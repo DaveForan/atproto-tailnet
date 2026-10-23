@@ -1,0 +1,29 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: atproto_tailnet
+      POSTGRES_PASSWORD: atproto_tailnet
+      POSTGRES_DB: atproto_tailnet
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "127.0.0.1:8180:80"
+      - "127.0.0.1:8445:443"
+      - "127.0.0.1:2019:2019"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

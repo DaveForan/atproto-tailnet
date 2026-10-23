@@ -1,0 +1,35 @@
+import { z } from "zod";
+
+const configSchema = z.object({
+  port: z.coerce.number().default(3000),
+  publicUrl: z.string().default("http://localhost:3000"),
+  databaseUrl: z
+    .string()
+    .default(
+      "postgresql://atproto_tailnet:atproto_tailnet@localhost:5432/atproto_tailnet",
+    ),
+  sessionSecret: z.string().default("dev-secret-change-me"),
+  baseDomain: z.string().default("ts.localhost"),
+  headscale: z.object({
+    image: z.string().default("headscale/headscale:0.29.1"),
+    portRangeStart: z.coerce.number().default(10001),
+    portRangeEnd: z.coerce.number().default(10100),
+    dataDir: z.string().default("./data/headscale"),
+  }),
+});
+
+export const config = configSchema.parse({
+  port: process.env.PORT,
+  publicUrl: process.env.PUBLIC_URL,
+  databaseUrl: process.env.DATABASE_URL,
+  sessionSecret: process.env.SESSION_SECRET,
+  baseDomain: process.env.BASE_DOMAIN,
+  headscale: {
+    image: process.env.HEADSCALE_IMAGE,
+    portRangeStart: process.env.HEADSCALE_PORT_RANGE_START,
+    portRangeEnd: process.env.HEADSCALE_PORT_RANGE_END,
+    dataDir: process.env.HEADSCALE_DATA_DIR,
+  },
+});
+
+export type Config = typeof config;
