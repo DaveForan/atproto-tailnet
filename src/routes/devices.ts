@@ -1,18 +1,27 @@
 import { Router } from "express";
 import { eq, and } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { memberships, users } from "../db/schema.js";
+import {
+  memberships,
+  users,
+  deviceApprovals,
+  deviceLocks,
+} from "../db/schema.js";
 import { HeadscaleApiClient } from "../orchestrator/headscale-api.js";
-import { requireAuth, param, getTenantForUser } from "./helpers.js";
-import { config } from "../config.js";
+import {
+  requireAuth,
+  param,
+  getTenantForUser,
+  hasPermission,
+  isLockedDown,
+  toHsUsername,
+  tenantLoginServer,
+} from "./helpers.js";
+import { logAudit } from "./audit.js";
 
 export const devicesRouter = Router();
 
-function tenantLoginServer(slug: string): string {
-  const proto = config.publicUrl.startsWith("https") ? "https" : "http";
-  return `${proto}://${slug}.${config.baseDomain}`;
-}
-
+/** Lists devices grouped by Headscale user, with machineKey for lock management. */
 devicesRouter.get(
   "/api/tenants/:tenantId/devices",
   requireAuth,
@@ -33,16 +42,33 @@ devicesRouter.get(
 
     try {
       const nodes = await client.listNodes();
-      res.json(
-        nodes.map((n) => ({
-          id: n.id,
-          name: n.givenName || n.name,
-          ipAddresses: n.ipAddresses,
-          online: n.online,
-          lastSeen: n.lastSeen,
-          user: n.user?.name,
-        })),
-      );
+
+      const grouped = new Map<
+        string,
+        { hsUsername: string; devices: typeof mapped }
+      >();
+
+      const mapped = nodes.map((n) => ({
+        id: n.id,
+        name: n.givenName || n.name,
+        ipAddresses: n.ipAddresses ?? [],
+        online: n.online ?? false,
+        lastSeen: n.lastSeen,
+        machineKey: n.machineKey ?? null,
+        user: n.user?.name ?? "unknown",
+      }));
+
+      for (const d of mapped) {
+        if (!grouped.has(d.user)) {
+          grouped.set(d.user, { hsUsername: d.user, devices: [] });
+        }
+        grouped.get(d.user)!.devices.push(d);
+      }
+
+      res.json({
+        byUser: Array.from(grouped.values()),
+        total: nodes.length,
+      });
     } catch (err) {
       console.error("Failed to list devices:", err);
       res.status(502).json({ error: "Failed to reach Headscale instance" });
@@ -50,14 +76,16 @@ devicesRouter.get(
   },
 );
 
+/**
+ * Generates a pre-auth key for the caller.
+ * Checks lockdown, device locks, and device-approval requirement.
+ */
 devicesRouter.post(
   "/api/tenants/:tenantId/devices/auth-key",
   requireAuth,
   async (req, res) => {
-    const result = await getTenantForUser(
-      param(req, "tenantId"),
-      req.session.userId!,
-    );
+    const tenantId = param(req, "tenantId");
+    const result = await getTenantForUser(tenantId, req.session.userId!);
     if (!result) {
       res.status(404).json({ error: "Tenant not found" });
       return;
@@ -65,6 +93,11 @@ devicesRouter.post(
 
     if (!result.tenant.apiKey) {
       res.status(500).json({ error: "Tenant instance not available" });
+      return;
+    }
+
+    if (isLockedDown(result.tenant)) {
+      res.status(403).json({ error: "Tenant is in lockdown mode" });
       return;
     }
 
@@ -76,10 +109,48 @@ devicesRouter.post(
     const hsUsername =
       result.membership.role === "owner"
         ? "owner"
-        : user.handle
-            .replace(/[^a-z0-9]+/gi, "-")
-            .replace(/^-|-$/g, "")
-            .toLowerCase();
+        : toHsUsername(user.handle);
+
+    // Check device locks — if locked, new devices are blocked
+    const locks = await db
+      .select()
+      .from(deviceLocks)
+      .where(eq(deviceLocks.membershipId, result.membership.id))
+      .limit(1);
+
+    if (locks.length > 0) {
+      res.status(403).json({
+        error: "Session is locked to specific devices. Remove lock to add new devices.",
+      });
+      return;
+    }
+
+    // If device approval is required, create a pending request instead
+    if (result.tenant.requireDeviceApproval && result.membership.role !== "owner") {
+      const [approval] = await db
+        .insert(deviceApprovals)
+        .values({
+          tenantId,
+          requesterId: req.session.userId!,
+          hsUsername,
+          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        })
+        .returning();
+
+      logAudit({
+        tenantId,
+        actorUserId: req.session.userId!,
+        action: "device_approval_requested",
+        targetType: "device_approval",
+        targetId: approval.id,
+      });
+
+      res.status(202).json({
+        approvalId: approval.id,
+        status: "pending_approval",
+      });
+      return;
+    }
 
     try {
       const client = new HeadscaleApiClient(
@@ -88,6 +159,13 @@ devicesRouter.post(
       );
       const authKey = await client.createPreAuthKey(hsUsername);
       const loginServer = tenantLoginServer(result.tenant.slug);
+
+      logAudit({
+        tenantId,
+        actorUserId: req.session.userId!,
+        action: "device_auth_key_created",
+        targetType: "device",
+      });
 
       res.json({
         key: authKey.key,
@@ -101,23 +179,17 @@ devicesRouter.post(
   },
 );
 
+/** Deletes a device. Owners can delete any; members can delete their own. */
 devicesRouter.delete(
   "/api/tenants/:tenantId/devices/:nodeId",
   requireAuth,
   async (req, res) => {
-    const result = await getTenantForUser(
-      param(req, "tenantId"),
-      req.session.userId!,
-    );
+    const tenantId = param(req, "tenantId");
+    const nodeId = param(req, "nodeId");
+
+    const result = await getTenantForUser(tenantId, req.session.userId!);
     if (!result) {
       res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (result.membership.role !== "owner") {
-      res
-        .status(403)
-        .json({ error: "Only the tenant owner can remove devices" });
       return;
     }
 
@@ -126,8 +198,36 @@ devicesRouter.delete(
       result.tenant.apiKey,
     );
 
+    // Members can only delete their own devices
+    if (result.membership.role !== "owner") {
+      try {
+        const node = await client.getNode(nodeId);
+        const [user] = await db
+          .select()
+          .from(users)
+          .where(eq(users.id, req.session.userId!));
+        const expectedHsUser = toHsUsername(user.handle);
+        if (node.user?.name !== expectedHsUser) {
+          res.status(403).json({ error: "Can only remove your own devices" });
+          return;
+        }
+      } catch {
+        res.status(502).json({ error: "Failed to verify device ownership" });
+        return;
+      }
+    }
+
     try {
-      await client.deleteNode(param(req, "nodeId"));
+      await client.deleteNode(nodeId);
+
+      logAudit({
+        tenantId,
+        actorUserId: req.session.userId!,
+        action: "device_removed",
+        targetType: "device",
+        targetId: nodeId,
+      });
+
       res.json({ status: "deleted" });
     } catch (err) {
       console.error("Failed to delete device:", err);
@@ -136,6 +236,7 @@ devicesRouter.delete(
   },
 );
 
+/** Lists members with permissions metadata. */
 devicesRouter.get(
   "/api/tenants/:tenantId/members",
   requireAuth,
@@ -156,6 +257,8 @@ devicesRouter.get(
         displayName: users.displayName,
         avatarUrl: users.avatarUrl,
         role: memberships.role,
+        canInvite: memberships.canInvite,
+        canKick: memberships.canKick,
         joinedAt: memberships.createdAt,
       })
       .from(memberships)
@@ -166,24 +269,51 @@ devicesRouter.get(
   },
 );
 
+/**
+ * Removes a member from the tenant.
+ * Requires kick permission. Owner can never be removed.
+ */
 devicesRouter.delete(
   "/api/tenants/:tenantId/members/:userId",
   requireAuth,
   async (req, res) => {
-    const result = await getTenantForUser(
-      param(req, "tenantId"),
-      req.session.userId!,
-    );
-    if (!result || result.membership.role !== "owner") {
-      res
-        .status(403)
-        .json({ error: "Only the tenant owner can remove members" });
+    const tenantId = param(req, "tenantId");
+    const removedUserId = param(req, "userId");
+
+    const result = await getTenantForUser(tenantId, req.session.userId!);
+    if (!result) {
+      res.status(403).json({ error: "Not a member of this tenant" });
       return;
     }
 
-    const removedUserId = param(req, "userId");
+    if (!hasPermission(result.membership, "kick")) {
+      res.status(403).json({ error: "You do not have permission to remove members" });
+      return;
+    }
+
     if (removedUserId === req.session.userId) {
       res.status(400).json({ error: "Cannot remove yourself" });
+      return;
+    }
+
+    // Originator protection: owner can never be removed
+    const [targetMembership] = await db
+      .select()
+      .from(memberships)
+      .where(
+        and(
+          eq(memberships.tenantId, tenantId),
+          eq(memberships.userId, removedUserId),
+        ),
+      );
+
+    if (!targetMembership) {
+      res.status(404).json({ error: "Member not found" });
+      return;
+    }
+
+    if (targetMembership.role === "owner") {
+      res.status(403).json({ error: "Cannot remove the tenant owner" });
       return;
     }
 
@@ -193,10 +323,7 @@ devicesRouter.delete(
       .where(eq(users.id, removedUserId));
 
     if (removedUser && result.tenant.apiKey) {
-      const hsUsername = removedUser.handle
-        .replace(/[^a-z0-9]+/gi, "-")
-        .replace(/^-|-$/g, "")
-        .toLowerCase();
+      const hsUsername = toHsUsername(removedUser.handle);
 
       const client = new HeadscaleApiClient(
         result.tenant.port,
@@ -218,14 +345,38 @@ devicesRouter.delete(
       }
     }
 
+    // Mark any pending device approvals as rejected
+    await db
+      .update(deviceApprovals)
+      .set({ status: "rejected", reviewedAt: new Date() })
+      .where(
+        and(
+          eq(deviceApprovals.tenantId, tenantId),
+          eq(deviceApprovals.requesterId, removedUserId),
+          eq(deviceApprovals.status, "pending"),
+        ),
+      );
+
+    // Device locks cascade-delete via FK
     await db
       .delete(memberships)
       .where(
         and(
-          eq(memberships.tenantId, param(req, "tenantId")),
+          eq(memberships.tenantId, tenantId),
           eq(memberships.userId, removedUserId),
         ),
       );
+
+    logAudit({
+      tenantId,
+      actorUserId: req.session.userId!,
+      action: "member_removed",
+      targetType: "member",
+      targetId: removedUserId,
+      metadata: removedUser
+        ? { handle: removedUser.handle }
+        : undefined,
+    });
 
     res.json({ status: "removed" });
   },

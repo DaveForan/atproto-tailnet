@@ -9,13 +9,21 @@ import {
   invitations,
 } from "../db/schema.js";
 import { HeadscaleApiClient } from "../orchestrator/headscale-api.js";
-import { requireAuth, param } from "./helpers.js";
+import {
+  requireAuth,
+  param,
+  getTenantForUser,
+  hasPermission,
+  isLockedDown,
+} from "./helpers.js";
+import { logAudit } from "./audit.js";
 
 export const invitationsRouter = Router();
 
 const HANDLE_RE =
   /^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
 
+/** Resolves an AT Protocol handle to a DID via DNS TXT, HTTP, or Bluesky public API. */
 async function resolveHandleToDid(handle: string): Promise<string | null> {
   const cleanHandle = handle.replace(/^@/, "");
 
@@ -23,7 +31,6 @@ async function resolveHandleToDid(handle: string): Promise<string | null> {
     return null;
   }
 
-  // Try DNS TXT _atproto.<handle>
   try {
     const records = await resolveTxt(`_atproto.${cleanHandle}`);
     const didRecord = records.flat().find((r) => r.startsWith("did="));
@@ -35,7 +42,6 @@ async function resolveHandleToDid(handle: string): Promise<string | null> {
     // DNS resolution failed, try HTTP
   }
 
-  // Fallback: HTTP GET https://<handle>/.well-known/atproto-did
   try {
     const res = await fetch(
       `https://${cleanHandle}/.well-known/atproto-did`,
@@ -48,7 +54,6 @@ async function resolveHandleToDid(handle: string): Promise<string | null> {
     // fall through
   }
 
-  // Try via public Bluesky API
   try {
     const res = await fetch(
       `https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle?handle=${encodeURIComponent(cleanHandle)}`,
@@ -64,7 +69,7 @@ async function resolveHandleToDid(handle: string): Promise<string | null> {
   return null;
 }
 
-// Create invitation — owner invites someone by handle
+/** Creates an invitation. Requires invite permission. Blocked by lockdown. */
 invitationsRouter.post(
   "/api/tenants/:tenantId/invitations",
   requireAuth,
@@ -77,20 +82,19 @@ invitationsRouter.post(
       return;
     }
 
-    // Verify caller is owner of this tenant
-    const [membership] = await db
-      .select()
-      .from(memberships)
-      .where(
-        and(
-          eq(memberships.tenantId, tenantId),
-          eq(memberships.userId, req.session.userId!),
-          eq(memberships.role, "owner"),
-        ),
-      );
+    const result = await getTenantForUser(tenantId, req.session.userId!);
+    if (!result) {
+      res.status(403).json({ error: "Not a member of this tenant" });
+      return;
+    }
 
-    if (!membership) {
-      res.status(403).json({ error: "Only the tenant owner can invite" });
+    if (!hasPermission(result.membership, "invite")) {
+      res.status(403).json({ error: "You do not have permission to invite" });
+      return;
+    }
+
+    if (isLockedDown(result.tenant)) {
+      res.status(403).json({ error: "Tenant is in lockdown mode" });
       return;
     }
 
@@ -104,7 +108,6 @@ invitationsRouter.post(
       return;
     }
 
-    // Check if already a member
     const [existingUser] = await db
       .select()
       .from(users)
@@ -127,7 +130,6 @@ invitationsRouter.post(
       }
     }
 
-    // Check for existing pending invitation
     const [existingInvitation] = await db
       .select()
       .from(invitations)
@@ -154,11 +156,20 @@ invitationsRouter.post(
       })
       .returning();
 
+    logAudit({
+      tenantId,
+      actorUserId: req.session.userId!,
+      action: "invitation_created",
+      targetType: "invitation",
+      targetId: invitation.id,
+      metadata: { handle: cleanHandle, did },
+    });
+
     res.status(201).json(invitation);
   },
 );
 
-// List invitations for the current user (pending ones they can accept)
+/** Lists pending invitations for the current user. */
 invitationsRouter.get("/api/invitations", requireAuth, async (req, res) => {
   const did = req.session.did!;
 
@@ -183,7 +194,7 @@ invitationsRouter.get("/api/invitations", requireAuth, async (req, res) => {
   res.json(pendingInvitations);
 });
 
-// Accept invitation
+/** Accepts an invitation. Blocked by lockdown on the target tenant. */
 invitationsRouter.post(
   "/api/invitations/:invitationId/accept",
   requireAuth,
@@ -207,7 +218,6 @@ invitationsRouter.post(
       return;
     }
 
-    // Get the tenant
     const [tenant] = await db
       .select()
       .from(tenants)
@@ -218,7 +228,11 @@ invitationsRouter.post(
       return;
     }
 
-    // Create user in Headscale instance via REST API
+    if (isLockedDown(tenant)) {
+      res.status(403).json({ error: "Tenant is in lockdown mode — cannot accept invitations" });
+      return;
+    }
+
     const [user] = await db
       .select()
       .from(users)
@@ -241,24 +255,30 @@ invitationsRouter.post(
       // User might already exist if they were previously a member
     }
 
-    // Create membership
     await db.insert(memberships).values({
       userId: user.id,
       tenantId: tenant.id,
       role: "member",
     });
 
-    // Update invitation status
     await db
       .update(invitations)
       .set({ status: "accepted", updatedAt: new Date() })
       .where(eq(invitations.id, invitationId));
 
+    logAudit({
+      tenantId: tenant.id,
+      actorUserId: user.id,
+      action: "invitation_accepted",
+      targetType: "invitation",
+      targetId: invitationId,
+    });
+
     res.json({ status: "accepted", tenantId: tenant.id });
   },
 );
 
-// Decline invitation
+/** Declines an invitation. */
 invitationsRouter.post(
   "/api/invitations/:invitationId/decline",
   requireAuth,
@@ -287,11 +307,19 @@ invitationsRouter.post(
       .set({ status: "declined", updatedAt: new Date() })
       .where(eq(invitations.id, invitationId));
 
+    logAudit({
+      tenantId: invitation.tenantId,
+      actorUserId: req.session.userId!,
+      action: "invitation_declined",
+      targetType: "invitation",
+      targetId: invitationId,
+    });
+
     res.json({ status: "declined" });
   },
 );
 
-// Revoke invitation (owner only)
+/** Revokes a pending invitation. Requires invite permission. */
 invitationsRouter.delete(
   "/api/tenants/:tenantId/invitations/:invitationId",
   requireAuth,
@@ -299,19 +327,14 @@ invitationsRouter.delete(
     const tenantId = param(req, "tenantId");
     const invitationId = param(req, "invitationId");
 
-    const [membership] = await db
-      .select()
-      .from(memberships)
-      .where(
-        and(
-          eq(memberships.tenantId, tenantId),
-          eq(memberships.userId, req.session.userId!),
-          eq(memberships.role, "owner"),
-        ),
-      );
+    const result = await getTenantForUser(tenantId, req.session.userId!);
+    if (!result) {
+      res.status(403).json({ error: "Not a member of this tenant" });
+      return;
+    }
 
-    if (!membership) {
-      res.status(403).json({ error: "Only the tenant owner can revoke" });
+    if (!hasPermission(result.membership, "invite")) {
+      res.status(403).json({ error: "You do not have permission to revoke invitations" });
       return;
     }
 
@@ -319,6 +342,14 @@ invitationsRouter.delete(
       .update(invitations)
       .set({ status: "revoked", updatedAt: new Date() })
       .where(eq(invitations.id, invitationId));
+
+    logAudit({
+      tenantId,
+      actorUserId: req.session.userId!,
+      action: "invitation_revoked",
+      targetType: "invitation",
+      targetId: invitationId,
+    });
 
     res.json({ status: "revoked" });
   },

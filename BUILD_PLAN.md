@@ -124,6 +124,57 @@ See `docs/adr/` for rationale behind each choice:
 - [x] Dashboard network error handling (try/catch on fetch)
 - [x] Shared getTenantForUser helper (eliminates duplicate lookup logic)
 
+## Phase 5: Security Management — "Control your network" (ADR-0005)
+
+### 5.1 Permission model
+- [x] Per-member `canInvite` and `canKick` boolean columns on memberships
+- [x] `hasPermission(membership, "invite"|"kick")` helper — owners always pass
+- [x] Invitation creation gated by invite permission (not owner-only)
+- [x] Member removal gated by kick permission (not owner-only)
+- [x] Invitation revocation gated by invite permission
+- [x] Originator protection — owner membership can never be deleted
+
+### 5.2 Tenant security settings
+- [x] `requireDeviceApproval` toggle — new devices need owner approval
+- [x] `lockdownMode` toggle — blocks all invitations, joins, and device registrations
+- [x] `PATCH /api/tenants/:id/settings` (owner only)
+- [x] Lockdown banner on dashboard when active
+- [x] Lockdown check on invitation create, accept, and auth-key generate
+
+### 5.3 Device approval system
+- [x] `device_approvals` table (pending/approved/rejected/expired)
+- [x] Auth-key endpoint returns 202 + approval ID when approval required
+- [x] `GET /api/tenants/:id/device-approvals` — list pending (owner/canInvite)
+- [x] `POST .../approve` — generates Headscale pre-auth key on approval
+- [x] `POST .../reject` — rejects request
+- [x] `GET .../mine` — member views own approval status + key when approved
+- [x] Lazy expiry: pending approvals auto-expire after 24h
+
+### 5.4 Device locking
+- [x] `device_locks` table — binds membership to specific Headscale machineKeys
+- [x] `POST /api/tenants/:id/device-locks` — locks to current devices (self or owner)
+- [x] `DELETE /api/tenants/:id/device-locks` — removes locks
+- [x] `GET /api/tenants/:id/device-locks/:userId` — lists locked devices
+- [x] Auth-key generation blocked when device locks exist
+
+### 5.5 Audit log
+- [x] `audit_logs` table — append-only, JSONB metadata
+- [x] `logAudit()` fire-and-forget helper for all security-relevant actions
+- [x] `GET /api/tenants/:id/audit-log` — paginated, owner-only
+- [x] All permission changes, invitations, device operations, and settings mutations logged
+
+### 5.6 Dashboard UI
+- [x] Security tab (owner) — settings toggles + pending device approval queue
+- [x] Audit Log tab (owner) — paginated event log with human-readable labels
+- [x] Enhanced Members tab — permission toggle chips for owner, badges for members
+- [x] Enhanced Devices tab — grouped by Headscale user
+- [x] Add Device tab — handles pending_approval response
+- [x] Lockdown banner with disable button
+
+**Milestone:** Owner can delegate invite/kick permissions, require device approval, lock devices to known machines, view full audit trail, and emergency-lockdown the entire tailnet.
+
+---
+
 ## Phase 4: Polish — "Production-ready"
 
 ### 4.1 ACL management

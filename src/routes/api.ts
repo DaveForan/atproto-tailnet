@@ -8,15 +8,9 @@ import {
   stopInstance,
 } from "../orchestrator/headscale.js";
 import { removeTenantRoute } from "../orchestrator/caddy.js";
-import { requireAuth, param, getTenantForUser } from "./helpers.js";
-import { config } from "../config.js";
+import { requireAuth, param, getTenantForUser, tenantLoginServer } from "./helpers.js";
 
 export const apiRouter = Router();
-
-function tenantLoginServer(slug: string): string {
-  const proto = config.publicUrl.startsWith("https") ? "https" : "http";
-  return `${proto}://${slug}.${config.baseDomain}`;
-}
 
 apiRouter.get("/health", async (_req, res) => {
   try {
