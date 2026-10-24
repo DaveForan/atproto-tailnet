@@ -506,6 +506,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     function renderMembers(members) {
       if (!members || members.length === 0) return '<div class="empty-state">No members</div>';
       var canManageRoles = hasPerm('manage_roles');
+      var canLock = hasPerm('lock_devices');
 
       return members.map(function(m) {
         var roleHtml = '';
@@ -514,6 +515,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         } else {
           roleHtml = '<span class="badge badge-role">' + esc(m.roleName || 'no role') + '</span>';
         }
+
+        var lockBadge = m.isLocked ? '<span class="badge" style="background:#f59e0b20;color:var(--warning);font-size:11px;margin-left:4px">locked</span>' : '';
 
         var roleSelect = '';
         if (canManageRoles && !m.isOriginator) {
@@ -525,16 +528,25 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           roleSelect += '</select>';
         }
 
-        var actions = '';
-        if (!m.isOriginator && hasPerm('kick')) {
-          actions = '<button class="btn-sm btn-danger" onclick="removeMember(\\'' + m.id + '\\')">Remove</button>';
+        var actions = '<div style="display:flex;gap:6px;align-items:center">';
+        if (canLock) {
+          if (m.isLocked) {
+            actions += '<button class="btn-sm btn-warning" onclick="unlockDevices(\\'' + m.id + '\\')">Unlock</button>';
+          } else {
+            actions += '<button class="btn-sm btn-ghost" onclick="lockDevices(\\'' + m.id + '\\')">Lock</button>';
+          }
         }
+        if (!m.isOriginator && hasPerm('kick')) {
+          actions += '<button class="btn-sm btn-danger" onclick="removeMember(\\'' + m.id + '\\')">Remove</button>';
+        }
+        actions += '</div>';
 
         return '<div class="member-item">' +
           '<div class="member-info">' +
             (safeUrl(m.avatarUrl) ? '<img src="' + safeUrl(m.avatarUrl) + '" />' : '') +
             '<span>' + esc(m.displayName || m.handle) + '</span>' +
             roleHtml +
+            lockBadge +
             (roleSelect ? '<span style="margin-left:4px">' + roleSelect + '</span>' : '') +
           '</div>' +
           actions +
@@ -610,7 +622,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       var tabBar = '<div class="tab-bar">' +
         '<button class="tab ' + (state.tab === 'devices' ? 'active' : '') + '" onclick="switchTab(\\'devices\\')">Devices</button>' +
         '<button class="tab ' + (state.tab === 'members' ? 'active' : '') + '" onclick="switchTab(\\'members\\')">Members</button>' +
-        '<button class="tab ' + (state.tab === 'invite' ? 'active' : '') + '" onclick="switchTab(\\'invite\\')">Invite</button>' +
+        (hasPerm('invite') ? '<button class="tab ' + (state.tab === 'invite' ? 'active' : '') + '" onclick="switchTab(\\'invite\\')">Invite</button>' : '') +
         '<button class="tab ' + (state.tab === 'connect' ? 'active' : '') + '" onclick="switchTab(\\'connect\\')">Add Device</button>' +
         (canServices ? '<button class="tab ' + (state.tab === 'services' ? 'active' : '') + '" onclick="switchTab(\\'services\\')">Services</button>' : '') +
         (canBoard ? '<button class="tab ' + (state.tab === 'board' ? 'active' : '') + '" onclick="switchTab(\\'board\\')">Board</button>' : '') +
@@ -645,7 +657,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         '<div class="card"><div id="member-list">Loading...</div></div>' +
       '</div>' +
 
-      '<div id="tab-invite" class="' + (state.tab !== 'invite' ? 'hidden' : '') + '">' +
+      (hasPerm('invite') ? '<div id="tab-invite" class="' + (state.tab !== 'invite' ? 'hidden' : '') + '">' +
         '<div class="card">' +
           '<p style="margin-bottom:12px;color:var(--text-dim)">Invite someone by their Bluesky handle</p>' +
           '<div class="inline-form">' +
@@ -654,7 +666,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           '</div>' +
           '<div id="sent-invitations" style="margin-top:16px"></div>' +
         '</div>' +
-      '</div>' +
+      '</div>' : '') +
 
       '<div id="tab-connect" class="' + (state.tab !== 'connect' ? 'hidden' : '') + '">' +
         '<div class="card">' +
@@ -798,6 +810,12 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     async function loadMembers() {
       if (!state.currentTenant) return;
       var members = await api('/api/tenants/' + state.currentTenant.id + '/members');
+      if (members && hasPerm('lock_devices')) {
+        for (var i = 0; i < members.length; i++) {
+          var locks = await api('/api/tenants/' + state.currentTenant.id + '/device-locks/' + members[i].id);
+          if (locks) members[i].isLocked = locks.locked;
+        }
+      }
       var el = document.getElementById('member-list');
       if (el) el.innerHTML = renderMembers(members);
     }
@@ -810,8 +828,13 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (invs.length === 0) { el.innerHTML = ''; return; }
       el.innerHTML = '<h4 style="margin-bottom:8px;color:var(--text-dim)">Sent</h4>' +
         invs.map(function(i) {
-          return '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">' +
+          var revokeBtn = '';
+          if (i.status === 'pending') {
+            revokeBtn = '<button class="btn-sm btn-danger" onclick="revokeInvitation(\\'' + i.id + '\\')">Revoke</button>';
+          }
+          return '<div style="display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid var(--border)">' +
             '<span>' + esc(i.inviteeHandle) + ' <span class="badge" style="font-size:11px">' + esc(i.status) + '</span></span>' +
+            revokeBtn +
           '</div>';
         }).join('');
     }
@@ -1322,6 +1345,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 
     async function loadAuditLog() {
       if (!state.currentTenant) return;
+      auditOffset = 0;
       var data = await api('/api/tenants/' + state.currentTenant.id + '/audit-log?limit=50');
       var el = document.getElementById('audit-log');
       if (!el || !data) return;
@@ -1517,6 +1541,31 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       loadDevices();
     }
 
+    async function lockDevices(userId) {
+      if (!state.currentTenant) return;
+      if (!confirm('Lock this member to their current devices? They will not be able to add new devices.')) return;
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/device-locks', {
+        method: 'POST',
+        body: JSON.stringify({ userId: userId }),
+      });
+      if (result) {
+        toast('Devices locked (' + (result.devices ? result.devices.length : 0) + ' devices)');
+        loadMembers();
+      }
+    }
+
+    async function unlockDevices(userId) {
+      if (!state.currentTenant) return;
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/device-locks', {
+        method: 'DELETE',
+        body: JSON.stringify({ userId: userId }),
+      });
+      if (result) {
+        toast('Devices unlocked');
+        loadMembers();
+      }
+    }
+
     async function removeMember(userId) {
       if (!state.currentTenant) return;
       if (!confirm('Remove this member? Their devices will also be disconnected.')) return;
@@ -1536,6 +1585,16 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (result) {
         input.value = '';
         toast('Invitation sent to ' + handle);
+        loadSentInvitations();
+      }
+    }
+
+    async function revokeInvitation(invitationId) {
+      if (!state.currentTenant) return;
+      if (!confirm('Revoke this invitation?')) return;
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/invitations/' + invitationId, { method: 'DELETE' });
+      if (result) {
+        toast('Invitation revoked');
         loadSentInvitations();
       }
     }

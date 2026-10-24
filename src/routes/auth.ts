@@ -203,12 +203,19 @@ authRouter.get("/auth/callback", async (req, res) => {
         .where(eq(users.id, user.id));
     }
 
-    req.session.userId = user.id;
-    req.session.did = did;
-
     const dest = req.session.postLoginRedirect || "/";
-    delete req.session.postLoginRedirect;
-    res.redirect(dest);
+    req.session.regenerate((err) => {
+      if (err) {
+        console.error("Session regeneration failed:", err);
+        res.status(500).json({ error: "Authentication failed" });
+        return;
+      }
+      req.session.userId = user.id;
+      req.session.did = did;
+      req.session.save(() => {
+        res.redirect(dest);
+      });
+    });
   } catch (err) {
     console.error("Callback error:", err);
     res.status(500).json({ error: "Authentication failed" });

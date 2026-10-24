@@ -415,10 +415,10 @@ securityRouter.delete(
       return;
     }
 
-    // Unassign members who have this role (set to null)
+    // Reassign members to the tenant's default role (or null as last resort)
     await db
       .update(memberships)
-      .set({ roleId: null })
+      .set({ roleId: tenant.defaultRoleId })
       .where(and(eq(memberships.tenantId, tenantId), eq(memberships.roleId, roleId)));
 
     await db.delete(roles).where(eq(roles.id, roleId));
@@ -673,6 +673,11 @@ securityRouter.post(
       return;
     }
 
+    if (isLockedDown(result.tenant)) {
+      res.status(403).json({ error: "Tenant is in lockdown mode" });
+      return;
+    }
+
     const [approval] = await db
       .select()
       .from(deviceApprovals)
@@ -847,6 +852,11 @@ securityRouter.post(
       return;
     }
 
+    if (isLockedDown(result.tenant)) {
+      res.status(403).json({ error: "Tenant is in lockdown mode" });
+      return;
+    }
+
     const [request] = await db
       .select()
       .from(joinRequests)
@@ -886,7 +896,7 @@ securityRouter.post(
       role: "member",
       roleId: result.tenant.defaultRoleId,
       isOriginator: false,
-    });
+    }).onConflictDoNothing();
 
     await db
       .update(joinRequests)

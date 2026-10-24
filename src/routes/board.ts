@@ -55,7 +55,12 @@ boardRouter.get(
       .from(boardPosts)
       .innerJoin(users, eq(boardPosts.authorId, users.id))
       .innerJoin(services, eq(boardPosts.serviceId, services.id))
-      .where(eq(boardPosts.tenantId, tenantId))
+      .where(
+        and(
+          eq(boardPosts.tenantId, tenantId),
+          eq(boardPosts.status, "active"),
+        ),
+      )
       .orderBy(desc(boardPosts.createdAt));
 
     res.json(rows);
@@ -321,6 +326,11 @@ const BOARD_PAGE_HTML = `<!DOCTYPE html>
       if (s == null) return '';
       return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
     }
+    function safeUrl(url) {
+      if (!url || typeof url !== 'string') return '';
+      try { var u = new URL(url); if (u.protocol === 'https:' || u.protocol === 'http:') return esc(url); } catch(e) {}
+      return '';
+    }
 
     async function init() {
       try {
@@ -368,8 +378,9 @@ const BOARD_PAGE_HTML = `<!DOCTYPE html>
       var detail = document.createElement('div');
       detail.className = 'service-detail';
       detail.style.cssText = 'margin-top:12px;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;font-size:13px';
+      var safe = safeUrl(url);
       detail.innerHTML = (desc ? '<p style="margin-bottom:8px">' + esc(desc) + '</p>' : '') +
-        '<p>Service URL: <a href="' + esc(url) + '" target="_blank" rel="noopener">' + esc(url) + '</a></p>';
+        (safe ? '<p>Service URL: <a href="' + safe + '" target="_blank" rel="noopener">' + safe + '</a></p>' : '<p>Service URL: ' + esc(url) + '</p>');
       el.appendChild(detail);
       event.stopPropagation();
     }

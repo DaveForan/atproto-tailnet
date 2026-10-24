@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { resolveTxt } from "node:dns/promises";
-import { eq, and } from "drizzle-orm";
+import { eq, and, desc } from "drizzle-orm";
 import { db } from "../db/index.js";
 import {
   users,
@@ -19,6 +19,40 @@ import {
 import { logAudit } from "./audit.js";
 
 export const invitationsRouter = Router();
+
+invitationsRouter.get(
+  "/api/tenants/:tenantId/invitations",
+  requireAuth,
+  async (req, res) => {
+    const tenantId = param(req, "tenantId");
+    const result = await getTenantForUser(tenantId, req.session.userId!);
+    if (!result) {
+      res.status(403).json({ error: "Not a member of this tenant" });
+      return;
+    }
+
+    if (!hasPermission(result.membership, result.role, "invite")) {
+      res.status(403).json({ error: "Insufficient permissions" });
+      return;
+    }
+
+    const rows = await db
+      .select({
+        id: invitations.id,
+        inviteeHandle: invitations.inviteeHandle,
+        inviteeDid: invitations.inviteeDid,
+        status: invitations.status,
+        inviterHandle: users.handle,
+        createdAt: invitations.createdAt,
+      })
+      .from(invitations)
+      .innerJoin(users, eq(invitations.inviterUserId, users.id))
+      .where(eq(invitations.tenantId, tenantId))
+      .orderBy(desc(invitations.createdAt));
+
+    res.json(rows);
+  },
+);
 
 const HANDLE_RE =
   /^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
@@ -257,7 +291,7 @@ invitationsRouter.post(
       role: "member",
       roleId: tenant.defaultRoleId,
       isOriginator: false,
-    });
+    }).onConflictDoNothing();
 
     await db
       .update(invitations)
@@ -334,10 +368,30 @@ invitationsRouter.delete(
       return;
     }
 
+    const [target] = await db
+      .select()
+      .from(invitations)
+      .where(
+        and(
+          eq(invitations.id, invitationId),
+          eq(invitations.tenantId, tenantId),
+        ),
+      );
+
+    if (!target) {
+      res.status(404).json({ error: "Invitation not found" });
+      return;
+    }
+
     await db
       .update(invitations)
       .set({ status: "revoked", updatedAt: new Date() })
-      .where(eq(invitations.id, invitationId));
+      .where(
+        and(
+          eq(invitations.id, invitationId),
+          eq(invitations.tenantId, tenantId),
+        ),
+      );
 
     logAudit({
       tenantId,

@@ -8,6 +8,7 @@ import {
   jsonb,
   pgEnum,
   uniqueIndex,
+  index,
 } from "drizzle-orm/pg-core";
 
 export const tenantStatusEnum = pgEnum("tenant_status", [
@@ -197,53 +198,68 @@ export const oauthSessions = pgTable("oauth_sessions", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
-export const invitations = pgTable("invitations", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  tenantId: uuid("tenant_id")
-    .notNull()
-    .references(() => tenants.id),
-  inviterUserId: uuid("inviter_user_id")
-    .notNull()
-    .references(() => users.id),
-  inviteeDid: text("invitee_did").notNull(),
-  inviteeHandle: text("invitee_handle").notNull(),
-  status: invitationStatusEnum("status").notNull().default("pending"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+export const invitations = pgTable(
+  "invitations",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    inviterUserId: uuid("inviter_user_id")
+      .notNull()
+      .references(() => users.id),
+    inviteeDid: text("invitee_did").notNull(),
+    inviteeHandle: text("invitee_handle").notNull(),
+    status: invitationStatusEnum("status").notNull().default("pending"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => [
+    index("invitations_tenant_idx").on(t.tenantId),
+    index("invitations_invitee_did_idx").on(t.inviteeDid),
+  ],
+);
 
-export const deviceApprovals = pgTable("device_approvals", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  tenantId: uuid("tenant_id")
-    .notNull()
-    .references(() => tenants.id),
-  requesterId: uuid("requester_id")
-    .notNull()
-    .references(() => users.id),
-  hsUsername: text("hs_username").notNull(),
-  status: deviceApprovalStatusEnum("status").notNull().default("pending"),
-  preAuthKey: text("pre_auth_key"),
-  command: text("command"),
-  reviewedById: uuid("reviewed_by_id").references(() => users.id),
-  requestedAt: timestamp("requested_at").defaultNow().notNull(),
-  reviewedAt: timestamp("reviewed_at"),
-  expiresAt: timestamp("expires_at").notNull(),
-});
+export const deviceApprovals = pgTable(
+  "device_approvals",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    requesterId: uuid("requester_id")
+      .notNull()
+      .references(() => users.id),
+    hsUsername: text("hs_username").notNull(),
+    status: deviceApprovalStatusEnum("status").notNull().default("pending"),
+    preAuthKey: text("pre_auth_key"),
+    command: text("command"),
+    reviewedById: uuid("reviewed_by_id").references(() => users.id),
+    requestedAt: timestamp("requested_at").defaultNow().notNull(),
+    reviewedAt: timestamp("reviewed_at"),
+    expiresAt: timestamp("expires_at").notNull(),
+  },
+  (t) => [index("device_approvals_tenant_idx").on(t.tenantId)],
+);
 
-export const joinRequests = pgTable("join_requests", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  tenantId: uuid("tenant_id")
-    .notNull()
-    .references(() => tenants.id),
-  requesterId: uuid("requester_id")
-    .notNull()
-    .references(() => users.id),
-  message: text("message"),
-  status: joinRequestStatusEnum("status").notNull().default("pending"),
-  reviewedById: uuid("reviewed_by_id").references(() => users.id),
-  requestedAt: timestamp("requested_at").defaultNow().notNull(),
-  reviewedAt: timestamp("reviewed_at"),
-});
+export const joinRequests = pgTable(
+  "join_requests",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    requesterId: uuid("requester_id")
+      .notNull()
+      .references(() => users.id),
+    message: text("message"),
+    status: joinRequestStatusEnum("status").notNull().default("pending"),
+    reviewedById: uuid("reviewed_by_id").references(() => users.id),
+    requestedAt: timestamp("requested_at").defaultNow().notNull(),
+    reviewedAt: timestamp("reviewed_at"),
+  },
+  (t) => [index("join_requests_tenant_idx").on(t.tenantId)],
+);
 
 export const deviceLocks = pgTable(
   "device_locks",
@@ -264,74 +280,90 @@ export const deviceLocks = pgTable(
   ],
 );
 
-export const serviceDevices = pgTable("service_devices", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  tenantId: uuid("tenant_id")
-    .notNull()
-    .references(() => tenants.id),
-  ownerId: uuid("owner_id")
-    .notNull()
-    .references(() => users.id),
-  name: text("name").notNull(),
-  description: text("description"),
-  status: serviceDeviceStatusEnum("status").notNull().default("pending"),
-  hsUsername: text("hs_username"),
-  preAuthKey: text("pre_auth_key"),
-  command: text("command"),
-  reviewedById: uuid("reviewed_by_id").references(() => users.id),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  reviewedAt: timestamp("reviewed_at"),
-});
+export const serviceDevices = pgTable(
+  "service_devices",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    ownerId: uuid("owner_id")
+      .notNull()
+      .references(() => users.id),
+    name: text("name").notNull(),
+    description: text("description"),
+    status: serviceDeviceStatusEnum("status").notNull().default("pending"),
+    hsUsername: text("hs_username"),
+    preAuthKey: text("pre_auth_key"),
+    command: text("command"),
+    reviewedById: uuid("reviewed_by_id").references(() => users.id),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    reviewedAt: timestamp("reviewed_at"),
+  },
+  (t) => [index("service_devices_tenant_idx").on(t.tenantId)],
+);
 
-export const services = pgTable("services", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  tenantId: uuid("tenant_id")
-    .notNull()
-    .references(() => tenants.id),
-  ownerId: uuid("owner_id")
-    .notNull()
-    .references(() => users.id),
-  serviceDeviceId: uuid("service_device_id")
-    .notNull()
-    .references(() => serviceDevices.id),
-  name: text("name").notNull(),
-  description: text("description"),
-  url: text("url").notNull(),
-  status: serviceStatusEnum("status").notNull().default("pending"),
-  reviewedById: uuid("reviewed_by_id").references(() => users.id),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+export const services = pgTable(
+  "services",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    ownerId: uuid("owner_id")
+      .notNull()
+      .references(() => users.id),
+    serviceDeviceId: uuid("service_device_id")
+      .notNull()
+      .references(() => serviceDevices.id),
+    name: text("name").notNull(),
+    description: text("description"),
+    url: text("url").notNull(),
+    status: serviceStatusEnum("status").notNull().default("pending"),
+    reviewedById: uuid("reviewed_by_id").references(() => users.id),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => [index("services_tenant_idx").on(t.tenantId)],
+);
 
-export const boardPosts = pgTable("board_posts", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  tenantId: uuid("tenant_id")
-    .notNull()
-    .references(() => tenants.id),
-  authorId: uuid("author_id")
-    .notNull()
-    .references(() => users.id),
-  serviceId: uuid("service_id")
-    .notNull()
-    .references(() => services.id),
-  title: text("title").notNull(),
-  description: text("description"),
-  status: boardPostStatusEnum("status").notNull().default("active"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-  updatedAt: timestamp("updated_at").defaultNow().notNull(),
-});
+export const boardPosts = pgTable(
+  "board_posts",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    authorId: uuid("author_id")
+      .notNull()
+      .references(() => users.id),
+    serviceId: uuid("service_id")
+      .notNull()
+      .references(() => services.id),
+    title: text("title").notNull(),
+    description: text("description"),
+    status: boardPostStatusEnum("status").notNull().default("active"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => [index("board_posts_tenant_idx").on(t.tenantId)],
+);
 
-export const auditLogs = pgTable("audit_logs", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  tenantId: uuid("tenant_id")
-    .notNull()
-    .references(() => tenants.id),
-  actorUserId: uuid("actor_user_id")
-    .notNull()
-    .references(() => users.id),
-  action: auditActionEnum("action").notNull(),
-  targetType: text("target_type"),
-  targetId: text("target_id"),
-  metadata: jsonb("metadata"),
-  createdAt: timestamp("created_at").defaultNow().notNull(),
-});
+export const auditLogs = pgTable(
+  "audit_logs",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    actorUserId: uuid("actor_user_id")
+      .notNull()
+      .references(() => users.id),
+    action: auditActionEnum("action").notNull(),
+    targetType: text("target_type"),
+    targetId: text("target_id"),
+    metadata: jsonb("metadata"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [index("audit_logs_tenant_created_idx").on(t.tenantId, t.createdAt)],
+);

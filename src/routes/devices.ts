@@ -7,6 +7,9 @@ import {
   users,
   deviceApprovals,
   deviceLocks,
+  serviceDevices,
+  services,
+  boardPosts,
 } from "../db/schema.js";
 import { HeadscaleApiClient } from "../orchestrator/headscale-api.js";
 import {
@@ -344,6 +347,36 @@ devicesRouter.delete(
           eq(deviceApprovals.status, "pending"),
         ),
       );
+
+    // Soft-delete board posts by this user
+    await db
+      .update(boardPosts)
+      .set({ status: "removed", updatedAt: new Date() })
+      .where(
+        and(
+          eq(boardPosts.tenantId, tenantId),
+          eq(boardPosts.authorId, removedUserId),
+          eq(boardPosts.status, "active"),
+        ),
+      );
+
+    // Remove services owned by this user (board posts already cleaned above)
+    const userServices = await db
+      .select({ id: services.id })
+      .from(services)
+      .where(and(eq(services.tenantId, tenantId), eq(services.ownerId, removedUserId)));
+    for (const svc of userServices) {
+      await db
+        .update(boardPosts)
+        .set({ status: "removed", updatedAt: new Date() })
+        .where(and(eq(boardPosts.serviceId, svc.id), eq(boardPosts.status, "active")));
+      await db.delete(services).where(eq(services.id, svc.id));
+    }
+
+    // Remove service devices owned by this user
+    await db
+      .delete(serviceDevices)
+      .where(and(eq(serviceDevices.tenantId, tenantId), eq(serviceDevices.ownerId, removedUserId)));
 
     await db
       .delete(memberships)

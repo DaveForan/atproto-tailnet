@@ -1,5 +1,5 @@
 import type { Request, Response, NextFunction } from "express";
-import { eq, and } from "drizzle-orm";
+import { eq, and, ne } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { tenants, memberships, roles } from "../db/schema.js";
 import { config } from "../config.js";
@@ -38,7 +38,11 @@ export async function getTenantForUser(
     .innerJoin(tenants, eq(memberships.tenantId, tenants.id))
     .leftJoin(roles, eq(memberships.roleId, roles.id))
     .where(
-      and(eq(memberships.tenantId, tenantId), eq(memberships.userId, userId)),
+      and(
+        eq(memberships.tenantId, tenantId),
+        eq(memberships.userId, userId),
+        ne(tenants.status, "deleted"),
+      ),
     );
 
   return results[0] ?? null;

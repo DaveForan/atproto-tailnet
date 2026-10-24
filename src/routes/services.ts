@@ -8,6 +8,7 @@ import {
   memberships,
   serviceDevices,
   services,
+  boardPosts,
 } from "../db/schema.js";
 import { HeadscaleApiClient } from "../orchestrator/headscale-api.js";
 import {
@@ -193,6 +194,11 @@ servicesRouter.post(
       return;
     }
 
+    if (isLockedDown(result.tenant)) {
+      res.status(403).json({ error: "Tenant is in lockdown mode" });
+      return;
+    }
+
     const [device] = await db
       .select()
       .from(serviceDevices)
@@ -343,6 +349,19 @@ servicesRouter.delete(
       return;
     }
 
+    const deviceServices = await db
+      .select({ id: services.id })
+      .from(services)
+      .where(eq(services.serviceDeviceId, deviceId));
+
+    for (const svc of deviceServices) {
+      await db
+        .update(boardPosts)
+        .set({ status: "removed", updatedAt: new Date() })
+        .where(and(eq(boardPosts.serviceId, svc.id), eq(boardPosts.status, "active")));
+      await db.delete(services).where(eq(services.id, svc.id));
+    }
+
     await db.delete(serviceDevices).where(eq(serviceDevices.id, deviceId));
 
     logAudit({
@@ -351,7 +370,7 @@ servicesRouter.delete(
       action: "service_device_removed",
       targetType: "service_device",
       targetId: deviceId,
-      metadata: { name: device.name },
+      metadata: { name: device.name, cascadedServices: deviceServices.length },
     });
 
     res.json({ status: "deleted" });
@@ -400,7 +419,10 @@ servicesRouter.get(
 const serviceBody = z.object({
   name: z.string().min(1).max(100),
   description: z.string().max(500).optional(),
-  url: z.string().min(1).max(500),
+  url: z.string().min(1).max(500).url().refine(
+    (u) => u.startsWith("http://") || u.startsWith("https://"),
+    { message: "URL must use http or https protocol" },
+  ),
   serviceDeviceId: z.string().uuid(),
 });
 
@@ -530,6 +552,11 @@ servicesRouter.post(
       return;
     }
 
+    if (isLockedDown(result.tenant)) {
+      res.status(403).json({ error: "Tenant is in lockdown mode" });
+      return;
+    }
+
     const [service] = await db
       .select()
       .from(services)
@@ -656,6 +683,11 @@ servicesRouter.delete(
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
+
+    await db
+      .update(boardPosts)
+      .set({ status: "removed", updatedAt: new Date() })
+      .where(and(eq(boardPosts.serviceId, serviceId), eq(boardPosts.status, "active")));
 
     await db.delete(services).where(eq(services.id, serviceId));
 
