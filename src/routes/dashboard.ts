@@ -81,8 +81,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     }
     .badge-running { background: #22c55e20; color: var(--success); }
     .badge-stopped { background: #ef444420; color: var(--danger); }
-    .badge-owner { background: #6366f120; color: var(--accent); }
-    .badge-member { background: #8888a020; color: var(--text-dim); }
+    .badge-originator { background: #6366f120; color: var(--accent); }
+    .badge-role { background: #8888a020; color: var(--text-dim); }
     .badge-perm { background: #6366f110; color: var(--accent); font-size: 11px; margin-left: 4px; }
     .code-block {
       background: #000;
@@ -148,7 +148,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       color: var(--text);
     }
     .btn-ghost:hover { background: var(--surface); }
-    input[type="text"] {
+    input[type="text"], select {
       background: var(--bg);
       border: 1px solid var(--border);
       color: var(--text);
@@ -157,13 +157,15 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       font-size: 14px;
       width: 100%;
     }
+    select { cursor: pointer; }
+    select option { background: var(--bg); color: var(--text); }
     input[type="text"]::placeholder { color: var(--text-dim); }
     .inline-form {
       display: flex;
       gap: 8px;
       align-items: center;
     }
-    .inline-form input { flex: 1; }
+    .inline-form input, .inline-form select { flex: 1; }
     .member-item {
       display: flex;
       align-items: center;
@@ -293,18 +295,6 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     }
     .toggle input:checked + .slider { background: var(--accent); }
     .toggle input:checked + .slider::before { transform: translateX(20px); }
-    .perm-toggle {
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      font-size: 12px;
-      color: var(--text-dim);
-      cursor: pointer;
-      padding: 2px 6px;
-      border-radius: 4px;
-    }
-    .perm-toggle:hover { background: var(--border); }
-    .perm-toggle.active { color: var(--accent); }
     .user-group {
       margin-bottom: 16px;
     }
@@ -335,19 +325,67 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     .audit-time { color: var(--text-dim); font-size: 12px; }
     .audit-actor { color: var(--accent); font-weight: 500; }
     .audit-action { color: var(--text); }
+    .role-card {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px;
+      margin-bottom: 8px;
+      background: var(--bg);
+    }
+    .role-card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .role-card-header strong { font-size: 14px; }
+    .perm-chip {
+      display: inline-block;
+      padding: 2px 8px;
+      margin: 2px;
+      border-radius: 4px;
+      font-size: 11px;
+      cursor: pointer;
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+    }
+    .perm-chip.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: white;
+    }
+    .perm-chip.readonly { cursor: default; }
+    .default-badge {
+      background: #22c55e20;
+      color: var(--success);
+      font-size: 11px;
+      padding: 1px 6px;
+      border-radius: 4px;
+      margin-left: 6px;
+    }
+    .system-badge {
+      background: #8888a015;
+      color: var(--text-dim);
+      font-size: 10px;
+      padding: 1px 6px;
+      border-radius: 4px;
+      margin-left: 6px;
+    }
   </style>
 </head>
 <body>
   <div id="app"></div>
   <script>
-    const app = document.getElementById('app');
-    let state = {
+    var app = document.getElementById('app');
+    var state = {
       user: null,
       tenants: [],
       invitations: [],
       currentTenant: null,
       tab: 'devices',
       settings: null,
+      roles: [],
+      allPerms: [],
     };
 
     function esc(s) {
@@ -356,19 +394,19 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     }
     function safeUrl(url) {
       if (!url || typeof url !== 'string') return '';
-      try { const u = new URL(url); if (u.protocol === 'https:' || u.protocol === 'http:') return esc(url); } catch(e) {}
+      try { var u = new URL(url); if (u.protocol === 'https:' || u.protocol === 'http:') return esc(url); } catch(e) {}
       return '';
     }
 
     async function api(path, opts) {
       try {
-        const res = await fetch(path, {
+        var res = await fetch(path, {
           headers: { 'Content-Type': 'application/json' },
           ...opts,
         });
         if (res.status === 401) { render(); return null; }
         if (!res.ok) {
-          const err = await res.json().catch(() => ({ error: 'Request failed' }));
+          var err = await res.json().catch(function() { return { error: 'Request failed' }; });
           toast(err.error || 'Something went wrong');
           return null;
         }
@@ -380,11 +418,11 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     }
 
     function toast(msg) {
-      const el = document.createElement('div');
+      var el = document.createElement('div');
       el.className = 'toast';
       el.textContent = msg;
       document.body.appendChild(el);
-      setTimeout(() => el.remove(), 3000);
+      setTimeout(function() { el.remove(); }, 3000);
     }
 
     function copyToClipboard(text) {
@@ -392,25 +430,35 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       toast('Copied to clipboard');
     }
 
-    function isOwner() {
-      return state.currentTenant && state.currentTenant.role === 'owner';
+    function isOriginator() {
+      return state.currentTenant && state.currentTenant.isOriginator;
     }
 
-    let pollTimer = null;
+    function hasPerm(perm) {
+      if (isOriginator()) return true;
+      var role = state.roles.find(function(r) { return r.id === state.currentTenant.roleId; });
+      if (!role) return false;
+      return role.permissions.indexOf(perm) !== -1;
+    }
+
+    var pollTimer = null;
 
     async function init() {
       state.user = await api('/api/me');
       if (state.user) {
         state.tenants = await api('/api/tenants') || [];
         state.invitations = await api('/api/invitations') || [];
+        state.allPerms = await api('/api/permissions') || [];
         if (state.tenants.length > 0 && !state.currentTenant) {
-          state.currentTenant = state.tenants[0];
+          var detail = await api('/api/tenants/' + state.tenants[0].id);
+          state.currentTenant = detail || state.tenants[0];
         }
         if (state.currentTenant) {
           state.settings = await api('/api/tenants/' + state.currentTenant.id + '/settings');
+          state.roles = await api('/api/tenants/' + state.currentTenant.id + '/roles') || [];
         }
-        if (state.tenants.some(t => t.status === 'provisioning')) {
-          if (!pollTimer) pollTimer = setInterval(() => init(), 3000);
+        if (state.tenants.some(function(t) { return t.status === 'provisioning'; })) {
+          if (!pollTimer) pollTimer = setInterval(function() { init(); }, 3000);
         } else if (pollTimer) {
           clearInterval(pollTimer);
           pollTimer = null;
@@ -457,26 +505,28 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 
     function renderMembers(members) {
       if (!members || members.length === 0) return '<div class="empty-state">No members</div>';
+      var canManageRoles = hasPerm('manage_roles');
+
       return members.map(function(m) {
-        var permHtml = '';
-        if (isOwner() && m.role !== 'owner') {
-          permHtml = '<div style="display:flex;gap:4px;margin-left:8px">' +
-            '<span class="perm-toggle ' + (m.canInvite ? 'active' : '') + '" ' +
-              'onclick="togglePermission(\\'' + m.id + '\\', \\'canInvite\\', ' + !m.canInvite + ')" ' +
-              'title="Toggle invite permission">Invite</span>' +
-            '<span class="perm-toggle ' + (m.canKick ? 'active' : '') + '" ' +
-              'onclick="togglePermission(\\'' + m.id + '\\', \\'canKick\\', ' + !m.canKick + ')" ' +
-              'title="Toggle kick permission">Kick</span>' +
-          '</div>';
-        } else if (m.role !== 'owner') {
-          var badges = '';
-          if (m.canInvite) badges += '<span class="badge badge-perm">invite</span>';
-          if (m.canKick) badges += '<span class="badge badge-perm">kick</span>';
-          permHtml = badges;
+        var roleHtml = '';
+        if (m.isOriginator) {
+          roleHtml = '<span class="badge badge-originator">originator</span>';
+        } else {
+          roleHtml = '<span class="badge badge-role">' + esc(m.roleName || 'no role') + '</span>';
+        }
+
+        var roleSelect = '';
+        if (canManageRoles && !m.isOriginator) {
+          var assignableRoles = state.roles.filter(function(r) { return !(r.isSystem && r.name === 'originator'); });
+          roleSelect = '<select style="width:auto;padding:2px 8px;font-size:12px" onchange="assignRole(\\'' + m.id + '\\', this.value)">';
+          assignableRoles.forEach(function(r) {
+            roleSelect += '<option value="' + r.id + '"' + (m.roleId === r.id ? ' selected' : '') + '>' + esc(r.name) + '</option>';
+          });
+          roleSelect += '</select>';
         }
 
         var actions = '';
-        if (m.role !== 'owner' && isOwner()) {
+        if (!m.isOriginator && hasPerm('kick')) {
           actions = '<button class="btn-sm btn-danger" onclick="removeMember(\\'' + m.id + '\\')">Remove</button>';
         }
 
@@ -484,8 +534,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           '<div class="member-info">' +
             (safeUrl(m.avatarUrl) ? '<img src="' + safeUrl(m.avatarUrl) + '" />' : '') +
             '<span>' + esc(m.displayName || m.handle) + '</span>' +
-            '<span class="badge badge-' + m.role + '">' + m.role + '</span>' +
-            permHtml +
+            roleHtml +
+            (roleSelect ? '<span style="margin-left:4px">' + roleSelect + '</span>' : '') +
           '</div>' +
           actions +
         '</div>';
@@ -514,7 +564,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (!state.settings || !state.settings.lockdownMode) return '';
       return '<div class="lockdown-banner">' +
         '<span>LOCKDOWN MODE \\u2014 No new invitations, joins, or device registrations permitted.</span>' +
-        (isOwner() ? '<button class="btn-sm btn-warning" onclick="toggleSetting(\\'lockdownMode\\', false)">Disable</button>' : '') +
+        (hasPerm('manage_settings') ? '<button class="btn-sm btn-warning" onclick="toggleSetting(\\'lockdownMode\\', false)">Disable</button>' : '') +
       '</div>';
     }
 
@@ -551,14 +601,23 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         '</div></div>';
       }
 
+      var canSecurity = hasPerm('manage_settings') || hasPerm('approve_devices');
+      var canAudit = hasPerm('view_audit_log');
+      var canRoles = hasPerm('manage_roles');
+
       var tabBar = '<div class="tab-bar">' +
         '<button class="tab ' + (state.tab === 'devices' ? 'active' : '') + '" onclick="switchTab(\\'devices\\')">Devices</button>' +
         '<button class="tab ' + (state.tab === 'members' ? 'active' : '') + '" onclick="switchTab(\\'members\\')">Members</button>' +
         '<button class="tab ' + (state.tab === 'invite' ? 'active' : '') + '" onclick="switchTab(\\'invite\\')">Invite</button>' +
         '<button class="tab ' + (state.tab === 'connect' ? 'active' : '') + '" onclick="switchTab(\\'connect\\')">Add Device</button>' +
-        (isOwner() ? '<button class="tab ' + (state.tab === 'security' ? 'active' : '') + '" onclick="switchTab(\\'security\\')">Security</button>' : '') +
-        (isOwner() ? '<button class="tab ' + (state.tab === 'audit' ? 'active' : '') + '" onclick="switchTab(\\'audit\\')">Audit Log</button>' : '') +
+        (canRoles ? '<button class="tab ' + (state.tab === 'roles' ? 'active' : '') + '" onclick="switchTab(\\'roles\\')">Roles</button>' : '') +
+        (canSecurity ? '<button class="tab ' + (state.tab === 'security' ? 'active' : '') + '" onclick="switchTab(\\'security\\')">Security</button>' : '') +
+        (canAudit ? '<button class="tab ' + (state.tab === 'audit' ? 'active' : '') + '" onclick="switchTab(\\'audit\\')">Audit Log</button>' : '') +
       '</div>';
+
+      var roleBadge = t.isOriginator
+        ? '<span class="badge badge-originator">originator</span>'
+        : '<span class="badge badge-role">' + esc(t.roleName || 'citizen') + '</span>';
 
       return '<div class="section">' +
         '<div class="card">' +
@@ -566,7 +625,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
             '<h3>' + esc(t.name) + '</h3>' +
             '<div style="display:flex;gap:8px">' +
               '<span class="badge badge-' + t.status + '">' + t.status + '</span>' +
-              '<span class="badge badge-' + t.role + '">' + t.role + '</span>' +
+              roleBadge +
             '</div>' +
           '</div>' +
         '</div>' +
@@ -601,19 +660,41 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         '</div>' +
       '</div>' +
 
-      (isOwner() ?
-        '<div id="tab-security" class="' + (state.tab !== 'security' ? 'hidden' : '') + '">' +
+      (canRoles ?
+        '<div id="tab-roles" class="' + (state.tab !== 'roles' ? 'hidden' : '') + '">' +
           '<div class="card">' +
-            '<h3 style="margin-bottom:12px">Tenant Settings</h3>' +
-            '<div id="security-settings">Loading...</div>' +
+            '<div class="card-header"><h3>Role Builder</h3></div>' +
+            '<div id="roles-list">Loading...</div>' +
+            '<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">' +
+              '<h4 style="margin-bottom:8px;font-size:14px">Create Role</h4>' +
+              '<div class="inline-form" style="margin-bottom:8px">' +
+                '<input type="text" id="new-role-name" placeholder="Role name" style="max-width:200px" />' +
+                '<input type="text" id="new-role-desc" placeholder="Description (optional)" />' +
+                '<button onclick="createRole()">Create</button>' +
+              '</div>' +
+            '</div>' +
           '</div>' +
           '<div class="card" style="margin-top:12px">' +
-            '<h3 style="margin-bottom:12px">Pending Device Approvals</h3>' +
-            '<div id="device-approvals">Loading...</div>' +
+            '<div class="card-header"><h3>Default Role for New Members</h3></div>' +
+            '<div id="default-role-select">Loading...</div>' +
           '</div>' +
         '</div>' : '') +
 
-      (isOwner() ?
+      (canSecurity ?
+        '<div id="tab-security" class="' + (state.tab !== 'security' ? 'hidden' : '') + '">' +
+          (hasPerm('manage_settings') ?
+            '<div class="card">' +
+              '<h3 style="margin-bottom:12px">Tenant Settings</h3>' +
+              '<div id="security-settings">Loading...</div>' +
+            '</div>' : '') +
+          (hasPerm('approve_devices') ?
+            '<div class="card" style="margin-top:12px">' +
+              '<h3 style="margin-bottom:12px">Pending Device Approvals</h3>' +
+              '<div id="device-approvals">Loading...</div>' +
+            '</div>' : '') +
+        '</div>' : '') +
+
+      (canAudit ?
         '<div id="tab-audit" class="' + (state.tab !== 'audit' ? 'hidden' : '') + '">' +
           '<div class="card"><div id="audit-log">Loading...</div></div>' +
         '</div>' : '');
@@ -625,6 +706,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (tab === 'devices') loadDevices();
       if (tab === 'members') loadMembers();
       if (tab === 'invite') loadSentInvitations();
+      if (tab === 'roles') loadRoles();
       if (tab === 'security') loadSecurity();
       if (tab === 'audit') loadAuditLog();
     }
@@ -657,44 +739,173 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         }).join('');
     }
 
-    async function loadSecurity() {
-      if (!state.currentTenant) return;
-      var settings = await api('/api/tenants/' + state.currentTenant.id + '/settings');
-      state.settings = settings;
-      var el = document.getElementById('security-settings');
-      if (el && settings) {
-        el.innerHTML =
-          '<div class="toggle-row">' +
-            '<div class="toggle-label"><span>Require device approval</span><span>New devices must be approved before connecting</span></div>' +
-            '<label class="toggle"><input type="checkbox" ' + (settings.requireDeviceApproval ? 'checked' : '') +
-              ' onchange="toggleSetting(\\'requireDeviceApproval\\', this.checked)" /><span class="slider"></span></label>' +
-          '</div>' +
-          '<div class="toggle-row">' +
-            '<div class="toggle-label"><span>Lockdown mode</span><span>Block all new invitations, joins, and device registrations</span></div>' +
-            '<label class="toggle"><input type="checkbox" ' + (settings.lockdownMode ? 'checked' : '') +
-              ' onchange="toggleSetting(\\'lockdownMode\\', this.checked)" /><span class="slider"></span></label>' +
-          '</div>';
+    function renderRoleCard(role) {
+      var isDefault = state.settings && state.settings.defaultRoleId === role.id;
+      var isOriginatorRole = role.isSystem && role.name === 'originator';
+      var canEdit = !isOriginatorRole;
+
+      var permChips = state.allPerms.map(function(p) {
+        var active = role.permissions.indexOf(p) !== -1;
+        if (isOriginatorRole) {
+          return '<span class="perm-chip active readonly">' + esc(p) + '</span>';
+        }
+        return '<span class="perm-chip ' + (active ? 'active' : '') + '" ' +
+          'onclick="toggleRolePerm(\\'' + role.id + '\\', \\'' + p + '\\', ' + !active + ')">' + esc(p) + '</span>';
+      }).join('');
+
+      var actions = '';
+      if (!role.isSystem) {
+        actions = '<button class="btn-sm btn-danger" onclick="deleteRole(\\'' + role.id + '\\')">Delete</button>';
       }
 
-      var approvals = await api('/api/tenants/' + state.currentTenant.id + '/device-approvals');
-      var ae = document.getElementById('device-approvals');
-      if (ae && approvals) {
-        var pending = approvals.filter(function(a) { return a.status === 'pending'; });
-        if (pending.length === 0) {
-          ae.innerHTML = '<div class="empty-state" style="padding:16px">No pending approvals</div>';
+      return '<div class="role-card">' +
+        '<div class="role-card-header">' +
+          '<div>' +
+            '<strong>' + esc(role.name) + '</strong>' +
+            (role.isSystem ? '<span class="system-badge">system</span>' : '') +
+            (isDefault ? '<span class="default-badge">default</span>' : '') +
+          '</div>' +
+          actions +
+        '</div>' +
+        (role.description ? '<div style="font-size:13px;color:var(--text-dim);margin-bottom:8px">' + esc(role.description) + '</div>' : '') +
+        '<div>' + permChips + '</div>' +
+      '</div>';
+    }
+
+    async function loadRoles() {
+      if (!state.currentTenant) return;
+      state.roles = await api('/api/tenants/' + state.currentTenant.id + '/roles') || [];
+      var el = document.getElementById('roles-list');
+      if (el) {
+        if (state.roles.length === 0) {
+          el.innerHTML = '<div class="empty-state" style="padding:16px">No roles defined</div>';
         } else {
-          ae.innerHTML = pending.map(function(a) {
-            return '<div class="approval-item">' +
-              '<div>' +
-                '<strong>' + esc(a.requesterDisplayName || a.requesterHandle) + '</strong>' +
-                '<br><span style="color:var(--text-dim);font-size:12px">Requested ' + new Date(a.requestedAt).toLocaleString() + '</span>' +
-              '</div>' +
-              '<div style="display:flex;gap:8px">' +
-                '<button class="btn-sm" onclick="approveDevice(\\'' + a.id + '\\')">Approve</button>' +
-                '<button class="btn-sm btn-danger" onclick="rejectDevice(\\'' + a.id + '\\')">Reject</button>' +
-              '</div>' +
+          el.innerHTML = state.roles.map(renderRoleCard).join('');
+        }
+      }
+
+      var dre = document.getElementById('default-role-select');
+      if (dre) {
+        var assignable = state.roles.filter(function(r) { return !(r.isSystem && r.name === 'originator'); });
+        dre.innerHTML = '<p style="font-size:13px;color:var(--text-dim);margin-bottom:8px">New members who accept an invitation will be assigned this role.</p>' +
+          '<select style="max-width:300px" onchange="setDefaultRole(this.value)">' +
+          assignable.map(function(r) {
+            return '<option value="' + r.id + '"' + (state.settings && state.settings.defaultRoleId === r.id ? ' selected' : '') + '>' + esc(r.name) + '</option>';
+          }).join('') +
+          '</select>';
+      }
+    }
+
+    async function createRole() {
+      if (!state.currentTenant) return;
+      var nameEl = document.getElementById('new-role-name');
+      var descEl = document.getElementById('new-role-desc');
+      var name = nameEl.value.trim();
+      if (!name) return;
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/roles', {
+        method: 'POST',
+        body: JSON.stringify({ name: name, description: descEl.value.trim() || undefined, permissions: [] }),
+      });
+      if (result) {
+        nameEl.value = '';
+        descEl.value = '';
+        toast('Role "' + name + '" created');
+        loadRoles();
+      }
+    }
+
+    async function deleteRole(roleId) {
+      if (!state.currentTenant) return;
+      if (!confirm('Delete this role? Members with this role will be unassigned.')) return;
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/roles/' + roleId, { method: 'DELETE' });
+      if (result) {
+        toast('Role deleted');
+        loadRoles();
+      }
+    }
+
+    async function toggleRolePerm(roleId, perm, add) {
+      if (!state.currentTenant) return;
+      var role = state.roles.find(function(r) { return r.id === roleId; });
+      if (!role) return;
+      var perms = role.permissions.slice();
+      if (add) { perms.push(perm); } else { perms = perms.filter(function(p) { return p !== perm; }); }
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/roles/' + roleId, {
+        method: 'PATCH',
+        body: JSON.stringify({ permissions: perms }),
+      });
+      if (result) {
+        role.permissions = result.permissions;
+        loadRoles();
+      }
+    }
+
+    async function setDefaultRole(roleId) {
+      if (!state.currentTenant) return;
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/default-role', {
+        method: 'PATCH',
+        body: JSON.stringify({ roleId: roleId }),
+      });
+      if (result) {
+        state.settings.defaultRoleId = roleId;
+        toast('Default role set to ' + result.roleName);
+      }
+    }
+
+    async function assignRole(userId, roleId) {
+      if (!state.currentTenant) return;
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/members/' + userId + '/role', {
+        method: 'PUT',
+        body: JSON.stringify({ roleId: roleId }),
+      });
+      if (result) {
+        toast('Role changed to ' + result.roleName);
+        loadMembers();
+      }
+    }
+
+    async function loadSecurity() {
+      if (!state.currentTenant) return;
+      if (hasPerm('manage_settings')) {
+        var settings = await api('/api/tenants/' + state.currentTenant.id + '/settings');
+        state.settings = settings;
+        var el = document.getElementById('security-settings');
+        if (el && settings) {
+          el.innerHTML =
+            '<div class="toggle-row">' +
+              '<div class="toggle-label"><span>Require device approval</span><span>New devices must be approved before connecting</span></div>' +
+              '<label class="toggle"><input type="checkbox" ' + (settings.requireDeviceApproval ? 'checked' : '') +
+                ' onchange="toggleSetting(\\'requireDeviceApproval\\', this.checked)" /><span class="slider"></span></label>' +
+            '</div>' +
+            '<div class="toggle-row">' +
+              '<div class="toggle-label"><span>Lockdown mode</span><span>Block all new invitations, joins, and device registrations</span></div>' +
+              '<label class="toggle"><input type="checkbox" ' + (settings.lockdownMode ? 'checked' : '') +
+                ' onchange="toggleSetting(\\'lockdownMode\\', this.checked)" /><span class="slider"></span></label>' +
             '</div>';
-          }).join('');
+        }
+      }
+
+      if (hasPerm('approve_devices')) {
+        var approvals = await api('/api/tenants/' + state.currentTenant.id + '/device-approvals');
+        var ae = document.getElementById('device-approvals');
+        if (ae && approvals) {
+          var pending = approvals.filter(function(a) { return a.status === 'pending'; });
+          if (pending.length === 0) {
+            ae.innerHTML = '<div class="empty-state" style="padding:16px">No pending approvals</div>';
+          } else {
+            ae.innerHTML = pending.map(function(a) {
+              return '<div class="approval-item">' +
+                '<div>' +
+                  '<strong>' + esc(a.requesterDisplayName || a.requesterHandle) + '</strong>' +
+                  '<br><span style="color:var(--text-dim);font-size:12px">Requested ' + new Date(a.requestedAt).toLocaleString() + '</span>' +
+                '</div>' +
+                '<div style="display:flex;gap:8px">' +
+                  '<button class="btn-sm" onclick="approveDevice(\\'' + a.id + '\\')">Approve</button>' +
+                  '<button class="btn-sm btn-danger" onclick="rejectDevice(\\'' + a.id + '\\')">Reject</button>' +
+                '</div>' +
+              '</div>';
+            }).join('');
+          }
         }
       }
     }
@@ -725,19 +936,20 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         tenant_settings_updated: 'updated settings',
         lockdown_enabled: 'enabled lockdown',
         lockdown_disabled: 'disabled lockdown',
+        role_created: 'created role',
+        role_updated: 'updated role',
+        role_deleted: 'deleted role',
+        member_role_changed: 'changed member role',
+        default_role_changed: 'changed default role',
       };
       el.innerHTML = data.entries.map(function(e) {
         var label = actionLabels[e.action] || e.action;
         var detail = '';
         if (e.metadata) {
           if (e.metadata.handle) detail = ' \\u2014 ' + esc(String(e.metadata.handle));
+          else if (e.metadata.name) detail = ' \\u2014 ' + esc(String(e.metadata.name));
+          else if (e.metadata.roleName) detail = ' \\u2014 ' + esc(String(e.metadata.roleName));
           else if (e.metadata.requireDeviceApproval !== undefined) detail = ' \\u2014 device approval: ' + (e.metadata.requireDeviceApproval ? 'on' : 'off');
-          else if (e.metadata.canInvite !== undefined || e.metadata.canKick !== undefined) {
-            var parts = [];
-            if (e.metadata.canInvite !== undefined) parts.push('invite: ' + (e.metadata.canInvite ? 'on' : 'off'));
-            if (e.metadata.canKick !== undefined) parts.push('kick: ' + (e.metadata.canKick ? 'on' : 'off'));
-            detail = ' \\u2014 ' + parts.join(', ');
-          }
         }
         return '<div class="audit-item">' +
           '<span class="audit-time">' + new Date(e.createdAt).toLocaleString() + '</span> ' +
@@ -764,6 +976,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         device_rejected: 'rejected device request', device_locked: 'locked devices',
         device_unlocked: 'unlocked devices', tenant_settings_updated: 'updated settings',
         lockdown_enabled: 'enabled lockdown', lockdown_disabled: 'disabled lockdown',
+        role_created: 'created role', role_updated: 'updated role', role_deleted: 'deleted role',
+        member_role_changed: 'changed member role', default_role_changed: 'changed default role',
       };
       var html = data.entries.map(function(e) {
         var label = actionLabels[e.action] || e.action;
@@ -788,20 +1002,6 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         state.settings = result;
         if (key === 'lockdownMode') render();
         toast(key + ' ' + (value ? 'enabled' : 'disabled'));
-      }
-    }
-
-    async function togglePermission(userId, perm, value) {
-      if (!state.currentTenant) return;
-      var body = {};
-      body[perm] = value;
-      var result = await api('/api/tenants/' + state.currentTenant.id + '/members/' + userId + '/permissions', {
-        method: 'PATCH',
-        body: JSON.stringify(body),
-      });
-      if (result) {
-        toast(perm + ' ' + (value ? 'granted' : 'revoked'));
-        loadMembers();
       }
     }
 
@@ -832,7 +1032,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (result.status === 'pending_approval') {
         el.innerHTML = '<div class="card" style="background:var(--bg)">' +
           '<p style="color:var(--warning)">Device approval required</p>' +
-          '<p style="color:var(--text-dim);font-size:13px;margin-top:4px">Your request has been submitted and is waiting for owner approval. Check back later.</p>' +
+          '<p style="color:var(--text-dim);font-size:13px;margin-top:4px">Your request has been submitted and is waiting for approval. Check back later.</p>' +
         '</div>';
       } else {
         el.innerHTML = '<p style="margin-bottom:8px;color:var(--text-dim)">Run this on the device you want to connect:</p>' +
@@ -888,6 +1088,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         if (state.tab === 'devices') loadDevices();
         if (state.tab === 'members') loadMembers();
         if (state.tab === 'invite') loadSentInvitations();
+        if (state.tab === 'roles') loadRoles();
         if (state.tab === 'security') loadSecurity();
         if (state.tab === 'audit') loadAuditLog();
       }

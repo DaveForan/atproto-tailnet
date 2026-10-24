@@ -1,8 +1,9 @@
 import type { Request, Response, NextFunction } from "express";
 import { eq, and } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { tenants, memberships } from "../db/schema.js";
+import { tenants, memberships, roles } from "../db/schema.js";
 import { config } from "../config.js";
+import type { Permission } from "./permissions.js";
 
 /** Rejects unauthenticated requests with 401. */
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
@@ -20,18 +21,22 @@ export function param(req: Request, name: string): string {
   return val;
 }
 
-/** Loads a tenant + the caller's membership in one query. Returns null if not a member. */
+export type TenantForUser = {
+  tenant: typeof tenants.$inferSelect;
+  membership: typeof memberships.$inferSelect;
+  role: typeof roles.$inferSelect | null;
+};
+
+/** Loads a tenant + the caller's membership + their role in one query. Returns null if not a member. */
 export async function getTenantForUser(
   tenantId: string,
   userId: string,
-): Promise<{
-  tenant: typeof tenants.$inferSelect;
-  membership: typeof memberships.$inferSelect;
-} | null> {
+): Promise<TenantForUser | null> {
   const results = await db
-    .select({ tenant: tenants, membership: memberships })
+    .select({ tenant: tenants, membership: memberships, role: roles })
     .from(memberships)
     .innerJoin(tenants, eq(memberships.tenantId, tenants.id))
+    .leftJoin(roles, eq(memberships.roleId, roles.id))
     .where(
       and(eq(memberships.tenantId, tenantId), eq(memberships.userId, userId)),
     );
@@ -40,18 +45,18 @@ export async function getTenantForUser(
 }
 
 /**
- * Checks whether a membership has a specific delegated permission.
- * Owners implicitly have all permissions — only member-role rows
- * consult the boolean columns.
+ * Checks whether a membership has a specific permission.
+ * Originators implicitly have all permissions. Others check their role's JSONB array.
  */
 export function hasPermission(
   membership: typeof memberships.$inferSelect,
-  permission: "invite" | "kick",
+  role: typeof roles.$inferSelect | null,
+  permission: Permission,
 ): boolean {
-  if (membership.role === "owner") return true;
-  if (permission === "invite") return membership.canInvite;
-  if (permission === "kick") return membership.canKick;
-  return false;
+  if (membership.isOriginator) return true;
+  if (!role) return false;
+  const perms = role.permissions as string[];
+  return perms.includes(permission);
 }
 
 /** Returns true when the tenant is in lockdown mode. */

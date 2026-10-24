@@ -44,6 +44,11 @@ export const auditActionEnum = pgEnum("audit_action", [
   "tenant_settings_updated",
   "lockdown_enabled",
   "lockdown_disabled",
+  "role_created",
+  "role_updated",
+  "role_deleted",
+  "member_role_changed",
+  "default_role_changed",
 ]);
 
 export const deviceApprovalStatusEnum = pgEnum("device_approval_status", [
@@ -63,6 +68,25 @@ export const users = pgTable("users", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+export const roles = pgTable(
+  "roles",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    name: text("name").notNull(),
+    description: text("description"),
+    /** JSON array of Permission strings from ALL_PERMISSIONS. */
+    permissions: jsonb("permissions").notNull().$type<string[]>().default([]),
+    /** System roles (originator, citizen) cannot be deleted. */
+    isSystem: boolean("is_system").notNull().default(false),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => [uniqueIndex("roles_tenant_name_idx").on(t.tenantId, t.name)],
+);
+
 export const tenants = pgTable("tenants", {
   id: uuid("id").defaultRandom().primaryKey(),
   slug: text("slug").notNull().unique(),
@@ -78,6 +102,8 @@ export const tenants = pgTable("tenants", {
     .notNull()
     .default(false),
   lockdownMode: boolean("lockdown_mode").notNull().default(false),
+  /** Role assigned to new members on invitation acceptance. */
+  defaultRoleId: uuid("default_role_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -92,7 +118,13 @@ export const memberships = pgTable(
     tenantId: uuid("tenant_id")
       .notNull()
       .references(() => tenants.id),
+    /** Legacy column — kept for migration compat. New code uses roleId. */
     role: memberRoleEnum("role").notNull().default("member"),
+    /** FK to the composable role assigned to this member. */
+    roleId: uuid("role_id").references(() => roles.id),
+    /** True only for the tenant creator — can never be removed. */
+    isOriginator: boolean("is_originator").notNull().default(false),
+    /** Legacy columns — kept for migration compat. New code uses role permissions. */
     canInvite: boolean("can_invite").notNull().default(false),
     canKick: boolean("can_kick").notNull().default(false),
     createdAt: timestamp("created_at").defaultNow().notNull(),

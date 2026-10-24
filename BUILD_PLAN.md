@@ -126,13 +126,22 @@ See `docs/adr/` for rationale behind each choice:
 
 ## Phase 5: Security Management — "Control your network" (ADR-0005)
 
-### 5.1 Permission model
-- [x] Per-member `canInvite` and `canKick` boolean columns on memberships
-- [x] `hasPermission(membership, "invite"|"kick")` helper — owners always pass
-- [x] Invitation creation gated by invite permission (not owner-only)
-- [x] Member removal gated by kick permission (not owner-only)
-- [x] Invitation revocation gated by invite permission
-- [x] Originator protection — owner membership can never be deleted
+### 5.1 Composable role system
+- [x] `roles` table with JSONB permissions, `isSystem` flag, unique (tenantId, name)
+- [x] `memberships.isOriginator` boolean for hard originator protection
+- [x] `memberships.roleId` FK to roles
+- [x] `tenants.defaultRoleId` FK to roles (citizen by default)
+- [x] 8 discrete permissions: invite, kick, manage_roles, manage_settings, approve_devices, lock_devices, view_audit_log, manage_devices
+- [x] `hasPermission(membership, role, permission)` — originators always pass, others check role JSONB
+- [x] Two system roles per tenant: originator (all perms, immutable) and citizen (customizable)
+- [x] Role CRUD API (GET/POST/PATCH/DELETE /api/tenants/:id/roles)
+- [x] Role assignment API (PUT /api/tenants/:id/members/:userId/role)
+- [x] Default role API (PATCH /api/tenants/:id/default-role)
+- [x] GET /api/permissions — list all available permissions
+- [x] System role protection: originator role cannot be modified/deleted/assigned to non-originators
+- [x] Originator membership can never be kicked or role-changed
+- [x] Invitation acceptance assigns tenant's default role
+- [x] Provisioning creates both system roles + sets citizen as default
 
 ### 5.2 Tenant security settings
 - [x] `requireDeviceApproval` toggle — new devices need owner approval
@@ -164,14 +173,16 @@ See `docs/adr/` for rationale behind each choice:
 - [x] All permission changes, invitations, device operations, and settings mutations logged
 
 ### 5.6 Dashboard UI
-- [x] Security tab (owner) — settings toggles + pending device approval queue
-- [x] Audit Log tab (owner) — paginated event log with human-readable labels
-- [x] Enhanced Members tab — permission toggle chips for owner, badges for members
+- [x] Roles tab — role builder with permission chip toggles, create/delete roles, default role selector
+- [x] Security tab (permission-gated) — settings toggles + pending device approval queue
+- [x] Audit Log tab (permission-gated) — paginated event log with role action labels
+- [x] Enhanced Members tab — role badge, role assignment dropdown for authorized users
 - [x] Enhanced Devices tab — grouped by Headscale user
 - [x] Add Device tab — handles pending_approval response
 - [x] Lockdown banner with disable button
+- [x] Tab visibility gated by permissions (not hard-coded to originator)
 
-**Milestone:** Owner can delegate invite/kick permissions, require device approval, lock devices to known machines, view full audit trail, and emergency-lockdown the entire tailnet.
+**Milestone:** Originator can create custom roles with arbitrary permission sets, assign roles to members, delegate role management, require device approval, lock devices, view audit trail, and emergency-lockdown the tailnet.
 
 ---
 

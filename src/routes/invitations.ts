@@ -23,7 +23,6 @@ export const invitationsRouter = Router();
 const HANDLE_RE =
   /^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
 
-/** Resolves an AT Protocol handle to a DID via DNS TXT, HTTP, or Bluesky public API. */
 async function resolveHandleToDid(handle: string): Promise<string | null> {
   const cleanHandle = handle.replace(/^@/, "");
 
@@ -69,7 +68,6 @@ async function resolveHandleToDid(handle: string): Promise<string | null> {
   return null;
 }
 
-/** Creates an invitation. Requires invite permission. Blocked by lockdown. */
 invitationsRouter.post(
   "/api/tenants/:tenantId/invitations",
   requireAuth,
@@ -88,7 +86,7 @@ invitationsRouter.post(
       return;
     }
 
-    if (!hasPermission(result.membership, "invite")) {
+    if (!hasPermission(result.membership, result.role, "invite")) {
       res.status(403).json({ error: "You do not have permission to invite" });
       return;
     }
@@ -169,7 +167,6 @@ invitationsRouter.post(
   },
 );
 
-/** Lists pending invitations for the current user. */
 invitationsRouter.get("/api/invitations", requireAuth, async (req, res) => {
   const did = req.session.did!;
 
@@ -194,7 +191,6 @@ invitationsRouter.get("/api/invitations", requireAuth, async (req, res) => {
   res.json(pendingInvitations);
 });
 
-/** Accepts an invitation. Blocked by lockdown on the target tenant. */
 invitationsRouter.post(
   "/api/invitations/:invitationId/accept",
   requireAuth,
@@ -259,6 +255,8 @@ invitationsRouter.post(
       userId: user.id,
       tenantId: tenant.id,
       role: "member",
+      roleId: tenant.defaultRoleId,
+      isOriginator: false,
     });
 
     await db
@@ -278,7 +276,6 @@ invitationsRouter.post(
   },
 );
 
-/** Declines an invitation. */
 invitationsRouter.post(
   "/api/invitations/:invitationId/decline",
   requireAuth,
@@ -319,7 +316,6 @@ invitationsRouter.post(
   },
 );
 
-/** Revokes a pending invitation. Requires invite permission. */
 invitationsRouter.delete(
   "/api/tenants/:tenantId/invitations/:invitationId",
   requireAuth,
@@ -333,7 +329,7 @@ invitationsRouter.delete(
       return;
     }
 
-    if (!hasPermission(result.membership, "invite")) {
+    if (!hasPermission(result.membership, result.role, "invite")) {
       res.status(403).json({ error: "You do not have permission to revoke invitations" });
       return;
     }

@@ -7,11 +7,15 @@ import {
   getPublicJwks,
 } from "../auth/atproto.js";
 import { db } from "../db/index.js";
-import { users, tenants, memberships } from "../db/schema.js";
+import { users, tenants, memberships, roles } from "../db/schema.js";
 import { allocatePort } from "../orchestrator/ports.js";
 import { createInstance } from "../orchestrator/headscale.js";
 import { HeadscaleApiClient } from "../orchestrator/headscale-api.js";
 import { addTenantRoute } from "../orchestrator/caddy.js";
+import {
+  ORIGINATOR_PERMISSIONS,
+  DEFAULT_CITIZEN_PERMISSIONS,
+} from "./permissions.js";
 
 export const authRouter = Router();
 
@@ -68,10 +72,42 @@ async function provisionTenant(
   }
   if (!tenant) throw new Error("Failed to create tenant after retries");
 
+  // Create system roles
+  const [originatorRole] = await db
+    .insert(roles)
+    .values({
+      tenantId: tenant.id,
+      name: "originator",
+      description: "Full control over the tailnet",
+      permissions: [...ORIGINATOR_PERMISSIONS],
+      isSystem: true,
+    })
+    .returning();
+
+  const [citizenRole] = await db
+    .insert(roles)
+    .values({
+      tenantId: tenant.id,
+      name: "citizen",
+      description: "Default role for new members",
+      permissions: [...DEFAULT_CITIZEN_PERMISSIONS],
+      isSystem: true,
+    })
+    .returning();
+
+  // Set citizen as the default role for new members
+  await db
+    .update(tenants)
+    .set({ defaultRoleId: citizenRole.id })
+    .where(eq(tenants.id, tenant.id));
+
+  // Create originator membership
   await db.insert(memberships).values({
     userId: user.id,
     tenantId: tenant.id,
     role: "owner",
+    roleId: originatorRole.id,
+    isOriginator: true,
   });
 
   setImmediate(async () => {

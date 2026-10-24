@@ -8,7 +8,7 @@ Tailscale-as-a-service where users authenticate with their AT Protocol (Bluesky)
 - **Control plane**: One Headscale Docker container per tenant (see ADR-0002)
 - **Auth**: AT Protocol OAuth via `@atproto/oauth-client-node` (see ADR-0003)
 - **Reverse proxy**: Caddy with admin API for dynamic subdomain routing
-- **Security model**: Per-member delegated permissions, device approval, lockdown (see ADR-0005)
+- **Security model**: Composable role-based permissions, device approval, lockdown (see ADR-0005)
 - **ADRs**: `docs/adr/0001-0005` — read these before changing architecture
 
 ## Development
@@ -27,11 +27,14 @@ npm run dev                      # http://localhost:3000
 
 - `req.params` values are `string | string[]` in Express 5 — use `param(req, "name")` from `routes/helpers.ts`
 - `getTenantForUser(tenantId, userId)` in `routes/helpers.ts` — shared membership+tenant lookup for all protected routes
-- `hasPermission(membership, "invite"|"kick")` — owners always pass, members check boolean columns
+- `hasPermission(membership, role, permission)` — originators always pass, others check role's JSONB permissions array
+- `Permission` type and `ALL_PERMISSIONS` constant live in `routes/permissions.ts`
+- Two system roles per tenant: "originator" (all perms) and "citizen" (default for new members, customizable)
+- `membership.isOriginator` is the hard source of truth for originator identity (overrides role)
 - `isLockedDown(tenant)` — blocks invitations, acceptances, and auth key generation when true
 - `toHsUsername(handle)` / `tenantLoginServer(slug)` — shared helpers in `routes/helpers.ts`
 - `logAudit(...)` in `routes/audit.ts` — fire-and-forget append to `audit_logs` table
-- Originator protection: owner membership can never be deleted (hard 403 in route)
+- Originator protection: `isOriginator` membership can never be deleted or role-changed (hard 403 in route)
 - Tenant provisioning is async (setImmediate) — dashboard polls until status flips from "provisioning" to "running"
 - Headscale bootstrap via `docker exec` (API key + initial user), all runtime operations via REST `HeadscaleApiClient`
 - Dashboard HTML-escapes all user-controlled data via `esc()` and validates avatar URLs via `safeUrl()`
@@ -54,7 +57,7 @@ npm run dev                      # http://localhost:3000
 src/
   auth/atproto.ts          — AT Proto OAuth client setup + DB-backed stores
   config.ts                — Zod-validated env config
-  db/schema.ts             — Drizzle schema (users, tenants, memberships, invitations, device_approvals, device_locks, audit_logs)
+  db/schema.ts             — Drizzle schema (users, tenants, roles, memberships, invitations, device_approvals, device_locks, audit_logs)
   db/index.ts              — Database connection + pool export
   orchestrator/
     headscale.ts           — Docker lifecycle (create/start/stop/destroy), CLI exec
@@ -66,8 +69,9 @@ src/
     api.ts                 — /api/me, /api/tenants, /health
     invitations.ts         — Create/accept/decline/revoke invitations (permission-gated)
     devices.ts             — Node listing, auth key generation, member management (permission-gated)
-    security.ts            — Tenant settings, member permissions, device approvals/locks, audit log
-    dashboard.ts           — Inline SPA (dark theme, tabbed UI with Security + Audit tabs)
+    permissions.ts         — ALL_PERMISSIONS constant, Permission type, role defaults
+    security.ts            — Tenant settings, role CRUD, role assignment, device approvals/locks, audit log
+    dashboard.ts           — Inline SPA (dark theme, tabbed UI with Roles + Security + Audit tabs)
     helpers.ts             — Shared middleware, param(), permission checks, hs username/URL helpers
     audit.ts               — Fire-and-forget audit log writer
 docs/adr/                  — Architecture Decision Records (0001-0005)

@@ -1,83 +1,126 @@
-# ADR-0005: Tenant security management and device approval
+# ADR-0005: Tenant security management — composable role system
 
-**Status:** Accepted
+**Status:** Accepted (revised 2026-10-23)
 **Date:** 2026-10-23
 
 ## Context
 
 Tailnet owners need granular control over who can join their network, what
-members can do, and which devices are allowed. The current system has a
-binary owner/member role model: owners can do everything, members can only
-connect devices and view the network. There is no audit trail, no device
-approval gate, and no way to delegate invite or kick permissions.
+members can do, and which devices are allowed. The initial implementation
+used a binary owner/member role with per-member boolean permission flags
+(`can_invite`, `can_kick`). This was too rigid — adding new permissions
+meant new columns, and there was no way for the originator to create
+custom roles or delegate role management.
 
 Requirements (prioritized):
 
-1. Member visibility — see everyone on the tailnet with their permissions
-2. Delegated permissions — owner toggles per-member invite/kick rights
-3. Originator protection — the tenant creator can never be removed
-4. Device approval — owner can require approval before new devices join
-5. Device locking — users can bind their membership to specific machines
-6. Audit log — immutable record of all security-relevant actions
-7. Emergency lockdown — freeze all new joins and device registrations
+1. **Composable roles** — define roles with arbitrary permission sets
+2. **Two system roles** — originator (all perms, immutable) and citizen (default for new members, customizable)
+3. **Role builder** — originators and authorized members can create, edit, and delete custom roles
+4. **Role assignment** — assign any role to any non-originator member
+5. **Default role** — set which role new members get on invitation acceptance
+6. **Originator protection** — the `isOriginator` boolean on membership can never be removed; originator cannot be kicked
+7. **Eight discrete permissions** — invite, kick, manage_roles, manage_settings, approve_devices, lock_devices, view_audit_log, manage_devices
+8. **Device approval** — configurable gate for new devices
+9. **Device locking** — bind membership to specific machineKeys
+10. **Audit log** — append-only record of all security-relevant actions including role mutations
+11. **Lockdown mode** — freeze all new joins and device registrations
 
 Non-goals for this iteration:
 
 - IP allowlisting per member (ACL-level, defer to Phase 4.1)
 - Key rotation UI (pre-auth keys already single-use, 24h expiry)
-- Role hierarchy beyond owner/member (e.g., "admin" tier)
+- Role hierarchy / inheritance (roles are flat permission sets)
+- Permission scoping to specific resources (e.g., "invite only these handles")
 
 ## Decision
 
-### Permission model
+### Composable role system
 
-Keep the two-role enum (owner, member). Add per-member boolean permission
-columns (`can_invite`, `can_kick`) to the `memberships` table. The owner's
-permissions are always true by code convention — never stored or checked.
-This avoids enum proliferation while giving fine-grained delegation.
+A `roles` table stores per-tenant role definitions. Each role has:
+
+- `name` — unique per tenant
+- `permissions` — JSONB array of permission strings from `ALL_PERMISSIONS`
+- `is_system` — system roles (originator, citizen) cannot be deleted
+
+Permission strings are defined in `src/routes/permissions.ts`:
+
+```
+invite, kick, manage_roles, manage_settings,
+approve_devices, lock_devices, view_audit_log, manage_devices
+```
+
+The originator system role always has all permissions (enforced in code via
+`membership.isOriginator`, not by checking the role). The citizen system
+role starts empty but can have its permissions customized.
+
+### Membership changes
+
+The `memberships` table adds:
+
+- `role_id` (FK → roles) — the member's assigned role
+- `is_originator` (boolean) — hard protection for the tenant creator
+
+The `is_originator` flag is the source of truth for originator identity —
+it takes precedence over any role assignment. This ensures the originator
+retains all permissions even if their role is somehow changed.
+
+### Tenant changes
+
+The `tenants` table adds `default_role_id` (FK → roles). New members who
+accept invitations are assigned this role. During provisioning, both system
+roles are created and citizen is set as the default.
+
+### Permission checking
+
+`hasPermission(membership, role, permission)` checks:
+1. `membership.isOriginator` → true (short-circuit)
+2. `role?.permissions.includes(permission)` → true/false
+
+Destructive infrastructure operations (tenant delete/start/stop) remain
+originator-only and bypass the permission system entirely.
+
+### Dashboard tabs
+
+Tab visibility is permission-gated:
+- **Roles** tab visible to users with `manage_roles`
+- **Security** tab visible to users with `manage_settings` or `approve_devices`
+- **Audit Log** tab visible to users with `view_audit_log`
+- Members tab shows role assignment dropdown when viewer has `manage_roles`
 
 ### Device approval flow
 
-Add a `device_approvals` table. When `require_device_approval` is true on
-a tenant, `POST .../devices/auth-key` creates an approval request instead
-of a Headscale pre-auth key. The owner (or a member with `can_invite`)
-approves, which triggers key generation. The key is stored in the approval
-record for the requester to retrieve.
+Unchanged from initial implementation. When `require_device_approval` is
+true, auth-key requests create a pending `device_approvals` row. Users with
+`approve_devices` permission can approve or reject.
 
 ### Device locking
 
-A `device_locks` table records Headscale `machineKey` values that a user
-has bound to their membership. When locks exist, new auth-key generation
-for that user requires removing the lock first. This prevents credential
-theft from silently adding rogue devices.
+Unchanged. `device_locks` binds a membership to specific machineKeys.
+Users with `lock_devices` permission can lock/unlock other members.
 
 ### Audit log
 
-An append-only `audit_logs` table records actor, action, target, and a
-JSONB metadata payload for every security-relevant mutation. The table has
-no UPDATE or DELETE exposed in the application layer. Retention is
-configurable (default 90 days, cleanup via utility function).
+Extended with new actions: `role_created`, `role_updated`, `role_deleted`,
+`member_role_changed`, `default_role_changed`. All role mutations are logged.
 
 ### Lockdown mode
 
-A boolean `lockdown_mode` on the tenant. When true: no new invitations,
-no invitation acceptance, no new auth keys. Existing connections remain
-active (disconnecting them requires explicit node deletion).
+Unchanged. Boolean on tenant; blocks invitations, joins, and device
+registration.
 
 ### Originator protection
 
-The membership deletion endpoint hard-checks: if the target membership
-role is `owner`, the request is rejected with 403. This is enforced at
-the route level, not the permission level — it cannot be bypassed by
-any permission combination.
+Enforced via `membership.isOriginator`:
+- Cannot be kicked (hard 403)
+- Cannot have role changed
+- Cannot be assigned the citizen role (they always have originator role)
+- The originator role itself cannot be assigned to non-originators
 
 ## Consequences
 
-- Migration adds 3 new tables and 4 new columns across 2 existing tables.
-- All permission checks route through a shared `hasPermission()` helper
-  to avoid scattered role logic.
-- The audit log grows unbounded without cleanup; a utility function handles
-  retention-based pruning.
-- Device approval adds latency to the "add device" flow when enabled.
-- Lockdown mode is a blunt instrument — it blocks everything, not
-  selectively. Fine-grained suspension is a future enhancement.
+- Migration adds `roles` table, `memberships.role_id`/`is_originator`, `tenants.default_role_id`, and 5 new audit actions.
+- Legacy `memberships.role` enum and `can_invite`/`can_kick` booleans are preserved for migration compatibility but not used by new code.
+- JSONB permissions array is simpler than a junction table and performs fine for 8 permissions. If the permission set grows past ~50, revisit.
+- Custom roles are tenant-scoped — no global role templates.
+- Role deletion unassigns affected members (sets `role_id = null`), which grants no permissions until reassigned.

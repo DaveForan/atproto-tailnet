@@ -5,6 +5,7 @@ import { db } from "../db/index.js";
 import {
   tenants,
   memberships,
+  roles,
   users,
   deviceApprovals,
   deviceLocks,
@@ -21,6 +22,7 @@ import {
   tenantLoginServer,
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
+import { ALL_PERMISSIONS, type Permission } from "./permissions.js";
 
 export const securityRouter = Router();
 
@@ -29,18 +31,38 @@ const settingsBody = z.object({
   lockdownMode: z.boolean().optional(),
 });
 
-const permissionsBody = z.object({
-  canInvite: z.boolean().optional(),
-  canKick: z.boolean().optional(),
+const roleBody = z.object({
+  name: z.string().min(1).max(50),
+  description: z.string().max(200).optional(),
+  permissions: z.array(z.enum(ALL_PERMISSIONS as unknown as [string, ...string[]])),
+});
+
+const roleUpdateBody = z.object({
+  name: z.string().min(1).max(50).optional(),
+  description: z.string().max(200).optional(),
+  permissions: z.array(z.enum(ALL_PERMISSIONS as unknown as [string, ...string[]])).optional(),
+});
+
+const assignRoleBody = z.object({
+  roleId: z.string().uuid(),
+});
+
+const defaultRoleBody = z.object({
+  roleId: z.string().uuid(),
 });
 
 const deviceLockBody = z.object({
   userId: z.string().uuid(),
 });
 
+// ── Permissions list ────────────────────────────────────────────────
+
+securityRouter.get("/api/permissions", requireAuth, (_req, res) => {
+  res.json(ALL_PERMISSIONS);
+});
+
 // ── Tenant settings ─────────────────────────────────────────────────
 
-/** Returns the tenant's security settings. Any member can read. */
 securityRouter.get(
   "/api/tenants/:tenantId/settings",
   requireAuth,
@@ -57,11 +79,11 @@ securityRouter.get(
     res.json({
       requireDeviceApproval: result.tenant.requireDeviceApproval,
       lockdownMode: result.tenant.lockdownMode,
+      defaultRoleId: result.tenant.defaultRoleId,
     });
   },
 );
 
-/** Updates tenant security settings. Owner only. */
 securityRouter.patch(
   "/api/tenants/:tenantId/settings",
   requireAuth,
@@ -70,8 +92,8 @@ securityRouter.patch(
       param(req, "tenantId"),
       req.session.userId!,
     );
-    if (!result || result.membership.role !== "owner") {
-      res.status(403).json({ error: "Only the tenant owner can change settings" });
+    if (!result || !hasPermission(result.membership, result.role, "manage_settings")) {
+      res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
 
@@ -119,29 +141,241 @@ securityRouter.patch(
     res.json({
       requireDeviceApproval: updated.requireDeviceApproval,
       lockdownMode: updated.lockdownMode,
+      defaultRoleId: updated.defaultRoleId,
     });
   },
 );
 
-// ── Member permissions ──────────────────────────────────────────────
+// ── Roles CRUD ──────────────────────────────────────────────────────
 
-/** Toggles per-member invite/kick permissions. Owner only. */
+securityRouter.get(
+  "/api/tenants/:tenantId/roles",
+  requireAuth,
+  async (req, res) => {
+    const result = await getTenantForUser(
+      param(req, "tenantId"),
+      req.session.userId!,
+    );
+    if (!result) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+
+    const tenantRoles = await db
+      .select()
+      .from(roles)
+      .where(eq(roles.tenantId, param(req, "tenantId")))
+      .orderBy(roles.createdAt);
+
+    res.json(tenantRoles);
+  },
+);
+
+securityRouter.post(
+  "/api/tenants/:tenantId/roles",
+  requireAuth,
+  async (req, res) => {
+    const tenantId = param(req, "tenantId");
+    const result = await getTenantForUser(tenantId, req.session.userId!);
+    if (!result || !hasPermission(result.membership, result.role, "manage_roles")) {
+      res.status(403).json({ error: "Insufficient permissions" });
+      return;
+    }
+
+    const parsed = roleBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
+      return;
+    }
+
+    const [existing] = await db
+      .select()
+      .from(roles)
+      .where(and(eq(roles.tenantId, tenantId), eq(roles.name, parsed.data.name)));
+
+    if (existing) {
+      res.status(409).json({ error: "A role with that name already exists" });
+      return;
+    }
+
+    const [created] = await db
+      .insert(roles)
+      .values({
+        tenantId,
+        name: parsed.data.name,
+        description: parsed.data.description ?? null,
+        permissions: parsed.data.permissions,
+      })
+      .returning();
+
+    logAudit({
+      tenantId,
+      actorUserId: req.session.userId!,
+      action: "role_created",
+      targetType: "role",
+      targetId: created.id,
+      metadata: { name: parsed.data.name, permissions: parsed.data.permissions },
+    });
+
+    res.status(201).json(created);
+  },
+);
+
 securityRouter.patch(
-  "/api/tenants/:tenantId/members/:userId/permissions",
+  "/api/tenants/:tenantId/roles/:roleId",
+  requireAuth,
+  async (req, res) => {
+    const tenantId = param(req, "tenantId");
+    const roleId = param(req, "roleId");
+
+    const result = await getTenantForUser(tenantId, req.session.userId!);
+    if (!result || !hasPermission(result.membership, result.role, "manage_roles")) {
+      res.status(403).json({ error: "Insufficient permissions" });
+      return;
+    }
+
+    const [targetRole] = await db
+      .select()
+      .from(roles)
+      .where(and(eq(roles.id, roleId), eq(roles.tenantId, tenantId)));
+
+    if (!targetRole) {
+      res.status(404).json({ error: "Role not found" });
+      return;
+    }
+
+    // System originator role's permissions cannot be changed
+    if (targetRole.isSystem && targetRole.name === "originator") {
+      res.status(403).json({ error: "Cannot modify the originator role" });
+      return;
+    }
+
+    const parsed = roleUpdateBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
+      return;
+    }
+
+    // System roles cannot be renamed
+    if (targetRole.isSystem && parsed.data.name && parsed.data.name !== targetRole.name) {
+      res.status(403).json({ error: "Cannot rename a system role" });
+      return;
+    }
+
+    if (parsed.data.name && parsed.data.name !== targetRole.name) {
+      const [dup] = await db
+        .select()
+        .from(roles)
+        .where(and(eq(roles.tenantId, tenantId), eq(roles.name, parsed.data.name)));
+      if (dup) {
+        res.status(409).json({ error: "A role with that name already exists" });
+        return;
+      }
+    }
+
+    const updates: Record<string, unknown> = { updatedAt: new Date() };
+    if (parsed.data.name !== undefined) updates.name = parsed.data.name;
+    if (parsed.data.description !== undefined) updates.description = parsed.data.description;
+    if (parsed.data.permissions !== undefined) updates.permissions = parsed.data.permissions;
+
+    await db
+      .update(roles)
+      .set(updates)
+      .where(eq(roles.id, roleId));
+
+    const [updated] = await db.select().from(roles).where(eq(roles.id, roleId));
+
+    logAudit({
+      tenantId,
+      actorUserId: req.session.userId!,
+      action: "role_updated",
+      targetType: "role",
+      targetId: roleId,
+      metadata: { changes: parsed.data },
+    });
+
+    res.json(updated);
+  },
+);
+
+securityRouter.delete(
+  "/api/tenants/:tenantId/roles/:roleId",
+  requireAuth,
+  async (req, res) => {
+    const tenantId = param(req, "tenantId");
+    const roleId = param(req, "roleId");
+
+    const result = await getTenantForUser(tenantId, req.session.userId!);
+    if (!result || !hasPermission(result.membership, result.role, "manage_roles")) {
+      res.status(403).json({ error: "Insufficient permissions" });
+      return;
+    }
+
+    const [targetRole] = await db
+      .select()
+      .from(roles)
+      .where(and(eq(roles.id, roleId), eq(roles.tenantId, tenantId)));
+
+    if (!targetRole) {
+      res.status(404).json({ error: "Role not found" });
+      return;
+    }
+
+    if (targetRole.isSystem) {
+      res.status(403).json({ error: "Cannot delete a system role" });
+      return;
+    }
+
+    // If this role is the default role, block deletion
+    const [tenant] = await db
+      .select()
+      .from(tenants)
+      .where(eq(tenants.id, tenantId));
+
+    if (tenant.defaultRoleId === roleId) {
+      res.status(409).json({ error: "Cannot delete the default role — assign a different default first" });
+      return;
+    }
+
+    // Unassign members who have this role (set to null)
+    await db
+      .update(memberships)
+      .set({ roleId: null })
+      .where(and(eq(memberships.tenantId, tenantId), eq(memberships.roleId, roleId)));
+
+    await db.delete(roles).where(eq(roles.id, roleId));
+
+    logAudit({
+      tenantId,
+      actorUserId: req.session.userId!,
+      action: "role_deleted",
+      targetType: "role",
+      targetId: roleId,
+      metadata: { name: targetRole.name },
+    });
+
+    res.json({ status: "deleted" });
+  },
+);
+
+// ── Role assignment ─────────────────────────────────────────────────
+
+securityRouter.put(
+  "/api/tenants/:tenantId/members/:userId/role",
   requireAuth,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const targetUserId = param(req, "userId");
 
     const result = await getTenantForUser(tenantId, req.session.userId!);
-    if (!result || result.membership.role !== "owner") {
-      res.status(403).json({ error: "Only the tenant owner can change permissions" });
+    if (!result || !hasPermission(result.membership, result.role, "manage_roles")) {
+      res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
 
-    const parsed = permissionsBody.safeParse(req.body);
+    const parsed = assignRoleBody.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
+      res.status(400).json({ error: "roleId is required" });
       return;
     }
 
@@ -160,54 +394,101 @@ securityRouter.patch(
       return;
     }
 
-    if (targetMembership.role === "owner") {
-      res.status(400).json({ error: "Cannot modify owner permissions" });
+    if (targetMembership.isOriginator) {
+      res.status(403).json({ error: "Cannot change the originator's role" });
       return;
     }
 
-    const updates: Record<string, unknown> = {};
-    if (parsed.data.canInvite !== undefined) updates.canInvite = parsed.data.canInvite;
-    if (parsed.data.canKick !== undefined) updates.canKick = parsed.data.canKick;
+    // Verify the role belongs to this tenant
+    const [targetRole] = await db
+      .select()
+      .from(roles)
+      .where(and(eq(roles.id, parsed.data.roleId), eq(roles.tenantId, tenantId)));
 
-    if (Object.keys(updates).length === 0) {
-      res.json({
-        userId: targetUserId,
-        canInvite: targetMembership.canInvite,
-        canKick: targetMembership.canKick,
-      });
+    if (!targetRole) {
+      res.status(404).json({ error: "Role not found in this tenant" });
+      return;
+    }
+
+    // Don't allow assigning the originator role to non-originators
+    if (targetRole.isSystem && targetRole.name === "originator") {
+      res.status(403).json({ error: "The originator role cannot be assigned" });
       return;
     }
 
     await db
       .update(memberships)
-      .set(updates)
+      .set({ roleId: parsed.data.roleId })
       .where(eq(memberships.id, targetMembership.id));
 
     logAudit({
       tenantId,
       actorUserId: req.session.userId!,
-      action: "member_permissions_updated",
+      action: "member_role_changed",
       targetType: "member",
       targetId: targetUserId,
-      metadata: updates,
+      metadata: { roleId: parsed.data.roleId, roleName: targetRole.name },
     });
 
-    const [refreshed] = await db
+    res.json({ userId: targetUserId, roleId: parsed.data.roleId, roleName: targetRole.name });
+  },
+);
+
+// ── Default role ────────────────────────────────────────────────────
+
+securityRouter.patch(
+  "/api/tenants/:tenantId/default-role",
+  requireAuth,
+  async (req, res) => {
+    const tenantId = param(req, "tenantId");
+
+    const result = await getTenantForUser(tenantId, req.session.userId!);
+    if (!result || !hasPermission(result.membership, result.role, "manage_roles")) {
+      res.status(403).json({ error: "Insufficient permissions" });
+      return;
+    }
+
+    const parsed = defaultRoleBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "roleId is required" });
+      return;
+    }
+
+    const [targetRole] = await db
       .select()
-      .from(memberships)
-      .where(eq(memberships.id, targetMembership.id));
+      .from(roles)
+      .where(and(eq(roles.id, parsed.data.roleId), eq(roles.tenantId, tenantId)));
 
-    res.json({
-      userId: targetUserId,
-      canInvite: refreshed.canInvite,
-      canKick: refreshed.canKick,
+    if (!targetRole) {
+      res.status(404).json({ error: "Role not found in this tenant" });
+      return;
+    }
+
+    if (targetRole.isSystem && targetRole.name === "originator") {
+      res.status(403).json({ error: "Cannot set originator as the default role" });
+      return;
+    }
+
+    await db
+      .update(tenants)
+      .set({ defaultRoleId: parsed.data.roleId, updatedAt: new Date() })
+      .where(eq(tenants.id, tenantId));
+
+    logAudit({
+      tenantId,
+      actorUserId: req.session.userId!,
+      action: "default_role_changed",
+      targetType: "role",
+      targetId: parsed.data.roleId,
+      metadata: { roleName: targetRole.name },
     });
+
+    res.json({ defaultRoleId: parsed.data.roleId, roleName: targetRole.name });
   },
 );
 
 // ── Device approvals ────────────────────────────────────────────────
 
-/** Marks expired pending approvals as expired (lazy). */
 async function expireStalePending(tenantId: string): Promise<void> {
   await db
     .update(deviceApprovals)
@@ -221,7 +502,6 @@ async function expireStalePending(tenantId: string): Promise<void> {
     );
 }
 
-/** Lists pending device approvals. Owner or canInvite. */
 securityRouter.get(
   "/api/tenants/:tenantId/device-approvals",
   requireAuth,
@@ -232,7 +512,7 @@ securityRouter.get(
       res.status(404).json({ error: "Tenant not found" });
       return;
     }
-    if (!hasPermission(result.membership, "invite")) {
+    if (!hasPermission(result.membership, result.role, "approve_devices")) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -260,7 +540,6 @@ securityRouter.get(
   },
 );
 
-/** Lists the current user's own device approval requests. */
 securityRouter.get(
   "/api/tenants/:tenantId/device-approvals/mine",
   requireAuth,
@@ -299,7 +578,6 @@ securityRouter.get(
   },
 );
 
-/** Approves a pending device request — generates a Headscale pre-auth key. */
 securityRouter.post(
   "/api/tenants/:tenantId/device-approvals/:approvalId/approve",
   requireAuth,
@@ -312,7 +590,7 @@ securityRouter.post(
       res.status(404).json({ error: "Tenant not found" });
       return;
     }
-    if (!hasPermission(result.membership, "invite")) {
+    if (!hasPermission(result.membership, result.role, "approve_devices")) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -381,7 +659,6 @@ securityRouter.post(
   },
 );
 
-/** Rejects a pending device request. */
 securityRouter.post(
   "/api/tenants/:tenantId/device-approvals/:approvalId/reject",
   requireAuth,
@@ -394,7 +671,7 @@ securityRouter.post(
       res.status(404).json({ error: "Tenant not found" });
       return;
     }
-    if (!hasPermission(result.membership, "invite")) {
+    if (!hasPermission(result.membership, result.role, "approve_devices")) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -439,7 +716,6 @@ securityRouter.post(
 
 // ── Device locks ────────────────────────────────────────────────────
 
-/** Locks a user's membership to their current Headscale devices. */
 securityRouter.post(
   "/api/tenants/:tenantId/device-locks",
   requireAuth,
@@ -459,8 +735,8 @@ securityRouter.post(
 
     const targetUserId = parsed.data.userId;
     const isSelf = targetUserId === req.session.userId;
-    if (!isSelf && result.membership.role !== "owner") {
-      res.status(403).json({ error: "Only the owner can lock other members' devices" });
+    if (!isSelf && !hasPermission(result.membership, result.role, "lock_devices")) {
+      res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
 
@@ -485,7 +761,7 @@ securityRouter.post(
       .where(eq(users.id, targetUserId));
 
     const hsUsername =
-      targetMembership.role === "owner"
+      targetMembership.isOriginator
         ? "owner"
         : toHsUsername(targetUser.handle);
 
@@ -540,7 +816,6 @@ securityRouter.post(
   },
 );
 
-/** Removes all device locks for a user. */
 securityRouter.delete(
   "/api/tenants/:tenantId/device-locks",
   requireAuth,
@@ -560,8 +835,8 @@ securityRouter.delete(
 
     const targetUserId = parsed.data.userId;
     const isSelf = targetUserId === req.session.userId;
-    if (!isSelf && result.membership.role !== "owner") {
-      res.status(403).json({ error: "Only the owner can unlock other members' devices" });
+    if (!isSelf && !hasPermission(result.membership, result.role, "lock_devices")) {
+      res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
 
@@ -596,7 +871,6 @@ securityRouter.delete(
   },
 );
 
-/** Lists locked devices for a user. */
 securityRouter.get(
   "/api/tenants/:tenantId/device-locks/:userId",
   requireAuth,
@@ -611,7 +885,7 @@ securityRouter.get(
     }
 
     const isSelf = targetUserId === req.session.userId;
-    if (!isSelf && result.membership.role !== "owner") {
+    if (!isSelf && !hasPermission(result.membership, result.role, "lock_devices")) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -649,15 +923,14 @@ securityRouter.get(
 
 // ── Audit log ───────────────────────────────────────────────────────
 
-/** Paginated audit log. Owner only. */
 securityRouter.get(
   "/api/tenants/:tenantId/audit-log",
   requireAuth,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const result = await getTenantForUser(tenantId, req.session.userId!);
-    if (!result || result.membership.role !== "owner") {
-      res.status(403).json({ error: "Only the tenant owner can view the audit log" });
+    if (!result || !hasPermission(result.membership, result.role, "view_audit_log")) {
+      res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
 

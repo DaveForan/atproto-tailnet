@@ -3,6 +3,7 @@ import { eq, and } from "drizzle-orm";
 import { db } from "../db/index.js";
 import {
   memberships,
+  roles,
   users,
   deviceApprovals,
   deviceLocks,
@@ -21,7 +22,6 @@ import { logAudit } from "./audit.js";
 
 export const devicesRouter = Router();
 
-/** Lists devices grouped by Headscale user, with machineKey for lock management. */
 devicesRouter.get(
   "/api/tenants/:tenantId/devices",
   requireAuth,
@@ -76,10 +76,6 @@ devicesRouter.get(
   },
 );
 
-/**
- * Generates a pre-auth key for the caller.
- * Checks lockdown, device locks, and device-approval requirement.
- */
 devicesRouter.post(
   "/api/tenants/:tenantId/devices/auth-key",
   requireAuth,
@@ -107,11 +103,10 @@ devicesRouter.post(
       .where(eq(users.id, req.session.userId!));
 
     const hsUsername =
-      result.membership.role === "owner"
+      result.membership.isOriginator
         ? "owner"
         : toHsUsername(user.handle);
 
-    // Check device locks — if locked, new devices are blocked
     const locks = await db
       .select()
       .from(deviceLocks)
@@ -125,8 +120,7 @@ devicesRouter.post(
       return;
     }
 
-    // If device approval is required, create a pending request instead
-    if (result.tenant.requireDeviceApproval && result.membership.role !== "owner") {
+    if (result.tenant.requireDeviceApproval && !result.membership.isOriginator) {
       const [approval] = await db
         .insert(deviceApprovals)
         .values({
@@ -179,7 +173,6 @@ devicesRouter.post(
   },
 );
 
-/** Deletes a device. Owners can delete any; members can delete their own. */
 devicesRouter.delete(
   "/api/tenants/:tenantId/devices/:nodeId",
   requireAuth,
@@ -198,15 +191,16 @@ devicesRouter.delete(
       result.tenant.apiKey,
     );
 
-    // Members can only delete their own devices
-    if (result.membership.role !== "owner") {
+    if (!hasPermission(result.membership, result.role, "manage_devices")) {
       try {
         const node = await client.getNode(nodeId);
         const [user] = await db
           .select()
           .from(users)
           .where(eq(users.id, req.session.userId!));
-        const expectedHsUser = toHsUsername(user.handle);
+        const expectedHsUser = result.membership.isOriginator
+          ? "owner"
+          : toHsUsername(user.handle);
         if (node.user?.name !== expectedHsUser) {
           res.status(403).json({ error: "Can only remove your own devices" });
           return;
@@ -236,7 +230,6 @@ devicesRouter.delete(
   },
 );
 
-/** Lists members with permissions metadata. */
 devicesRouter.get(
   "/api/tenants/:tenantId/members",
   requireAuth,
@@ -256,23 +249,20 @@ devicesRouter.get(
         handle: users.handle,
         displayName: users.displayName,
         avatarUrl: users.avatarUrl,
-        role: memberships.role,
-        canInvite: memberships.canInvite,
-        canKick: memberships.canKick,
+        isOriginator: memberships.isOriginator,
+        roleId: memberships.roleId,
+        roleName: roles.name,
         joinedAt: memberships.createdAt,
       })
       .from(memberships)
       .innerJoin(users, eq(memberships.userId, users.id))
+      .leftJoin(roles, eq(memberships.roleId, roles.id))
       .where(eq(memberships.tenantId, param(req, "tenantId")));
 
     res.json(members);
   },
 );
 
-/**
- * Removes a member from the tenant.
- * Requires kick permission. Owner can never be removed.
- */
 devicesRouter.delete(
   "/api/tenants/:tenantId/members/:userId",
   requireAuth,
@@ -286,7 +276,7 @@ devicesRouter.delete(
       return;
     }
 
-    if (!hasPermission(result.membership, "kick")) {
+    if (!hasPermission(result.membership, result.role, "kick")) {
       res.status(403).json({ error: "You do not have permission to remove members" });
       return;
     }
@@ -296,7 +286,6 @@ devicesRouter.delete(
       return;
     }
 
-    // Originator protection: owner can never be removed
     const [targetMembership] = await db
       .select()
       .from(memberships)
@@ -312,8 +301,8 @@ devicesRouter.delete(
       return;
     }
 
-    if (targetMembership.role === "owner") {
-      res.status(403).json({ error: "Cannot remove the tenant owner" });
+    if (targetMembership.isOriginator) {
+      res.status(403).json({ error: "Cannot remove the tenant originator" });
       return;
     }
 
@@ -345,7 +334,6 @@ devicesRouter.delete(
       }
     }
 
-    // Mark any pending device approvals as rejected
     await db
       .update(deviceApprovals)
       .set({ status: "rejected", reviewedAt: new Date() })
@@ -357,7 +345,6 @@ devicesRouter.delete(
         ),
       );
 
-    // Device locks cascade-delete via FK
     await db
       .delete(memberships)
       .where(

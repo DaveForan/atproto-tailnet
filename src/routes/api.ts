@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { eq } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { users, tenants, memberships, invitations } from "../db/schema.js";
+import { users, tenants, memberships, roles, invitations } from "../db/schema.js";
 import {
   destroyInstance,
   startInstance,
@@ -48,10 +48,12 @@ apiRouter.get("/api/tenants", requireAuth, async (req, res) => {
       slug: tenants.slug,
       name: tenants.name,
       status: tenants.status,
-      role: memberships.role,
+      isOriginator: memberships.isOriginator,
+      roleName: roles.name,
     })
     .from(memberships)
     .innerJoin(tenants, eq(memberships.tenantId, tenants.id))
+    .leftJoin(roles, eq(memberships.roleId, roles.id))
     .where(eq(memberships.userId, req.session.userId!));
 
   res.json(userTenants);
@@ -69,7 +71,10 @@ apiRouter.get("/api/tenants/:id", requireAuth, async (req, res) => {
     slug: result.tenant.slug,
     name: result.tenant.name,
     status: result.tenant.status,
-    role: result.membership.role,
+    isOriginator: result.membership.isOriginator,
+    roleName: result.role?.name ?? null,
+    roleId: result.membership.roleId,
+    defaultRoleId: result.tenant.defaultRoleId,
     loginServer: tenantLoginServer(result.tenant.slug),
   });
 });
@@ -98,8 +103,8 @@ apiRouter.delete("/api/tenants/:id", requireAuth, async (req, res) => {
   const tenantId = param(req, "id");
   const result = await getTenantForUser(tenantId, req.session.userId!);
 
-  if (!result || result.membership.role !== "owner") {
-    res.status(403).json({ error: "Only the tenant owner can delete" });
+  if (!result || !result.membership.isOriginator) {
+    res.status(403).json({ error: "Only the tenant originator can delete" });
     return;
   }
 
@@ -129,8 +134,8 @@ apiRouter.delete("/api/tenants/:id", requireAuth, async (req, res) => {
 
 apiRouter.post("/api/tenants/:id/start", requireAuth, async (req, res) => {
   const result = await getTenantForUser(param(req, "id"), req.session.userId!);
-  if (!result || result.membership.role !== "owner") {
-    res.status(403).json({ error: "Only the tenant owner can start" });
+  if (!result || !result.membership.isOriginator) {
+    res.status(403).json({ error: "Only the tenant originator can start" });
     return;
   }
   if (!result.tenant.containerId) {
@@ -153,8 +158,8 @@ apiRouter.post("/api/tenants/:id/start", requireAuth, async (req, res) => {
 
 apiRouter.post("/api/tenants/:id/stop", requireAuth, async (req, res) => {
   const result = await getTenantForUser(param(req, "id"), req.session.userId!);
-  if (!result || result.membership.role !== "owner") {
-    res.status(403).json({ error: "Only the tenant owner can stop" });
+  if (!result || !result.membership.isOriginator) {
+    res.status(403).json({ error: "Only the tenant originator can stop" });
     return;
   }
   if (!result.tenant.containerId) {
