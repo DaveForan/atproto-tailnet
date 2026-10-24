@@ -131,7 +131,7 @@ See `docs/adr/` for rationale behind each choice:
 - [x] `memberships.isOriginator` boolean for hard originator protection
 - [x] `memberships.roleId` FK to roles
 - [x] `tenants.defaultRoleId` FK to roles (citizen by default)
-- [x] 8 discrete permissions: invite, kick, manage_roles, manage_settings, approve_devices, lock_devices, view_audit_log, manage_devices
+- [x] 9 discrete permissions: invite, kick, manage_roles, manage_settings, approve_devices, approve_joins, lock_devices, view_audit_log, manage_devices
 - [x] `hasPermission(membership, role, permission)` — originators always pass, others check role JSONB
 - [x] Two system roles per tenant: originator (all perms, immutable) and citizen (customizable)
 - [x] Role CRUD API (GET/POST/PATCH/DELETE /api/tenants/:id/roles)
@@ -182,7 +182,22 @@ See `docs/adr/` for rationale behind each choice:
 - [x] Lockdown banner with disable button
 - [x] Tab visibility gated by permissions (not hard-coded to originator)
 
-**Milestone:** Originator can create custom roles with arbitrary permission sets, assign roles to members, delegate role management, require device approval, lock devices, view audit trail, and emergency-lockdown the tailnet.
+### 5.7 Join request system
+- [x] `allowJoinRequests` toggle on tenant settings
+- [x] `joinRequests` table (pending/approved/rejected, optional message)
+- [x] `approve_joins` permission for gating who can review requests
+- [x] Public tenant lookup (`GET /api/tenants/by-slug/:slug/public`) — minimal info, hidden in lockdown
+- [x] Submit join request (`POST /api/tenants/:id/join-requests`) — deduplication, lockdown check, 500-char message limit
+- [x] View own request status (`GET /api/tenants/:id/join-requests/mine`)
+- [x] List/approve/reject requests in security management (`approve_joins` gated)
+- [x] Approval creates Headscale user + membership with default role
+- [x] Public `/join/:slug` page — sign-in via Bluesky, request form, status display
+- [x] Post-login redirect preserves `/join/:slug` destination through OAuth flow
+- [x] Shareable join link in settings when feature is enabled
+- [x] Dashboard join request queue with approve/reject buttons
+- [x] Audit logging for enable/disable/create/approve/reject actions
+
+**Milestone:** Originator can create custom roles with arbitrary permission sets, assign roles to members, delegate role management, require device approval, lock devices, view audit trail, emergency-lockdown the tailnet, and open public join requests.
 
 ---
 

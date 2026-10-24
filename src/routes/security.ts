@@ -8,6 +8,7 @@ import {
   roles,
   users,
   deviceApprovals,
+  joinRequests,
   deviceLocks,
   auditLogs,
 } from "../db/schema.js";
@@ -29,6 +30,7 @@ export const securityRouter = Router();
 const settingsBody = z.object({
   requireDeviceApproval: z.boolean().optional(),
   lockdownMode: z.boolean().optional(),
+  allowJoinRequests: z.boolean().optional(),
 });
 
 const roleBody = z.object({
@@ -79,6 +81,7 @@ securityRouter.get(
     res.json({
       requireDeviceApproval: result.tenant.requireDeviceApproval,
       lockdownMode: result.tenant.lockdownMode,
+      allowJoinRequests: result.tenant.allowJoinRequests,
       defaultRoleId: result.tenant.defaultRoleId,
     });
   },
@@ -128,6 +131,17 @@ securityRouter.patch(
       });
     }
 
+    if (parsed.data.allowJoinRequests !== undefined) {
+      updates.allowJoinRequests = parsed.data.allowJoinRequests;
+      logAudit({
+        tenantId: result.tenant.id,
+        actorUserId: req.session.userId!,
+        action: parsed.data.allowJoinRequests ? "join_requests_enabled" : "join_requests_disabled",
+        targetType: "tenant",
+        targetId: result.tenant.id,
+      });
+    }
+
     await db
       .update(tenants)
       .set(updates)
@@ -141,6 +155,7 @@ securityRouter.patch(
     res.json({
       requireDeviceApproval: updated.requireDeviceApproval,
       lockdownMode: updated.lockdownMode,
+      allowJoinRequests: updated.allowJoinRequests,
       defaultRoleId: updated.defaultRoleId,
     });
   },
@@ -708,6 +723,179 @@ securityRouter.post(
       targetType: "device_approval",
       targetId: approvalId,
       metadata: { requesterId: approval.requesterId },
+    });
+
+    res.json({ status: "rejected" });
+  },
+);
+
+// ── Join requests ───────────────────────────────────────────────────
+
+securityRouter.get(
+  "/api/tenants/:tenantId/join-requests",
+  requireAuth,
+  async (req, res) => {
+    const tenantId = param(req, "tenantId");
+    const result = await getTenantForUser(tenantId, req.session.userId!);
+    if (!result) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+    if (!hasPermission(result.membership, result.role, "approve_joins")) {
+      res.status(403).json({ error: "Insufficient permissions" });
+      return;
+    }
+
+    const rows = await db
+      .select({
+        id: joinRequests.id,
+        requesterId: joinRequests.requesterId,
+        requesterHandle: users.handle,
+        requesterDisplayName: users.displayName,
+        requesterAvatarUrl: users.avatarUrl,
+        message: joinRequests.message,
+        status: joinRequests.status,
+        requestedAt: joinRequests.requestedAt,
+        reviewedAt: joinRequests.reviewedAt,
+      })
+      .from(joinRequests)
+      .innerJoin(users, eq(joinRequests.requesterId, users.id))
+      .where(eq(joinRequests.tenantId, tenantId))
+      .orderBy(desc(joinRequests.requestedAt));
+
+    res.json(rows);
+  },
+);
+
+securityRouter.post(
+  "/api/tenants/:tenantId/join-requests/:requestId/approve",
+  requireAuth,
+  async (req, res) => {
+    const tenantId = param(req, "tenantId");
+    const requestId = param(req, "requestId");
+
+    const result = await getTenantForUser(tenantId, req.session.userId!);
+    if (!result) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+    if (!hasPermission(result.membership, result.role, "approve_joins")) {
+      res.status(403).json({ error: "Insufficient permissions" });
+      return;
+    }
+
+    const [request] = await db
+      .select()
+      .from(joinRequests)
+      .where(
+        and(
+          eq(joinRequests.id, requestId),
+          eq(joinRequests.tenantId, tenantId),
+          eq(joinRequests.status, "pending"),
+        ),
+      );
+
+    if (!request) {
+      res.status(404).json({ error: "Pending join request not found" });
+      return;
+    }
+
+    const [requester] = await db
+      .select()
+      .from(users)
+      .where(eq(users.id, request.requesterId));
+
+    const hsUsername = toHsUsername(requester.handle);
+
+    try {
+      const client = new HeadscaleApiClient(
+        result.tenant.port,
+        result.tenant.apiKey,
+      );
+      await client.createUser(hsUsername);
+    } catch {
+      // User might already exist
+    }
+
+    await db.insert(memberships).values({
+      userId: request.requesterId,
+      tenantId,
+      role: "member",
+      roleId: result.tenant.defaultRoleId,
+      isOriginator: false,
+    });
+
+    await db
+      .update(joinRequests)
+      .set({
+        status: "approved",
+        reviewedById: req.session.userId!,
+        reviewedAt: new Date(),
+      })
+      .where(eq(joinRequests.id, requestId));
+
+    logAudit({
+      tenantId,
+      actorUserId: req.session.userId!,
+      action: "join_request_approved",
+      targetType: "join_request",
+      targetId: requestId,
+      metadata: { handle: requester.handle },
+    });
+
+    res.json({ status: "approved" });
+  },
+);
+
+securityRouter.post(
+  "/api/tenants/:tenantId/join-requests/:requestId/reject",
+  requireAuth,
+  async (req, res) => {
+    const tenantId = param(req, "tenantId");
+    const requestId = param(req, "requestId");
+
+    const result = await getTenantForUser(tenantId, req.session.userId!);
+    if (!result) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+    if (!hasPermission(result.membership, result.role, "approve_joins")) {
+      res.status(403).json({ error: "Insufficient permissions" });
+      return;
+    }
+
+    const [request] = await db
+      .select()
+      .from(joinRequests)
+      .where(
+        and(
+          eq(joinRequests.id, requestId),
+          eq(joinRequests.tenantId, tenantId),
+          eq(joinRequests.status, "pending"),
+        ),
+      );
+
+    if (!request) {
+      res.status(404).json({ error: "Pending join request not found" });
+      return;
+    }
+
+    await db
+      .update(joinRequests)
+      .set({
+        status: "rejected",
+        reviewedById: req.session.userId!,
+        reviewedAt: new Date(),
+      })
+      .where(eq(joinRequests.id, requestId));
+
+    logAudit({
+      tenantId,
+      actorUserId: req.session.userId!,
+      action: "join_request_rejected",
+      targetType: "join_request",
+      targetId: requestId,
+      metadata: { requesterId: request.requesterId },
     });
 
     res.json({ status: "rejected" });

@@ -49,6 +49,11 @@ export const auditActionEnum = pgEnum("audit_action", [
   "role_deleted",
   "member_role_changed",
   "default_role_changed",
+  "join_requests_enabled",
+  "join_requests_disabled",
+  "join_request_created",
+  "join_request_approved",
+  "join_request_rejected",
 ]);
 
 export const deviceApprovalStatusEnum = pgEnum("device_approval_status", [
@@ -56,6 +61,12 @@ export const deviceApprovalStatusEnum = pgEnum("device_approval_status", [
   "approved",
   "rejected",
   "expired",
+]);
+
+export const joinRequestStatusEnum = pgEnum("join_request_status", [
+  "pending",
+  "approved",
+  "rejected",
 ]);
 
 export const users = pgTable("users", {
@@ -102,6 +113,8 @@ export const tenants = pgTable("tenants", {
     .notNull()
     .default(false),
   lockdownMode: boolean("lockdown_mode").notNull().default(false),
+  /** When true, non-members can request to join via the public join page. */
+  allowJoinRequests: boolean("allow_join_requests").notNull().default(false),
   /** Role assigned to new members on invitation acceptance. */
   defaultRoleId: uuid("default_role_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -175,6 +188,21 @@ export const deviceApprovals = pgTable("device_approvals", {
   requestedAt: timestamp("requested_at").defaultNow().notNull(),
   reviewedAt: timestamp("reviewed_at"),
   expiresAt: timestamp("expires_at").notNull(),
+});
+
+export const joinRequests = pgTable("join_requests", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  tenantId: uuid("tenant_id")
+    .notNull()
+    .references(() => tenants.id),
+  requesterId: uuid("requester_id")
+    .notNull()
+    .references(() => users.id),
+  message: text("message"),
+  status: joinRequestStatusEnum("status").notNull().default("pending"),
+  reviewedById: uuid("reviewed_by_id").references(() => users.id),
+  requestedAt: timestamp("requested_at").defaultNow().notNull(),
+  reviewedAt: timestamp("reviewed_at"),
 });
 
 export const deviceLocks = pgTable(

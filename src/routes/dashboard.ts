@@ -601,7 +601,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         '</div></div>';
       }
 
-      var canSecurity = hasPerm('manage_settings') || hasPerm('approve_devices');
+      var canSecurity = hasPerm('manage_settings') || hasPerm('approve_devices') || hasPerm('approve_joins');
       var canAudit = hasPerm('view_audit_log');
       var canRoles = hasPerm('manage_roles');
 
@@ -686,6 +686,11 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
             '<div class="card">' +
               '<h3 style="margin-bottom:12px">Tenant Settings</h3>' +
               '<div id="security-settings">Loading...</div>' +
+            '</div>' : '') +
+          (hasPerm('approve_joins') ?
+            '<div class="card" style="margin-top:12px">' +
+              '<h3 style="margin-bottom:12px">Pending Join Requests</h3>' +
+              '<div id="join-requests">Loading...</div>' +
             '</div>' : '') +
           (hasPerm('approve_devices') ?
             '<div class="card" style="margin-top:12px">' +
@@ -878,10 +883,43 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
                 ' onchange="toggleSetting(\\'requireDeviceApproval\\', this.checked)" /><span class="slider"></span></label>' +
             '</div>' +
             '<div class="toggle-row">' +
+              '<div class="toggle-label"><span>Allow join requests</span><span>Non-members can request to join via a public link</span></div>' +
+              '<label class="toggle"><input type="checkbox" ' + (settings.allowJoinRequests ? 'checked' : '') +
+                ' onchange="toggleSetting(\\'allowJoinRequests\\', this.checked)" /><span class="slider"></span></label>' +
+            '</div>' +
+            (settings.allowJoinRequests && state.currentTenant ?
+              '<div style="margin-top:8px;font-size:13px;color:var(--text-dim)">Share this link: <code style="color:var(--accent);cursor:pointer" onclick="copyToClipboard(window.location.origin + \\'/join/' + esc(state.currentTenant.slug) + '\\')">' + esc(location.origin) + '/join/' + esc(state.currentTenant.slug) + '</code></div>' : '') +
+            '<div class="toggle-row">' +
               '<div class="toggle-label"><span>Lockdown mode</span><span>Block all new invitations, joins, and device registrations</span></div>' +
               '<label class="toggle"><input type="checkbox" ' + (settings.lockdownMode ? 'checked' : '') +
                 ' onchange="toggleSetting(\\'lockdownMode\\', this.checked)" /><span class="slider"></span></label>' +
             '</div>';
+        }
+      }
+
+      if (hasPerm('approve_joins')) {
+        var joinReqs = await api('/api/tenants/' + state.currentTenant.id + '/join-requests');
+        var jre = document.getElementById('join-requests');
+        if (jre && joinReqs) {
+          var pendingJoins = joinReqs.filter(function(r) { return r.status === 'pending'; });
+          if (pendingJoins.length === 0) {
+            jre.innerHTML = '<div class="empty-state" style="padding:16px">No pending join requests</div>';
+          } else {
+            jre.innerHTML = pendingJoins.map(function(r) {
+              return '<div class="approval-item">' +
+                '<div>' +
+                  (safeUrl(r.requesterAvatarUrl) ? '<img src="' + safeUrl(r.requesterAvatarUrl) + '" style="width:24px;height:24px;border-radius:50%;vertical-align:middle;margin-right:6px" />' : '') +
+                  '<strong>' + esc(r.requesterDisplayName || r.requesterHandle) + '</strong>' +
+                  (r.message ? '<br><span style="color:var(--text-dim);font-size:12px">' + esc(r.message) + '</span>' : '') +
+                  '<br><span style="color:var(--text-dim);font-size:12px">Requested ' + new Date(r.requestedAt).toLocaleString() + '</span>' +
+                '</div>' +
+                '<div style="display:flex;gap:8px">' +
+                  '<button class="btn-sm" onclick="approveJoin(\\'' + r.id + '\\')">Approve</button>' +
+                  '<button class="btn-sm btn-danger" onclick="rejectJoin(\\'' + r.id + '\\')">Reject</button>' +
+                '</div>' +
+              '</div>';
+            }).join('');
+          }
         }
       }
 
@@ -941,6 +979,11 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         role_deleted: 'deleted role',
         member_role_changed: 'changed member role',
         default_role_changed: 'changed default role',
+        join_requests_enabled: 'enabled join requests',
+        join_requests_disabled: 'disabled join requests',
+        join_request_created: 'requested to join',
+        join_request_approved: 'approved join request',
+        join_request_rejected: 'rejected join request',
       };
       el.innerHTML = data.entries.map(function(e) {
         var label = actionLabels[e.action] || e.action;
@@ -978,6 +1021,9 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         lockdown_enabled: 'enabled lockdown', lockdown_disabled: 'disabled lockdown',
         role_created: 'created role', role_updated: 'updated role', role_deleted: 'deleted role',
         member_role_changed: 'changed member role', default_role_changed: 'changed default role',
+        join_requests_enabled: 'enabled join requests', join_requests_disabled: 'disabled join requests',
+        join_request_created: 'requested to join', join_request_approved: 'approved join request',
+        join_request_rejected: 'rejected join request',
       };
       var html = data.entries.map(function(e) {
         var label = actionLabels[e.action] || e.action;
@@ -1019,6 +1065,24 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       var result = await api('/api/tenants/' + state.currentTenant.id + '/device-approvals/' + approvalId + '/reject', { method: 'POST' });
       if (result) {
         toast('Device request rejected');
+        loadSecurity();
+      }
+    }
+
+    async function approveJoin(requestId) {
+      if (!state.currentTenant) return;
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/join-requests/' + requestId + '/approve', { method: 'POST' });
+      if (result) {
+        toast('Join request approved');
+        loadSecurity();
+      }
+    }
+
+    async function rejectJoin(requestId) {
+      if (!state.currentTenant) return;
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/join-requests/' + requestId + '/reject', { method: 'POST' });
+      if (result) {
+        toast('Join request rejected');
         loadSecurity();
       }
     }
@@ -1101,4 +1165,245 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 
 dashboardRouter.get("/", (req, res) => {
   res.type("html").send(DASHBOARD_HTML);
+});
+
+const JOIN_PAGE_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Join tailnet — atproto-tailnet</title>
+  <style>
+    :root {
+      --bg: #0a0a0f;
+      --surface: #13131a;
+      --border: #23232f;
+      --text: #e4e4ed;
+      --text-dim: #8888a0;
+      --accent: #6366f1;
+      --accent-hover: #818cf8;
+      --success: #22c55e;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 24px;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 32px;
+      max-width: 480px;
+      width: 100%;
+      text-align: center;
+    }
+    h1 { font-size: 24px; font-weight: 600; margin-bottom: 8px; }
+    .sub { color: var(--text-dim); font-size: 14px; margin-bottom: 24px; }
+    button {
+      background: var(--accent);
+      color: white;
+      border: none;
+      padding: 10px 20px;
+      border-radius: 6px;
+      font-size: 15px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+    button:hover { background: var(--accent-hover); }
+    .btn-ghost {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+    .btn-ghost:hover { background: var(--surface); }
+    textarea {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 10px 12px;
+      border-radius: 6px;
+      font-size: 14px;
+      width: 100%;
+      resize: vertical;
+      min-height: 60px;
+      margin-bottom: 12px;
+    }
+    textarea::placeholder { color: var(--text-dim); }
+    .status-badge {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 12px;
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .status-pending { background: #f59e0b20; color: var(--warning); }
+    .status-approved { background: #22c55e20; color: var(--success); }
+    .status-rejected { background: #ef444420; color: var(--danger); }
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      padding: 12px 20px;
+      border-radius: 8px;
+      font-size: 14px;
+      z-index: 1000;
+      animation: fadeIn 0.2s;
+    }
+    @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } }
+    a { color: var(--accent); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div id="join-app" class="card">Loading...</div>
+  <script>
+    var slug = window.location.pathname.split('/join/')[1];
+    var app = document.getElementById('join-app');
+
+    function esc(s) {
+      if (s == null) return '';
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+    }
+
+    function toast(msg) {
+      var el = document.createElement('div');
+      el.className = 'toast';
+      el.textContent = msg;
+      document.body.appendChild(el);
+      setTimeout(function() { el.remove(); }, 3000);
+    }
+
+    async function api(path, opts) {
+      try {
+        var res = await fetch(path, {
+          headers: { 'Content-Type': 'application/json' },
+          ...opts,
+        });
+        if (res.status === 401) return { _unauth: true };
+        if (!res.ok) {
+          var err = await res.json().catch(function() { return { error: 'Request failed' }; });
+          return { _error: err.error || 'Something went wrong' };
+        }
+        return res.json();
+      } catch (e) {
+        return { _error: 'Network error' };
+      }
+    }
+
+    async function init() {
+      var tenant = await api('/api/tenants/by-slug/' + encodeURIComponent(slug) + '/public');
+
+      if (tenant._error) {
+        app.innerHTML = '<h1>Tailnet not found</h1><p class="sub">This tailnet does not exist or is not accepting requests.</p>' +
+          '<a href="/">Go to dashboard</a>';
+        return;
+      }
+
+      if (!tenant.joinOpen) {
+        app.innerHTML = '<h1>' + esc(tenant.name) + '</h1>' +
+          '<p class="sub">This tailnet is not currently accepting join requests.</p>' +
+          '<a href="/">Go to dashboard</a>';
+        return;
+      }
+
+      var me = await api('/api/me');
+
+      if (me._unauth || !me.id) {
+        app.innerHTML = '<h1>' + esc(tenant.name) + '</h1>' +
+          '<p class="sub">Sign in with your Bluesky identity to request access to this tailnet.</p>' +
+          '<form action="/auth/login" method="get" style="display:flex;gap:8px;justify-content:center">' +
+            '<input type="text" name="handle" placeholder="yourname.bsky.social" required ' +
+              'style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:6px;font-size:14px;width:220px" />' +
+            '<input type="hidden" name="redirect" value="/join/' + esc(slug) + '" />' +
+            '<button type="submit">Sign in</button>' +
+          '</form>';
+        return;
+      }
+
+      var mine = await api('/api/tenants/' + tenant.id + '/join-requests/mine');
+
+      if (mine._error) {
+        var existing = await api('/api/tenants/' + tenant.id);
+        if (existing && existing.id) {
+          app.innerHTML = '<h1>' + esc(tenant.name) + '</h1>' +
+            '<p class="sub">You are already a member of this tailnet.</p>' +
+            '<a href="/">Go to dashboard</a>';
+          return;
+        }
+      }
+
+      if (mine && !mine._error && mine.length > 0) {
+        var latest = mine[0];
+        if (latest.status === 'pending') {
+          app.innerHTML = '<h1>' + esc(tenant.name) + '</h1>' +
+            '<p class="sub">Your request to join is pending review.</p>' +
+            '<span class="status-badge status-pending">Pending</span>' +
+            '<p style="margin-top:16px;font-size:13px;color:var(--text-dim)">Submitted ' + new Date(latest.requestedAt).toLocaleString() + '</p>' +
+            '<p style="margin-top:16px"><a href="/">Go to dashboard</a></p>';
+          return;
+        }
+        if (latest.status === 'approved') {
+          app.innerHTML = '<h1>' + esc(tenant.name) + '</h1>' +
+            '<p class="sub">Your request was approved! You are now a member.</p>' +
+            '<span class="status-badge status-approved">Approved</span>' +
+            '<p style="margin-top:16px"><a href="/">Go to dashboard</a></p>';
+          return;
+        }
+        if (latest.status === 'rejected') {
+          app.innerHTML = '<h1>' + esc(tenant.name) + '</h1>' +
+            '<p class="sub">Your previous request was declined.</p>' +
+            '<span class="status-badge status-rejected">Rejected</span>' +
+            '<div style="margin-top:16px">' +
+              '<textarea id="join-message" placeholder="Add an optional message (max 500 chars)"></textarea>' +
+              '<button onclick="submitRequest(\\'' + tenant.id + '\\')">Request Again</button>' +
+            '</div>';
+          return;
+        }
+      }
+
+      app.innerHTML = '<h1>' + esc(tenant.name) + '</h1>' +
+        '<p class="sub">Request to join this tailnet. The owner will review your request.</p>' +
+        '<div>' +
+          '<textarea id="join-message" placeholder="Add an optional message (max 500 chars)"></textarea>' +
+          '<button onclick="submitRequest(\\'' + tenant.id + '\\')">Request to Join</button>' +
+        '</div>';
+    }
+
+    async function submitRequest(tenantId) {
+      var msgEl = document.getElementById('join-message');
+      var message = msgEl ? msgEl.value.trim() : '';
+      var result = await api('/api/tenants/' + tenantId + '/join-requests', {
+        method: 'POST',
+        body: JSON.stringify({ message: message || undefined }),
+      });
+      if (result._error) {
+        toast(result._error);
+        return;
+      }
+      toast('Request submitted!');
+      init();
+    }
+
+    init();
+  </script>
+</body>
+</html>`;
+
+dashboardRouter.get("/join/:slug", (req, res) => {
+  res.type("html").send(JOIN_PAGE_HTML);
 });

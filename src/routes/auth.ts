@@ -156,6 +156,11 @@ authRouter.get("/auth/login", async (req, res) => {
       return;
     }
 
+    const redirect = req.query.redirect as string | undefined;
+    if (redirect && /^\/[a-z0-9]/.test(redirect)) {
+      req.session.postLoginRedirect = redirect;
+    }
+
     const client = await getOAuthClient();
     const url = await client.authorize(handle, {
       scope: "atproto transition:generic",
@@ -201,7 +206,9 @@ authRouter.get("/auth/callback", async (req, res) => {
     req.session.userId = user.id;
     req.session.did = did;
 
-    res.redirect("/");
+    const dest = req.session.postLoginRedirect || "/";
+    delete req.session.postLoginRedirect;
+    res.redirect(dest);
   } catch (err) {
     console.error("Callback error:", err);
     res.status(500).json({ error: "Authentication failed" });

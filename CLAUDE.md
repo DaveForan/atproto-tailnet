@@ -50,6 +50,8 @@ npm run dev                      # http://localhost:3000
 - All config flows through Zod-validated `src/config.ts` (including caddyAdminUrl, databaseUrl)
 - Device approval: when `requireDeviceApproval` is true, auth-key requests create pending `device_approvals`; owner approves to generate key
 - Device locks: `device_locks` table binds a membership to specific Headscale `machineKey` values — blocks new key generation until unlocked
+- Join requests: `allowJoinRequests` toggle + public `/join/:slug` page; gated by `approve_joins` permission; lockdown blocks requests
+- Post-login redirect: `req.session.postLoginRedirect` stores destination (validated as local path) through OAuth flow
 
 ## File layout
 
@@ -57,7 +59,7 @@ npm run dev                      # http://localhost:3000
 src/
   auth/atproto.ts          — AT Proto OAuth client setup + DB-backed stores
   config.ts                — Zod-validated env config
-  db/schema.ts             — Drizzle schema (users, tenants, roles, memberships, invitations, device_approvals, device_locks, audit_logs)
+  db/schema.ts             — Drizzle schema (users, tenants, roles, memberships, invitations, device_approvals, device_locks, join_requests, audit_logs)
   db/index.ts              — Database connection + pool export
   orchestrator/
     headscale.ts           — Docker lifecycle (create/start/stop/destroy), CLI exec
@@ -66,12 +68,12 @@ src/
     ports.ts               — Port allocator
   routes/
     auth.ts                — /auth/login, /auth/callback, /auth/logout, /.well-known/* + tenant provisioning
-    api.ts                 — /api/me, /api/tenants, /health
+    api.ts                 — /api/me, /api/tenants, /health, public tenant lookup, join request submit/status
     invitations.ts         — Create/accept/decline/revoke invitations (permission-gated)
     devices.ts             — Node listing, auth key generation, member management (permission-gated)
     permissions.ts         — ALL_PERMISSIONS constant, Permission type, role defaults
-    security.ts            — Tenant settings, role CRUD, role assignment, device approvals/locks, audit log
-    dashboard.ts           — Inline SPA (dark theme, tabbed UI with Roles + Security + Audit tabs)
+    security.ts            — Tenant settings, role CRUD, role assignment, device approvals/locks, join request management, audit log
+    dashboard.ts           — Inline SPA (dark theme, tabbed UI with Roles + Security + Audit tabs) + /join/:slug public page
     helpers.ts             — Shared middleware, param(), permission checks, hs username/URL helpers
     audit.ts               — Fire-and-forget audit log writer
 docs/adr/                  — Architecture Decision Records (0001-0005)
