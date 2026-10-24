@@ -1,5 +1,19 @@
+/**
+ * @module routes/dashboard
+ *
+ * Inline single-page application served at `/`. Renders a dark-themed
+ * dashboard with tabbed navigation: Devices, Members, Invite, Add Device,
+ * Services, Board, Agents, Roles, Security, and Audit Log.
+ *
+ * Also serves the public join page at `/join/:slug` for tailnets that
+ * have join requests enabled.
+ *
+ * All user-controlled data is HTML-escaped via `esc()` and avatar URLs
+ * are validated via `safeUrl()` to prevent XSS.
+ */
 import { Router } from "express";
 
+/** Main dashboard router — serves HTML pages (no JSON API). */
 export const dashboardRouter = Router();
 
 const DASHBOARD_HTML = `<!DOCTYPE html>
@@ -618,6 +632,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       var canRoles = hasPerm('manage_roles');
       var canServices = hasPerm('manage_services') || hasPerm('approve_services');
       var canBoard = hasPerm('manage_board') || hasPerm('create_posts');
+      var canAgents = state.settings && state.settings.allowAgentTokens;
 
       var tabBar = '<div class="tab-bar">' +
         '<button class="tab ' + (state.tab === 'devices' ? 'active' : '') + '" onclick="switchTab(\\'devices\\')">Devices</button>' +
@@ -627,6 +642,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         (canServices ? '<button class="tab ' + (state.tab === 'services' ? 'active' : '') + '" onclick="switchTab(\\'services\\')">Services</button>' : '') +
         (canBoard ? '<button class="tab ' + (state.tab === 'board' ? 'active' : '') + '" onclick="switchTab(\\'board\\')">Board</button>' : '') +
         (canRoles ? '<button class="tab ' + (state.tab === 'roles' ? 'active' : '') + '" onclick="switchTab(\\'roles\\')">Roles</button>' : '') +
+        (canAgents ? '<button class="tab ' + (state.tab === 'agents' ? 'active' : '') + '" onclick="switchTab(\\'agents\\')">Agents</button>' : '') +
         (canSecurity ? '<button class="tab ' + (state.tab === 'security' ? 'active' : '') + '" onclick="switchTab(\\'security\\')">Security</button>' : '') +
         (canAudit ? '<button class="tab ' + (state.tab === 'audit' ? 'active' : '') + '" onclick="switchTab(\\'audit\\')">Audit Log</button>' : '') +
       '</div>';
@@ -757,6 +773,34 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           '</div>' +
         '</div>' : '') +
 
+      (canAgents ?
+        '<div id="tab-agents" class="' + (state.tab !== 'agents' ? 'hidden' : '') + '">' +
+          '<div class="card">' +
+            '<div class="card-header"><h3>Agent API Tokens</h3></div>' +
+            '<p style="color:var(--text-dim);font-size:13px;margin-bottom:12px">API tokens allow AI agents and other programmatic clients to manage this tailnet on your behalf. Tokens are scoped to a subset of your permissions and carry a mandatory expiry.</p>' +
+            '<div id="agent-tokens-list">Loading...</div>' +
+            (hasPerm('create_agent_tokens') || isOriginator() ?
+              '<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">' +
+                '<h4 style="margin-bottom:8px;font-size:14px">Create Token</h4>' +
+                '<div class="inline-form" style="margin-bottom:8px">' +
+                  '<input type="text" id="agent-token-name" placeholder="Token name (e.g. claude-code)" style="max-width:200px" />' +
+                  '<select id="agent-token-expiry" style="max-width:150px">' +
+                    '<option value="7">7 days</option>' +
+                    '<option value="30" selected>30 days</option>' +
+                    '<option value="90">90 days</option>' +
+                    '<option value="365">365 days</option>' +
+                  '</select>' +
+                  '<button onclick="createAgentToken()">Create</button>' +
+                '</div>' +
+                '<div style="margin-bottom:8px">' +
+                  '<span style="font-size:12px;color:var(--text-dim)">Token permissions (select which permissions to grant):</span>' +
+                  '<div id="agent-token-perms" style="margin-top:4px"></div>' +
+                '</div>' +
+              '</div>' : '') +
+            '<div id="agent-token-created" style="margin-top:12px"></div>' +
+          '</div>' +
+        '</div>' : '') +
+
       (canSecurity ?
         '<div id="tab-security" class="' + (state.tab !== 'security' ? 'hidden' : '') + '">' +
           (hasPerm('manage_settings') ?
@@ -795,6 +839,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (tab === 'invite') loadSentInvitations();
       if (tab === 'services') loadServices();
       if (tab === 'board') loadBoard();
+      if (tab === 'agents') loadAgents();
       if (tab === 'roles') loadRoles();
       if (tab === 'security') loadSecurity();
       if (tab === 'audit') loadAuditLog();
@@ -1192,6 +1237,105 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (result) { toast('Post removed'); loadBoard(); }
     }
 
+    // ── Agents tab ─────────────────────────────────────────────────
+
+    var agentTokenPerms = [];
+
+    async function loadAgents() {
+      if (!state.currentTenant) return;
+      var tokens = await api('/api/tenants/' + state.currentTenant.id + '/agent-tokens') || [];
+      var el = document.getElementById('agent-tokens-list');
+      if (el) {
+        if (tokens.length === 0) {
+          el.innerHTML = '<div class="empty-state" style="padding:16px">No agent tokens</div>';
+        } else {
+          el.innerHTML = tokens.map(function(t) {
+            var isExpired = new Date(t.expiresAt) < new Date();
+            var statusBadge = t.status === 'revoked'
+              ? '<span class="badge badge-stopped">revoked</span>'
+              : isExpired
+                ? '<span class="badge" style="background:#f59e0b20;color:var(--warning)">expired</span>'
+                : '<span class="badge badge-running">active</span>';
+            var ownerInfo = t.ownerId !== state.user.id
+              ? '<br><span style="color:var(--text-dim);font-size:12px">Owner: ' + esc(t.ownerDisplayName || t.ownerHandle) + '</span>'
+              : '';
+            var permsHtml = (t.permissions || []).map(function(p) {
+              return '<span class="badge-perm">' + esc(p) + '</span>';
+            }).join('');
+            var lastUsed = t.lastUsedAt
+              ? '<br><span style="color:var(--text-dim);font-size:12px">Last used: ' + new Date(t.lastUsedAt).toLocaleString() + '</span>'
+              : '<br><span style="color:var(--text-dim);font-size:12px">Never used</span>';
+            var canRevoke = t.status === 'active' && !isExpired && (t.ownerId === state.user.id || hasPerm('manage_agent_tokens'));
+            return '<div class="approval-item">' +
+              '<div>' +
+                '<strong>' + esc(t.name) + '</strong> ' + statusBadge +
+                '<span style="color:var(--text-dim);font-size:12px;margin-left:8px">' + esc(t.tokenPrefix) + '...</span>' +
+                ownerInfo +
+                '<br><span style="color:var(--text-dim);font-size:12px">Expires: ' + new Date(t.expiresAt).toLocaleDateString() + '</span>' +
+                lastUsed +
+                '<br>' + permsHtml +
+              '</div>' +
+              (canRevoke ? '<button class="btn-sm btn-danger" onclick="revokeAgentToken(\\'' + t.id + '\\')">Revoke</button>' : '') +
+            '</div>';
+          }).join('');
+        }
+      }
+
+      // Render permission chips for token creation
+      var permEl = document.getElementById('agent-token-perms');
+      if (permEl) {
+        agentTokenPerms = [];
+        permEl.innerHTML = state.allPerms.map(function(p) {
+          return '<span class="perm-chip" id="atp-' + p + '" onclick="toggleAgentPerm(\\'' + p + '\\')">' + esc(p) + '</span>';
+        }).join('');
+      }
+    }
+
+    function toggleAgentPerm(perm) {
+      var idx = agentTokenPerms.indexOf(perm);
+      if (idx === -1) { agentTokenPerms.push(perm); } else { agentTokenPerms.splice(idx, 1); }
+      var chip = document.getElementById('atp-' + perm);
+      if (chip) { chip.className = 'perm-chip' + (agentTokenPerms.indexOf(perm) !== -1 ? ' active' : ''); }
+    }
+
+    async function createAgentToken() {
+      if (!state.currentTenant) return;
+      var nameEl = document.getElementById('agent-token-name');
+      var expiryEl = document.getElementById('agent-token-expiry');
+      var name = nameEl.value.trim();
+      if (!name) { toast('Token name required'); return; }
+      if (agentTokenPerms.length === 0) { toast('Select at least one permission'); return; }
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/agent-tokens', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: name,
+          permissions: agentTokenPerms,
+          expiresInDays: parseInt(expiryEl.value),
+        }),
+      });
+      if (result) {
+        nameEl.value = '';
+        var el = document.getElementById('agent-token-created');
+        if (el) {
+          el.innerHTML = '<div class="card" style="background:var(--bg);border-color:var(--success)">' +
+            '<p style="color:var(--success);font-weight:600;margin-bottom:8px">Token created! Copy it now \\u2014 it will not be shown again.</p>' +
+            '<div class="code-block" onclick="copyToClipboard(this.textContent)">' + esc(result.token) + '</div>' +
+          '</div>';
+        }
+        loadAgents();
+      }
+    }
+
+    async function revokeAgentToken(tokenId) {
+      if (!state.currentTenant) return;
+      if (!confirm('Revoke this agent token? Any agent using it will lose access immediately.')) return;
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/agent-tokens/' + tokenId, { method: 'DELETE' });
+      if (result) {
+        toast('Token revoked');
+        loadAgents();
+      }
+    }
+
     async function loadSecurity() {
       if (!state.currentTenant) return;
       if (hasPerm('manage_settings')) {
@@ -1235,6 +1379,16 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
               '<div class="toggle-label"><span>Require service approval</span><span>Services must be approved before going active</span></div>' +
               '<label class="toggle"><input type="checkbox" ' + (settings.requireServiceApproval ? 'checked' : '') +
                 ' onchange="toggleSetting(\\'requireServiceApproval\\', this.checked)" /><span class="slider"></span></label>' +
+            '</div>' +
+            '<div class="toggle-row">' +
+              '<div class="toggle-label"><span>Allow agent tokens</span><span>Enable API token generation for AI agents and automation</span></div>' +
+              '<label class="toggle"><input type="checkbox" ' + (settings.allowAgentTokens ? 'checked' : '') +
+                ' onchange="toggleSetting(\\'allowAgentTokens\\', this.checked)" /><span class="slider"></span></label>' +
+            '</div>' +
+            '<div class="toggle-row">' +
+              '<div class="toggle-label"><span>Allow member agent tokens</span><span>Non-originator members can create their own agent tokens</span></div>' +
+              '<label class="toggle"><input type="checkbox" ' + (settings.allowMemberAgentTokens ? 'checked' : '') +
+                ' onchange="toggleSetting(\\'allowMemberAgentTokens\\', this.checked)" /><span class="slider"></span></label>' +
             '</div>' +
             '<div class="toggle-row">' +
               '<div class="toggle-label"><span>Lockdown mode</span><span>Block all new invitations, joins, and device registrations</span></div>' +
@@ -1393,6 +1547,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         service_approved: 'approved service',
         service_rejected: 'rejected service',
         service_removed: 'removed service',
+        agent_token_created: 'created agent token',
+        agent_token_revoked: 'revoked agent token',
       };
       el.innerHTML = data.entries.map(function(e) {
         var label = actionLabels[e.action] || e.action;
@@ -1440,6 +1596,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         service_device_removed: 'removed service device', service_created: 'registered service',
         service_approved: 'approved service', service_rejected: 'rejected service',
         service_removed: 'removed service',
+        agent_token_created: 'created agent token', agent_token_revoked: 'revoked agent token',
       };
       var html = data.entries.map(function(e) {
         var label = actionLabels[e.action] || e.action;
@@ -1619,6 +1776,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         if (state.tab === 'invite') loadSentInvitations();
         if (state.tab === 'services') loadServices();
         if (state.tab === 'board') loadBoard();
+        if (state.tab === 'agents') loadAgents();
         if (state.tab === 'roles') loadRoles();
         if (state.tab === 'security') loadSecurity();
         if (state.tab === 'audit') loadAuditLog();

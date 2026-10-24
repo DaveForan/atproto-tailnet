@@ -1,3 +1,10 @@
+/**
+ * @module orchestrator/headscale-api
+ * REST client for the Headscale gRPC-gateway API (v1).
+ * Used for all runtime operations after initial bootstrap (users, nodes,
+ * pre-auth keys, ACL policy, health). Responses are Zod-validated.
+ */
+
 import { z } from "zod";
 
 const headscaleNodeSchema = z.object({
@@ -35,14 +42,23 @@ const headscalePreAuthKeySchema = z.object({
   createdAt: z.string().optional(),
 });
 
+/** A registered node (machine) in the tailnet. */
 export type HeadscaleNode = z.infer<typeof headscaleNodeSchema>;
+/** A Headscale user (namespace) that owns nodes. */
 export type HeadscaleUser = z.infer<typeof headscaleUserSchema>;
+/** A pre-authentication key used to register nodes without interactive login. */
 export type HeadscalePreAuthKey = z.infer<typeof headscalePreAuthKeySchema>;
 
+/**
+ * Authenticated REST client for a single Headscale instance.
+ * Connects to the container's localhost-bound port using the API key
+ * generated during bootstrap.
+ */
 export class HeadscaleApiClient {
   private baseUrl: string;
   private apiKey: string;
 
+  /** @param port - Localhost port the Headscale container is bound to. */
   constructor(port: number, apiKey: string) {
     this.baseUrl = `http://localhost:${port}`;
     this.apiKey = apiKey;
@@ -73,6 +89,7 @@ export class HeadscaleApiClient {
     return res.json();
   }
 
+  /** Create a new user (namespace) in the Headscale instance. */
   async createUser(name: string): Promise<HeadscaleUser> {
     const data = (await this.request("POST", "/api/v1/user", {
       name,
@@ -80,6 +97,7 @@ export class HeadscaleApiClient {
     return headscaleUserSchema.parse(data.user);
   }
 
+  /** List all users in the Headscale instance. */
   async listUsers(): Promise<HeadscaleUser[]> {
     const data = (await this.request("GET", "/api/v1/user")) as {
       users: unknown[];
@@ -87,10 +105,12 @@ export class HeadscaleApiClient {
     return data.users.map((u) => headscaleUserSchema.parse(u));
   }
 
+  /** Delete a user by name. */
   async deleteUser(name: string): Promise<void> {
     await this.request("DELETE", `/api/v1/user/${encodeURIComponent(name)}`);
   }
 
+  /** Create a pre-auth key for a user. Defaults to single-use, non-ephemeral, 24h expiry. */
   async createPreAuthKey(
     user: string,
     opts?: { reusable?: boolean; ephemeral?: boolean; expirationSeconds?: number },
@@ -108,6 +128,7 @@ export class HeadscaleApiClient {
     return headscalePreAuthKeySchema.parse(data.preAuthKey);
   }
 
+  /** List all registered nodes across all users. */
   async listNodes(): Promise<HeadscaleNode[]> {
     const data = (await this.request("GET", "/api/v1/node")) as {
       nodes: unknown[];
@@ -115,6 +136,7 @@ export class HeadscaleApiClient {
     return data.nodes.map((n) => headscaleNodeSchema.parse(n));
   }
 
+  /** Get a single node by its Headscale-assigned ID. */
   async getNode(nodeId: string): Promise<HeadscaleNode> {
     const data = (await this.request(
       "GET",
@@ -123,6 +145,7 @@ export class HeadscaleApiClient {
     return headscaleNodeSchema.parse(data.node);
   }
 
+  /** Remove a node from the tailnet. */
   async deleteNode(nodeId: string): Promise<void> {
     await this.request(
       "DELETE",
@@ -130,6 +153,7 @@ export class HeadscaleApiClient {
     );
   }
 
+  /** Rename a node's given name. */
   async renameNode(nodeId: string, newName: string): Promise<HeadscaleNode> {
     const data = (await this.request(
       "POST",
@@ -138,12 +162,14 @@ export class HeadscaleApiClient {
     return headscaleNodeSchema.parse(data.node);
   }
 
+  /** Replace the ACL policy document (serialized as JSON string in the request body). */
   async setPolicy(policy: object): Promise<void> {
     await this.request("PUT", "/api/v1/policy", {
       policy: JSON.stringify(policy),
     });
   }
 
+  /** Returns true if the Headscale API is reachable and authenticated. */
   async healthcheck(): Promise<boolean> {
     try {
       await this.request("GET", "/api/v1/apikey");

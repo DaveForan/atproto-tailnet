@@ -1,3 +1,10 @@
+/**
+ * @module routes/invitations
+ * Invitation lifecycle: create (resolve handle via DNS/HTTP/Bluesky API),
+ * list sent, list received, accept (provisions Headscale user + membership),
+ * decline, and revoke. Gated by the "invite" permission and lockdown mode.
+ */
+
 import { Router } from "express";
 import { resolveTxt } from "node:dns/promises";
 import { eq, and, desc } from "drizzle-orm";
@@ -18,6 +25,7 @@ import {
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
 
+/** Router for invitation CRUD: create, list, accept, decline, and revoke. */
 export const invitationsRouter = Router();
 
 invitationsRouter.get(

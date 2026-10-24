@@ -1,4 +1,13 @@
-/** Every discrete permission that can be granted via a role. */
+/**
+ * @module permissions
+ *
+ * Every discrete permission that can be granted via a role.
+ *
+ * Permissions are stored as a JSONB string array on each role row. The
+ * originator membership bypasses this array entirely — see
+ * {@link hasPermission} in `helpers.ts`. When adding a new permission,
+ * append it here **and** add a label in {@link PERMISSION_LABELS}.
+ */
 export const ALL_PERMISSIONS = [
   "invite",
   "kick",
@@ -13,8 +22,11 @@ export const ALL_PERMISSIONS = [
   "manage_services",
   "manage_board",
   "create_posts",
+  "create_agent_tokens",
+  "manage_agent_tokens",
 ] as const;
 
+/** A single permission string from {@link ALL_PERMISSIONS}. */
 export type Permission = (typeof ALL_PERMISSIONS)[number];
 
 /** Human-readable labels for the dashboard UI. */
@@ -32,6 +44,8 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   manage_services: "Register, edit, and remove services and service devices",
   manage_board: "Control board settings and remove any post",
   create_posts: "Create and remove own posts on the public board",
+  create_agent_tokens: "Create personal API tokens for agent access",
+  manage_agent_tokens: "View and revoke any member's agent tokens",
 };
 
 /** Originator system role always has every permission. */

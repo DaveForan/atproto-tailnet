@@ -1,8 +1,20 @@
+/**
+ * @module orchestrator/ports
+ * Port allocator for Headscale containers.
+ * Scans the configured port range and returns the first port not
+ * already claimed by a non-deleted tenant in the database.
+ */
+
 import { ne } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { tenants } from "../db/schema.js";
 import { config } from "../config.js";
 
+/**
+ * Allocate the next available port from the configured range.
+ * Queries all non-deleted tenants to build the used-port set, then
+ * returns the lowest unused port. Throws if the range is exhausted.
+ */
 export async function allocatePort(): Promise<number> {
   const { portRangeStart, portRangeEnd } = config.headscale;
 

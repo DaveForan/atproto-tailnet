@@ -1,3 +1,11 @@
+/**
+ * @module routes/security
+ * Tenant security surface: settings (toggles for device approval, lockdown,
+ * join requests, board, services, agent tokens), role CRUD with permission
+ * chip toggling, role assignment, default-role selection, device approval
+ * and rejection, device locks, join-request review, and paginated audit log.
+ */
+
 import { Router } from "express";
 import { eq, and, desc, lt, count } from "drizzle-orm";
 import { z } from "zod";
@@ -25,6 +33,10 @@ import {
 import { logAudit } from "./audit.js";
 import { ALL_PERMISSIONS, type Permission } from "./permissions.js";
 
+/**
+ * Router for tenant settings, roles CRUD, role assignment, device approvals/locks,
+ * join-request management, and audit log retrieval.
+ */
 export const securityRouter = Router();
 
 const settingsBody = z.object({
@@ -36,6 +48,8 @@ const settingsBody = z.object({
   maxBoardPostsDisplayed: z.number().int().min(1).max(200).optional(),
   requireServiceApproval: z.boolean().optional(),
   requireServiceDeviceApproval: z.boolean().optional(),
+  allowAgentTokens: z.boolean().optional(),
+  allowMemberAgentTokens: z.boolean().optional(),
 });
 
 const roleBody = z.object({
@@ -92,6 +106,8 @@ securityRouter.get(
       maxBoardPostsDisplayed: result.tenant.maxBoardPostsDisplayed,
       requireServiceApproval: result.tenant.requireServiceApproval,
       requireServiceDeviceApproval: result.tenant.requireServiceDeviceApproval,
+      allowAgentTokens: result.tenant.allowAgentTokens,
+      allowMemberAgentTokens: result.tenant.allowMemberAgentTokens,
       defaultRoleId: result.tenant.defaultRoleId,
     });
   },
@@ -200,6 +216,30 @@ securityRouter.patch(
       });
     }
 
+    if (parsed.data.allowAgentTokens !== undefined) {
+      updates.allowAgentTokens = parsed.data.allowAgentTokens;
+      logAudit({
+        tenantId: result.tenant.id,
+        actorUserId: req.session.userId!,
+        action: "tenant_settings_updated",
+        targetType: "tenant",
+        targetId: result.tenant.id,
+        metadata: { allowAgentTokens: parsed.data.allowAgentTokens },
+      });
+    }
+
+    if (parsed.data.allowMemberAgentTokens !== undefined) {
+      updates.allowMemberAgentTokens = parsed.data.allowMemberAgentTokens;
+      logAudit({
+        tenantId: result.tenant.id,
+        actorUserId: req.session.userId!,
+        action: "tenant_settings_updated",
+        targetType: "tenant",
+        targetId: result.tenant.id,
+        metadata: { allowMemberAgentTokens: parsed.data.allowMemberAgentTokens },
+      });
+    }
+
     await db
       .update(tenants)
       .set(updates)
@@ -219,6 +259,8 @@ securityRouter.patch(
       maxBoardPostsDisplayed: updated.maxBoardPostsDisplayed,
       requireServiceApproval: updated.requireServiceApproval,
       requireServiceDeviceApproval: updated.requireServiceDeviceApproval,
+      allowAgentTokens: updated.allowAgentTokens,
+      allowMemberAgentTokens: updated.allowMemberAgentTokens,
       defaultRoleId: updated.defaultRoleId,
     });
   },

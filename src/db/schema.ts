@@ -1,3 +1,19 @@
+/**
+ * @module schema
+ *
+ * Drizzle ORM schema defining all PostgreSQL tables, enums, and indexes.
+ *
+ * Tables: users, tenants, roles, memberships, oauth_states, oauth_sessions,
+ * invitations, device_approvals, join_requests, device_locks, service_devices,
+ * services, board_posts, agent_tokens, audit_logs.
+ *
+ * Enums are used for status columns (tenant_status, invitation_status, etc.)
+ * and the audit_action enum tracks all auditable events in the system.
+ *
+ * Migrations are generated with `npx drizzle-kit generate` — never edit
+ * migration SQL files by hand.
+ */
+
 import {
   pgTable,
   uuid,
@@ -68,6 +84,8 @@ export const auditActionEnum = pgEnum("audit_action", [
   "service_approved",
   "service_rejected",
   "service_removed",
+  "agent_token_created",
+  "agent_token_revoked",
 ]);
 
 export const deviceApprovalStatusEnum = pgEnum("device_approval_status", [
@@ -98,6 +116,12 @@ export const serviceStatusEnum = pgEnum("service_status", [
 export const boardPostStatusEnum = pgEnum("board_post_status", [
   "active",
   "removed",
+]);
+
+/** Agent API token lifecycle states. */
+export const agentTokenStatusEnum = pgEnum("agent_token_status", [
+  "active",
+  "revoked",
 ]);
 
 export const users = pgTable("users", {
@@ -156,6 +180,10 @@ export const tenants = pgTable("tenants", {
   requireServiceApproval: boolean("require_service_approval").notNull().default(true),
   /** When true, services must be approved before going active. */
   requireServiceDeviceApproval: boolean("require_service_device_approval").notNull().default(true),
+  /** When true, members with `create_agent_tokens` can generate API tokens. */
+  allowAgentTokens: boolean("allow_agent_tokens").notNull().default(false),
+  /** When true, non-originator members can create their own agent tokens (requires allowAgentTokens). */
+  allowMemberAgentTokens: boolean("allow_member_agent_tokens").notNull().default(false),
   /** Role assigned to new members on invitation acceptance. */
   defaultRoleId: uuid("default_role_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -347,6 +375,40 @@ export const boardPosts = pgTable(
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
   (t) => [index("board_posts_tenant_idx").on(t.tenantId)],
+);
+
+/**
+ * API tokens for AI agent access. The raw token is shown once at creation;
+ * only the SHA-256 hash is stored. Tokens are scoped to a subset of the
+ * creator's permissions and carry a mandatory expiry.
+ */
+export const agentTokens = pgTable(
+  "agent_tokens",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id),
+    name: text("name").notNull(),
+    /** SHA-256 hex hash of the raw token. */
+    tokenHash: text("token_hash").notNull().unique(),
+    /** First 8 chars of the raw token for identification in the UI. */
+    tokenPrefix: text("token_prefix").notNull(),
+    /** JSONB array of Permission strings — token cannot exceed creator's role permissions. */
+    permissions: jsonb("permissions").notNull().$type<string[]>().default([]),
+    status: agentTokenStatusEnum("status").notNull().default("active"),
+    expiresAt: timestamp("expires_at").notNull(),
+    lastUsedAt: timestamp("last_used_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    revokedAt: timestamp("revoked_at"),
+  },
+  (t) => [
+    index("agent_tokens_tenant_idx").on(t.tenantId),
+    index("agent_tokens_hash_idx").on(t.tokenHash),
+  ],
 );
 
 export const auditLogs = pgTable(

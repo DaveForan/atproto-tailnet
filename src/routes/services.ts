@@ -1,3 +1,11 @@
+/**
+ * @module routes/services
+ * Service device and service lifecycle: register service devices (with
+ * optional approval flow), approve/reject/remove service devices, register
+ * services on approved devices (with optional approval), approve/reject/remove
+ * services. Deletion cascades to associated board posts.
+ */
+
 import { Router } from "express";
 import { eq, and, desc } from "drizzle-orm";
 import { z } from "zod";
@@ -22,6 +30,10 @@ import {
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
 
+/**
+ * Router for service device registration/approval and service CRUD/approval.
+ * Both resource types support optional originator-gated approval workflows.
+ */
 export const servicesRouter = Router();
 
 // ── Service device registration ────────────────────────────────────

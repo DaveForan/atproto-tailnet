@@ -27,7 +27,7 @@ npm run dev                      # http://localhost:3000
 
 - `req.params` values are `string | string[]` in Express 5 — use `param(req, "name")` from `routes/helpers.ts`
 - `getTenantForUser(tenantId, userId)` in `routes/helpers.ts` — shared membership+tenant lookup for all protected routes
-- `hasPermission(membership, role, permission)` — originators always pass, others check role's JSONB permissions array
+- `hasPermission(membership, role, permission, req?)` — originators always pass, others check role's JSONB permissions array; optional `req` param enforces agent token scope intersection
 - `Permission` type and `ALL_PERMISSIONS` constant live in `routes/permissions.ts`
 - Two system roles per tenant: "originator" (all perms) and "citizen" (default for new members, customizable)
 - `membership.isOriginator` is the hard source of truth for originator identity (overrides role)
@@ -55,15 +55,20 @@ npm run dev                      # http://localhost:3000
 - Service devices: distinct from regular devices; `requireServiceDeviceApproval` toggle; originators auto-approve; gated by `manage_services` and `approve_services`
 - Services: registered on approved service devices; `requireServiceApproval` toggle; must be active to appear on board
 - Board posts: public message board at `/board/:slug`; `boardEnabled` toggle; `maxBoardPosts`/`maxBoardPostsDisplayed` limits; linked to active services
-- 13 permissions total: invite, kick, manage_roles, manage_settings, approve_devices, approve_joins, approve_services, lock_devices, view_audit_log, manage_devices, manage_services, manage_board, create_posts
+- Agent tokens: `at_`-prefixed Bearer tokens for AI agents; SHA-256 hashed storage; scoped to single tenant + permission subset; mandatory expiry (max 365 days)
+- Agent middleware chain: `resolveAgentToken` (Bearer → hash lookup → req.agentToken) → `enforceAgentScope` (tenant UUID match) → `requireAuth` → route handlers
+- Agent token settings: `allowAgentTokens` master toggle, `allowMemberAgentTokens` member toggle; originator can always create when master is on
+- 15 permissions total: invite, kick, manage_roles, manage_settings, approve_devices, approve_joins, approve_services, lock_devices, view_audit_log, manage_devices, manage_services, manage_board, create_posts, create_agent_tokens, manage_agent_tokens
 
 ## File layout
 
 ```
 src/
+  types/express.d.ts       — Augments Express Request with agentToken context
+  types/express-session.d.ts — Session data types (userId, did, postLoginRedirect)
   auth/atproto.ts          — AT Proto OAuth client setup + DB-backed stores
   config.ts                — Zod-validated env config
-  db/schema.ts             — Drizzle schema (users, tenants, roles, memberships, invitations, device_approvals, device_locks, join_requests, service_devices, services, board_posts, audit_logs)
+  db/schema.ts             — Drizzle schema (users, tenants, roles, memberships, invitations, device_approvals, device_locks, join_requests, service_devices, services, board_posts, agent_tokens, audit_logs)
   db/index.ts              — Database connection + pool export
   orchestrator/
     headscale.ts           — Docker lifecycle (create/start/stop/destroy), CLI exec
@@ -79,8 +84,9 @@ src/
     security.ts            — Tenant settings, role CRUD, role assignment, device approvals/locks, join request management, audit log
     services.ts            — Service device registration/approval, service CRUD/approval
     board.ts               — Board posts CRUD, public board API + /board/:slug page
-    dashboard.ts           — Inline SPA (tabbed: Devices, Members, Invite, Add Device, Services, Board, Roles, Security, Audit) + /join/:slug
-    helpers.ts             — Shared middleware, param(), permission checks, hs username/URL helpers
+    agents.ts              — Agent token CRUD (create, list, revoke)
+    dashboard.ts           — Inline SPA (tabbed: Devices, Members, Invite, Add Device, Services, Board, Agents, Roles, Security, Audit) + /join/:slug
+    helpers.ts             — Shared middleware, param(), permission checks, agent token resolution, hs username/URL helpers
     audit.ts               — Fire-and-forget audit log writer
 docs/adr/                  — Architecture Decision Records (0001-0005)
 BUILD_PLAN.md              — Phased build tracker

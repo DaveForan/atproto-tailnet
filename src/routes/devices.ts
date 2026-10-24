@@ -1,3 +1,11 @@
+/**
+ * @module routes/devices
+ * Device and member management: list Headscale nodes grouped by user,
+ * generate pre-auth keys (with optional device-approval flow), remove
+ * individual nodes, list members, and kick members (cascading cleanup
+ * of devices, services, board posts, and approvals).
+ */
+
 import { Router } from "express";
 import { eq, and } from "drizzle-orm";
 import { db } from "../db/index.js";
@@ -23,6 +31,10 @@ import {
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
 
+/**
+ * Router for device listing, auth-key generation, node removal,
+ * member listing, and member removal with cascading cleanup.
+ */
 export const devicesRouter = Router();
 
 devicesRouter.get(

@@ -1,3 +1,11 @@
+/**
+ * @module auth/atproto
+ * AT Protocol OAuth client setup using the BFF (backend-for-frontend) pattern.
+ * The server acts as a confidential client: it holds the private key, performs
+ * DPoP-bound token requests, and manages PKCE state -- the browser never sees tokens.
+ * OAuth state and sessions are persisted to PostgreSQL via Drizzle-backed stores
+ * so they survive server restarts.
+ */
 import { NodeOAuthClient } from "@atproto/oauth-client-node";
 import type {
   NodeSavedState,
@@ -67,6 +75,11 @@ const dbSessionStore: SessionStore = {
 
 let clientInstance: NodeOAuthClient | null = null;
 
+/**
+ * Returns the singleton NodeOAuthClient, creating it on first call.
+ * In dev (localhost) uses a loopback client_id with no keyset;
+ * in production uses private_key_jwt auth with a JWK loaded from ATPROTO_PRIVATE_KEY.
+ */
 export async function getOAuthClient(): Promise<NodeOAuthClient> {
   if (clientInstance) return clientInstance;
 
@@ -123,6 +136,7 @@ export async function getOAuthClient(): Promise<NodeOAuthClient> {
   return clientInstance;
 }
 
+/** Returns the production client metadata object, served at `/.well-known/atproto-client-metadata.json`. */
 export function getClientMetadata(): object {
   const url = config.publicUrl;
   return {
@@ -141,6 +155,7 @@ export function getClientMetadata(): object {
   };
 }
 
+/** Returns the public JWKS, served at `/.well-known/jwks.json`. Empty if no private key is configured. */
 export async function getPublicJwks(): Promise<{ keys: unknown[] }> {
   const keyStr = process.env.ATPROTO_PRIVATE_KEY;
   if (!keyStr) return { keys: [] };

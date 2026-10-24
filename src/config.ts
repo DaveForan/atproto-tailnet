@@ -1,5 +1,12 @@
+/**
+ * @module config
+ * Central Zod-validated configuration for the atproto-tailnet service.
+ * All env vars flow through here; nothing reads process.env directly elsewhere.
+ * Throws at startup if production invariants are violated (e.g. weak session secret).
+ */
 import { z } from "zod";
 
+/** Zod schema defining every config knob and its default. */
 const configSchema = z.object({
   port: z.coerce.number().default(3000),
   publicUrl: z.string().default("http://localhost:3000"),
@@ -19,6 +26,7 @@ const configSchema = z.object({
   }),
 });
 
+/** Parsed and validated application config. Importing this triggers validation at module load. */
 export const config = configSchema.parse({
   port: process.env.PORT,
   publicUrl: process.env.PUBLIC_URL,
@@ -44,4 +52,5 @@ if (
   );
 }
 
+/** TypeScript type inferred from the validated config object. */
 export type Config = typeof config;

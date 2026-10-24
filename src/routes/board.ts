@@ -1,3 +1,12 @@
+/**
+ * @module routes/board
+ * Board post CRUD (create, list, soft-delete) and public board endpoints.
+ * Posts are linked to active services and capped by tenant-level limits
+ * (maxBoardPosts enforced transactionally). The public board API and
+ * rendered HTML page at /board/:slug require no auth but respect
+ * lockdown and boardEnabled settings.
+ */
+
 import { Router } from "express";
 import { eq, and, desc, count, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -17,6 +26,10 @@ import {
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
 
+/**
+ * Router for board post CRUD, public board JSON API, and the
+ * server-rendered public board page at /board/:slug.
+ */
 export const boardRouter = Router();
 
 // ── Board posts CRUD ───────────────────────────────────────────────

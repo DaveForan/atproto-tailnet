@@ -1,3 +1,9 @@
+/**
+ * @module routes/auth
+ * AT Protocol OAuth login/callback/logout and .well-known endpoint serving.
+ * Also handles first-login tenant provisioning (async via setImmediate).
+ */
+
 import { Router } from "express";
 import { eq } from "drizzle-orm";
 import { Agent } from "@atproto/api";
@@ -17,6 +23,10 @@ import {
   DEFAULT_CITIZEN_PERMISSIONS,
 } from "./permissions.js";
 
+/**
+ * Router for authentication routes: login initiation, OAuth callback,
+ * logout, and AT Proto .well-known metadata/JWKS endpoints.
+ */
 export const authRouter = Router();
 
 async function generateUniqueSlug(handle: string): Promise<string> {

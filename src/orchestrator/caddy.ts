@@ -1,3 +1,10 @@
+/**
+ * @module orchestrator/caddy
+ * Dynamic subdomain routing via the Caddy admin API.
+ * Adds and removes reverse-proxy routes that map `{slug}.{baseDomain}`
+ * to a tenant's Headscale container port on localhost.
+ */
+
 import { config } from "../config.js";
 
 interface CaddyRoute {
@@ -33,6 +40,7 @@ async function caddyRequest(
   return res.json();
 }
 
+/** Register a reverse-proxy route from `{slug}.{baseDomain}` to the tenant's local port. */
 export async function addTenantRoute(
   slug: string,
   port: number,
@@ -54,6 +62,7 @@ export async function addTenantRoute(
   );
 }
 
+/** Remove the reverse-proxy route for a tenant. No-op if the route does not exist. */
 export async function removeTenantRoute(slug: string): Promise<void> {
   const serverConfig = (await caddyRequest(
     "GET",

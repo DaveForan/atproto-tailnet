@@ -1,3 +1,10 @@
+/**
+ * @module routes/audit
+ * Fire-and-forget audit log writer. Every security-relevant action across
+ * the app calls {@link logAudit} to append a row to the audit_logs table;
+ * failures are logged to stderr but never block the caller.
+ */
+
 import { db } from "../db/index.js";
 import { auditLogs, auditActionEnum } from "../db/schema.js";
 

@@ -1,3 +1,10 @@
+/**
+ * @module routes/api
+ * Core API routes: health check, current-user info, tenant CRUD and
+ * lifecycle (start/stop/delete), public tenant lookup, and join request
+ * submission/status.
+ */
+
 import { Router } from "express";
 import { eq, and } from "drizzle-orm";
 import { db } from "../db/index.js";
@@ -11,6 +18,10 @@ import { removeTenantRoute } from "../orchestrator/caddy.js";
 import { requireAuth, param, getTenantForUser, tenantLoginServer } from "./helpers.js";
 import { logAudit } from "./audit.js";
 
+/**
+ * Router for /health, /api/me, /api/tenants (list, detail, delete,
+ * start, stop), public tenant lookup by slug, and join request endpoints.
+ */
 export const apiRouter = Router();
 
 apiRouter.get("/health", async (_req, res) => {

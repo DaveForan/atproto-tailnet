@@ -1,3 +1,10 @@
+/**
+ * @module orchestrator/headscale
+ * Docker lifecycle management for per-tenant Headscale containers.
+ * Handles container creation with generated config, bootstrap via `docker exec`
+ * (API key + initial user), and start/stop/destroy operations.
+ */
+
 import Docker from "dockerode";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
@@ -5,6 +12,7 @@ import { config } from "../config.js";
 
 const docker = new Docker();
 
+/** Result of provisioning a new Headscale container for a tenant. */
 export interface TenantInstance {
   slug: string;
   port: number;
@@ -101,6 +109,11 @@ async function execInContainer(
   return Buffer.concat(chunks).toString().trim();
 }
 
+/**
+ * Provision a new Headscale container for a tenant.
+ * Writes config to the data directory, creates and starts the container,
+ * waits for readiness, then bootstraps an API key and default "owner" user via CLI exec.
+ */
 export async function createInstance(
   slug: string,
   port: number,
@@ -153,6 +166,7 @@ export async function createInstance(
   };
 }
 
+/** Stop and remove a Headscale container. Safe to call if already stopped. */
 export async function destroyInstance(containerId: string): Promise<void> {
   const container = docker.getContainer(containerId);
   try {
@@ -163,6 +177,7 @@ export async function destroyInstance(containerId: string): Promise<void> {
   await container.remove();
 }
 
+/** Check whether a container is running, stopped, or gone entirely. */
 export async function getInstanceStatus(
   containerId: string,
 ): Promise<"running" | "stopped" | "missing"> {
@@ -175,16 +190,19 @@ export async function getInstanceStatus(
   }
 }
 
+/** Start a previously stopped Headscale container. */
 export async function startInstance(containerId: string): Promise<void> {
   const container = docker.getContainer(containerId);
   await container.start();
 }
 
+/** Stop a running Headscale container. */
 export async function stopInstance(containerId: string): Promise<void> {
   const container = docker.getContainer(containerId);
   await container.stop();
 }
 
+/** Create a Headscale user inside a running container via `headscale users create`. */
 export async function createUserInInstance(
   containerId: string,
   username: string,
@@ -198,6 +216,7 @@ export async function createUserInInstance(
   ]);
 }
 
+/** Generate a 24-hour pre-auth key for a user via `headscale preauthkeys create`. */
 export async function createPreAuthKeyInInstance(
   containerId: string,
   username: string,
