@@ -1,7 +1,13 @@
 import { NodeOAuthClient } from "@atproto/oauth-client-node";
-import type { NodeSavedState, NodeSavedSession } from "@atproto/oauth-client-node";
+import type {
+  NodeSavedState,
+  NodeSavedSession,
+} from "@atproto/oauth-client-node";
 import { JoseKey } from "@atproto/jwk-jose";
+import { eq } from "drizzle-orm";
 import { config } from "../config.js";
+import { db } from "../db/index.js";
+import { oauthStates, oauthSessions } from "../db/schema.js";
 
 type StateStore = {
   get(key: string): Promise<NodeSavedState | undefined>;
@@ -15,19 +21,48 @@ type SessionStore = {
   del(key: string): Promise<void>;
 };
 
-const stateStore = new Map<string, NodeSavedState>();
-const sessionStore = new Map<string, NodeSavedSession>();
-
-const memoryStateStore: StateStore = {
-  async get(key) { return stateStore.get(key); },
-  async set(key, val) { stateStore.set(key, val); },
-  async del(key) { stateStore.delete(key); },
+const dbStateStore: StateStore = {
+  async get(key) {
+    const [row] = await db
+      .select()
+      .from(oauthStates)
+      .where(eq(oauthStates.key, key));
+    return row ? (JSON.parse(row.state) as NodeSavedState) : undefined;
+  },
+  async set(key, val) {
+    await db
+      .insert(oauthStates)
+      .values({ key, state: JSON.stringify(val) })
+      .onConflictDoUpdate({
+        target: oauthStates.key,
+        set: { state: JSON.stringify(val) },
+      });
+  },
+  async del(key) {
+    await db.delete(oauthStates).where(eq(oauthStates.key, key));
+  },
 };
 
-const memorySessionStore: SessionStore = {
-  async get(key) { return sessionStore.get(key); },
-  async set(key, val) { sessionStore.set(key, val); },
-  async del(key) { sessionStore.delete(key); },
+const dbSessionStore: SessionStore = {
+  async get(key) {
+    const [row] = await db
+      .select()
+      .from(oauthSessions)
+      .where(eq(oauthSessions.key, key));
+    return row ? (JSON.parse(row.session) as NodeSavedSession) : undefined;
+  },
+  async set(key, val) {
+    await db
+      .insert(oauthSessions)
+      .values({ key, session: JSON.stringify(val) })
+      .onConflictDoUpdate({
+        target: oauthSessions.key,
+        set: { session: JSON.stringify(val), updatedAt: new Date() },
+      });
+  },
+  async del(key) {
+    await db.delete(oauthSessions).where(eq(oauthSessions.key, key));
+  },
 };
 
 let clientInstance: NodeOAuthClient | null = null;
@@ -55,8 +90,8 @@ export async function getOAuthClient(): Promise<NodeOAuthClient> {
         token_endpoint_auth_method: "none",
         dpop_bound_access_tokens: true,
       },
-      stateStore: memoryStateStore,
-      sessionStore: memorySessionStore,
+      stateStore: dbStateStore,
+      sessionStore: dbSessionStore,
     });
   } else {
     const privateKey = await JoseKey.fromImportable(
@@ -80,10 +115,36 @@ export async function getOAuthClient(): Promise<NodeOAuthClient> {
         dpop_bound_access_tokens: true,
       },
       keyset: [privateKey],
-      stateStore: memoryStateStore,
-      sessionStore: memorySessionStore,
+      stateStore: dbStateStore,
+      sessionStore: dbSessionStore,
     });
   }
 
   return clientInstance;
+}
+
+export function getClientMetadata(): object {
+  const url = config.publicUrl;
+  return {
+    client_name: "atproto-tailnet",
+    client_id: `${url}/.well-known/atproto-client-metadata.json`,
+    client_uri: url,
+    redirect_uris: [`${url}/auth/callback`],
+    scope: "atproto transition:generic",
+    grant_types: ["authorization_code", "refresh_token"],
+    response_types: ["code"],
+    application_type: "web",
+    token_endpoint_auth_method: "private_key_jwt",
+    token_endpoint_auth_signing_alg: "ES256",
+    jwks_uri: `${url}/.well-known/jwks.json`,
+    dpop_bound_access_tokens: true,
+  };
+}
+
+export async function getPublicJwks(): Promise<{ keys: unknown[] }> {
+  const keyStr = process.env.ATPROTO_PRIVATE_KEY;
+  if (!keyStr) return { keys: [] };
+  const key = await JoseKey.fromImportable(keyStr, "key1");
+  const pub = key.publicJwk;
+  return { keys: pub ? [pub] : [] };
 }

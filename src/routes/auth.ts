@@ -1,7 +1,11 @@
 import { Router } from "express";
 import { eq } from "drizzle-orm";
 import { Agent } from "@atproto/api";
-import { getOAuthClient } from "../auth/atproto.js";
+import {
+  getOAuthClient,
+  getClientMetadata,
+  getPublicJwks,
+} from "../auth/atproto.js";
 import { db } from "../db/index.js";
 import { users, tenants, memberships } from "../db/schema.js";
 import { allocatePort } from "../orchestrator/ports.js";
@@ -11,30 +15,58 @@ import { addTenantRoute } from "../orchestrator/caddy.js";
 
 export const authRouter = Router();
 
+async function generateUniqueSlug(handle: string): Promise<string> {
+  const base = handle
+    .replace(/[^a-z0-9]+/gi, "-")
+    .replace(/^-|-$/g, "")
+    .toLowerCase();
+  const [existing] = await db
+    .select({ slug: tenants.slug })
+    .from(tenants)
+    .where(eq(tenants.slug, base));
+  if (!existing) return base;
+  for (let i = 2; i <= 100; i++) {
+    const candidate = `${base}-${i}`;
+    const [check] = await db
+      .select({ slug: tenants.slug })
+      .from(tenants)
+      .where(eq(tenants.slug, candidate));
+    if (!check) return candidate;
+  }
+  throw new Error("Could not generate unique slug");
+}
+
 async function provisionTenant(
   user: typeof users.$inferSelect,
   displayName: string,
   handle: string,
 ): Promise<void> {
-  const slug = handle
-    .replace(/[^a-z0-9]+/gi, "-")
-    .replace(/^-|-$/g, "")
-    .toLowerCase();
+  const slug = await generateUniqueSlug(handle);
 
-  const port = await allocatePort();
-
-  // Insert tenant as provisioning first
-  const [tenant] = await db
-    .insert(tenants)
-    .values({
-      slug,
-      name: `${displayName}'s tailnet`,
-      ownerUserId: user.id,
-      port,
-      apiKey: "",
-      status: "provisioning",
-    })
-    .returning();
+  let tenant: typeof tenants.$inferSelect | undefined;
+  let port = 0;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    port = await allocatePort();
+    try {
+      const [inserted] = await db
+        .insert(tenants)
+        .values({
+          slug,
+          name: `${displayName}'s tailnet`,
+          ownerUserId: user.id,
+          port,
+          apiKey: "",
+          status: "provisioning",
+        })
+        .returning();
+      tenant = inserted;
+      break;
+    } catch (err: unknown) {
+      const pgErr = err as { code?: string };
+      if (attempt === 2 || pgErr.code !== "23505") throw err;
+    }
+  }
+  if (!tenant) throw new Error("Failed to create tenant after retries");
 
   await db.insert(memberships).values({
     userId: user.id,
@@ -42,7 +74,6 @@ async function provisionTenant(
     role: "owner",
   });
 
-  // Provision asynchronously — don't block the redirect
   setImmediate(async () => {
     try {
       const instance = await createInstance(slug, port);
@@ -55,9 +86,8 @@ async function provisionTenant(
           status: "running",
           updatedAt: new Date(),
         })
-        .where(eq(tenants.id, tenant.id));
+        .where(eq(tenants.id, tenant!.id));
 
-      // Push default-allow ACL policy
       const hsClient = new HeadscaleApiClient(port, instance.apiKey);
       await hsClient
         .setPolicy({
@@ -67,7 +97,6 @@ async function provisionTenant(
           console.error(`Failed to set default policy for ${slug}:`, err),
         );
 
-      // Register with Caddy
       await addTenantRoute(slug, port).catch((err) =>
         console.error(`Failed to add Caddy route for ${slug}:`, err),
       );
@@ -78,7 +107,7 @@ async function provisionTenant(
       await db
         .update(tenants)
         .set({ status: "error", updatedAt: new Date() })
-        .where(eq(tenants.id, tenant.id));
+        .where(eq(tenants.id, tenant!.id));
     }
   });
 }
@@ -147,4 +176,18 @@ authRouter.post("/auth/logout", (req, res) => {
   req.session.destroy(() => {
     res.redirect("/");
   });
+});
+
+authRouter.get("/.well-known/atproto-client-metadata.json", (_req, res) => {
+  res.json(getClientMetadata());
+});
+
+authRouter.get("/.well-known/jwks.json", async (_req, res) => {
+  try {
+    const jwks = await getPublicJwks();
+    res.json(jwks);
+  } catch (err) {
+    console.error("Failed to generate JWKS:", err);
+    res.status(500).json({ error: "JWKS not available" });
+  }
 });

@@ -66,6 +66,18 @@ export const memberships = pgTable(
   (t) => [uniqueIndex("memberships_user_tenant_idx").on(t.userId, t.tenantId)],
 );
 
+export const oauthStates = pgTable("oauth_states", {
+  key: text("key").primaryKey(),
+  state: text("state").notNull(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const oauthSessions = pgTable("oauth_sessions", {
+  key: text("key").primaryKey(),
+  session: text("session").notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
 export const invitations = pgTable("invitations", {
   id: uuid("id").defaultRandom().primaryKey(),
   tenantId: uuid("tenant_id")

@@ -10,6 +10,7 @@ const configSchema = z.object({
     ),
   sessionSecret: z.string().default("dev-secret-change-me"),
   baseDomain: z.string().default("ts.localhost"),
+  caddyAdminUrl: z.string().url().default("http://localhost:2019"),
   headscale: z.object({
     image: z.string().default("headscale/headscale:0.29.1"),
     portRangeStart: z.coerce.number().default(10001),
@@ -24,6 +25,7 @@ export const config = configSchema.parse({
   databaseUrl: process.env.DATABASE_URL,
   sessionSecret: process.env.SESSION_SECRET,
   baseDomain: process.env.BASE_DOMAIN,
+  caddyAdminUrl: process.env.CADDY_ADMIN_URL,
   headscale: {
     image: process.env.HEADSCALE_IMAGE,
     portRangeStart: process.env.HEADSCALE_PORT_RANGE_START,
@@ -31,5 +33,15 @@ export const config = configSchema.parse({
     dataDir: process.env.HEADSCALE_DATA_DIR,
   },
 });
+
+if (
+  !config.publicUrl.includes("localhost") &&
+  (config.sessionSecret === "dev-secret-change-me" ||
+    config.sessionSecret.length < 32)
+) {
+  throw new Error(
+    "SESSION_SECRET must be a strong value (>= 32 chars) in production",
+  );
+}
 
 export type Config = typeof config;

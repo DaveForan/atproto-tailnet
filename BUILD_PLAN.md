@@ -98,31 +98,49 @@ See `docs/adr/` for rationale behind each choice:
 
 ### 3.3 Member management
 - [x] List members of a tailnet
-- [x] Remove member (owner only)
-- [x] Roles: owner, member
-- [ ] Roles: owner, member (owner can manage, member can connect devices)
+- [x] Remove member (owner only, with Headscale node/user cleanup)
+- [x] Roles: owner, member (owner can manage, member can connect devices)
 
 **Milestone:** Alice invites `@bob.bsky.social` → Bob logs in → sees invitation → accepts → gets connection instructions → Bob's devices can reach Alice's devices.
 
 ---
 
+### 3.4 Security hardening (audit fixes)
+- [x] XSS: HTML-escape all user-controlled data in dashboard (esc/safeUrl)
+- [x] SSRF: Validate AT Protocol handle format before HTTP resolution
+- [x] Headscale ports bound to 127.0.0.1 (not 0.0.0.0)
+- [x] CSRF: SameSite=Lax on session cookie
+- [x] IDOR: Membership check on tenant invitations endpoint
+- [x] Session secret validation in production
+- [x] Internal port removed from API responses
+- [x] Login server URL uses proper domain (not localhost:port)
+- [x] DNS TXT handle resolution (AT Proto ADR-0003 compliance)
+- [x] Headscale operations consolidated on REST API (CLI exec only for bootstrap)
+- [x] Dead code removed (ensureCaddyBaseConfig), caddy/db config centralized
+- [x] Tenant deletion flow: destroy container + remove Caddy route + mark deleted
+- [x] Tenant start/stop API endpoints
+- [x] Health check endpoint (GET /health)
+- [x] Slug collision handling (generateUniqueSlug)
+- [x] Dashboard network error handling (try/catch on fetch)
+- [x] Shared getTenantForUser helper (eliminates duplicate lookup logic)
+
 ## Phase 4: Polish — "Production-ready"
 
 ### 4.1 ACL management
-- [ ] Default policy: all members can reach all devices (simple start)
 - [ ] UI for basic ACL rules (who can reach what)
 - [ ] Push ACL updates to Headscale instance
 
 ### 4.2 Instance lifecycle
-- [ ] Graceful shutdown/restart of Headscale instances
 - [ ] Health checks and auto-restart
 - [ ] Instance hibernation for inactive tenants (stop after N days idle, restart on connection)
 
 ### 4.3 Production deployment
 - [ ] Real domain + wildcard TLS (Let's Encrypt via Caddy)
-- [ ] Client metadata hosted at `/.well-known/atproto-client-metadata.json`
-- [ ] JWKS endpoint for production OAuth
-- [ ] Rate limiting, CSRF protection
+- [x] Client metadata hosted at `/.well-known/atproto-client-metadata.json`
+- [x] JWKS endpoint for production OAuth (`/.well-known/jwks.json`)
+- [x] Rate limiting (express-rate-limit: auth 10/min, API 60/min)
+- [x] DB-backed auth state/session stores (oauth_states, oauth_sessions tables + connect-pg-simple)
+- [x] Port race condition retry (catches PG 23505, retries up to 3 times)
 - [ ] Logging, error tracking
 
 ### 4.4 UX polish

@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { resolveTxt } from "node:dns/promises";
 import { eq, and } from "drizzle-orm";
 import { db } from "../db/index.js";
 import {
@@ -7,18 +8,33 @@ import {
   memberships,
   invitations,
 } from "../db/schema.js";
-import {
-  createUserInInstance,
-  createPreAuthKeyInInstance,
-} from "../orchestrator/headscale.js";
+import { HeadscaleApiClient } from "../orchestrator/headscale-api.js";
 import { requireAuth, param } from "./helpers.js";
 
 export const invitationsRouter = Router();
 
+const HANDLE_RE =
+  /^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
+
 async function resolveHandleToDid(handle: string): Promise<string | null> {
   const cleanHandle = handle.replace(/^@/, "");
 
+  if (!HANDLE_RE.test(cleanHandle)) {
+    return null;
+  }
+
   // Try DNS TXT _atproto.<handle>
+  try {
+    const records = await resolveTxt(`_atproto.${cleanHandle}`);
+    const didRecord = records.flat().find((r) => r.startsWith("did="));
+    if (didRecord) {
+      const did = didRecord.slice(4).trim();
+      if (did.startsWith("did:")) return did;
+    }
+  } catch {
+    // DNS resolution failed, try HTTP
+  }
+
   // Fallback: HTTP GET https://<handle>/.well-known/atproto-did
   try {
     const res = await fetch(
@@ -197,12 +213,12 @@ invitationsRouter.post(
       .from(tenants)
       .where(eq(tenants.id, invitation.tenantId));
 
-    if (!tenant || !tenant.containerId) {
+    if (!tenant || !tenant.apiKey) {
       res.status(500).json({ error: "Tenant instance not available" });
       return;
     }
 
-    // Create user in Headscale instance
+    // Create user in Headscale instance via REST API
     const [user] = await db
       .select()
       .from(users)
@@ -219,7 +235,8 @@ invitationsRouter.post(
       .toLowerCase();
 
     try {
-      await createUserInInstance(tenant.containerId, hsUsername);
+      const client = new HeadscaleApiClient(tenant.port, tenant.apiKey);
+      await client.createUser(hsUsername);
     } catch {
       // User might already exist if they were previously a member
     }

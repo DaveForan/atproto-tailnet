@@ -14,9 +14,12 @@
   "dependencies": {
     "@atproto/api": "^0.13.0",
     "@atproto/oauth-client-node": "^0.3.0",
+    "@types/connect-pg-simple": "^7.0.3",
+    "connect-pg-simple": "^10.0.0",
     "dockerode": "^4.0.0",
     "drizzle-orm": "^0.39.0",
     "express": "^5.1.0",
+    "express-rate-limit": "^8.7.1",
     "express-session": "^1.18.0",
     "pg": "^8.13.0",
     "zod": "^3.24.0"

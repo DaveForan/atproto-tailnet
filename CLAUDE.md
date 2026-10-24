@@ -25,10 +25,21 @@ npm run dev                      # http://localhost:3000
 ## Key patterns
 
 - `req.params` values are `string | string[]` in Express 5 — use `param(req, "name")` from `routes/helpers.ts`
+- `getTenantForUser(tenantId, userId)` in `routes/helpers.ts` — shared membership+tenant lookup for all protected routes
+- `tenantLoginServer(slug)` in api.ts/devices.ts — generates proper `<proto>://<slug>.<baseDomain>` URL
 - Tenant provisioning is async (setImmediate) — dashboard polls until status flips from "provisioning" to "running"
-- Headscale API keys are created via `docker exec` after container start, not via config
-- Auth state/session stores are in-memory Maps (dev); swap to DB-backed for production
+- Headscale bootstrap via `docker exec` (API key + initial user), all runtime operations via REST `HeadscaleApiClient`
+- Dashboard HTML-escapes all user-controlled data via `esc()` and validates avatar URLs via `safeUrl()`
+- Session cookie uses `sameSite: "lax"` for CSRF protection
+- AT Proto handle validation: `HANDLE_RE` regex rejects non-handle input before any HTTP/DNS resolution
+- Handle resolution: DNS TXT → HTTP .well-known → Bluesky public API
+- Auth state/session stores are DB-backed (`oauth_states`, `oauth_sessions` tables via Drizzle upsert)
+- Express sessions stored in PostgreSQL via `connect-pg-simple`
+- Rate limiting: auth routes 10 req/min, API routes 60 req/min (`express-rate-limit`)
+- `.well-known/atproto-client-metadata.json` and `.well-known/jwks.json` served for production AT Proto OAuth
+- Port allocation retries on unique constraint violation (PG error 23505) up to 3 times
 - Port range 10001-10100 allocated from DB; excludes all non-deleted tenants
+- All config flows through Zod-validated `src/config.ts` (including caddyAdminUrl, databaseUrl)
 
 ## File layout
 

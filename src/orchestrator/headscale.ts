@@ -121,7 +121,7 @@ export async function createInstance(
     HostConfig: {
       Binds: [`${dataDir}:/etc/headscale`],
       PortBindings: {
-        "8080/tcp": [{ HostPort: String(port) }],
+        "8080/tcp": [{ HostIp: "127.0.0.1", HostPort: String(port) }],
       },
       RestartPolicy: { Name: "unless-stopped" },
     },

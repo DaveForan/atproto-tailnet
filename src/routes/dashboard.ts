@@ -247,18 +247,33 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     const app = document.getElementById('app');
     let state = { user: null, tenants: [], invitations: [], currentTenant: null, tab: 'devices' };
 
+    function esc(s) {
+      if (s == null) return '';
+      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+    }
+    function safeUrl(url) {
+      if (!url || typeof url !== 'string') return '';
+      try { const u = new URL(url); if (u.protocol === 'https:' || u.protocol === 'http:') return esc(url); } catch(e) {}
+      return '';
+    }
+
     async function api(path, opts) {
-      const res = await fetch(path, {
-        headers: { 'Content-Type': 'application/json' },
-        ...opts,
-      });
-      if (res.status === 401) { render(); return null; }
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({ error: 'Request failed' }));
-        toast(err.error || 'Something went wrong');
+      try {
+        const res = await fetch(path, {
+          headers: { 'Content-Type': 'application/json' },
+          ...opts,
+        });
+        if (res.status === 401) { render(); return null; }
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({ error: 'Request failed' }));
+          toast(err.error || 'Something went wrong');
+          return null;
+        }
+        return res.json();
+      } catch (e) {
+        toast('Network error \\u2014 check your connection');
         return null;
       }
-      return res.json();
     }
 
     function toast(msg) {
@@ -314,11 +329,11 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         '<li class="device-item">' +
           '<div>' +
             '<span class="online-dot ' + (d.online ? 'on' : 'off') + '"></span>' +
-            '<span class="device-name">' + d.name + '</span>' +
-            (d.user ? ' <span style="color:var(--text-dim);font-size:12px">(' + d.user + ')</span>' : '') +
+            '<span class="device-name">' + esc(d.name) + '</span>' +
+            (d.user ? ' <span style="color:var(--text-dim);font-size:12px">(' + esc(d.user) + ')</span>' : '') +
           '</div>' +
           '<div style="display:flex;align-items:center;gap:12px">' +
-            '<span class="device-ip">' + (d.ipAddresses || []).join(', ') + '</span>' +
+            '<span class="device-ip">' + esc((d.ipAddresses || []).join(', ')) + '</span>' +
             '<button class="btn-sm btn-danger" onclick="deleteDevice(\\'' + d.id + '\\')">Remove</button>' +
           '</div>' +
         '</li>'
@@ -330,8 +345,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       return members.map(m =>
         '<div class="member-item">' +
           '<div class="member-info">' +
-            (m.avatarUrl ? '<img src="' + m.avatarUrl + '" />' : '') +
-            '<span>' + (m.displayName || m.handle) + '</span>' +
+            (safeUrl(m.avatarUrl) ? '<img src="' + safeUrl(m.avatarUrl) + '" />' : '') +
+            '<span>' + esc(m.displayName || m.handle) + '</span>' +
             '<span class="badge badge-' + m.role + '">' + m.role + '</span>' +
           '</div>' +
           (m.role !== 'owner' && state.currentTenant?.role === 'owner'
@@ -347,8 +362,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         state.invitations.map(inv =>
           '<div class="invitation-item">' +
             '<div>' +
-              '<strong>' + inv.tenantName + '</strong>' +
-              '<br><span style="color:var(--text-dim);font-size:13px">from ' + (inv.inviterDisplayName || inv.inviterHandle) + '</span>' +
+              '<strong>' + esc(inv.tenantName) + '</strong>' +
+              '<br><span style="color:var(--text-dim);font-size:13px">from ' + esc(inv.inviterDisplayName || inv.inviterHandle) + '</span>' +
             '</div>' +
             '<div style="display:flex;gap:8px">' +
               '<button class="btn-sm" onclick="acceptInvitation(\\'' + inv.id + '\\')">Accept</button>' +
@@ -364,8 +379,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       return '<header>' +
         '<h1>atproto-tailnet</h1>' +
         '<div class="user-info">' +
-          (state.user.avatarUrl ? '<img src="' + state.user.avatarUrl + '" />' : '') +
-          '<span>' + state.user.handle + '</span>' +
+          (safeUrl(state.user.avatarUrl) ? '<img src="' + safeUrl(state.user.avatarUrl) + '" />' : '') +
+          '<span>' + esc(state.user.handle) + '</span>' +
           '<form action="/auth/logout" method="post" style="display:inline"><button class="btn-sm btn-ghost">Sign out</button></form>' +
         '</div>' +
       '</header>' +
@@ -378,14 +393,14 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     function renderTenantView(t) {
       if (t.status === 'provisioning') {
         return '<div class="section"><div class="card">' +
-          '<div class="card-header"><h3>' + t.name + '</h3>' +
+          '<div class="card-header"><h3>' + esc(t.name) + '</h3>' +
             '<span class="badge" style="background:#f59e0b20;color:#f59e0b">provisioning</span></div>' +
           '<p style="color:var(--text-dim);margin-top:8px">Your tailnet is being set up. This usually takes 10-15 seconds. The page will refresh automatically.</p>' +
         '</div></div>';
       }
       if (t.status === 'error') {
         return '<div class="section"><div class="card">' +
-          '<div class="card-header"><h3>' + t.name + '</h3>' +
+          '<div class="card-header"><h3>' + esc(t.name) + '</h3>' +
             '<span class="badge" style="background:#ef444420;color:#ef4444">error</span></div>' +
           '<p style="color:var(--text-dim);margin-top:8px">Something went wrong provisioning your tailnet. Try signing out and back in, or contact support.</p>' +
         '</div></div>';
@@ -393,7 +408,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       return '<div class="section">' +
         '<div class="card">' +
           '<div class="card-header">' +
-            '<h3>' + t.name + '</h3>' +
+            '<h3>' + esc(t.name) + '</h3>' +
             '<div style="display:flex;gap:8px">' +
               '<span class="badge badge-' + t.status + '">' + t.status + '</span>' +
               '<span class="badge badge-' + t.role + '">' + t.role + '</span>' +
@@ -468,7 +483,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       el.innerHTML = '<h4 style="margin-bottom:8px;color:var(--text-dim)">Sent</h4>' +
         invs.map(i =>
           '<div style="display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border)">' +
-            '<span>' + i.inviteeHandle + ' <span class="badge" style="font-size:11px">' + i.status + '</span></span>' +
+            '<span>' + esc(i.inviteeHandle) + ' <span class="badge" style="font-size:11px">' + esc(i.status) + '</span></span>' +
           '</div>'
         ).join('');
     }
@@ -480,7 +495,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       const el = document.getElementById('auth-key-output');
       if (el) {
         el.innerHTML = '<p style="margin-bottom:8px;color:var(--text-dim)">Run this on the device you want to connect:</p>' +
-          '<div class="code-block" onclick="copyToClipboard(this.textContent)">' + result.command + '</div>';
+          '<div class="code-block" onclick="copyToClipboard(this.textContent)">' + esc(result.command) + '</div>';
       }
     }
 

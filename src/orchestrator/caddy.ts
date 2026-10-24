@@ -1,8 +1,5 @@
 import { config } from "../config.js";
 
-const CADDY_ADMIN_URL =
-  process.env.CADDY_ADMIN_URL ?? "http://localhost:2019";
-
 interface CaddyRoute {
   match: Array<{ host: string[] }>;
   handle: Array<{
@@ -17,7 +14,7 @@ async function caddyRequest(
   path: string,
   body?: unknown,
 ): Promise<unknown> {
-  const res = await fetch(`${CADDY_ADMIN_URL}${path}`, {
+  const res = await fetch(`${config.caddyAdminUrl}${path}`, {
     method,
     headers: { "Content-Type": "application/json" },
     body: body ? JSON.stringify(body) : undefined,
@@ -36,33 +33,6 @@ async function caddyRequest(
   return res.json();
 }
 
-export async function ensureCaddyBaseConfig(): Promise<void> {
-  const baseConfig = {
-    apps: {
-      http: {
-        servers: {
-          tailnet_proxy: {
-            listen: [":80"],
-            routes: [
-              {
-                match: [{ host: [`api.${config.baseDomain}`] }],
-                handle: [
-                  {
-                    handler: "reverse_proxy",
-                    upstreams: [{ dial: `localhost:${config.port}` }],
-                  },
-                ],
-              },
-            ],
-          },
-        },
-      },
-    },
-  };
-
-  await caddyRequest("POST", "/load", baseConfig);
-}
-
 export async function addTenantRoute(
   slug: string,
   port: number,
@@ -77,38 +47,29 @@ export async function addTenantRoute(
     ],
   };
 
-  try {
-    await caddyRequest(
-      "POST",
-      "/config/apps/http/servers/tailnet_proxy/routes",
-      route,
-    );
-  } catch (err) {
-    console.error(`Failed to add Caddy route for ${slug}:`, err);
-  }
+  await caddyRequest(
+    "POST",
+    "/config/apps/http/servers/tailnet_proxy/routes",
+    route,
+  );
 }
 
 export async function removeTenantRoute(slug: string): Promise<void> {
-  try {
-    const serverConfig = (await caddyRequest(
-      "GET",
-      "/config/apps/http/servers/tailnet_proxy/routes",
-    )) as CaddyRoute[] | null;
+  const serverConfig = (await caddyRequest(
+    "GET",
+    "/config/apps/http/servers/tailnet_proxy/routes",
+  )) as CaddyRoute[] | null;
 
-    if (!serverConfig) return;
+  if (!serverConfig) return;
 
-    const idx = serverConfig.findIndex(
-      (r) =>
-        r.match?.[0]?.host?.[0] === `${slug}.${config.baseDomain}`,
+  const idx = serverConfig.findIndex(
+    (r) => r.match?.[0]?.host?.[0] === `${slug}.${config.baseDomain}`,
+  );
+
+  if (idx >= 0) {
+    await caddyRequest(
+      "DELETE",
+      `/config/apps/http/servers/tailnet_proxy/routes/${idx}`,
     );
-
-    if (idx >= 0) {
-      await caddyRequest(
-        "DELETE",
-        `/config/apps/http/servers/tailnet_proxy/routes/${idx}`,
-      );
-    }
-  } catch (err) {
-    console.error(`Failed to remove Caddy route for ${slug}:`, err);
   }
 }
