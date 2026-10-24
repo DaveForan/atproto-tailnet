@@ -47,6 +47,7 @@ import {
   param,
   getTenantForUser,
   hasPermission,
+  authUserId,
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
 import { ALL_PERMISSIONS } from "./permissions.js";
@@ -79,7 +80,7 @@ agentsRouter.post(
   requireAuth,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const userId = req.session.userId!;
+    const userId = authUserId(req);
 
     const result = await getTenantForUser(tenantId, userId);
     if (!result) {
@@ -89,6 +90,11 @@ agentsRouter.post(
 
     if (!result.tenant.allowAgentTokens) {
       res.status(403).json({ error: "Agent tokens are not enabled for this tenant" });
+      return;
+    }
+
+    if (req.agentToken && !hasPermission(result.membership, result.role, "create_agent_tokens", req)) {
+      res.status(403).json({ error: "Agent token lacks create_agent_tokens permission" });
       return;
     }
 
@@ -110,9 +116,12 @@ agentsRouter.post(
     }
 
     // Validate that requested permissions don't exceed the creator's own permissions
-    const userPerms = result.membership.isOriginator
+    let userPerms: string[] = result.membership.isOriginator
       ? [...ALL_PERMISSIONS]
       : ((result.role?.permissions ?? []) as string[]);
+    if (req.agentToken) {
+      userPerms = userPerms.filter((p) => (req.agentToken!.permissions as string[]).includes(p));
+    }
 
     const exceeds = parsed.data.permissions.filter((p) => !userPerms.includes(p));
     if (exceeds.length > 0) {
@@ -179,7 +188,7 @@ agentsRouter.get(
   requireAuth,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const userId = req.session.userId!;
+    const userId = authUserId(req);
 
     const result = await getTenantForUser(tenantId, userId);
     if (!result) {
@@ -236,7 +245,7 @@ agentsRouter.delete(
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const tokenId = param(req, "tokenId");
-    const userId = req.session.userId!;
+    const userId = authUserId(req);
 
     const result = await getTenantForUser(tenantId, userId);
     if (!result) {

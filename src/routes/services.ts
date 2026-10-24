@@ -27,6 +27,7 @@ import {
   isLockedDown,
   toHsUsername,
   tenantLoginServer,
+  authUserId,
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
 
@@ -48,7 +49,7 @@ servicesRouter.get(
   requireAuth,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, req.session.userId!);
+    const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
       res.status(404).json({ error: "Tenant not found" });
       return;
@@ -81,7 +82,7 @@ servicesRouter.post(
   requireAuth,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const userId = req.session.userId!;
+    const userId = authUserId(req);
 
     const result = await getTenantForUser(tenantId, userId);
     if (!result) {
@@ -89,7 +90,7 @@ servicesRouter.post(
       return;
     }
 
-    if (!hasPermission(result.membership, result.role, "manage_services")) {
+    if (!hasPermission(result.membership, result.role, "manage_services", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -197,12 +198,12 @@ servicesRouter.post(
     const tenantId = param(req, "tenantId");
     const deviceId = param(req, "deviceId");
 
-    const result = await getTenantForUser(tenantId, req.session.userId!);
+    const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
       res.status(404).json({ error: "Tenant not found" });
       return;
     }
-    if (!hasPermission(result.membership, result.role, "approve_services")) {
+    if (!hasPermission(result.membership, result.role, "approve_services", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -251,14 +252,14 @@ servicesRouter.post(
           status: "approved",
           preAuthKey: authKey.key,
           command,
-          reviewedById: req.session.userId!,
+          reviewedById: authUserId(req),
           reviewedAt: new Date(),
         })
         .where(eq(serviceDevices.id, deviceId));
 
       logAudit({
         tenantId,
-        actorUserId: req.session.userId!,
+        actorUserId: authUserId(req),
         action: "service_device_approved",
         targetType: "service_device",
         targetId: deviceId,
@@ -280,12 +281,12 @@ servicesRouter.post(
     const tenantId = param(req, "tenantId");
     const deviceId = param(req, "deviceId");
 
-    const result = await getTenantForUser(tenantId, req.session.userId!);
+    const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
       res.status(404).json({ error: "Tenant not found" });
       return;
     }
-    if (!hasPermission(result.membership, result.role, "approve_services")) {
+    if (!hasPermission(result.membership, result.role, "approve_services", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -310,14 +311,14 @@ servicesRouter.post(
       .update(serviceDevices)
       .set({
         status: "rejected",
-        reviewedById: req.session.userId!,
+        reviewedById: authUserId(req),
         reviewedAt: new Date(),
       })
       .where(eq(serviceDevices.id, deviceId));
 
     logAudit({
       tenantId,
-      actorUserId: req.session.userId!,
+      actorUserId: authUserId(req),
       action: "service_device_rejected",
       targetType: "service_device",
       targetId: deviceId,
@@ -335,7 +336,7 @@ servicesRouter.delete(
     const tenantId = param(req, "tenantId");
     const deviceId = param(req, "deviceId");
 
-    const result = await getTenantForUser(tenantId, req.session.userId!);
+    const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
       res.status(404).json({ error: "Tenant not found" });
       return;
@@ -356,8 +357,8 @@ servicesRouter.delete(
       return;
     }
 
-    const isOwner = device.ownerId === req.session.userId;
-    if (!isOwner && !hasPermission(result.membership, result.role, "manage_services")) {
+    const isOwner = device.ownerId === authUserId(req);
+    if (!isOwner && !hasPermission(result.membership, result.role, "manage_services", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -379,7 +380,7 @@ servicesRouter.delete(
 
     logAudit({
       tenantId,
-      actorUserId: req.session.userId!,
+      actorUserId: authUserId(req),
       action: "service_device_removed",
       targetType: "service_device",
       targetId: deviceId,
@@ -395,7 +396,7 @@ servicesRouter.get(
   requireAuth,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, req.session.userId!);
+    const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
       res.status(404).json({ error: "Tenant not found" });
       return;
@@ -407,7 +408,7 @@ servicesRouter.get(
       .where(
         and(
           eq(serviceDevices.tenantId, tenantId),
-          eq(serviceDevices.ownerId, req.session.userId!),
+          eq(serviceDevices.ownerId, authUserId(req)),
         ),
       )
       .orderBy(desc(serviceDevices.createdAt))
@@ -445,7 +446,7 @@ servicesRouter.get(
   requireAuth,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, req.session.userId!);
+    const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
       res.status(404).json({ error: "Tenant not found" });
       return;
@@ -481,7 +482,7 @@ servicesRouter.post(
   requireAuth,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const userId = req.session.userId!;
+    const userId = authUserId(req);
 
     const result = await getTenantForUser(tenantId, userId);
     if (!result) {
@@ -489,7 +490,7 @@ servicesRouter.post(
       return;
     }
 
-    if (!hasPermission(result.membership, result.role, "manage_services")) {
+    if (!hasPermission(result.membership, result.role, "manage_services", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -557,12 +558,12 @@ servicesRouter.post(
     const tenantId = param(req, "tenantId");
     const serviceId = param(req, "serviceId");
 
-    const result = await getTenantForUser(tenantId, req.session.userId!);
+    const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
       res.status(404).json({ error: "Tenant not found" });
       return;
     }
-    if (!hasPermission(result.membership, result.role, "approve_services")) {
+    if (!hasPermission(result.membership, result.role, "approve_services", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -592,14 +593,14 @@ servicesRouter.post(
       .update(services)
       .set({
         status: "active",
-        reviewedById: req.session.userId!,
+        reviewedById: authUserId(req),
         updatedAt: new Date(),
       })
       .where(eq(services.id, serviceId));
 
     logAudit({
       tenantId,
-      actorUserId: req.session.userId!,
+      actorUserId: authUserId(req),
       action: "service_approved",
       targetType: "service",
       targetId: serviceId,
@@ -617,12 +618,12 @@ servicesRouter.post(
     const tenantId = param(req, "tenantId");
     const serviceId = param(req, "serviceId");
 
-    const result = await getTenantForUser(tenantId, req.session.userId!);
+    const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
       res.status(404).json({ error: "Tenant not found" });
       return;
     }
-    if (!hasPermission(result.membership, result.role, "approve_services")) {
+    if (!hasPermission(result.membership, result.role, "approve_services", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -647,14 +648,14 @@ servicesRouter.post(
       .update(services)
       .set({
         status: "disabled",
-        reviewedById: req.session.userId!,
+        reviewedById: authUserId(req),
         updatedAt: new Date(),
       })
       .where(eq(services.id, serviceId));
 
     logAudit({
       tenantId,
-      actorUserId: req.session.userId!,
+      actorUserId: authUserId(req),
       action: "service_rejected",
       targetType: "service",
       targetId: serviceId,
@@ -672,7 +673,7 @@ servicesRouter.delete(
     const tenantId = param(req, "tenantId");
     const serviceId = param(req, "serviceId");
 
-    const result = await getTenantForUser(tenantId, req.session.userId!);
+    const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
       res.status(404).json({ error: "Tenant not found" });
       return;
@@ -693,8 +694,8 @@ servicesRouter.delete(
       return;
     }
 
-    const isOwner = service.ownerId === req.session.userId;
-    if (!isOwner && !hasPermission(result.membership, result.role, "manage_services")) {
+    const isOwner = service.ownerId === authUserId(req);
+    if (!isOwner && !hasPermission(result.membership, result.role, "manage_services", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -708,7 +709,7 @@ servicesRouter.delete(
 
     logAudit({
       tenantId,
-      actorUserId: req.session.userId!,
+      actorUserId: authUserId(req),
       action: "service_removed",
       targetType: "service",
       targetId: serviceId,

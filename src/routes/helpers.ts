@@ -16,14 +16,18 @@ import { createHash } from "node:crypto";
 import type { Request, Response, NextFunction } from "express";
 import { eq, and, ne } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { tenants, memberships, roles, agentTokens } from "../db/schema.js";
+import { tenants, memberships, roles, agentTokens, users } from "../db/schema.js";
 import { config } from "../config.js";
 import type { Permission } from "./permissions.js";
 
 /**
  * Express middleware that resolves a Bearer token from the `Authorization`
- * header. If present and valid, populates `req.session.userId` and
- * `req.agentToken` so downstream handlers work transparently.
+ * header. If present and valid, populates `req.agentToken` so downstream
+ * handlers work transparently via {@link authUserId}.
+ *
+ * Does NOT write to `req.session` — agent auth is stateless and must not
+ * persist a session cookie. Also verifies the tenant's `allowAgentTokens`
+ * and `allowMemberAgentTokens` settings at runtime.
  *
  * Must be mounted **before** `requireAuth` in the middleware chain.
  */
@@ -56,13 +60,48 @@ export async function resolveAgentToken(
     return;
   }
 
+  // Verify the tenant still allows agent tokens
+  const [tenant] = await db
+    .select({
+      allowAgentTokens: tenants.allowAgentTokens,
+      allowMemberAgentTokens: tenants.allowMemberAgentTokens,
+      ownerUserId: tenants.ownerUserId,
+    })
+    .from(tenants)
+    .where(eq(tenants.id, token.tenantId));
+
+  if (!tenant || !tenant.allowAgentTokens) {
+    next();
+    return;
+  }
+
+  // Check member token toggle for non-originator tokens
+  const [membership] = await db
+    .select({ isOriginator: memberships.isOriginator })
+    .from(memberships)
+    .where(
+      and(
+        eq(memberships.tenantId, token.tenantId),
+        eq(memberships.userId, token.userId),
+      ),
+    );
+
+  if (!membership) {
+    next();
+    return;
+  }
+
+  if (!membership.isOriginator && !tenant.allowMemberAgentTokens) {
+    next();
+    return;
+  }
+
   // Touch lastUsedAt (fire-and-forget)
   db.update(agentTokens)
     .set({ lastUsedAt: new Date() })
     .where(eq(agentTokens.id, token.id))
     .catch(() => {});
 
-  req.session.userId = token.userId;
   req.agentToken = {
     id: token.id,
     tenantId: token.tenantId,
@@ -93,9 +132,19 @@ export function enforceAgentScope(
   const m = req.path.match(
     /\/api\/tenants\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i,
   );
-  if (m && m[1] !== req.agentToken.tenantId) {
-    res.status(403).json({ error: "Agent token is scoped to a different tenant" });
-    return;
+  if (m) {
+    if (m[1] !== req.agentToken.tenantId) {
+      res.status(403).json({ error: "Agent token is scoped to a different tenant" });
+      return;
+    }
+  } else {
+    // Block non-tenant-scoped routes to prevent cross-tenant data leaks.
+    // Only /api/me and /api/permissions are allowed without a tenant UUID.
+    const allowed = ["/api/me", "/api/permissions", "/health"];
+    if (!allowed.includes(req.path)) {
+      res.status(403).json({ error: "Agent tokens cannot access non-tenant-scoped routes" });
+      return;
+    }
   }
   next();
 }
@@ -107,11 +156,33 @@ export function enforceAgentScope(
  * (Bearer header resolved by {@link resolveAgentToken}).
  */
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
-  if (!req.session.userId) {
+  if (!req.session.userId && !req.agentToken) {
     res.status(401).json({ error: "Not authenticated" });
     return;
   }
   next();
+}
+
+/**
+ * Returns the authenticated user's ID from either the session or agent token.
+ * Must be called after {@link requireAuth}.
+ */
+export function authUserId(req: Request): string {
+  return req.agentToken?.userId ?? req.session.userId!;
+}
+
+/**
+ * Returns the authenticated user's DID. For session-based auth, reads from
+ * the session. For agent tokens, looks up the DID from the users table.
+ */
+export async function authUserDid(req: Request): Promise<string | null> {
+  if (req.session.did) return req.session.did;
+  const userId = authUserId(req);
+  const [user] = await db
+    .select({ did: users.did })
+    .from(users)
+    .where(eq(users.id, userId));
+  return user?.did ?? null;
 }
 
 /**

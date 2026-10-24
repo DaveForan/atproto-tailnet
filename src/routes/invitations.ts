@@ -22,6 +22,8 @@ import {
   getTenantForUser,
   hasPermission,
   isLockedDown,
+  authUserId,
+  authUserDid,
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
 
@@ -33,13 +35,13 @@ invitationsRouter.get(
   requireAuth,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, req.session.userId!);
+    const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
       res.status(403).json({ error: "Not a member of this tenant" });
       return;
     }
 
-    if (!hasPermission(result.membership, result.role, "invite")) {
+    if (!hasPermission(result.membership, result.role, "invite", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -123,13 +125,13 @@ invitationsRouter.post(
       return;
     }
 
-    const result = await getTenantForUser(tenantId, req.session.userId!);
+    const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
       res.status(403).json({ error: "Not a member of this tenant" });
       return;
     }
 
-    if (!hasPermission(result.membership, result.role, "invite")) {
+    if (!hasPermission(result.membership, result.role, "invite", req)) {
       res.status(403).json({ error: "You do not have permission to invite" });
       return;
     }
@@ -191,7 +193,7 @@ invitationsRouter.post(
       .insert(invitations)
       .values({
         tenantId,
-        inviterUserId: req.session.userId!,
+        inviterUserId: authUserId(req),
         inviteeDid: did,
         inviteeHandle: cleanHandle,
       })
@@ -199,7 +201,7 @@ invitationsRouter.post(
 
     logAudit({
       tenantId,
-      actorUserId: req.session.userId!,
+      actorUserId: authUserId(req),
       action: "invitation_created",
       targetType: "invitation",
       targetId: invitation.id,
@@ -211,7 +213,11 @@ invitationsRouter.post(
 );
 
 invitationsRouter.get("/api/invitations", requireAuth, async (req, res) => {
-  const did = req.session.did!;
+  const did = await authUserDid(req);
+  if (!did) {
+    res.status(403).json({ error: "Could not resolve user identity" });
+    return;
+  }
 
   const pendingInvitations = await db
     .select({
@@ -240,7 +246,11 @@ invitationsRouter.post(
   requireAuth,
   async (req, res) => {
     const invitationId = param(req, "invitationId");
-    const did = req.session.did!;
+    const did = await authUserDid(req);
+    if (!did) {
+      res.status(403).json({ error: "Could not resolve user identity" });
+      return;
+    }
 
     const [invitation] = await db
       .select()
@@ -325,7 +335,11 @@ invitationsRouter.post(
   requireAuth,
   async (req, res) => {
     const invitationId = param(req, "invitationId");
-    const did = req.session.did!;
+    const did = await authUserDid(req);
+    if (!did) {
+      res.status(403).json({ error: "Could not resolve user identity" });
+      return;
+    }
 
     const [invitation] = await db
       .select()
@@ -350,7 +364,7 @@ invitationsRouter.post(
 
     logAudit({
       tenantId: invitation.tenantId,
-      actorUserId: req.session.userId!,
+      actorUserId: authUserId(req),
       action: "invitation_declined",
       targetType: "invitation",
       targetId: invitationId,
@@ -367,13 +381,13 @@ invitationsRouter.delete(
     const tenantId = param(req, "tenantId");
     const invitationId = param(req, "invitationId");
 
-    const result = await getTenantForUser(tenantId, req.session.userId!);
+    const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
       res.status(403).json({ error: "Not a member of this tenant" });
       return;
     }
 
-    if (!hasPermission(result.membership, result.role, "invite")) {
+    if (!hasPermission(result.membership, result.role, "invite", req)) {
       res.status(403).json({ error: "You do not have permission to revoke invitations" });
       return;
     }
@@ -405,7 +419,7 @@ invitationsRouter.delete(
 
     logAudit({
       tenantId,
-      actorUserId: req.session.userId!,
+      actorUserId: authUserId(req),
       action: "invitation_revoked",
       targetType: "invitation",
       targetId: invitationId,

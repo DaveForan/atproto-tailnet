@@ -23,6 +23,7 @@ import {
   param,
   getTenantForUser,
   hasPermission,
+  authUserId,
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
 
@@ -45,7 +46,7 @@ boardRouter.get(
   requireAuth,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, req.session.userId!);
+    const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
       res.status(404).json({ error: "Tenant not found" });
       return;
@@ -86,7 +87,7 @@ boardRouter.post(
   requireAuth,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const userId = req.session.userId!;
+    const userId = authUserId(req);
 
     const result = await getTenantForUser(tenantId, userId);
     if (!result) {
@@ -94,7 +95,7 @@ boardRouter.post(
       return;
     }
 
-    if (!hasPermission(result.membership, result.role, "create_posts")) {
+    if (!hasPermission(result.membership, result.role, "create_posts", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -181,7 +182,7 @@ boardRouter.delete(
     const tenantId = param(req, "tenantId");
     const postId = param(req, "postId");
 
-    const result = await getTenantForUser(tenantId, req.session.userId!);
+    const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
       res.status(404).json({ error: "Tenant not found" });
       return;
@@ -202,9 +203,9 @@ boardRouter.delete(
       return;
     }
 
-    const isAuthor = post.authorId === req.session.userId;
-    const canRemoveOwn = isAuthor && hasPermission(result.membership, result.role, "create_posts");
-    const canRemoveAny = hasPermission(result.membership, result.role, "manage_board");
+    const isAuthor = post.authorId === authUserId(req);
+    const canRemoveOwn = isAuthor && hasPermission(result.membership, result.role, "create_posts", req);
+    const canRemoveAny = hasPermission(result.membership, result.role, "manage_board", req);
 
     if (!canRemoveOwn && !canRemoveAny) {
       res.status(403).json({ error: "Insufficient permissions" });
@@ -218,7 +219,7 @@ boardRouter.delete(
 
     logAudit({
       tenantId,
-      actorUserId: req.session.userId!,
+      actorUserId: authUserId(req),
       action: "board_post_removed",
       targetType: "board_post",
       targetId: postId,

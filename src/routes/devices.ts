@@ -28,6 +28,7 @@ import {
   isLockedDown,
   toHsUsername,
   tenantLoginServer,
+  authUserId,
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
 
@@ -43,7 +44,7 @@ devicesRouter.get(
   async (req, res) => {
     const result = await getTenantForUser(
       param(req, "tenantId"),
-      req.session.userId!,
+      authUserId(req),
     );
     if (!result) {
       res.status(404).json({ error: "Tenant not found" });
@@ -96,7 +97,7 @@ devicesRouter.post(
   requireAuth,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, req.session.userId!);
+    const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
       res.status(404).json({ error: "Tenant not found" });
       return;
@@ -115,7 +116,7 @@ devicesRouter.post(
     const [user] = await db
       .select()
       .from(users)
-      .where(eq(users.id, req.session.userId!));
+      .where(eq(users.id, authUserId(req)));
 
     const hsUsername =
       result.membership.isOriginator
@@ -140,7 +141,7 @@ devicesRouter.post(
         .insert(deviceApprovals)
         .values({
           tenantId,
-          requesterId: req.session.userId!,
+          requesterId: authUserId(req),
           hsUsername,
           expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
         })
@@ -148,7 +149,7 @@ devicesRouter.post(
 
       logAudit({
         tenantId,
-        actorUserId: req.session.userId!,
+        actorUserId: authUserId(req),
         action: "device_approval_requested",
         targetType: "device_approval",
         targetId: approval.id,
@@ -171,7 +172,7 @@ devicesRouter.post(
 
       logAudit({
         tenantId,
-        actorUserId: req.session.userId!,
+        actorUserId: authUserId(req),
         action: "device_auth_key_created",
         targetType: "device",
       });
@@ -195,7 +196,7 @@ devicesRouter.delete(
     const tenantId = param(req, "tenantId");
     const nodeId = param(req, "nodeId");
 
-    const result = await getTenantForUser(tenantId, req.session.userId!);
+    const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
       res.status(404).json({ error: "Tenant not found" });
       return;
@@ -206,13 +207,13 @@ devicesRouter.delete(
       result.tenant.apiKey,
     );
 
-    if (!hasPermission(result.membership, result.role, "manage_devices")) {
+    if (!hasPermission(result.membership, result.role, "manage_devices", req)) {
       try {
         const node = await client.getNode(nodeId);
         const [user] = await db
           .select()
           .from(users)
-          .where(eq(users.id, req.session.userId!));
+          .where(eq(users.id, authUserId(req)));
         const expectedHsUser = result.membership.isOriginator
           ? "owner"
           : toHsUsername(user.handle);
@@ -231,7 +232,7 @@ devicesRouter.delete(
 
       logAudit({
         tenantId,
-        actorUserId: req.session.userId!,
+        actorUserId: authUserId(req),
         action: "device_removed",
         targetType: "device",
         targetId: nodeId,
@@ -251,7 +252,7 @@ devicesRouter.get(
   async (req, res) => {
     const result = await getTenantForUser(
       param(req, "tenantId"),
-      req.session.userId!,
+      authUserId(req),
     );
     if (!result) {
       res.status(404).json({ error: "Tenant not found" });
@@ -285,18 +286,18 @@ devicesRouter.delete(
     const tenantId = param(req, "tenantId");
     const removedUserId = param(req, "userId");
 
-    const result = await getTenantForUser(tenantId, req.session.userId!);
+    const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
       res.status(403).json({ error: "Not a member of this tenant" });
       return;
     }
 
-    if (!hasPermission(result.membership, result.role, "kick")) {
+    if (!hasPermission(result.membership, result.role, "kick", req)) {
       res.status(403).json({ error: "You do not have permission to remove members" });
       return;
     }
 
-    if (removedUserId === req.session.userId) {
+    if (removedUserId === authUserId(req)) {
       res.status(400).json({ error: "Cannot remove yourself" });
       return;
     }
@@ -401,7 +402,7 @@ devicesRouter.delete(
 
     logAudit({
       tenantId,
-      actorUserId: req.session.userId!,
+      actorUserId: authUserId(req),
       action: "member_removed",
       targetType: "member",
       targetId: removedUserId,

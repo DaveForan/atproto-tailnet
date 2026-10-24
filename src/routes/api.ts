@@ -15,7 +15,7 @@ import {
   stopInstance,
 } from "../orchestrator/headscale.js";
 import { removeTenantRoute } from "../orchestrator/caddy.js";
-import { requireAuth, param, getTenantForUser, tenantLoginServer } from "./helpers.js";
+import { requireAuth, param, getTenantForUser, tenantLoginServer, authUserId } from "./helpers.js";
 import { logAudit } from "./audit.js";
 
 /**
@@ -37,7 +37,7 @@ apiRouter.get("/api/me", requireAuth, async (req, res) => {
   const [user] = await db
     .select()
     .from(users)
-    .where(eq(users.id, req.session.userId!));
+    .where(eq(users.id, authUserId(req)));
 
   if (!user) {
     res.status(404).json({ error: "User not found" });
@@ -66,13 +66,13 @@ apiRouter.get("/api/tenants", requireAuth, async (req, res) => {
     .from(memberships)
     .innerJoin(tenants, eq(memberships.tenantId, tenants.id))
     .leftJoin(roles, eq(memberships.roleId, roles.id))
-    .where(eq(memberships.userId, req.session.userId!));
+    .where(eq(memberships.userId, authUserId(req)));
 
   res.json(userTenants);
 });
 
 apiRouter.get("/api/tenants/:id", requireAuth, async (req, res) => {
-  const result = await getTenantForUser(param(req, "id"), req.session.userId!);
+  const result = await getTenantForUser(param(req, "id"), authUserId(req));
   if (!result) {
     res.status(404).json({ error: "Tenant not found" });
     return;
@@ -125,7 +125,7 @@ apiRouter.post(
   requireAuth,
   async (req, res) => {
     const tenantId = param(req, "id");
-    const userId = req.session.userId!;
+    const userId = authUserId(req);
     const { message } = req.body as { message?: string };
 
     const [tenant] = await db
@@ -205,7 +205,7 @@ apiRouter.get(
   requireAuth,
   async (req, res) => {
     const tenantId = param(req, "id");
-    const userId = req.session.userId!;
+    const userId = authUserId(req);
 
     const rows = await db
       .select()
@@ -231,7 +231,7 @@ apiRouter.get(
 
 apiRouter.delete("/api/tenants/:id", requireAuth, async (req, res) => {
   const tenantId = param(req, "id");
-  const result = await getTenantForUser(tenantId, req.session.userId!);
+  const result = await getTenantForUser(tenantId, authUserId(req));
 
   if (!result || !result.membership.isOriginator) {
     res.status(403).json({ error: "Only the tenant originator can delete" });
@@ -263,7 +263,7 @@ apiRouter.delete("/api/tenants/:id", requireAuth, async (req, res) => {
 });
 
 apiRouter.post("/api/tenants/:id/start", requireAuth, async (req, res) => {
-  const result = await getTenantForUser(param(req, "id"), req.session.userId!);
+  const result = await getTenantForUser(param(req, "id"), authUserId(req));
   if (!result || !result.membership.isOriginator) {
     res.status(403).json({ error: "Only the tenant originator can start" });
     return;
@@ -287,7 +287,7 @@ apiRouter.post("/api/tenants/:id/start", requireAuth, async (req, res) => {
 });
 
 apiRouter.post("/api/tenants/:id/stop", requireAuth, async (req, res) => {
-  const result = await getTenantForUser(param(req, "id"), req.session.userId!);
+  const result = await getTenantForUser(param(req, "id"), authUserId(req));
   if (!result || !result.membership.isOriginator) {
     res.status(403).json({ error: "Only the tenant originator can stop" });
     return;

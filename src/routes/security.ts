@@ -29,6 +29,7 @@ import {
   isLockedDown,
   toHsUsername,
   tenantLoginServer,
+  authUserId,
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
 import { ALL_PERMISSIONS, type Permission } from "./permissions.js";
@@ -90,7 +91,7 @@ securityRouter.get(
   async (req, res) => {
     const result = await getTenantForUser(
       param(req, "tenantId"),
-      req.session.userId!,
+      authUserId(req),
     );
     if (!result) {
       res.status(403).json({ error: "Not a member of this tenant" });
@@ -119,9 +120,9 @@ securityRouter.patch(
   async (req, res) => {
     const result = await getTenantForUser(
       param(req, "tenantId"),
-      req.session.userId!,
+      authUserId(req),
     );
-    if (!result || !hasPermission(result.membership, result.role, "manage_settings")) {
+    if (!result || !hasPermission(result.membership, result.role, "manage_settings", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -138,7 +139,7 @@ securityRouter.patch(
       updates.requireDeviceApproval = parsed.data.requireDeviceApproval;
       logAudit({
         tenantId: result.tenant.id,
-        actorUserId: req.session.userId!,
+        actorUserId: authUserId(req),
         action: "tenant_settings_updated",
         targetType: "tenant",
         targetId: result.tenant.id,
@@ -150,7 +151,7 @@ securityRouter.patch(
       updates.lockdownMode = parsed.data.lockdownMode;
       logAudit({
         tenantId: result.tenant.id,
-        actorUserId: req.session.userId!,
+        actorUserId: authUserId(req),
         action: parsed.data.lockdownMode ? "lockdown_enabled" : "lockdown_disabled",
         targetType: "tenant",
         targetId: result.tenant.id,
@@ -161,7 +162,7 @@ securityRouter.patch(
       updates.allowJoinRequests = parsed.data.allowJoinRequests;
       logAudit({
         tenantId: result.tenant.id,
-        actorUserId: req.session.userId!,
+        actorUserId: authUserId(req),
         action: parsed.data.allowJoinRequests ? "join_requests_enabled" : "join_requests_disabled",
         targetType: "tenant",
         targetId: result.tenant.id,
@@ -172,7 +173,7 @@ securityRouter.patch(
       updates.boardEnabled = parsed.data.boardEnabled;
       logAudit({
         tenantId: result.tenant.id,
-        actorUserId: req.session.userId!,
+        actorUserId: authUserId(req),
         action: parsed.data.boardEnabled ? "board_enabled" : "board_disabled",
         targetType: "tenant",
         targetId: result.tenant.id,
@@ -184,7 +185,7 @@ securityRouter.patch(
       if (parsed.data.maxBoardPostsDisplayed !== undefined) updates.maxBoardPostsDisplayed = parsed.data.maxBoardPostsDisplayed;
       logAudit({
         tenantId: result.tenant.id,
-        actorUserId: req.session.userId!,
+        actorUserId: authUserId(req),
         action: "board_settings_updated",
         targetType: "tenant",
         targetId: result.tenant.id,
@@ -196,7 +197,7 @@ securityRouter.patch(
       updates.requireServiceApproval = parsed.data.requireServiceApproval;
       logAudit({
         tenantId: result.tenant.id,
-        actorUserId: req.session.userId!,
+        actorUserId: authUserId(req),
         action: "tenant_settings_updated",
         targetType: "tenant",
         targetId: result.tenant.id,
@@ -208,7 +209,7 @@ securityRouter.patch(
       updates.requireServiceDeviceApproval = parsed.data.requireServiceDeviceApproval;
       logAudit({
         tenantId: result.tenant.id,
-        actorUserId: req.session.userId!,
+        actorUserId: authUserId(req),
         action: "tenant_settings_updated",
         targetType: "tenant",
         targetId: result.tenant.id,
@@ -220,7 +221,7 @@ securityRouter.patch(
       updates.allowAgentTokens = parsed.data.allowAgentTokens;
       logAudit({
         tenantId: result.tenant.id,
-        actorUserId: req.session.userId!,
+        actorUserId: authUserId(req),
         action: "tenant_settings_updated",
         targetType: "tenant",
         targetId: result.tenant.id,
@@ -232,7 +233,7 @@ securityRouter.patch(
       updates.allowMemberAgentTokens = parsed.data.allowMemberAgentTokens;
       logAudit({
         tenantId: result.tenant.id,
-        actorUserId: req.session.userId!,
+        actorUserId: authUserId(req),
         action: "tenant_settings_updated",
         targetType: "tenant",
         targetId: result.tenant.id,
@@ -274,7 +275,7 @@ securityRouter.get(
   async (req, res) => {
     const result = await getTenantForUser(
       param(req, "tenantId"),
-      req.session.userId!,
+      authUserId(req),
     );
     if (!result) {
       res.status(404).json({ error: "Tenant not found" });
@@ -296,8 +297,8 @@ securityRouter.post(
   requireAuth,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, req.session.userId!);
-    if (!result || !hasPermission(result.membership, result.role, "manage_roles")) {
+    const result = await getTenantForUser(tenantId, authUserId(req));
+    if (!result || !hasPermission(result.membership, result.role, "manage_roles", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -330,7 +331,7 @@ securityRouter.post(
 
     logAudit({
       tenantId,
-      actorUserId: req.session.userId!,
+      actorUserId: authUserId(req),
       action: "role_created",
       targetType: "role",
       targetId: created.id,
@@ -348,8 +349,8 @@ securityRouter.patch(
     const tenantId = param(req, "tenantId");
     const roleId = param(req, "roleId");
 
-    const result = await getTenantForUser(tenantId, req.session.userId!);
-    if (!result || !hasPermission(result.membership, result.role, "manage_roles")) {
+    const result = await getTenantForUser(tenantId, authUserId(req));
+    if (!result || !hasPermission(result.membership, result.role, "manage_roles", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -407,7 +408,7 @@ securityRouter.patch(
 
     logAudit({
       tenantId,
-      actorUserId: req.session.userId!,
+      actorUserId: authUserId(req),
       action: "role_updated",
       targetType: "role",
       targetId: roleId,
@@ -425,8 +426,8 @@ securityRouter.delete(
     const tenantId = param(req, "tenantId");
     const roleId = param(req, "roleId");
 
-    const result = await getTenantForUser(tenantId, req.session.userId!);
-    if (!result || !hasPermission(result.membership, result.role, "manage_roles")) {
+    const result = await getTenantForUser(tenantId, authUserId(req));
+    if (!result || !hasPermission(result.membership, result.role, "manage_roles", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -467,7 +468,7 @@ securityRouter.delete(
 
     logAudit({
       tenantId,
-      actorUserId: req.session.userId!,
+      actorUserId: authUserId(req),
       action: "role_deleted",
       targetType: "role",
       targetId: roleId,
@@ -487,8 +488,8 @@ securityRouter.put(
     const tenantId = param(req, "tenantId");
     const targetUserId = param(req, "userId");
 
-    const result = await getTenantForUser(tenantId, req.session.userId!);
-    if (!result || !hasPermission(result.membership, result.role, "manage_roles")) {
+    const result = await getTenantForUser(tenantId, authUserId(req));
+    if (!result || !hasPermission(result.membership, result.role, "manage_roles", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -543,7 +544,7 @@ securityRouter.put(
 
     logAudit({
       tenantId,
-      actorUserId: req.session.userId!,
+      actorUserId: authUserId(req),
       action: "member_role_changed",
       targetType: "member",
       targetId: targetUserId,
@@ -562,8 +563,8 @@ securityRouter.patch(
   async (req, res) => {
     const tenantId = param(req, "tenantId");
 
-    const result = await getTenantForUser(tenantId, req.session.userId!);
-    if (!result || !hasPermission(result.membership, result.role, "manage_roles")) {
+    const result = await getTenantForUser(tenantId, authUserId(req));
+    if (!result || !hasPermission(result.membership, result.role, "manage_roles", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -596,7 +597,7 @@ securityRouter.patch(
 
     logAudit({
       tenantId,
-      actorUserId: req.session.userId!,
+      actorUserId: authUserId(req),
       action: "default_role_changed",
       targetType: "role",
       targetId: parsed.data.roleId,
@@ -627,12 +628,12 @@ securityRouter.get(
   requireAuth,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, req.session.userId!);
+    const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
       res.status(404).json({ error: "Tenant not found" });
       return;
     }
-    if (!hasPermission(result.membership, result.role, "approve_devices")) {
+    if (!hasPermission(result.membership, result.role, "approve_devices", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -666,7 +667,7 @@ securityRouter.get(
   requireAuth,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, req.session.userId!);
+    const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
       res.status(404).json({ error: "Tenant not found" });
       return;
@@ -680,7 +681,7 @@ securityRouter.get(
       .where(
         and(
           eq(deviceApprovals.tenantId, tenantId),
-          eq(deviceApprovals.requesterId, req.session.userId!),
+          eq(deviceApprovals.requesterId, authUserId(req)),
         ),
       )
       .orderBy(desc(deviceApprovals.requestedAt));
@@ -706,12 +707,12 @@ securityRouter.post(
     const tenantId = param(req, "tenantId");
     const approvalId = param(req, "approvalId");
 
-    const result = await getTenantForUser(tenantId, req.session.userId!);
+    const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
       res.status(404).json({ error: "Tenant not found" });
       return;
     }
-    if (!hasPermission(result.membership, result.role, "approve_devices")) {
+    if (!hasPermission(result.membership, result.role, "approve_devices", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -763,14 +764,14 @@ securityRouter.post(
           status: "approved",
           preAuthKey: authKey.key,
           command,
-          reviewedById: req.session.userId!,
+          reviewedById: authUserId(req),
           reviewedAt: new Date(),
         })
         .where(eq(deviceApprovals.id, approvalId));
 
       logAudit({
         tenantId,
-        actorUserId: req.session.userId!,
+        actorUserId: authUserId(req),
         action: "device_approved",
         targetType: "device_approval",
         targetId: approvalId,
@@ -792,12 +793,12 @@ securityRouter.post(
     const tenantId = param(req, "tenantId");
     const approvalId = param(req, "approvalId");
 
-    const result = await getTenantForUser(tenantId, req.session.userId!);
+    const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
       res.status(404).json({ error: "Tenant not found" });
       return;
     }
-    if (!hasPermission(result.membership, result.role, "approve_devices")) {
+    if (!hasPermission(result.membership, result.role, "approve_devices", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -822,14 +823,14 @@ securityRouter.post(
       .update(deviceApprovals)
       .set({
         status: "rejected",
-        reviewedById: req.session.userId!,
+        reviewedById: authUserId(req),
         reviewedAt: new Date(),
       })
       .where(eq(deviceApprovals.id, approvalId));
 
     logAudit({
       tenantId,
-      actorUserId: req.session.userId!,
+      actorUserId: authUserId(req),
       action: "device_rejected",
       targetType: "device_approval",
       targetId: approvalId,
@@ -847,12 +848,12 @@ securityRouter.get(
   requireAuth,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, req.session.userId!);
+    const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
       res.status(404).json({ error: "Tenant not found" });
       return;
     }
-    if (!hasPermission(result.membership, result.role, "approve_joins")) {
+    if (!hasPermission(result.membership, result.role, "approve_joins", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -886,12 +887,12 @@ securityRouter.post(
     const tenantId = param(req, "tenantId");
     const requestId = param(req, "requestId");
 
-    const result = await getTenantForUser(tenantId, req.session.userId!);
+    const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
       res.status(404).json({ error: "Tenant not found" });
       return;
     }
-    if (!hasPermission(result.membership, result.role, "approve_joins")) {
+    if (!hasPermission(result.membership, result.role, "approve_joins", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -946,14 +947,14 @@ securityRouter.post(
       .update(joinRequests)
       .set({
         status: "approved",
-        reviewedById: req.session.userId!,
+        reviewedById: authUserId(req),
         reviewedAt: new Date(),
       })
       .where(eq(joinRequests.id, requestId));
 
     logAudit({
       tenantId,
-      actorUserId: req.session.userId!,
+      actorUserId: authUserId(req),
       action: "join_request_approved",
       targetType: "join_request",
       targetId: requestId,
@@ -971,12 +972,12 @@ securityRouter.post(
     const tenantId = param(req, "tenantId");
     const requestId = param(req, "requestId");
 
-    const result = await getTenantForUser(tenantId, req.session.userId!);
+    const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
       res.status(404).json({ error: "Tenant not found" });
       return;
     }
-    if (!hasPermission(result.membership, result.role, "approve_joins")) {
+    if (!hasPermission(result.membership, result.role, "approve_joins", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -1001,14 +1002,14 @@ securityRouter.post(
       .update(joinRequests)
       .set({
         status: "rejected",
-        reviewedById: req.session.userId!,
+        reviewedById: authUserId(req),
         reviewedAt: new Date(),
       })
       .where(eq(joinRequests.id, requestId));
 
     logAudit({
       tenantId,
-      actorUserId: req.session.userId!,
+      actorUserId: authUserId(req),
       action: "join_request_rejected",
       targetType: "join_request",
       targetId: requestId,
@@ -1032,15 +1033,15 @@ securityRouter.post(
       return;
     }
 
-    const result = await getTenantForUser(tenantId, req.session.userId!);
+    const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
       res.status(404).json({ error: "Tenant not found" });
       return;
     }
 
     const targetUserId = parsed.data.userId;
-    const isSelf = targetUserId === req.session.userId;
-    if (!isSelf && !hasPermission(result.membership, result.role, "lock_devices")) {
+    const isSelf = targetUserId === authUserId(req);
+    if (!isSelf && !hasPermission(result.membership, result.role, "lock_devices", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -1100,7 +1101,7 @@ securityRouter.post(
 
       logAudit({
         tenantId,
-        actorUserId: req.session.userId!,
+        actorUserId: authUserId(req),
         action: "device_locked",
         targetType: "member",
         targetId: targetUserId,
@@ -1132,15 +1133,15 @@ securityRouter.delete(
       return;
     }
 
-    const result = await getTenantForUser(tenantId, req.session.userId!);
+    const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
       res.status(404).json({ error: "Tenant not found" });
       return;
     }
 
     const targetUserId = parsed.data.userId;
-    const isSelf = targetUserId === req.session.userId;
-    if (!isSelf && !hasPermission(result.membership, result.role, "lock_devices")) {
+    const isSelf = targetUserId === authUserId(req);
+    if (!isSelf && !hasPermission(result.membership, result.role, "lock_devices", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -1166,7 +1167,7 @@ securityRouter.delete(
 
     logAudit({
       tenantId,
-      actorUserId: req.session.userId!,
+      actorUserId: authUserId(req),
       action: "device_unlocked",
       targetType: "member",
       targetId: targetUserId,
@@ -1183,14 +1184,14 @@ securityRouter.get(
     const tenantId = param(req, "tenantId");
     const targetUserId = param(req, "userId");
 
-    const result = await getTenantForUser(tenantId, req.session.userId!);
+    const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
       res.status(404).json({ error: "Tenant not found" });
       return;
     }
 
-    const isSelf = targetUserId === req.session.userId;
-    if (!isSelf && !hasPermission(result.membership, result.role, "lock_devices")) {
+    const isSelf = targetUserId === authUserId(req);
+    if (!isSelf && !hasPermission(result.membership, result.role, "lock_devices", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -1233,8 +1234,8 @@ securityRouter.get(
   requireAuth,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, req.session.userId!);
-    if (!result || !hasPermission(result.membership, result.role, "view_audit_log")) {
+    const result = await getTenantForUser(tenantId, authUserId(req));
+    if (!result || !hasPermission(result.membership, result.role, "view_audit_log", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
