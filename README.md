@@ -54,24 +54,43 @@ Each tenant gets a dedicated Headscale instance with its own subdomain (`<slug>.
 ```sh
 git clone https://github.com/DaveForan/atproto-tailnet.git
 cd atproto-tailnet
-cp .env.example .env
+cp .env.example .env          # defaults work for local dev
 docker compose up -d          # PostgreSQL + Caddy
-npm install
-npx drizzle-kit generate      # Generate migrations
-npx drizzle-kit migrate        # Apply migrations
-npm run dev                    # http://localhost:3000
+npm install                   # install dependencies
+npm run db:migrate            # apply database migrations
+npm run dev                   # http://localhost:3000
 ```
 
 Open `http://localhost:3000` and sign in with your Bluesky handle.
+
+> **Note:** If you have `NODE_ENV=production` set globally, use `npm install --include=dev` instead — the dev server and build tools are in devDependencies.
+
+### Production build
+
+```sh
+npm run build                 # compiles to dist/
+npm run start                 # runs dist/index.js
+```
 
 ### Environment variables
 
 See `.env.example` for all options. The defaults work for local development. For production you'll need:
 
 - `SESSION_SECRET` — strong random string (32+ chars)
-- `PUBLIC_URL` — your public-facing URL
-- `BASE_DOMAIN` — wildcard domain for tenant subdomains
+- `PUBLIC_URL` — your public-facing URL (e.g. `https://tailnets.example.com`)
+- `BASE_DOMAIN` — wildcard domain for tenant subdomains (e.g. `ts.example.com`)
 - `ATPROTO_PRIVATE_KEY` — ES256 JWK for AT Proto OAuth client auth
+
+### npm scripts
+
+| Script | Description |
+|--------|-------------|
+| `npm run dev` | Start dev server with hot reload (tsx) |
+| `npm run build` | Compile TypeScript to `dist/` |
+| `npm run start` | Run compiled production server |
+| `npm run db:generate` | Generate new migration from schema changes |
+| `npm run db:migrate` | Apply pending migrations |
+| `npm run db:studio` | Open Drizzle Studio (DB browser) |
 
 ## Project structure
 
