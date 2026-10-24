@@ -34,7 +34,7 @@ export const auditActionEnum = pgEnum("audit_action", [
   "invitation_declined",
   "invitation_revoked",
   "member_removed",
-  "member_permissions_updated",
+  "member_permissions_updated", // legacy: PG enums can't drop values; superseded by member_role_changed
   "device_auth_key_created",
   "device_removed",
   "device_approval_requested",

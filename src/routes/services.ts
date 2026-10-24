@@ -57,7 +57,8 @@ servicesRouter.get(
       .from(serviceDevices)
       .innerJoin(users, eq(serviceDevices.ownerId, users.id))
       .where(eq(serviceDevices.tenantId, tenantId))
-      .orderBy(desc(serviceDevices.createdAt));
+      .orderBy(desc(serviceDevices.createdAt))
+      .limit(200);
 
     res.json(rows);
   },
@@ -397,7 +398,8 @@ servicesRouter.get(
           eq(serviceDevices.ownerId, req.session.userId!),
         ),
       )
-      .orderBy(desc(serviceDevices.createdAt));
+      .orderBy(desc(serviceDevices.createdAt))
+      .limit(100);
 
     res.json(
       rows.map((r) => ({
@@ -455,7 +457,8 @@ servicesRouter.get(
       .innerJoin(users, eq(services.ownerId, users.id))
       .innerJoin(serviceDevices, eq(services.serviceDeviceId, serviceDevices.id))
       .where(eq(services.tenantId, tenantId))
-      .orderBy(desc(services.createdAt));
+      .orderBy(desc(services.createdAt))
+      .limit(200);
 
     res.json(rows);
   },

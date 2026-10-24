@@ -48,7 +48,8 @@ invitationsRouter.get(
       .from(invitations)
       .innerJoin(users, eq(invitations.inviterUserId, users.id))
       .where(eq(invitations.tenantId, tenantId))
-      .orderBy(desc(invitations.createdAt));
+      .orderBy(desc(invitations.createdAt))
+      .limit(200);
 
     res.json(rows);
   },
@@ -220,7 +221,8 @@ invitationsRouter.get("/api/invitations", requireAuth, async (req, res) => {
     .innerJoin(users, eq(invitations.inviterUserId, users.id))
     .where(
       and(eq(invitations.inviteeDid, did), eq(invitations.status, "pending")),
-    );
+    )
+    .limit(100);
 
   res.json(pendingInvitations);
 });

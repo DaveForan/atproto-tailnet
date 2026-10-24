@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { eq, and, desc, count } from "drizzle-orm";
+import { eq, and, desc, count, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/index.js";
 import {
@@ -61,7 +61,8 @@ boardRouter.get(
           eq(boardPosts.status, "active"),
         ),
       )
-      .orderBy(desc(boardPosts.createdAt));
+      .orderBy(desc(boardPosts.createdAt))
+      .limit(200);
 
     res.json(rows);
   },
@@ -112,31 +113,40 @@ boardRouter.post(
       return;
     }
 
-    const [{ total }] = await db
-      .select({ total: count() })
-      .from(boardPosts)
-      .where(
-        and(
-          eq(boardPosts.tenantId, tenantId),
-          eq(boardPosts.status, "active"),
-        ),
-      );
+    const created = await db.transaction(async (tx) => {
+      await tx.execute(sql`SELECT 1 FROM ${tenants} WHERE ${tenants.id} = ${tenantId} FOR UPDATE`);
 
-    if (total >= result.tenant.maxBoardPosts) {
+      const [{ total }] = await tx
+        .select({ total: count() })
+        .from(boardPosts)
+        .where(
+          and(
+            eq(boardPosts.tenantId, tenantId),
+            eq(boardPosts.status, "active"),
+          ),
+        );
+
+      if (total >= result.tenant.maxBoardPosts) {
+        return null;
+      }
+
+      const [row] = await tx
+        .insert(boardPosts)
+        .values({
+          tenantId,
+          authorId: userId,
+          serviceId: parsed.data.serviceId,
+          title: parsed.data.title,
+          description: parsed.data.description ?? null,
+        })
+        .returning();
+      return row;
+    });
+
+    if (!created) {
       res.status(409).json({ error: "Maximum number of board posts reached (" + result.tenant.maxBoardPosts + ")" });
       return;
     }
-
-    const [created] = await db
-      .insert(boardPosts)
-      .values({
-        tenantId,
-        authorId: userId,
-        serviceId: parsed.data.serviceId,
-        title: parsed.data.title,
-        description: parsed.data.description ?? null,
-      })
-      .returning();
 
     logAudit({
       tenantId,

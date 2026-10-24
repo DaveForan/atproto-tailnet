@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { eq, and } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { users, tenants, memberships, roles, invitations, joinRequests } from "../db/schema.js";
+import { users, tenants, memberships, roles, joinRequests } from "../db/schema.js";
 import {
   destroyInstance,
   startInstance,
@@ -79,26 +79,6 @@ apiRouter.get("/api/tenants/:id", requireAuth, async (req, res) => {
     loginServer: tenantLoginServer(result.tenant.slug),
   });
 });
-
-apiRouter.get(
-  "/api/tenants/:id/invitations",
-  requireAuth,
-  async (req, res) => {
-    const tenantId = param(req, "id");
-    const result = await getTenantForUser(tenantId, req.session.userId!);
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    const tenantInvitations = await db
-      .select()
-      .from(invitations)
-      .where(eq(invitations.tenantId, tenantId));
-
-    res.json(tenantInvitations);
-  },
-);
 
 /** Public tenant info — no auth required. Only returns data if join requests are enabled. */
 apiRouter.get("/api/tenants/by-slug/:slug/public", async (req, res) => {

@@ -79,7 +79,7 @@ securityRouter.get(
       req.session.userId!,
     );
     if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
+      res.status(403).json({ error: "Not a member of this tenant" });
       return;
     }
 
@@ -612,7 +612,8 @@ securityRouter.get(
       .from(deviceApprovals)
       .innerJoin(users, eq(deviceApprovals.requesterId, users.id))
       .where(eq(deviceApprovals.tenantId, tenantId))
-      .orderBy(desc(deviceApprovals.requestedAt));
+      .orderBy(desc(deviceApprovals.requestedAt))
+      .limit(200);
 
     res.json(rows);
   },
@@ -829,7 +830,8 @@ securityRouter.get(
       .from(joinRequests)
       .innerJoin(users, eq(joinRequests.requesterId, users.id))
       .where(eq(joinRequests.tenantId, tenantId))
-      .orderBy(desc(joinRequests.requestedAt));
+      .orderBy(desc(joinRequests.requestedAt))
+      .limit(200);
 
     res.json(rows);
   },
