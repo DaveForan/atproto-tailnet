@@ -27,11 +27,11 @@ npm run dev                      # http://localhost:3000
 
 - `req.params` values are `string | string[]` in Express 5 — use `param(req, "name")` from `routes/helpers.ts`
 - `getTenantForUser(tenantId, userId)` in `routes/helpers.ts` — shared membership+tenant lookup for all protected routes
-- `hasPermission(membership, role, permission, req?)` — originators always pass, others check role's JSONB permissions array; optional `req` param enforces agent token scope intersection
+- `hasPermission(membership, role, permission, req)` — originators always pass, others check role's JSONB permissions array; `req` param is required to enforce agent token scope intersection (omitting it would bypass token scoping)
 - `Permission` type and `ALL_PERMISSIONS` constant live in `routes/permissions.ts`
 - Two system roles per tenant: "originator" (all perms) and "citizen" (default for new members, customizable)
 - `membership.isOriginator` is the hard source of truth for originator identity (overrides role)
-- `isLockedDown(tenant)` — blocks invitations, acceptances, and auth key generation when true
+- `isLockedDown(tenant)` — blocks invitations, acceptances, auth key generation, and agent token creation when true
 - `toHsUsername(handle)` / `tenantLoginServer(slug)` — shared helpers in `routes/helpers.ts`
 - `logAudit(...)` in `routes/audit.ts` — fire-and-forget append to `audit_logs` table
 - Originator protection: `isOriginator` membership can never be deleted or role-changed (hard 403 in route)
@@ -43,11 +43,11 @@ npm run dev                      # http://localhost:3000
 - Handle resolution: DNS TXT → HTTP .well-known → Bluesky public API
 - Auth state/session stores are DB-backed (`oauth_states`, `oauth_sessions` tables via Drizzle upsert)
 - Express sessions stored in PostgreSQL via `connect-pg-simple`
-- Rate limiting: auth routes 10 req/min, API routes 60 req/min (`express-rate-limit`)
+- Rate limiting: auth + `.well-known` routes 10 req/min, API routes 60 req/min (`express-rate-limit`)
 - `.well-known/atproto-client-metadata.json` and `.well-known/jwks.json` served for production AT Proto OAuth
 - Port allocation retries on unique constraint violation (PG error 23505) up to 3 times
 - Port range 10001-10100 allocated from DB; excludes all non-deleted tenants
-- All config flows through Zod-validated `src/config.ts` (including caddyAdminUrl, databaseUrl)
+- All config flows through Zod-validated `src/config.ts` (including caddyAdminUrl, databaseUrl, atprotoPrivateKey)
 - Device approval: when `requireDeviceApproval` is true, auth-key requests create pending `device_approvals`; owner approves to generate key
 - Device locks: `device_locks` table binds a membership to specific Headscale `machineKey` values — blocks new key generation until unlocked
 - Join requests: `allowJoinRequests` toggle + public `/join/:slug` page; gated by `approve_joins` permission; lockdown blocks requests
@@ -56,8 +56,14 @@ npm run dev                      # http://localhost:3000
 - Services: registered on approved service devices; `requireServiceApproval` toggle; must be active to appear on board
 - Board posts: public message board at `/board/:slug`; `boardEnabled` toggle; `maxBoardPosts`/`maxBoardPostsDisplayed` limits; linked to active services
 - Agent tokens: `at_`-prefixed Bearer tokens for AI agents; SHA-256 hashed storage; scoped to single tenant + permission subset; mandatory expiry (max 365 days)
-- Agent middleware chain: `resolveAgentToken` (Bearer → hash lookup → req.agentToken) → `enforceAgentScope` (tenant UUID match) → `requireAuth` → route handlers
-- Agent token settings: `allowAgentTokens` master toggle, `allowMemberAgentTokens` member toggle; originator can always create when master is on
+- Agent middleware chain: `resolveAgentToken` (Bearer → hash lookup + tenant toggle check → req.agentToken) → `enforceAgentScope` (tenant UUID match + non-tenant route allowlist) → `requireAuth` → route handlers
+- Agent token settings: `allowAgentTokens` master toggle, `allowMemberAgentTokens` member toggle; checked at token resolution time (not just creation)
+- Agent auth helpers: `authUserId(req)` returns user ID from session or token; `authUserDid(req)` resolves DID (session or DB lookup). All route files use these instead of `req.session.userId` directly
+- Agent scope enforcement: `enforceAgentScope` allows `/api/me`, `/api/permissions`, `/api/tenants`, `/health` without tenant UUID; all other non-tenant routes blocked
+- Non-member responses: always 404 "Tenant not found" (never 403 — avoids leaking tenant existence)
+- Guard clause ordering: param extraction → getTenantForUser → hasPermission → lockdown check → body validation → business logic
+- List queries capped at `.limit(200)` with explicit `.orderBy()`
+- Tenant lifecycle (delete/start/stop) audit-logged as `tenant_deleted`/`tenant_started`/`tenant_stopped`
 - 15 permissions total: invite, kick, manage_roles, manage_settings, approve_devices, approve_joins, approve_services, lock_devices, view_audit_log, manage_devices, manage_services, manage_board, create_posts, create_agent_tokens, manage_agent_tokens
 
 ## File layout

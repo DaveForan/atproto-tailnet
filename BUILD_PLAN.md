@@ -131,8 +131,8 @@ See `docs/adr/` for rationale behind each choice:
 - [x] `memberships.isOriginator` boolean for hard originator protection
 - [x] `memberships.roleId` FK to roles
 - [x] `tenants.defaultRoleId` FK to roles (citizen by default)
-- [x] 13 discrete permissions: invite, kick, manage_roles, manage_settings, approve_devices, approve_joins, approve_services, lock_devices, view_audit_log, manage_devices, manage_services, manage_board, create_posts
-- [x] `hasPermission(membership, role, permission)` — originators always pass, others check role JSONB
+- [x] 15 discrete permissions: invite, kick, manage_roles, manage_settings, approve_devices, approve_joins, approve_services, lock_devices, view_audit_log, manage_devices, manage_services, manage_board, create_posts, create_agent_tokens, manage_agent_tokens
+- [x] `hasPermission(membership, role, permission, req)` — originators always pass, others check role JSONB; req enforces agent token scope
 - [x] Two system roles per tenant: originator (all perms, immutable) and citizen (customizable)
 - [x] Role CRUD API (GET/POST/PATCH/DELETE /api/tenants/:id/roles)
 - [x] Role assignment API (PUT /api/tenants/:id/members/:userId/role)
@@ -225,6 +225,32 @@ See `docs/adr/` for rationale behind each choice:
 - [x] Pending service approvals queue in Security tab
 - [x] Audit logging for all board, service, and service device actions
 
+### 5.10 Agent API tokens
+- [x] `agent_tokens` table — SHA-256 hashed, `at_` prefix, scoped to single tenant + permission subset
+- [x] `allowAgentTokens` master toggle, `allowMemberAgentTokens` member toggle on tenant settings
+- [x] Token CRUD: create (POST), list (GET), revoke (DELETE) at `/api/tenants/:id/agent-tokens`
+- [x] Middleware chain: `resolveAgentToken` → `enforceAgentScope` → route handlers
+- [x] `authUserId(req)` / `authUserDid(req)` helpers — all route files use these instead of `req.session.userId`
+- [x] Agent scope enforcement: tenant UUID match, non-tenant route allowlist
+- [x] Token toggle enforcement at resolution time (not just creation)
+- [x] Privilege escalation prevention: token perms intersected with creator's scope
+- [x] Lockdown blocks token creation
+- [x] Dashboard Agents tab with token creation, permission selection, revoke
+- [x] Agent token settings toggles in Security settings
+
+### 5.11 Consistency hardening
+- [x] Non-member responses standardized to 404 "Tenant not found" (no tenant existence leakage)
+- [x] Collapsed guard clauses split: distinct 404 (not member) vs 403 (insufficient perms)
+- [x] Zod validation error responses standardized to `{ error, details }` format
+- [x] All list queries bounded with `.limit(200)` and `.orderBy()`
+- [x] Tenant lifecycle (delete/start/stop) audit-logged
+- [x] `/.well-known/*` endpoints rate-limited
+- [x] `session.save()` error handling in OAuth callback
+- [x] `ATPROTO_PRIVATE_KEY` routed through config.ts (centralized env config)
+- [x] JSDoc on all modules and exports
+
+**Milestone:** Agent tokens enable AI-driven automation against tenant APIs with scoped permissions, mandatory expiry, and full audit trail. All routes follow consistent guard ordering, error shapes, and response patterns.
+
 ---
 
 ## Phase 4: Polish — "Production-ready"
@@ -241,7 +267,7 @@ See `docs/adr/` for rationale behind each choice:
 - [ ] Real domain + wildcard TLS (Let's Encrypt via Caddy)
 - [x] Client metadata hosted at `/.well-known/atproto-client-metadata.json`
 - [x] JWKS endpoint for production OAuth (`/.well-known/jwks.json`)
-- [x] Rate limiting (express-rate-limit: auth 10/min, API 60/min)
+- [x] Rate limiting (express-rate-limit: auth + .well-known 10/min, API 60/min)
 - [x] DB-backed auth state/session stores (oauth_states, oauth_sessions tables + connect-pg-simple)
 - [x] Port race condition retry (catches PG 23505, retries up to 3 times)
 - [ ] Logging, error tracking
