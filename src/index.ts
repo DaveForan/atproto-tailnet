@@ -73,6 +73,7 @@ const apiLimiter = rateLimit({
 
 app.use(dashboardRouter);
 app.use("/auth", authLimiter);
+app.use("/.well-known", authLimiter);
 app.use(authRouter);
 
 app.use("/api", apiLimiter);

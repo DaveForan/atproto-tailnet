@@ -48,6 +48,7 @@ import {
   getTenantForUser,
   hasPermission,
   authUserId,
+  isLockedDown,
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
 import { ALL_PERMISSIONS } from "./permissions.js";
@@ -84,7 +85,7 @@ agentsRouter.post(
 
     const result = await getTenantForUser(tenantId, userId);
     if (!result) {
-      res.status(403).json({ error: "Not a member of this tenant" });
+      res.status(404).json({ error: "Tenant not found" });
       return;
     }
 
@@ -107,6 +108,11 @@ agentsRouter.post(
         res.status(403).json({ error: "You do not have permission to create agent tokens" });
         return;
       }
+    }
+
+    if (isLockedDown(result.tenant)) {
+      res.status(403).json({ error: "Tenant is in lockdown mode" });
+      return;
     }
 
     const parsed = createTokenBody.safeParse(req.body);
@@ -192,7 +198,7 @@ agentsRouter.get(
 
     const result = await getTenantForUser(tenantId, userId);
     if (!result) {
-      res.status(403).json({ error: "Not a member of this tenant" });
+      res.status(404).json({ error: "Tenant not found" });
       return;
     }
 
@@ -249,7 +255,7 @@ agentsRouter.delete(
 
     const result = await getTenantForUser(tenantId, userId);
     if (!result) {
-      res.status(403).json({ error: "Not a member of this tenant" });
+      res.status(404).json({ error: "Tenant not found" });
       return;
     }
 

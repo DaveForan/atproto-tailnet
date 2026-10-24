@@ -108,7 +108,7 @@ export async function getOAuthClient(): Promise<NodeOAuthClient> {
     });
   } else {
     const privateKey = await JoseKey.fromImportable(
-      process.env.ATPROTO_PRIVATE_KEY ?? "",
+      config.atprotoPrivateKey ?? "",
       "key1",
     );
 
@@ -157,7 +157,7 @@ export function getClientMetadata(): object {
 
 /** Returns the public JWKS, served at `/.well-known/jwks.json`. Empty if no private key is configured. */
 export async function getPublicJwks(): Promise<{ keys: unknown[] }> {
-  const keyStr = process.env.ATPROTO_PRIVATE_KEY;
+  const keyStr = config.atprotoPrivateKey;
   if (!keyStr) return { keys: [] };
   const key = await JoseKey.fromImportable(keyStr, "key1");
   const pub = key.publicJwk;

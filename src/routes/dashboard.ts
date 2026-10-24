@@ -1549,6 +1549,9 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         service_removed: 'removed service',
         agent_token_created: 'created agent token',
         agent_token_revoked: 'revoked agent token',
+        tenant_deleted: 'deleted tenant',
+        tenant_started: 'started tenant',
+        tenant_stopped: 'stopped tenant',
       };
       el.innerHTML = data.entries.map(function(e) {
         var label = actionLabels[e.action] || e.action;
@@ -1597,13 +1600,21 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         service_approved: 'approved service', service_rejected: 'rejected service',
         service_removed: 'removed service',
         agent_token_created: 'created agent token', agent_token_revoked: 'revoked agent token',
+        tenant_deleted: 'deleted tenant', tenant_started: 'started tenant', tenant_stopped: 'stopped tenant',
       };
       var html = data.entries.map(function(e) {
         var label = actionLabels[e.action] || e.action;
+        var detail = '';
+        if (e.metadata) {
+          if (e.metadata.handle) detail = ' \\u2014 ' + esc(String(e.metadata.handle));
+          else if (e.metadata.name) detail = ' \\u2014 ' + esc(String(e.metadata.name));
+          else if (e.metadata.roleName) detail = ' \\u2014 ' + esc(String(e.metadata.roleName));
+          else if (e.metadata.requireDeviceApproval !== undefined) detail = ' \\u2014 device approval: ' + (e.metadata.requireDeviceApproval ? 'on' : 'off');
+        }
         return '<div class="audit-item">' +
           '<span class="audit-time">' + new Date(e.createdAt).toLocaleString() + '</span> ' +
           '<span class="audit-actor">' + esc(e.actorDisplayName || e.actorHandle) + '</span> ' +
-          '<span class="audit-action">' + esc(label) + '</span>' +
+          '<span class="audit-action">' + esc(label) + esc(detail) + '</span>' +
         '</div>';
       }).join('');
       el.insertAdjacentHTML('beforeend', html);

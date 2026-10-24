@@ -140,7 +140,7 @@ export function enforceAgentScope(
   } else {
     // Block non-tenant-scoped routes to prevent cross-tenant data leaks.
     // Only /api/me and /api/permissions are allowed without a tenant UUID.
-    const allowed = ["/api/me", "/api/permissions", "/health"];
+    const allowed = ["/api/me", "/api/permissions", "/api/tenants", "/health"];
     if (!allowed.includes(req.path)) {
       res.status(403).json({ error: "Agent tokens cannot access non-tenant-scoped routes" });
       return;

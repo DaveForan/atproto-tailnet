@@ -7,7 +7,7 @@
  */
 
 import { Router } from "express";
-import { eq, and } from "drizzle-orm";
+import { eq, and, desc } from "drizzle-orm";
 import { db } from "../db/index.js";
 import {
   memberships,
@@ -273,7 +273,9 @@ devicesRouter.get(
       .from(memberships)
       .innerJoin(users, eq(memberships.userId, users.id))
       .leftJoin(roles, eq(memberships.roleId, roles.id))
-      .where(eq(memberships.tenantId, param(req, "tenantId")));
+      .where(eq(memberships.tenantId, param(req, "tenantId")))
+      .orderBy(desc(memberships.createdAt))
+      .limit(200);
 
     res.json(members);
   },
@@ -288,7 +290,7 @@ devicesRouter.delete(
 
     const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
-      res.status(403).json({ error: "Not a member of this tenant" });
+      res.status(404).json({ error: "Tenant not found" });
       return;
     }
 

@@ -222,7 +222,11 @@ authRouter.get("/auth/callback", async (req, res) => {
       }
       req.session.userId = user.id;
       req.session.did = did;
-      req.session.save(() => {
+      req.session.save((err) => {
+        if (err) {
+          res.status(500).json({ error: "Session save failed" });
+          return;
+        }
         res.redirect(dest);
       });
     });

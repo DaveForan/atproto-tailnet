@@ -86,6 +86,9 @@ export const auditActionEnum = pgEnum("audit_action", [
   "service_removed",
   "agent_token_created",
   "agent_token_revoked",
+  "tenant_deleted",
+  "tenant_started",
+  "tenant_stopped",
 ]);
 
 export const deviceApprovalStatusEnum = pgEnum("device_approval_status", [
@@ -176,9 +179,9 @@ export const tenants = pgTable("tenants", {
   maxBoardPosts: integer("max_board_posts").notNull().default(20),
   /** Maximum number of posts shown on the public board page. */
   maxBoardPostsDisplayed: integer("max_board_posts_displayed").notNull().default(10),
-  /** When true, service devices require approval before getting an auth key. */
-  requireServiceApproval: boolean("require_service_approval").notNull().default(true),
   /** When true, services must be approved before going active. */
+  requireServiceApproval: boolean("require_service_approval").notNull().default(true),
+  /** When true, service devices require approval before getting an auth key. */
   requireServiceDeviceApproval: boolean("require_service_device_approval").notNull().default(true),
   /** When true, members with `create_agent_tokens` can generate API tokens. */
   allowAgentTokens: boolean("allow_agent_tokens").notNull().default(false),

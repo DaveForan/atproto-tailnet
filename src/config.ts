@@ -18,6 +18,7 @@ const configSchema = z.object({
   sessionSecret: z.string().default("dev-secret-change-me"),
   baseDomain: z.string().default("ts.localhost"),
   caddyAdminUrl: z.string().url().default("http://localhost:2019"),
+  atprotoPrivateKey: z.string().optional(),
   headscale: z.object({
     image: z.string().default("headscale/headscale:0.29.1"),
     portRangeStart: z.coerce.number().default(10001),
@@ -34,6 +35,7 @@ export const config = configSchema.parse({
   sessionSecret: process.env.SESSION_SECRET,
   baseDomain: process.env.BASE_DOMAIN,
   caddyAdminUrl: process.env.CADDY_ADMIN_URL,
+  atprotoPrivateKey: process.env.ATPROTO_PRIVATE_KEY,
   headscale: {
     image: process.env.HEADSCALE_IMAGE,
     portRangeStart: process.env.HEADSCALE_PORT_RANGE_START,

@@ -37,7 +37,7 @@ invitationsRouter.get(
     const tenantId = param(req, "tenantId");
     const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
-      res.status(403).json({ error: "Not a member of this tenant" });
+      res.status(404).json({ error: "Tenant not found" });
       return;
     }
 
@@ -127,7 +127,7 @@ invitationsRouter.post(
 
     const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
-      res.status(403).json({ error: "Not a member of this tenant" });
+      res.status(404).json({ error: "Tenant not found" });
       return;
     }
 
@@ -383,7 +383,7 @@ invitationsRouter.delete(
 
     const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
-      res.status(403).json({ error: "Not a member of this tenant" });
+      res.status(404).json({ error: "Tenant not found" });
       return;
     }
 

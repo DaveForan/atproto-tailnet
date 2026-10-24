@@ -94,7 +94,7 @@ securityRouter.get(
       authUserId(req),
     );
     if (!result) {
-      res.status(403).json({ error: "Not a member of this tenant" });
+      res.status(404).json({ error: "Tenant not found" });
       return;
     }
 
@@ -122,7 +122,11 @@ securityRouter.patch(
       param(req, "tenantId"),
       authUserId(req),
     );
-    if (!result || !hasPermission(result.membership, result.role, "manage_settings", req)) {
+    if (!result) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+    if (!hasPermission(result.membership, result.role, "manage_settings", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -286,7 +290,8 @@ securityRouter.get(
       .select()
       .from(roles)
       .where(eq(roles.tenantId, param(req, "tenantId")))
-      .orderBy(roles.createdAt);
+      .orderBy(roles.createdAt)
+      .limit(200);
 
     res.json(tenantRoles);
   },
@@ -298,7 +303,11 @@ securityRouter.post(
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result || !hasPermission(result.membership, result.role, "manage_roles", req)) {
+    if (!result) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+    if (!hasPermission(result.membership, result.role, "manage_roles", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -350,7 +359,11 @@ securityRouter.patch(
     const roleId = param(req, "roleId");
 
     const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result || !hasPermission(result.membership, result.role, "manage_roles", req)) {
+    if (!result) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+    if (!hasPermission(result.membership, result.role, "manage_roles", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -427,7 +440,11 @@ securityRouter.delete(
     const roleId = param(req, "roleId");
 
     const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result || !hasPermission(result.membership, result.role, "manage_roles", req)) {
+    if (!result) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+    if (!hasPermission(result.membership, result.role, "manage_roles", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
@@ -489,14 +506,18 @@ securityRouter.put(
     const targetUserId = param(req, "userId");
 
     const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result || !hasPermission(result.membership, result.role, "manage_roles", req)) {
+    if (!result) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+    if (!hasPermission(result.membership, result.role, "manage_roles", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
 
     const parsed = assignRoleBody.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ error: "roleId is required" });
+      res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
       return;
     }
 
@@ -564,14 +585,18 @@ securityRouter.patch(
     const tenantId = param(req, "tenantId");
 
     const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result || !hasPermission(result.membership, result.role, "manage_roles", req)) {
+    if (!result) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+    if (!hasPermission(result.membership, result.role, "manage_roles", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
 
     const parsed = defaultRoleBody.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ error: "roleId is required" });
+      res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
       return;
     }
 
@@ -684,7 +709,8 @@ securityRouter.get(
           eq(deviceApprovals.requesterId, authUserId(req)),
         ),
       )
-      .orderBy(desc(deviceApprovals.requestedAt));
+      .orderBy(desc(deviceApprovals.requestedAt))
+      .limit(200);
 
     res.json(
       rows.map((r) => ({
@@ -1029,7 +1055,7 @@ securityRouter.post(
     const tenantId = param(req, "tenantId");
     const parsed = deviceLockBody.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ error: "userId is required" });
+      res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
       return;
     }
 
@@ -1129,7 +1155,7 @@ securityRouter.delete(
     const tenantId = param(req, "tenantId");
     const parsed = deviceLockBody.safeParse(req.body);
     if (!parsed.success) {
-      res.status(400).json({ error: "userId is required" });
+      res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
       return;
     }
 
@@ -1235,7 +1261,11 @@ securityRouter.get(
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result || !hasPermission(result.membership, result.role, "view_audit_log", req)) {
+    if (!result) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+    if (!hasPermission(result.membership, result.role, "view_audit_log", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }

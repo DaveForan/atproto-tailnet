@@ -6,7 +6,7 @@
  */
 
 import { Router } from "express";
-import { eq, and } from "drizzle-orm";
+import { eq, and, desc } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { users, tenants, memberships, roles, joinRequests } from "../db/schema.js";
 import {
@@ -66,7 +66,9 @@ apiRouter.get("/api/tenants", requireAuth, async (req, res) => {
     .from(memberships)
     .innerJoin(tenants, eq(memberships.tenantId, tenants.id))
     .leftJoin(roles, eq(memberships.roleId, roles.id))
-    .where(eq(memberships.userId, authUserId(req)));
+    .where(eq(memberships.userId, authUserId(req)))
+    .orderBy(desc(tenants.createdAt))
+    .limit(200);
 
   res.json(userTenants);
 });
@@ -255,6 +257,14 @@ apiRouter.delete("/api/tenants/:id", requireAuth, async (req, res) => {
       .set({ status: "deleted", containerId: null, updatedAt: new Date() })
       .where(eq(tenants.id, tenantId));
 
+    logAudit({
+      tenantId,
+      actorUserId: authUserId(req),
+      action: "tenant_deleted",
+      targetType: "tenant",
+      targetId: tenantId,
+    });
+
     res.json({ status: "deleted" });
   } catch (err) {
     console.error("Failed to delete tenant:", err);
@@ -279,6 +289,14 @@ apiRouter.post("/api/tenants/:id/start", requireAuth, async (req, res) => {
       .update(tenants)
       .set({ status: "running", updatedAt: new Date() })
       .where(eq(tenants.id, result.tenant.id));
+    logAudit({
+      tenantId: result.tenant.id,
+      actorUserId: authUserId(req),
+      action: "tenant_started",
+      targetType: "tenant",
+      targetId: result.tenant.id,
+    });
+
     res.json({ status: "running" });
   } catch (err) {
     console.error("Failed to start tenant:", err);
@@ -303,6 +321,14 @@ apiRouter.post("/api/tenants/:id/stop", requireAuth, async (req, res) => {
       .update(tenants)
       .set({ status: "stopped", updatedAt: new Date() })
       .where(eq(tenants.id, result.tenant.id));
+    logAudit({
+      tenantId: result.tenant.id,
+      actorUserId: authUserId(req),
+      action: "tenant_stopped",
+      targetType: "tenant",
+      targetId: result.tenant.id,
+    });
+
     res.json({ status: "stopped" });
   } catch (err) {
     console.error("Failed to stop tenant:", err);

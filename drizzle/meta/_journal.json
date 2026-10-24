@@ -57,6 +57,13 @@
       "when": 1792813319492,
       "tag": "0007_unusual_madame_web",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1792816871021,
+      "tag": "0008_lean_magma",
+      "breakpoints": true
     }
   ]
 }
