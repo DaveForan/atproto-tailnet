@@ -601,15 +601,19 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         '</div></div>';
       }
 
-      var canSecurity = hasPerm('manage_settings') || hasPerm('approve_devices') || hasPerm('approve_joins');
+      var canSecurity = hasPerm('manage_settings') || hasPerm('approve_devices') || hasPerm('approve_joins') || hasPerm('approve_services');
       var canAudit = hasPerm('view_audit_log');
       var canRoles = hasPerm('manage_roles');
+      var canServices = hasPerm('manage_services') || hasPerm('approve_services');
+      var canBoard = hasPerm('manage_board') || hasPerm('create_posts');
 
       var tabBar = '<div class="tab-bar">' +
         '<button class="tab ' + (state.tab === 'devices' ? 'active' : '') + '" onclick="switchTab(\\'devices\\')">Devices</button>' +
         '<button class="tab ' + (state.tab === 'members' ? 'active' : '') + '" onclick="switchTab(\\'members\\')">Members</button>' +
         '<button class="tab ' + (state.tab === 'invite' ? 'active' : '') + '" onclick="switchTab(\\'invite\\')">Invite</button>' +
         '<button class="tab ' + (state.tab === 'connect' ? 'active' : '') + '" onclick="switchTab(\\'connect\\')">Add Device</button>' +
+        (canServices ? '<button class="tab ' + (state.tab === 'services' ? 'active' : '') + '" onclick="switchTab(\\'services\\')">Services</button>' : '') +
+        (canBoard ? '<button class="tab ' + (state.tab === 'board' ? 'active' : '') + '" onclick="switchTab(\\'board\\')">Board</button>' : '') +
         (canRoles ? '<button class="tab ' + (state.tab === 'roles' ? 'active' : '') + '" onclick="switchTab(\\'roles\\')">Roles</button>' : '') +
         (canSecurity ? '<button class="tab ' + (state.tab === 'security' ? 'active' : '') + '" onclick="switchTab(\\'security\\')">Security</button>' : '') +
         (canAudit ? '<button class="tab ' + (state.tab === 'audit' ? 'active' : '') + '" onclick="switchTab(\\'audit\\')">Audit Log</button>' : '') +
@@ -660,6 +664,67 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         '</div>' +
       '</div>' +
 
+      (canServices ?
+        '<div id="tab-services" class="' + (state.tab !== 'services' ? 'hidden' : '') + '">' +
+          '<div class="card">' +
+            '<div class="card-header"><h3>Service Devices</h3></div>' +
+            '<div id="service-devices-list">Loading...</div>' +
+            (hasPerm('manage_services') ?
+              '<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">' +
+                '<h4 style="margin-bottom:8px;font-size:14px">Register Service Device</h4>' +
+                '<div class="inline-form" style="margin-bottom:8px">' +
+                  '<input type="text" id="svc-dev-name" placeholder="Device name" style="max-width:200px" />' +
+                  '<input type="text" id="svc-dev-desc" placeholder="Description (optional)" />' +
+                  '<button onclick="registerServiceDevice()">Register</button>' +
+                '</div>' +
+              '</div>' : '') +
+          '</div>' +
+          '<div class="card" style="margin-top:12px">' +
+            '<div class="card-header"><h3>Services</h3></div>' +
+            '<div id="services-list">Loading...</div>' +
+            (hasPerm('manage_services') ?
+              '<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">' +
+                '<h4 style="margin-bottom:8px;font-size:14px">Register Service</h4>' +
+                '<div style="display:flex;flex-direction:column;gap:8px">' +
+                  '<div class="inline-form">' +
+                    '<input type="text" id="svc-name" placeholder="Service name" style="max-width:200px" />' +
+                    '<input type="text" id="svc-url" placeholder="Service URL (e.g. http://node:8080)" />' +
+                  '</div>' +
+                  '<div class="inline-form">' +
+                    '<input type="text" id="svc-desc" placeholder="Description (optional)" />' +
+                    '<select id="svc-device-select" style="max-width:250px"><option value="">Select service device...</option></select>' +
+                    '<button onclick="registerService()">Register</button>' +
+                  '</div>' +
+                '</div>' +
+              '</div>' : '') +
+          '</div>' +
+        '</div>' : '') +
+
+      (canBoard ?
+        '<div id="tab-board" class="' + (state.tab !== 'board' ? 'hidden' : '') + '">' +
+          '<div class="card">' +
+            '<div class="card-header"><h3>Board Posts</h3>' +
+              (state.settings && state.settings.boardEnabled && state.currentTenant ?
+                '<a href="/board/' + esc(state.currentTenant.slug) + '" target="_blank" class="btn-sm btn-ghost" style="text-decoration:none">View public board</a>' : '') +
+            '</div>' +
+            '<div id="board-posts-list">Loading...</div>' +
+            (hasPerm('create_posts') ?
+              '<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">' +
+                '<h4 style="margin-bottom:8px;font-size:14px">Create Post</h4>' +
+                '<div style="display:flex;flex-direction:column;gap:8px">' +
+                  '<div class="inline-form">' +
+                    '<input type="text" id="post-title" placeholder="Post title" />' +
+                    '<select id="post-service-select" style="max-width:250px"><option value="">Link to service...</option></select>' +
+                  '</div>' +
+                  '<div class="inline-form">' +
+                    '<input type="text" id="post-desc" placeholder="Description (optional)" />' +
+                    '<button onclick="createPost()">Create Post</button>' +
+                  '</div>' +
+                '</div>' +
+              '</div>' : '') +
+          '</div>' +
+        '</div>' : '') +
+
       (canRoles ?
         '<div id="tab-roles" class="' + (state.tab !== 'roles' ? 'hidden' : '') + '">' +
           '<div class="card">' +
@@ -687,6 +752,11 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
               '<h3 style="margin-bottom:12px">Tenant Settings</h3>' +
               '<div id="security-settings">Loading...</div>' +
             '</div>' : '') +
+          (hasPerm('approve_services') ?
+            '<div class="card" style="margin-top:12px">' +
+              '<h3 style="margin-bottom:12px">Pending Service Approvals</h3>' +
+              '<div id="service-approvals">Loading...</div>' +
+            '</div>' : '') +
           (hasPerm('approve_joins') ?
             '<div class="card" style="margin-top:12px">' +
               '<h3 style="margin-bottom:12px">Pending Join Requests</h3>' +
@@ -711,6 +781,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (tab === 'devices') loadDevices();
       if (tab === 'members') loadMembers();
       if (tab === 'invite') loadSentInvitations();
+      if (tab === 'services') loadServices();
+      if (tab === 'board') loadBoard();
       if (tab === 'roles') loadRoles();
       if (tab === 'security') loadSecurity();
       if (tab === 'audit') loadAuditLog();
@@ -869,6 +941,234 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       }
     }
 
+    // ── Services tab ────────────────────────────────────────────────
+
+    async function loadServices() {
+      if (!state.currentTenant) return;
+      var svcDevices = await api('/api/tenants/' + state.currentTenant.id + '/service-devices') || [];
+      var svcs = await api('/api/tenants/' + state.currentTenant.id + '/services') || [];
+
+      var sdEl = document.getElementById('service-devices-list');
+      if (sdEl) {
+        if (svcDevices.length === 0) {
+          sdEl.innerHTML = '<div class="empty-state" style="padding:16px">No service devices registered</div>';
+        } else {
+          sdEl.innerHTML = svcDevices.map(function(d) {
+            var statusBadge = d.status === 'pending' ? '<span class="badge" style="background:#f59e0b20;color:var(--warning)">pending</span>' :
+                             d.status === 'approved' ? '<span class="badge badge-running">approved</span>' :
+                             '<span class="badge badge-stopped">rejected</span>';
+            var actions = '';
+            if (d.status === 'pending' && hasPerm('approve_services')) {
+              actions = '<div style="display:flex;gap:6px">' +
+                '<button class="btn-sm" onclick="approveServiceDevice(\\'' + d.id + '\\')">Approve</button>' +
+                '<button class="btn-sm btn-danger" onclick="rejectServiceDevice(\\'' + d.id + '\\')">Reject</button>' +
+              '</div>';
+            } else if (hasPerm('manage_services') || d.ownerId === state.user.id) {
+              actions = '<button class="btn-sm btn-danger" onclick="removeServiceDevice(\\'' + d.id + '\\')">Remove</button>';
+            }
+            return '<div class="approval-item">' +
+              '<div>' +
+                '<strong>' + esc(d.name) + '</strong> ' + statusBadge +
+                (d.description ? '<br><span style="color:var(--text-dim);font-size:12px">' + esc(d.description) + '</span>' : '') +
+                '<br><span style="color:var(--text-dim);font-size:12px">Owner: ' + esc(d.ownerDisplayName || d.ownerHandle) + '</span>' +
+              '</div>' +
+              actions +
+            '</div>';
+          }).join('');
+        }
+      }
+
+      var sEl = document.getElementById('services-list');
+      if (sEl) {
+        if (svcs.length === 0) {
+          sEl.innerHTML = '<div class="empty-state" style="padding:16px">No services registered</div>';
+        } else {
+          sEl.innerHTML = svcs.map(function(s) {
+            var statusBadge = s.status === 'pending' ? '<span class="badge" style="background:#f59e0b20;color:var(--warning)">pending</span>' :
+                             s.status === 'active' ? '<span class="badge badge-running">active</span>' :
+                             '<span class="badge badge-stopped">disabled</span>';
+            var actions = '';
+            if (s.status === 'pending' && hasPerm('approve_services')) {
+              actions = '<div style="display:flex;gap:6px">' +
+                '<button class="btn-sm" onclick="approveService(\\'' + s.id + '\\')">Approve</button>' +
+                '<button class="btn-sm btn-danger" onclick="rejectService(\\'' + s.id + '\\')">Reject</button>' +
+              '</div>';
+            } else if (hasPerm('manage_services') || s.ownerId === state.user.id) {
+              actions = '<button class="btn-sm btn-danger" onclick="removeService(\\'' + s.id + '\\')">Remove</button>';
+            }
+            return '<div class="approval-item">' +
+              '<div>' +
+                '<strong>' + esc(s.name) + '</strong> ' + statusBadge +
+                '<br><span style="color:var(--text-dim);font-size:12px">' + esc(s.url) + '</span>' +
+                (s.description ? '<br><span style="color:var(--text-dim);font-size:12px">' + esc(s.description) + '</span>' : '') +
+                '<br><span style="color:var(--text-dim);font-size:12px">Device: ' + esc(s.deviceName) + ' \\u2022 Owner: ' + esc(s.ownerDisplayName || s.ownerHandle) + '</span>' +
+              '</div>' +
+              actions +
+            '</div>';
+          }).join('');
+        }
+      }
+
+      // Populate service device select for service registration
+      var sdSelect = document.getElementById('svc-device-select');
+      if (sdSelect) {
+        var approved = svcDevices.filter(function(d) { return d.status === 'approved'; });
+        sdSelect.innerHTML = '<option value="">Select service device...</option>' +
+          approved.map(function(d) {
+            return '<option value="' + d.id + '">' + esc(d.name) + '</option>';
+          }).join('');
+      }
+    }
+
+    async function registerServiceDevice() {
+      if (!state.currentTenant) return;
+      var nameEl = document.getElementById('svc-dev-name');
+      var descEl = document.getElementById('svc-dev-desc');
+      var name = nameEl.value.trim();
+      if (!name) return;
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/service-devices', {
+        method: 'POST',
+        body: JSON.stringify({ name: name, description: descEl.value.trim() || undefined }),
+      });
+      if (result) {
+        nameEl.value = '';
+        descEl.value = '';
+        if (result.status === 'pending') {
+          toast('Service device registered \\u2014 pending approval');
+        } else if (result.command) {
+          toast('Service device approved! Run the command on your device.');
+        }
+        loadServices();
+      }
+    }
+
+    async function approveServiceDevice(deviceId) {
+      if (!state.currentTenant) return;
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/service-devices/' + deviceId + '/approve', { method: 'POST' });
+      if (result) { toast('Service device approved'); loadServices(); }
+    }
+
+    async function rejectServiceDevice(deviceId) {
+      if (!state.currentTenant) return;
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/service-devices/' + deviceId + '/reject', { method: 'POST' });
+      if (result) { toast('Service device rejected'); loadServices(); }
+    }
+
+    async function removeServiceDevice(deviceId) {
+      if (!state.currentTenant) return;
+      if (!confirm('Remove this service device? Associated services will also be affected.')) return;
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/service-devices/' + deviceId, { method: 'DELETE' });
+      if (result) { toast('Service device removed'); loadServices(); }
+    }
+
+    async function registerService() {
+      if (!state.currentTenant) return;
+      var nameEl = document.getElementById('svc-name');
+      var urlEl = document.getElementById('svc-url');
+      var descEl = document.getElementById('svc-desc');
+      var deviceSelect = document.getElementById('svc-device-select');
+      var name = nameEl.value.trim();
+      var url = urlEl.value.trim();
+      var deviceId = deviceSelect.value;
+      if (!name || !url || !deviceId) { toast('All fields required'); return; }
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/services', {
+        method: 'POST',
+        body: JSON.stringify({ name: name, url: url, description: descEl.value.trim() || undefined, serviceDeviceId: deviceId }),
+      });
+      if (result) {
+        nameEl.value = '';
+        urlEl.value = '';
+        descEl.value = '';
+        toast(result.status === 'pending' ? 'Service registered \\u2014 pending approval' : 'Service registered and active');
+        loadServices();
+      }
+    }
+
+    async function approveService(serviceId) {
+      if (!state.currentTenant) return;
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/services/' + serviceId + '/approve', { method: 'POST' });
+      if (result) { toast('Service approved'); loadServices(); }
+    }
+
+    async function rejectService(serviceId) {
+      if (!state.currentTenant) return;
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/services/' + serviceId + '/reject', { method: 'POST' });
+      if (result) { toast('Service rejected'); loadServices(); }
+    }
+
+    async function removeService(serviceId) {
+      if (!state.currentTenant) return;
+      if (!confirm('Remove this service?')) return;
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/services/' + serviceId, { method: 'DELETE' });
+      if (result) { toast('Service removed'); loadServices(); }
+    }
+
+    // ── Board tab ─────────────────────────────────────────────────
+
+    async function loadBoard() {
+      if (!state.currentTenant) return;
+      var posts = await api('/api/tenants/' + state.currentTenant.id + '/board-posts') || [];
+      var svcs = await api('/api/tenants/' + state.currentTenant.id + '/services') || [];
+
+      var el = document.getElementById('board-posts-list');
+      if (el) {
+        var activePosts = posts.filter(function(p) { return p.status === 'active'; });
+        if (activePosts.length === 0) {
+          el.innerHTML = '<div class="empty-state" style="padding:16px">No board posts</div>';
+        } else {
+          el.innerHTML = activePosts.map(function(p) {
+            var canRemove = (p.authorId === state.user.id && hasPerm('create_posts')) || hasPerm('manage_board');
+            return '<div class="approval-item">' +
+              '<div>' +
+                '<strong>' + esc(p.title) + '</strong>' +
+                '<span class="badge" style="background:var(--accent);color:white;font-size:10px;margin-left:6px">' + esc(p.serviceName) + '</span>' +
+                (p.description ? '<br><span style="color:var(--text-dim);font-size:12px">' + esc(p.description) + '</span>' : '') +
+                '<br><span style="color:var(--text-dim);font-size:12px">by ' + esc(p.authorDisplayName || p.authorHandle) + ' \\u2022 ' + new Date(p.createdAt).toLocaleString() + '</span>' +
+              '</div>' +
+              (canRemove ? '<button class="btn-sm btn-danger" onclick="removePost(\\'' + p.id + '\\')">Remove</button>' : '') +
+            '</div>';
+          }).join('');
+        }
+      }
+
+      // Populate service select for post creation
+      var svcSelect = document.getElementById('post-service-select');
+      if (svcSelect) {
+        var active = svcs.filter(function(s) { return s.status === 'active'; });
+        svcSelect.innerHTML = '<option value="">Link to service...</option>' +
+          active.map(function(s) {
+            return '<option value="' + s.id + '">' + esc(s.name) + '</option>';
+          }).join('');
+      }
+    }
+
+    async function createPost() {
+      if (!state.currentTenant) return;
+      var titleEl = document.getElementById('post-title');
+      var descEl = document.getElementById('post-desc');
+      var svcSelect = document.getElementById('post-service-select');
+      var title = titleEl.value.trim();
+      var serviceId = svcSelect.value;
+      if (!title || !serviceId) { toast('Title and service are required'); return; }
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/board-posts', {
+        method: 'POST',
+        body: JSON.stringify({ title: title, description: descEl.value.trim() || undefined, serviceId: serviceId }),
+      });
+      if (result) {
+        titleEl.value = '';
+        descEl.value = '';
+        toast('Post created');
+        loadBoard();
+      }
+    }
+
+    async function removePost(postId) {
+      if (!state.currentTenant) return;
+      if (!confirm('Remove this post from the board?')) return;
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/board-posts/' + postId, { method: 'DELETE' });
+      if (result) { toast('Post removed'); loadBoard(); }
+    }
+
     async function loadSecurity() {
       if (!state.currentTenant) return;
       if (hasPerm('manage_settings')) {
@@ -890,10 +1190,82 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
             (settings.allowJoinRequests && state.currentTenant ?
               '<div style="margin-top:8px;font-size:13px;color:var(--text-dim)">Share this link: <code style="color:var(--accent);cursor:pointer" onclick="copyToClipboard(window.location.origin + \\'/join/' + esc(state.currentTenant.slug) + '\\')">' + esc(location.origin) + '/join/' + esc(state.currentTenant.slug) + '</code></div>' : '') +
             '<div class="toggle-row">' +
+              '<div class="toggle-label"><span>Enable public board</span><span>Show a public message board at /board/' + esc(state.currentTenant.slug) + '</span></div>' +
+              '<label class="toggle"><input type="checkbox" ' + (settings.boardEnabled ? 'checked' : '') +
+                ' onchange="toggleSetting(\\'boardEnabled\\', this.checked)" /><span class="slider"></span></label>' +
+            '</div>' +
+            (settings.boardEnabled && state.currentTenant ?
+              '<div style="margin-top:4px;margin-bottom:8px;font-size:13px;color:var(--text-dim)">Board link: <code style="color:var(--accent);cursor:pointer" onclick="copyToClipboard(window.location.origin + \\'/board/' + esc(state.currentTenant.slug) + '\\')">' + esc(location.origin) + '/board/' + esc(state.currentTenant.slug) + '</code></div>' +
+              '<div class="inline-form" style="margin-bottom:8px">' +
+                '<label style="font-size:13px;color:var(--text-dim);white-space:nowrap">Max posts:</label>' +
+                '<input type="number" id="max-posts-input" value="' + (settings.maxBoardPosts || 20) + '" style="width:80px;padding:4px 8px;font-size:13px" />' +
+                '<label style="font-size:13px;color:var(--text-dim);white-space:nowrap">Show on board:</label>' +
+                '<input type="number" id="max-posts-displayed-input" value="' + (settings.maxBoardPostsDisplayed || 10) + '" style="width:80px;padding:4px 8px;font-size:13px" />' +
+                '<button class="btn-sm" onclick="saveBoardLimits()">Save</button>' +
+              '</div>' : '') +
+            '<div class="toggle-row">' +
+              '<div class="toggle-label"><span>Require service device approval</span><span>Service devices must be approved by an authorized member</span></div>' +
+              '<label class="toggle"><input type="checkbox" ' + (settings.requireServiceDeviceApproval ? 'checked' : '') +
+                ' onchange="toggleSetting(\\'requireServiceDeviceApproval\\', this.checked)" /><span class="slider"></span></label>' +
+            '</div>' +
+            '<div class="toggle-row">' +
+              '<div class="toggle-label"><span>Require service approval</span><span>Services must be approved before going active</span></div>' +
+              '<label class="toggle"><input type="checkbox" ' + (settings.requireServiceApproval ? 'checked' : '') +
+                ' onchange="toggleSetting(\\'requireServiceApproval\\', this.checked)" /><span class="slider"></span></label>' +
+            '</div>' +
+            '<div class="toggle-row">' +
               '<div class="toggle-label"><span>Lockdown mode</span><span>Block all new invitations, joins, and device registrations</span></div>' +
               '<label class="toggle"><input type="checkbox" ' + (settings.lockdownMode ? 'checked' : '') +
                 ' onchange="toggleSetting(\\'lockdownMode\\', this.checked)" /><span class="slider"></span></label>' +
             '</div>';
+        }
+      }
+
+      if (hasPerm('approve_services')) {
+        var svcDevices = await api('/api/tenants/' + state.currentTenant.id + '/service-devices') || [];
+        var svcs = await api('/api/tenants/' + state.currentTenant.id + '/services') || [];
+        var sae = document.getElementById('service-approvals');
+        if (sae) {
+          var pendingDevices = svcDevices.filter(function(d) { return d.status === 'pending'; });
+          var pendingServices = svcs.filter(function(s) { return s.status === 'pending'; });
+          if (pendingDevices.length === 0 && pendingServices.length === 0) {
+            sae.innerHTML = '<div class="empty-state" style="padding:16px">No pending service approvals</div>';
+          } else {
+            var html = '';
+            if (pendingDevices.length > 0) {
+              html += '<div style="font-size:12px;color:var(--text-dim);padding:6px 12px;font-weight:600">Service Devices</div>';
+              html += pendingDevices.map(function(d) {
+                return '<div class="approval-item">' +
+                  '<div>' +
+                    '<strong>' + esc(d.name) + '</strong>' +
+                    (d.description ? '<br><span style="color:var(--text-dim);font-size:12px">' + esc(d.description) + '</span>' : '') +
+                    '<br><span style="color:var(--text-dim);font-size:12px">by ' + esc(d.ownerDisplayName || d.ownerHandle) + '</span>' +
+                  '</div>' +
+                  '<div style="display:flex;gap:6px">' +
+                    '<button class="btn-sm" onclick="approveServiceDevice(\\'' + d.id + '\\')">Approve</button>' +
+                    '<button class="btn-sm btn-danger" onclick="rejectServiceDevice(\\'' + d.id + '\\')">Reject</button>' +
+                  '</div>' +
+                '</div>';
+              }).join('');
+            }
+            if (pendingServices.length > 0) {
+              html += '<div style="font-size:12px;color:var(--text-dim);padding:6px 12px;font-weight:600;margin-top:8px">Services</div>';
+              html += pendingServices.map(function(s) {
+                return '<div class="approval-item">' +
+                  '<div>' +
+                    '<strong>' + esc(s.name) + '</strong>' +
+                    '<br><span style="color:var(--text-dim);font-size:12px">' + esc(s.url) + '</span>' +
+                    '<br><span style="color:var(--text-dim);font-size:12px">by ' + esc(s.ownerDisplayName || s.ownerHandle) + '</span>' +
+                  '</div>' +
+                  '<div style="display:flex;gap:6px">' +
+                    '<button class="btn-sm" onclick="approveService(\\'' + s.id + '\\')">Approve</button>' +
+                    '<button class="btn-sm btn-danger" onclick="rejectService(\\'' + s.id + '\\')">Reject</button>' +
+                  '</div>' +
+                '</div>';
+              }).join('');
+            }
+            sae.innerHTML = html;
+          }
         }
       }
 
@@ -984,6 +1356,19 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         join_request_created: 'requested to join',
         join_request_approved: 'approved join request',
         join_request_rejected: 'rejected join request',
+        board_enabled: 'enabled board',
+        board_disabled: 'disabled board',
+        board_settings_updated: 'updated board settings',
+        board_post_created: 'created board post',
+        board_post_removed: 'removed board post',
+        service_device_requested: 'registered service device',
+        service_device_approved: 'approved service device',
+        service_device_rejected: 'rejected service device',
+        service_device_removed: 'removed service device',
+        service_created: 'registered service',
+        service_approved: 'approved service',
+        service_rejected: 'rejected service',
+        service_removed: 'removed service',
       };
       el.innerHTML = data.entries.map(function(e) {
         var label = actionLabels[e.action] || e.action;
@@ -1024,6 +1409,13 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         join_requests_enabled: 'enabled join requests', join_requests_disabled: 'disabled join requests',
         join_request_created: 'requested to join', join_request_approved: 'approved join request',
         join_request_rejected: 'rejected join request',
+        board_enabled: 'enabled board', board_disabled: 'disabled board',
+        board_settings_updated: 'updated board settings', board_post_created: 'created board post',
+        board_post_removed: 'removed board post', service_device_requested: 'registered service device',
+        service_device_approved: 'approved service device', service_device_rejected: 'rejected service device',
+        service_device_removed: 'removed service device', service_created: 'registered service',
+        service_approved: 'approved service', service_rejected: 'rejected service',
+        service_removed: 'removed service',
       };
       var html = data.entries.map(function(e) {
         var label = actionLabels[e.action] || e.action;
@@ -1034,6 +1426,20 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         '</div>';
       }).join('');
       el.insertAdjacentHTML('beforeend', html);
+    }
+
+    async function saveBoardLimits() {
+      if (!state.currentTenant) return;
+      var maxPosts = parseInt(document.getElementById('max-posts-input').value) || 20;
+      var maxDisplayed = parseInt(document.getElementById('max-posts-displayed-input').value) || 10;
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ maxBoardPosts: maxPosts, maxBoardPostsDisplayed: maxDisplayed }),
+      });
+      if (result) {
+        state.settings = result;
+        toast('Board limits saved');
+      }
     }
 
     async function toggleSetting(key, value) {
@@ -1152,6 +1558,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         if (state.tab === 'devices') loadDevices();
         if (state.tab === 'members') loadMembers();
         if (state.tab === 'invite') loadSentInvitations();
+        if (state.tab === 'services') loadServices();
+        if (state.tab === 'board') loadBoard();
         if (state.tab === 'roles') loadRoles();
         if (state.tab === 'security') loadSecurity();
         if (state.tab === 'audit') loadAuditLog();

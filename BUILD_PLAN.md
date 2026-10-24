@@ -131,7 +131,7 @@ See `docs/adr/` for rationale behind each choice:
 - [x] `memberships.isOriginator` boolean for hard originator protection
 - [x] `memberships.roleId` FK to roles
 - [x] `tenants.defaultRoleId` FK to roles (citizen by default)
-- [x] 9 discrete permissions: invite, kick, manage_roles, manage_settings, approve_devices, approve_joins, lock_devices, view_audit_log, manage_devices
+- [x] 13 discrete permissions: invite, kick, manage_roles, manage_settings, approve_devices, approve_joins, approve_services, lock_devices, view_audit_log, manage_devices, manage_services, manage_board, create_posts
 - [x] `hasPermission(membership, role, permission)` — originators always pass, others check role JSONB
 - [x] Two system roles per tenant: originator (all perms, immutable) and citizen (customizable)
 - [x] Role CRUD API (GET/POST/PATCH/DELETE /api/tenants/:id/roles)
@@ -198,6 +198,32 @@ See `docs/adr/` for rationale behind each choice:
 - [x] Audit logging for enable/disable/create/approve/reject actions
 
 **Milestone:** Originator can create custom roles with arbitrary permission sets, assign roles to members, delegate role management, require device approval, lock devices, view audit trail, emergency-lockdown the tailnet, and open public join requests.
+
+### 5.8 Service devices and services
+- [x] `service_devices` table with pending/approved/rejected status, auth key generation on approval
+- [x] `services` table linked to approved service devices, with pending/active/disabled status
+- [x] `requireServiceDeviceApproval` and `requireServiceApproval` tenant settings
+- [x] 4 new permissions: `approve_services`, `manage_services`, `manage_board`, `create_posts`
+- [x] Service device registration with optional approval workflow (originators auto-approve)
+- [x] Service device approve/reject/remove endpoints
+- [x] Service CRUD with optional approval workflow
+- [x] Service approve/reject/remove endpoints
+- [x] Dashboard Services tab with device and service management, registration forms, approval actions
+- [x] Lockdown blocks service device registration
+
+### 5.9 Public message board
+- [x] `board_posts` table linked to active services, with active/removed status
+- [x] `boardEnabled`, `maxBoardPosts`, `maxBoardPostsDisplayed` tenant settings
+- [x] Board post CRUD gated by `create_posts` (own posts) and `manage_board` (any post)
+- [x] Post count enforced against `maxBoardPosts` limit
+- [x] Public board API (`GET /api/tenants/by-slug/:slug/board`) — returns posts with service details, respects display limit
+- [x] Public `/board/:slug` page — dark themed, shows post cards with expandable service details
+- [x] Board hidden in lockdown mode
+- [x] Dashboard Board tab with post management, creation form linked to active services
+- [x] Board settings (enable, limits) in Security tab
+- [x] Shareable board link when enabled
+- [x] Pending service approvals queue in Security tab
+- [x] Audit logging for all board, service, and service device actions
 
 ---
 

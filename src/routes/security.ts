@@ -31,6 +31,11 @@ const settingsBody = z.object({
   requireDeviceApproval: z.boolean().optional(),
   lockdownMode: z.boolean().optional(),
   allowJoinRequests: z.boolean().optional(),
+  boardEnabled: z.boolean().optional(),
+  maxBoardPosts: z.number().int().min(1).max(200).optional(),
+  maxBoardPostsDisplayed: z.number().int().min(1).max(200).optional(),
+  requireServiceApproval: z.boolean().optional(),
+  requireServiceDeviceApproval: z.boolean().optional(),
 });
 
 const roleBody = z.object({
@@ -82,6 +87,11 @@ securityRouter.get(
       requireDeviceApproval: result.tenant.requireDeviceApproval,
       lockdownMode: result.tenant.lockdownMode,
       allowJoinRequests: result.tenant.allowJoinRequests,
+      boardEnabled: result.tenant.boardEnabled,
+      maxBoardPosts: result.tenant.maxBoardPosts,
+      maxBoardPostsDisplayed: result.tenant.maxBoardPostsDisplayed,
+      requireServiceApproval: result.tenant.requireServiceApproval,
+      requireServiceDeviceApproval: result.tenant.requireServiceDeviceApproval,
       defaultRoleId: result.tenant.defaultRoleId,
     });
   },
@@ -142,6 +152,54 @@ securityRouter.patch(
       });
     }
 
+    if (parsed.data.boardEnabled !== undefined) {
+      updates.boardEnabled = parsed.data.boardEnabled;
+      logAudit({
+        tenantId: result.tenant.id,
+        actorUserId: req.session.userId!,
+        action: parsed.data.boardEnabled ? "board_enabled" : "board_disabled",
+        targetType: "tenant",
+        targetId: result.tenant.id,
+      });
+    }
+
+    if (parsed.data.maxBoardPosts !== undefined || parsed.data.maxBoardPostsDisplayed !== undefined) {
+      if (parsed.data.maxBoardPosts !== undefined) updates.maxBoardPosts = parsed.data.maxBoardPosts;
+      if (parsed.data.maxBoardPostsDisplayed !== undefined) updates.maxBoardPostsDisplayed = parsed.data.maxBoardPostsDisplayed;
+      logAudit({
+        tenantId: result.tenant.id,
+        actorUserId: req.session.userId!,
+        action: "board_settings_updated",
+        targetType: "tenant",
+        targetId: result.tenant.id,
+        metadata: { maxBoardPosts: parsed.data.maxBoardPosts, maxBoardPostsDisplayed: parsed.data.maxBoardPostsDisplayed },
+      });
+    }
+
+    if (parsed.data.requireServiceApproval !== undefined) {
+      updates.requireServiceApproval = parsed.data.requireServiceApproval;
+      logAudit({
+        tenantId: result.tenant.id,
+        actorUserId: req.session.userId!,
+        action: "tenant_settings_updated",
+        targetType: "tenant",
+        targetId: result.tenant.id,
+        metadata: { requireServiceApproval: parsed.data.requireServiceApproval },
+      });
+    }
+
+    if (parsed.data.requireServiceDeviceApproval !== undefined) {
+      updates.requireServiceDeviceApproval = parsed.data.requireServiceDeviceApproval;
+      logAudit({
+        tenantId: result.tenant.id,
+        actorUserId: req.session.userId!,
+        action: "tenant_settings_updated",
+        targetType: "tenant",
+        targetId: result.tenant.id,
+        metadata: { requireServiceDeviceApproval: parsed.data.requireServiceDeviceApproval },
+      });
+    }
+
     await db
       .update(tenants)
       .set(updates)
@@ -156,6 +214,11 @@ securityRouter.patch(
       requireDeviceApproval: updated.requireDeviceApproval,
       lockdownMode: updated.lockdownMode,
       allowJoinRequests: updated.allowJoinRequests,
+      boardEnabled: updated.boardEnabled,
+      maxBoardPosts: updated.maxBoardPosts,
+      maxBoardPostsDisplayed: updated.maxBoardPostsDisplayed,
+      requireServiceApproval: updated.requireServiceApproval,
+      requireServiceDeviceApproval: updated.requireServiceDeviceApproval,
       defaultRoleId: updated.defaultRoleId,
     });
   },

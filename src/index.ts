@@ -9,6 +9,8 @@ import { apiRouter } from "./routes/api.js";
 import { invitationsRouter } from "./routes/invitations.js";
 import { devicesRouter } from "./routes/devices.js";
 import { securityRouter } from "./routes/security.js";
+import { servicesRouter } from "./routes/services.js";
+import { boardRouter } from "./routes/board.js";
 import { dashboardRouter } from "./routes/dashboard.js";
 
 const app = express();
@@ -60,6 +62,8 @@ app.use(apiRouter);
 app.use(invitationsRouter);
 app.use(devicesRouter);
 app.use(securityRouter);
+app.use(servicesRouter);
+app.use(boardRouter);
 
 app.listen(config.port, () => {
   console.log(`atproto-tailnet running at ${config.publicUrl}`);

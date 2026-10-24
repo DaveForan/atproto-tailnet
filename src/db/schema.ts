@@ -54,6 +54,19 @@ export const auditActionEnum = pgEnum("audit_action", [
   "join_request_created",
   "join_request_approved",
   "join_request_rejected",
+  "board_enabled",
+  "board_disabled",
+  "board_settings_updated",
+  "board_post_created",
+  "board_post_removed",
+  "service_device_requested",
+  "service_device_approved",
+  "service_device_rejected",
+  "service_device_removed",
+  "service_created",
+  "service_approved",
+  "service_rejected",
+  "service_removed",
 ]);
 
 export const deviceApprovalStatusEnum = pgEnum("device_approval_status", [
@@ -67,6 +80,23 @@ export const joinRequestStatusEnum = pgEnum("join_request_status", [
   "pending",
   "approved",
   "rejected",
+]);
+
+export const serviceDeviceStatusEnum = pgEnum("service_device_status", [
+  "pending",
+  "approved",
+  "rejected",
+]);
+
+export const serviceStatusEnum = pgEnum("service_status", [
+  "pending",
+  "active",
+  "disabled",
+]);
+
+export const boardPostStatusEnum = pgEnum("board_post_status", [
+  "active",
+  "removed",
 ]);
 
 export const users = pgTable("users", {
@@ -115,6 +145,16 @@ export const tenants = pgTable("tenants", {
   lockdownMode: boolean("lockdown_mode").notNull().default(false),
   /** When true, non-members can request to join via the public join page. */
   allowJoinRequests: boolean("allow_join_requests").notNull().default(false),
+  /** When true, the public message board is visible at /board/:slug. */
+  boardEnabled: boolean("board_enabled").notNull().default(false),
+  /** Maximum number of board posts allowed. */
+  maxBoardPosts: integer("max_board_posts").notNull().default(20),
+  /** Maximum number of posts shown on the public board page. */
+  maxBoardPostsDisplayed: integer("max_board_posts_displayed").notNull().default(10),
+  /** When true, service devices require approval before getting an auth key. */
+  requireServiceApproval: boolean("require_service_approval").notNull().default(true),
+  /** When true, services must be approved before going active. */
+  requireServiceDeviceApproval: boolean("require_service_device_approval").notNull().default(true),
   /** Role assigned to new members on invitation acceptance. */
   defaultRoleId: uuid("default_role_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -223,6 +263,63 @@ export const deviceLocks = pgTable(
     ),
   ],
 );
+
+export const serviceDevices = pgTable("service_devices", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  tenantId: uuid("tenant_id")
+    .notNull()
+    .references(() => tenants.id),
+  ownerId: uuid("owner_id")
+    .notNull()
+    .references(() => users.id),
+  name: text("name").notNull(),
+  description: text("description"),
+  status: serviceDeviceStatusEnum("status").notNull().default("pending"),
+  hsUsername: text("hs_username"),
+  preAuthKey: text("pre_auth_key"),
+  command: text("command"),
+  reviewedById: uuid("reviewed_by_id").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  reviewedAt: timestamp("reviewed_at"),
+});
+
+export const services = pgTable("services", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  tenantId: uuid("tenant_id")
+    .notNull()
+    .references(() => tenants.id),
+  ownerId: uuid("owner_id")
+    .notNull()
+    .references(() => users.id),
+  serviceDeviceId: uuid("service_device_id")
+    .notNull()
+    .references(() => serviceDevices.id),
+  name: text("name").notNull(),
+  description: text("description"),
+  url: text("url").notNull(),
+  status: serviceStatusEnum("status").notNull().default("pending"),
+  reviewedById: uuid("reviewed_by_id").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+export const boardPosts = pgTable("board_posts", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  tenantId: uuid("tenant_id")
+    .notNull()
+    .references(() => tenants.id),
+  authorId: uuid("author_id")
+    .notNull()
+    .references(() => users.id),
+  serviceId: uuid("service_id")
+    .notNull()
+    .references(() => services.id),
+  title: text("title").notNull(),
+  description: text("description"),
+  status: boardPostStatusEnum("status").notNull().default("active"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
 
 export const auditLogs = pgTable("audit_logs", {
   id: uuid("id").defaultRandom().primaryKey(),

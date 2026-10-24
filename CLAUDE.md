@@ -52,6 +52,10 @@ npm run dev                      # http://localhost:3000
 - Device locks: `device_locks` table binds a membership to specific Headscale `machineKey` values — blocks new key generation until unlocked
 - Join requests: `allowJoinRequests` toggle + public `/join/:slug` page; gated by `approve_joins` permission; lockdown blocks requests
 - Post-login redirect: `req.session.postLoginRedirect` stores destination (validated as local path) through OAuth flow
+- Service devices: distinct from regular devices; `requireServiceDeviceApproval` toggle; originators auto-approve; gated by `manage_services` and `approve_services`
+- Services: registered on approved service devices; `requireServiceApproval` toggle; must be active to appear on board
+- Board posts: public message board at `/board/:slug`; `boardEnabled` toggle; `maxBoardPosts`/`maxBoardPostsDisplayed` limits; linked to active services
+- 13 permissions total: invite, kick, manage_roles, manage_settings, approve_devices, approve_joins, approve_services, lock_devices, view_audit_log, manage_devices, manage_services, manage_board, create_posts
 
 ## File layout
 
@@ -59,7 +63,7 @@ npm run dev                      # http://localhost:3000
 src/
   auth/atproto.ts          — AT Proto OAuth client setup + DB-backed stores
   config.ts                — Zod-validated env config
-  db/schema.ts             — Drizzle schema (users, tenants, roles, memberships, invitations, device_approvals, device_locks, join_requests, audit_logs)
+  db/schema.ts             — Drizzle schema (users, tenants, roles, memberships, invitations, device_approvals, device_locks, join_requests, service_devices, services, board_posts, audit_logs)
   db/index.ts              — Database connection + pool export
   orchestrator/
     headscale.ts           — Docker lifecycle (create/start/stop/destroy), CLI exec
@@ -73,7 +77,9 @@ src/
     devices.ts             — Node listing, auth key generation, member management (permission-gated)
     permissions.ts         — ALL_PERMISSIONS constant, Permission type, role defaults
     security.ts            — Tenant settings, role CRUD, role assignment, device approvals/locks, join request management, audit log
-    dashboard.ts           — Inline SPA (dark theme, tabbed UI with Roles + Security + Audit tabs) + /join/:slug public page
+    services.ts            — Service device registration/approval, service CRUD/approval
+    board.ts               — Board posts CRUD, public board API + /board/:slug page
+    dashboard.ts           — Inline SPA (tabbed: Devices, Members, Invite, Add Device, Services, Board, Roles, Security, Audit) + /join/:slug
     helpers.ts             — Shared middleware, param(), permission checks, hs username/URL helpers
     audit.ts               — Fire-and-forget audit log writer
 docs/adr/                  — Architecture Decision Records (0001-0005)
