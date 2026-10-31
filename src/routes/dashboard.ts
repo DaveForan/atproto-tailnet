@@ -1665,6 +1665,14 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
               '<label class="toggle"><input type="checkbox" ' + (settings.allowMemberAgentTokens ? 'checked' : '') +
                 ' onchange="toggleSetting(\\'allowMemberAgentTokens\\', this.checked)" /><span class="slider"></span></label>' +
             '</div>' +
+            '<div class="inline-form" style="margin-top:8px;margin-bottom:8px;align-items:center">' +
+              '<label style="font-size:13px;color:var(--text-dim);white-space:nowrap">Auto-hibernate after</label>' +
+              '<input type="number" id="hibernate-days-input" min="0" max="365" value="' + (settings.hibernateAfterDays || 0) + '" style="width:80px;padding:4px 8px;font-size:13px" />' +
+              '<span style="font-size:13px;color:var(--text-dim)">days of inactivity (0 = never)</span>' +
+              '<button class="btn-sm" onclick="saveHibernation()">Save</button>' +
+            '</div>' +
+            (settings.lastActivityAt ?
+              '<div style="margin-bottom:8px;font-size:12px;color:var(--text-dim)">Last activity: ' + relativeTime(settings.lastActivityAt) + '</div>' : '') +
             '<div class="toggle-row">' +
               '<div class="toggle-label"><span>Lockdown mode</span><span>Block all new invitations, joins, and device registrations</span></div>' +
               '<label class="toggle"><input type="checkbox" ' + (settings.lockdownMode ? 'checked' : '') +
@@ -1827,6 +1835,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         tenant_deleted: 'deleted tenant',
         tenant_started: 'started tenant',
         tenant_stopped: 'stopped tenant',
+        tenant_hibernated: 'tenant auto-hibernated',
         acl_updated: 'updated ACL policy',
       };
       el.innerHTML = data.entries.map(function(e) {
@@ -1877,6 +1886,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         service_removed: 'removed service',
         agent_token_created: 'created agent token', agent_token_revoked: 'revoked agent token',
         tenant_deleted: 'deleted tenant', tenant_started: 'started tenant', tenant_stopped: 'stopped tenant',
+        tenant_hibernated: 'tenant auto-hibernated',
         acl_updated: 'updated ACL policy',
       };
       var html = data.entries.map(function(e) {
@@ -1895,6 +1905,37 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         '</div>';
       }).join('');
       el.insertAdjacentHTML('beforeend', html);
+    }
+
+    function relativeTime(iso) {
+      var diff = Date.now() - new Date(iso).getTime();
+      var sec = Math.floor(diff / 1000);
+      if (sec < 60) return 'just now';
+      var min = Math.floor(sec / 60);
+      if (min < 60) return min + 'm ago';
+      var hr = Math.floor(min / 60);
+      if (hr < 24) return hr + 'h ago';
+      var days = Math.floor(hr / 24);
+      if (days < 30) return days + 'd ago';
+      var months = Math.floor(days / 30);
+      if (months < 12) return months + 'mo ago';
+      return Math.floor(months / 12) + 'y ago';
+    }
+
+    async function saveHibernation() {
+      if (!state.currentTenant) return;
+      var days = parseInt(document.getElementById('hibernate-days-input').value) || 0;
+      if (days < 0) days = 0;
+      if (days > 365) days = 365;
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/settings', {
+        method: 'PATCH',
+        body: JSON.stringify({ hibernateAfterDays: days }),
+      });
+      if (result) {
+        state.settings = result;
+        toast('Hibernation setting saved');
+        loadSecurity();
+      }
     }
 
     async function saveBoardLimits() {

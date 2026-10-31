@@ -89,6 +89,7 @@ export const auditActionEnum = pgEnum("audit_action", [
   "tenant_deleted",
   "tenant_started",
   "tenant_stopped",
+  "tenant_hibernated",
   "acl_updated",
 ]);
 
@@ -188,6 +189,10 @@ export const tenants = pgTable("tenants", {
   allowAgentTokens: boolean("allow_agent_tokens").notNull().default(false),
   /** When true, non-originator members can create their own agent tokens (requires allowAgentTokens). */
   allowMemberAgentTokens: boolean("allow_member_agent_tokens").notNull().default(false),
+  /** Days of inactivity before auto-stopping the instance. 0 = disabled. */
+  hibernateAfterDays: integer("hibernate_after_days").notNull().default(0),
+  /** Last time a member or agent accessed this tenant's API. Updated at most once per 5 minutes. */
+  lastActivityAt: timestamp("last_activity_at").defaultNow().notNull(),
   /** Role assigned to new members on invitation acceptance. */
   defaultRoleId: uuid("default_role_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),

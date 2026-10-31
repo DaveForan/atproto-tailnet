@@ -69,6 +69,8 @@ npm run dev                      # http://localhost:3000
 - Health monitoring: background 60s interval (`orchestrator/monitor.ts`) probes all running tenants via Headscale REST, auto-restarts failed containers, marks "error" if restart fails
 - Per-tenant health endpoint: `GET /api/tenants/:id/health` — any member, returns live Headscale probe result
 - Structured logging: `pino` via `src/logger.ts`; `LOG_LEVEL` env var (default: info); replaces all console.log/error
+- Instance hibernation: `hibernateAfterDays` setting (0 = disabled), `lastActivityAt` updated on API access (debounced 5 min); monitor sweep auto-stops idle tenants past threshold
+- `getTenantForUser` touches `lastActivityAt` fire-and-forget when >5 min stale
 
 ## File layout
 

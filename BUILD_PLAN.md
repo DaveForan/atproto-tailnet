@@ -267,7 +267,9 @@ See `docs/adr/` for rationale behind each choice:
 - [x] Background health monitor (60s interval, `orchestrator/monitor.ts`)
 - [x] Auto-restart failed Headscale containers, mark "error" if restart also fails
 - [x] Per-tenant health endpoint: `GET /api/tenants/:id/health` (any member)
-- [ ] Instance hibernation for inactive tenants (stop after N days idle, restart on connection)
+- [x] Instance hibernation: `lastActivityAt` tracking (debounced 5min), `hibernateAfterDays` setting (0=disabled)
+- [x] Monitor sweep auto-stops idle tenants past threshold, audit-logged as `tenant_hibernated`
+- [x] Hibernation settings in Security tab with relative-time last-activity display
 
 ### 4.3 Production deployment
 - [ ] Real domain + wildcard TLS (Let's Encrypt via Caddy)

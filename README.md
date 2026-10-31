@@ -26,6 +26,7 @@ Built on [Headscale](https://github.com/juanfont/headscale) (open-source Tailsca
 - **ACL management** — visual editor for Headscale access control rules, groups, and hosts
 - **Agent API tokens** — scoped Bearer tokens for AI agents and automation
 - **Health monitoring** — background checks with auto-restart for failed instances
+- **Instance hibernation** — auto-stop idle tenants after configurable days of inactivity
 - **Structured logging** — Pino-based JSON logs with configurable level
 - **Full audit log** — every security-relevant action recorded with metadata
 - **Inline dashboard** — single-page app served from the backend, no separate frontend build

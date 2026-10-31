@@ -51,6 +51,7 @@ const settingsBody = z.object({
   requireServiceDeviceApproval: z.boolean().optional(),
   allowAgentTokens: z.boolean().optional(),
   allowMemberAgentTokens: z.boolean().optional(),
+  hibernateAfterDays: z.number().int().min(0).max(365).optional(),
 });
 
 const roleBody = z.object({
@@ -109,6 +110,8 @@ securityRouter.get(
       requireServiceDeviceApproval: result.tenant.requireServiceDeviceApproval,
       allowAgentTokens: result.tenant.allowAgentTokens,
       allowMemberAgentTokens: result.tenant.allowMemberAgentTokens,
+      hibernateAfterDays: result.tenant.hibernateAfterDays,
+      lastActivityAt: result.tenant.lastActivityAt,
       defaultRoleId: result.tenant.defaultRoleId,
     });
   },
@@ -245,6 +248,18 @@ securityRouter.patch(
       });
     }
 
+    if (parsed.data.hibernateAfterDays !== undefined) {
+      updates.hibernateAfterDays = parsed.data.hibernateAfterDays;
+      logAudit({
+        tenantId: result.tenant.id,
+        actorUserId: authUserId(req),
+        action: "tenant_settings_updated",
+        targetType: "tenant",
+        targetId: result.tenant.id,
+        metadata: { hibernateAfterDays: parsed.data.hibernateAfterDays },
+      });
+    }
+
     await db
       .update(tenants)
       .set(updates)
@@ -266,6 +281,8 @@ securityRouter.patch(
       requireServiceDeviceApproval: updated.requireServiceDeviceApproval,
       allowAgentTokens: updated.allowAgentTokens,
       allowMemberAgentTokens: updated.allowMemberAgentTokens,
+      hibernateAfterDays: updated.hibernateAfterDays,
+      lastActivityAt: updated.lastActivityAt,
       defaultRoleId: updated.defaultRoleId,
     });
   },

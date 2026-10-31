@@ -202,8 +202,11 @@ export type TenantForUser = {
   role: typeof roles.$inferSelect | null;
 };
 
+const ACTIVITY_DEBOUNCE_MS = 5 * 60 * 1000;
+
 /**
  * Loads a tenant + the caller's membership + their role in one query.
+ * Also touches `lastActivityAt` (debounced to once per 5 minutes).
  *
  * Returns `null` if the user is not a member **or** the tenant is soft-deleted.
  */
@@ -224,7 +227,19 @@ export async function getTenantForUser(
       ),
     );
 
-  return results[0] ?? null;
+  const result = results[0] ?? null;
+
+  if (result) {
+    const sinceActivity = Date.now() - result.tenant.lastActivityAt.getTime();
+    if (sinceActivity > ACTIVITY_DEBOUNCE_MS) {
+      db.update(tenants)
+        .set({ lastActivityAt: new Date() })
+        .where(eq(tenants.id, tenantId))
+        .catch(() => {});
+    }
+  }
+
+  return result;
 }
 
 /**
