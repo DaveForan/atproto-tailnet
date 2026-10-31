@@ -24,6 +24,7 @@ export const ALL_PERMISSIONS = [
   "create_posts",
   "create_agent_tokens",
   "manage_agent_tokens",
+  "manage_acl",
 ] as const;
 
 /** A single permission string from {@link ALL_PERMISSIONS}. */
@@ -46,6 +47,7 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   create_posts: "Create and remove own posts on the public board",
   create_agent_tokens: "Create personal API tokens for agent access",
   manage_agent_tokens: "View and revoke any member's agent tokens",
+  manage_acl: "View and edit network access control rules",
 };
 
 /** Originator system role always has every permission. */

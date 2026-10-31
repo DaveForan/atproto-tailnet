@@ -89,6 +89,7 @@ export const auditActionEnum = pgEnum("audit_action", [
   "tenant_deleted",
   "tenant_started",
   "tenant_stopped",
+  "acl_updated",
 ]);
 
 export const deviceApprovalStatusEnum = pgEnum("device_approval_status", [

@@ -64,7 +64,11 @@ npm run dev                      # http://localhost:3000
 - Guard clause ordering: param extraction → getTenantForUser → hasPermission → lockdown check → body validation → business logic
 - List queries capped at `.limit(200)` with explicit `.orderBy()`
 - Tenant lifecycle (delete/start/stop) audit-logged as `tenant_deleted`/`tenant_started`/`tenant_stopped`
-- 15 permissions total: invite, kick, manage_roles, manage_settings, approve_devices, approve_joins, approve_services, lock_devices, view_audit_log, manage_devices, manage_services, manage_board, create_posts, create_agent_tokens, manage_agent_tokens
+- 16 permissions total: invite, kick, manage_roles, manage_settings, approve_devices, approve_joins, approve_services, lock_devices, view_audit_log, manage_devices, manage_services, manage_board, create_posts, create_agent_tokens, manage_agent_tokens, manage_acl
+- ACL management: `GET/PUT /api/tenants/:id/acl` — fetch/push Headscale ACL policy (groups, hosts, tagOwners, autoApprovers); gated by `manage_acl`; Zod-validated before push
+- Health monitoring: background 60s interval (`orchestrator/monitor.ts`) probes all running tenants via Headscale REST, auto-restarts failed containers, marks "error" if restart fails
+- Per-tenant health endpoint: `GET /api/tenants/:id/health` — any member, returns live Headscale probe result
+- Structured logging: `pino` via `src/logger.ts`; `LOG_LEVEL` env var (default: info); replaces all console.log/error
 
 ## File layout
 
@@ -76,11 +80,13 @@ src/
   config.ts                — Zod-validated env config
   db/schema.ts             — Drizzle schema (users, tenants, roles, memberships, invitations, device_approvals, device_locks, join_requests, service_devices, services, board_posts, agent_tokens, audit_logs)
   db/index.ts              — Database connection + pool export
+  logger.ts                — Pino structured logger (LOG_LEVEL env)
   orchestrator/
     headscale.ts           — Docker lifecycle (create/start/stop/destroy), CLI exec
-    headscale-api.ts       — REST client for running Headscale instances
+    headscale-api.ts       — REST client for running Headscale instances (includes getPolicy/setPolicy)
     caddy.ts               — Caddy admin API (dynamic route add/remove)
     ports.ts               — Port allocator
+    monitor.ts             — Background health-check loop + per-tenant health probe
   routes/
     auth.ts                — /auth/login, /auth/callback, /auth/logout, /.well-known/* + tenant provisioning
     api.ts                 — /api/me, /api/tenants, /health, public tenant lookup, join request submit/status
@@ -91,7 +97,8 @@ src/
     services.ts            — Service device registration/approval, service CRUD/approval
     board.ts               — Board posts CRUD, public board API + /board/:slug page
     agents.ts              — Agent token CRUD (create, list, revoke)
-    dashboard.ts           — Inline SPA (tabbed: Devices, Members, Invite, Add Device, Services, Board, Agents, Roles, Security, Audit) + /join/:slug
+    acl.ts                 — ACL policy GET/PUT (manage_acl permission, Zod-validated)
+    dashboard.ts           — Inline SPA (tabbed: Devices, Members, Invite, Add Device, Services, Board, Agents, ACL, Roles, Security, Audit) + /join/:slug
     helpers.ts             — Shared middleware, param(), permission checks, agent token resolution, hs username/URL helpers
     audit.ts               — Fire-and-forget audit log writer
 docs/adr/                  — Architecture Decision Records (0001-0005)

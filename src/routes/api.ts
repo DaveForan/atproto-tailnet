@@ -17,6 +17,8 @@ import {
 import { removeTenantRoute } from "../orchestrator/caddy.js";
 import { requireAuth, param, getTenantForUser, tenantLoginServer, authUserId } from "./helpers.js";
 import { logAudit } from "./audit.js";
+import { checkTenantHealth } from "../orchestrator/monitor.js";
+import { logger } from "../logger.js";
 
 /**
  * Router for /health, /api/me, /api/tenants (list, detail, delete,
@@ -246,10 +248,7 @@ apiRouter.delete("/api/tenants/:id", requireAuth, async (req, res) => {
     }
 
     await removeTenantRoute(result.tenant.slug).catch((err) =>
-      console.error(
-        `Failed to remove Caddy route for ${result.tenant.slug}:`,
-        err,
-      ),
+      logger.error({ tenantSlug: result.tenant.slug, err }, "failed to remove Caddy route"),
     );
 
     await db
@@ -267,7 +266,7 @@ apiRouter.delete("/api/tenants/:id", requireAuth, async (req, res) => {
 
     res.json({ status: "deleted" });
   } catch (err) {
-    console.error("Failed to delete tenant:", err);
+    logger.error({ tenantId, err }, "failed to delete tenant");
     res.status(502).json({ error: "Failed to delete tenant" });
   }
 });
@@ -299,7 +298,7 @@ apiRouter.post("/api/tenants/:id/start", requireAuth, async (req, res) => {
 
     res.json({ status: "running" });
   } catch (err) {
-    console.error("Failed to start tenant:", err);
+    logger.error({ tenantId: result.tenant.id, err }, "failed to start tenant");
     res.status(502).json({ error: "Failed to start tenant" });
   }
 });
@@ -331,7 +330,33 @@ apiRouter.post("/api/tenants/:id/stop", requireAuth, async (req, res) => {
 
     res.json({ status: "stopped" });
   } catch (err) {
-    console.error("Failed to stop tenant:", err);
+    logger.error({ tenantId: result.tenant.id, err }, "failed to stop tenant");
     res.status(502).json({ error: "Failed to stop tenant" });
   }
 });
+
+/** Live health status of a tenant's Headscale instance. Any member can check. */
+apiRouter.get(
+  "/api/tenants/:id/health",
+  requireAuth,
+  async (req, res) => {
+    const result = await getTenantForUser(param(req, "id"), authUserId(req));
+    if (!result) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+
+    if (!result.tenant.containerId || !result.tenant.apiKey) {
+      res.json({ status: result.tenant.status, healthy: false });
+      return;
+    }
+
+    try {
+      const health = await checkTenantHealth(result.tenant.port, result.tenant.apiKey);
+      res.json({ status: result.tenant.status, healthy: health.healthy });
+    } catch (err) {
+      logger.error({ tenantId: result.tenant.id, err }, "tenant health check failed");
+      res.json({ status: result.tenant.status, healthy: false });
+    }
+  },
+);

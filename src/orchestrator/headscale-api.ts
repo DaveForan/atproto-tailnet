@@ -162,6 +162,15 @@ export class HeadscaleApiClient {
     return headscaleNodeSchema.parse(data.node);
   }
 
+  /** Retrieve the current ACL policy document from the Headscale instance. */
+  async getPolicy(): Promise<object> {
+    const data = (await this.request("GET", "/api/v1/policy")) as {
+      policy: string;
+      updatedAt?: string;
+    };
+    return JSON.parse(data.policy);
+  }
+
   /** Replace the ACL policy document (serialized as JSON string in the request body). */
   async setPolicy(policy: object): Promise<void> {
     await this.request("PUT", "/api/v1/policy", {

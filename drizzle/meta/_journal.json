@@ -64,6 +64,13 @@
       "when": 1792816871021,
       "tag": "0008_lean_magma",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1793422649134,
+      "tag": "0009_zippy_misty_knight",
+      "breakpoints": true
     }
   ]
 }

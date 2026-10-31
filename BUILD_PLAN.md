@@ -131,7 +131,7 @@ See `docs/adr/` for rationale behind each choice:
 - [x] `memberships.isOriginator` boolean for hard originator protection
 - [x] `memberships.roleId` FK to roles
 - [x] `tenants.defaultRoleId` FK to roles (citizen by default)
-- [x] 15 discrete permissions: invite, kick, manage_roles, manage_settings, approve_devices, approve_joins, approve_services, lock_devices, view_audit_log, manage_devices, manage_services, manage_board, create_posts, create_agent_tokens, manage_agent_tokens
+- [x] 16 discrete permissions: invite, kick, manage_roles, manage_settings, approve_devices, approve_joins, approve_services, lock_devices, view_audit_log, manage_devices, manage_services, manage_board, create_posts, create_agent_tokens, manage_agent_tokens, manage_acl
 - [x] `hasPermission(membership, role, permission, req)` — originators always pass, others check role JSONB; req enforces agent token scope
 - [x] Two system roles per tenant: originator (all perms, immutable) and citizen (customizable)
 - [x] Role CRUD API (GET/POST/PATCH/DELETE /api/tenants/:id/roles)
@@ -256,11 +256,17 @@ See `docs/adr/` for rationale behind each choice:
 ## Phase 4: Polish — "Production-ready"
 
 ### 4.1 ACL management
-- [ ] UI for basic ACL rules (who can reach what)
-- [ ] Push ACL updates to Headscale instance
+- [x] ACL policy API: `GET/PUT /api/tenants/:id/acl` with Zod validation
+- [x] Push validated policy to Headscale REST API (policy mode: database)
+- [x] `manage_acl` permission (16th permission) gating ACL routes
+- [x] Dashboard ACL tab: rules table (add/delete), groups editor, hosts editor, save/reset
+- [x] ACL policy fetches Headscale users for autocomplete in UI
+- [x] `acl_updated` audit action with rule/group count metadata
 
 ### 4.2 Instance lifecycle
-- [ ] Health checks and auto-restart
+- [x] Background health monitor (60s interval, `orchestrator/monitor.ts`)
+- [x] Auto-restart failed Headscale containers, mark "error" if restart also fails
+- [x] Per-tenant health endpoint: `GET /api/tenants/:id/health` (any member)
 - [ ] Instance hibernation for inactive tenants (stop after N days idle, restart on connection)
 
 ### 4.3 Production deployment
@@ -270,7 +276,7 @@ See `docs/adr/` for rationale behind each choice:
 - [x] Rate limiting (express-rate-limit: auth + .well-known 10/min, API 60/min)
 - [x] DB-backed auth state/session stores (oauth_states, oauth_sessions tables + connect-pg-simple)
 - [x] Port race condition retry (catches PG 23505, retries up to 3 times)
-- [ ] Logging, error tracking
+- [x] Structured logging (Pino, `LOG_LEVEL` env, replaces all console.log/error)
 
 ### 4.4 UX polish
 - [ ] Real UI design (not just functional)

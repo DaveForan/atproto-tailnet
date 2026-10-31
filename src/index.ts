@@ -28,8 +28,11 @@ import { securityRouter } from "./routes/security.js";
 import { servicesRouter } from "./routes/services.js";
 import { boardRouter } from "./routes/board.js";
 import { agentsRouter } from "./routes/agents.js";
+import { aclRouter } from "./routes/acl.js";
 import { dashboardRouter } from "./routes/dashboard.js";
 import { resolveAgentToken, enforceAgentScope } from "./routes/helpers.js";
+import { startHealthMonitor } from "./orchestrator/monitor.js";
+import { logger } from "./logger.js";
 
 const app = express();
 
@@ -86,7 +89,9 @@ app.use(securityRouter);
 app.use(servicesRouter);
 app.use(boardRouter);
 app.use(agentsRouter);
+app.use(aclRouter);
 
 app.listen(config.port, () => {
-  console.log(`atproto-tailnet running at ${config.publicUrl}`);
+  logger.info({ port: config.port, url: config.publicUrl }, "atproto-tailnet running");
+  startHealthMonitor();
 });

@@ -23,7 +23,10 @@ Built on [Headscale](https://github.com/juanfont/headscale) (open-source Tailsca
 - **Service registry** — register services on your network, publish them to a public board
 - **Public board** — `/board/<slug>` page for advertising services to the world
 - **Join requests** — public `/join/<slug>` page so people can request access
+- **ACL management** — visual editor for Headscale access control rules, groups, and hosts
 - **Agent API tokens** — scoped Bearer tokens for AI agents and automation
+- **Health monitoring** — background checks with auto-restart for failed instances
+- **Structured logging** — Pino-based JSON logs with configurable level
 - **Full audit log** — every security-relevant action recorded with metadata
 - **Inline dashboard** — single-page app served from the backend, no separate frontend build
 
@@ -104,6 +107,7 @@ src/
     headscale-api.ts      — Headscale REST client
     caddy.ts              — Caddy admin API
     ports.ts              — Port allocator
+    monitor.ts            — Health check loop + auto-restart
   routes/
     auth.ts               — OAuth flow + .well-known endpoints
     api.ts                — Tenant CRUD, health, join requests
@@ -113,6 +117,7 @@ src/
     services.ts           — Service devices + service registry
     board.ts              — Public message board
     agents.ts             — Agent API token CRUD
+    acl.ts                — ACL policy management
     dashboard.ts          — Inline SPA dashboard
     helpers.ts            — Shared middleware + auth helpers
     permissions.ts        — Permission definitions
@@ -122,9 +127,9 @@ docs/adr/                 — Architecture Decision Records
 
 ## Security model
 
-The permission system has 15 discrete permissions assigned via custom roles:
+The permission system has 16 discrete permissions assigned via custom roles:
 
-`invite` · `kick` · `manage_roles` · `manage_settings` · `approve_devices` · `approve_joins` · `approve_services` · `lock_devices` · `view_audit_log` · `manage_devices` · `manage_services` · `manage_board` · `create_posts` · `create_agent_tokens` · `manage_agent_tokens`
+`invite` · `kick` · `manage_roles` · `manage_settings` · `approve_devices` · `approve_joins` · `approve_services` · `lock_devices` · `view_audit_log` · `manage_devices` · `manage_services` · `manage_board` · `create_posts` · `create_agent_tokens` · `manage_agent_tokens` · `manage_acl`
 
 The tenant originator has all permissions implicitly and cannot be kicked or demoted. Lockdown mode freezes all external access. Agent tokens are scoped to a single tenant with a permission subset and mandatory expiry.
 
@@ -132,7 +137,7 @@ See [ADR-0005](docs/adr/0005-security-management.md) for the full security desig
 
 ## Status
 
-This is an active development project. Phases 1-3 (auth, networking, invitations) and Phase 5 (security management, services, board, agent tokens) are complete. Phase 4 (production polish — ACL management, auto-restart, real UI) is next.
+This is an active development project. Phases 1-3 (auth, networking, invitations), Phase 5 (security management, services, board, agent tokens), and most of Phase 4 (ACL management, health monitoring, structured logging) are complete. Remaining Phase 4 items: instance hibernation and real UI design.
 
 See `BUILD_PLAN.md` for the full roadmap.
 

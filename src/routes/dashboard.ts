@@ -633,6 +633,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       var canServices = hasPerm('manage_services') || hasPerm('approve_services');
       var canBoard = hasPerm('manage_board') || hasPerm('create_posts');
       var canAgents = state.settings && state.settings.allowAgentTokens;
+      var canAcl = hasPerm('manage_acl');
 
       var tabBar = '<div class="tab-bar">' +
         '<button class="tab ' + (state.tab === 'devices' ? 'active' : '') + '" onclick="switchTab(\\'devices\\')">Devices</button>' +
@@ -643,6 +644,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         (canBoard ? '<button class="tab ' + (state.tab === 'board' ? 'active' : '') + '" onclick="switchTab(\\'board\\')">Board</button>' : '') +
         (canRoles ? '<button class="tab ' + (state.tab === 'roles' ? 'active' : '') + '" onclick="switchTab(\\'roles\\')">Roles</button>' : '') +
         (canAgents ? '<button class="tab ' + (state.tab === 'agents' ? 'active' : '') + '" onclick="switchTab(\\'agents\\')">Agents</button>' : '') +
+        (canAcl ? '<button class="tab ' + (state.tab === 'acl' ? 'active' : '') + '" onclick="switchTab(\\'acl\\')">ACL</button>' : '') +
         (canSecurity ? '<button class="tab ' + (state.tab === 'security' ? 'active' : '') + '" onclick="switchTab(\\'security\\')">Security</button>' : '') +
         (canAudit ? '<button class="tab ' + (state.tab === 'audit' ? 'active' : '') + '" onclick="switchTab(\\'audit\\')">Audit Log</button>' : '') +
       '</div>';
@@ -801,6 +803,58 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           '</div>' +
         '</div>' : '') +
 
+      (canAcl ?
+        '<div id="tab-acl" class="' + (state.tab !== 'acl' ? 'hidden' : '') + '">' +
+          '<div class="card">' +
+            '<div class="card-header"><h3>ACL Rules</h3></div>' +
+            '<p style="color:var(--text-dim);font-size:13px;margin-bottom:12px">Network access control rules define which sources can reach which destinations. Rules are evaluated top-down; the first matching rule wins.</p>' +
+            '<div id="acl-rules-list">Loading...</div>' +
+            '<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">' +
+              '<h4 style="margin-bottom:8px;font-size:14px">Add Rule</h4>' +
+              '<div style="display:flex;flex-direction:column;gap:8px">' +
+                '<div class="inline-form">' +
+                  '<select id="acl-src-select" multiple style="min-height:60px"><option value="*">* (all)</option></select>' +
+                  '<div style="display:flex;flex-direction:column;gap:4px;flex:1">' +
+                    '<select id="acl-dst-select" multiple style="min-height:60px"><option value="*">* (all)</option></select>' +
+                    '<div class="inline-form">' +
+                      '<input type="text" id="acl-dst-port" placeholder="Port (default: *)" style="max-width:150px" />' +
+                    '</div>' +
+                  '</div>' +
+                  '<button onclick="addAclRule()">Add Rule</button>' +
+                '</div>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+          '<div class="card" style="margin-top:12px">' +
+            '<div class="card-header"><h3>Groups</h3></div>' +
+            '<div id="acl-groups-list">Loading...</div>' +
+            '<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">' +
+              '<h4 style="margin-bottom:8px;font-size:14px">Add Group</h4>' +
+              '<div class="inline-form">' +
+                '<input type="text" id="acl-group-name" placeholder="group:name" style="max-width:200px" />' +
+                '<select id="acl-group-members" multiple style="min-height:40px"></select>' +
+                '<button onclick="addAclGroup()">Add Group</button>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+          '<div class="card" style="margin-top:12px">' +
+            '<div class="card-header"><h3>Host Aliases</h3></div>' +
+            '<div id="acl-hosts-list">Loading...</div>' +
+            '<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">' +
+              '<h4 style="margin-bottom:8px;font-size:14px">Add Host Alias</h4>' +
+              '<div class="inline-form">' +
+                '<input type="text" id="acl-host-alias" placeholder="Alias (e.g. webserver)" style="max-width:200px" />' +
+                '<input type="text" id="acl-host-ip" placeholder="IP address (e.g. 100.64.0.1)" />' +
+                '<button onclick="addAclHost()">Add Host</button>' +
+              '</div>' +
+            '</div>' +
+          '</div>' +
+          '<div style="display:flex;gap:8px;margin-top:12px">' +
+            '<button onclick="saveAcl()">Save ACL Policy</button>' +
+            '<button class="btn-danger" onclick="resetAclToAllowAll()">Reset to Allow-All</button>' +
+          '</div>' +
+        '</div>' : '') +
+
       (canSecurity ?
         '<div id="tab-security" class="' + (state.tab !== 'security' ? 'hidden' : '') + '">' +
           (hasPerm('manage_settings') ?
@@ -840,6 +894,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (tab === 'services') loadServices();
       if (tab === 'board') loadBoard();
       if (tab === 'agents') loadAgents();
+      if (tab === 'acl') loadAcl();
       if (tab === 'roles') loadRoles();
       if (tab === 'security') loadSecurity();
       if (tab === 'audit') loadAuditLog();
@@ -1336,6 +1391,226 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       }
     }
 
+    // ── ACL tab ──────────────────────────────────────────────────
+
+    var aclState = { acls: [], groups: {}, hosts: {}, users: [] };
+
+    async function loadAcl() {
+      if (!state.currentTenant) return;
+      var data = await api('/api/tenants/' + state.currentTenant.id + '/acl');
+      if (!data) return;
+      var policy = data.policy || {};
+      aclState.acls = policy.acls || [];
+      aclState.groups = policy.groups || {};
+      aclState.hosts = policy.hosts || {};
+      aclState.users = data.users || [];
+      renderAclRules();
+      renderAclGroups();
+      renderAclHosts();
+      populateAclSelects();
+    }
+
+    function aclOptionValues() {
+      var vals = aclState.users.slice();
+      Object.keys(aclState.groups).forEach(function(g) {
+        if (vals.indexOf(g) === -1) vals.push(g);
+      });
+      return vals;
+    }
+
+    function populateAclSelects() {
+      var opts = aclOptionValues();
+      var srcSelect = document.getElementById('acl-src-select');
+      var dstSelect = document.getElementById('acl-dst-select');
+      var grpMembers = document.getElementById('acl-group-members');
+      if (srcSelect) {
+        srcSelect.innerHTML = '<option value="*">* (all)</option>' +
+          opts.map(function(v) {
+            return '<option value="' + esc(v) + '">' + esc(v) + '</option>';
+          }).join('');
+      }
+      if (dstSelect) {
+        dstSelect.innerHTML = '<option value="*">* (all)</option>' +
+          opts.map(function(v) {
+            return '<option value="' + esc(v) + '">' + esc(v) + '</option>';
+          }).join('');
+      }
+      if (grpMembers) {
+        grpMembers.innerHTML = aclState.users.map(function(u) {
+          return '<option value="' + esc(u) + '">' + esc(u) + '</option>';
+        }).join('');
+      }
+    }
+
+    function renderAclRules() {
+      var el = document.getElementById('acl-rules-list');
+      if (!el) return;
+      if (aclState.acls.length === 0) {
+        el.innerHTML = '<div class="empty-state" style="padding:16px">No ACL rules defined</div>';
+        return;
+      }
+      el.innerHTML = '<div style="font-size:12px;color:var(--text-dim);padding:6px 12px;display:flex;gap:12px;font-weight:600">' +
+        '<span style="flex:1">Source(s)</span><span style="flex:1">Destination(s)</span><span style="width:70px">Action</span><span style="width:60px"></span>' +
+      '</div>' +
+      aclState.acls.map(function(rule, idx) {
+        var srcList = (rule.src || []).map(function(s) { return esc(s); }).join(', ');
+        var dstList = (rule.dst || []).map(function(d) { return esc(d); }).join(', ');
+        return '<div class="approval-item" style="font-size:13px">' +
+          '<span style="flex:1;font-family:monospace;word-break:break-all">' + srcList + '</span>' +
+          '<span style="flex:1;font-family:monospace;word-break:break-all">' + dstList + '</span>' +
+          '<span style="width:70px"><span class="badge badge-running">' + esc(rule.action || 'accept') + '</span></span>' +
+          '<span style="width:60px"><button class="btn-sm btn-danger" onclick="removeAclRule(' + idx + ')">Del</button></span>' +
+        '</div>';
+      }).join('');
+    }
+
+    function renderAclGroups() {
+      var el = document.getElementById('acl-groups-list');
+      if (!el) return;
+      var groupNames = Object.keys(aclState.groups);
+      if (groupNames.length === 0) {
+        el.innerHTML = '<div class="empty-state" style="padding:16px">No groups defined</div>';
+        return;
+      }
+      el.innerHTML = groupNames.map(function(name) {
+        var members = aclState.groups[name] || [];
+        return '<div class="approval-item">' +
+          '<div>' +
+            '<strong>' + esc(name) + '</strong>' +
+            '<br><span style="color:var(--text-dim);font-size:12px;font-family:monospace">' + members.map(function(m) { return esc(m); }).join(', ') + '</span>' +
+          '</div>' +
+          '<button class="btn-sm btn-danger" onclick="removeAclGroup(\\'' + esc(name).replace(/'/g, "\\\\'") + '\\')">Remove</button>' +
+        '</div>';
+      }).join('');
+    }
+
+    function renderAclHosts() {
+      var el = document.getElementById('acl-hosts-list');
+      if (!el) return;
+      var hostNames = Object.keys(aclState.hosts);
+      if (hostNames.length === 0) {
+        el.innerHTML = '<div class="empty-state" style="padding:16px">No host aliases defined</div>';
+        return;
+      }
+      el.innerHTML = hostNames.map(function(name) {
+        var ip = aclState.hosts[name];
+        return '<div class="approval-item">' +
+          '<div>' +
+            '<strong style="font-family:monospace">' + esc(name) + '</strong>' +
+            '<span style="color:var(--text-dim);margin-left:12px;font-family:monospace">' + esc(String(ip)) + '</span>' +
+          '</div>' +
+          '<button class="btn-sm btn-danger" onclick="removeAclHost(\\'' + esc(name).replace(/'/g, "\\\\'") + '\\')">Remove</button>' +
+        '</div>';
+      }).join('');
+    }
+
+    function getSelectedValues(selectId) {
+      var sel = document.getElementById(selectId);
+      if (!sel) return [];
+      var vals = [];
+      for (var i = 0; i < sel.options.length; i++) {
+        if (sel.options[i].selected) vals.push(sel.options[i].value);
+      }
+      return vals;
+    }
+
+    function addAclRule() {
+      var srcs = getSelectedValues('acl-src-select');
+      var dsts = getSelectedValues('acl-dst-select');
+      var portEl = document.getElementById('acl-dst-port');
+      var port = portEl ? portEl.value.trim() : '';
+      if (srcs.length === 0 || dsts.length === 0) { toast('Select at least one source and destination'); return; }
+      var portSuffix = port && port !== '*' ? ':' + port : ':*';
+      var formattedDsts = dsts.map(function(d) {
+        if (d === '*') return '*:*';
+        return d + portSuffix;
+      });
+      aclState.acls.push({ action: 'accept', src: srcs, dst: formattedDsts });
+      renderAclRules();
+      populateAclSelects();
+      if (portEl) portEl.value = '';
+      toast('Rule added (unsaved)');
+    }
+
+    function removeAclRule(idx) {
+      aclState.acls.splice(idx, 1);
+      renderAclRules();
+      toast('Rule removed (unsaved)');
+    }
+
+    function addAclGroup() {
+      var nameEl = document.getElementById('acl-group-name');
+      var name = nameEl ? nameEl.value.trim() : '';
+      if (!name) { toast('Group name is required'); return; }
+      if (name.indexOf('group:') !== 0) { toast('Group name must start with group:'); return; }
+      var members = getSelectedValues('acl-group-members');
+      if (members.length === 0) { toast('Select at least one member'); return; }
+      aclState.groups[name] = members;
+      renderAclGroups();
+      populateAclSelects();
+      if (nameEl) nameEl.value = '';
+      toast('Group added (unsaved)');
+    }
+
+    function removeAclGroup(name) {
+      delete aclState.groups[name];
+      renderAclGroups();
+      populateAclSelects();
+      toast('Group removed (unsaved)');
+    }
+
+    function addAclHost() {
+      var aliasEl = document.getElementById('acl-host-alias');
+      var ipEl = document.getElementById('acl-host-ip');
+      var alias = aliasEl ? aliasEl.value.trim() : '';
+      var ip = ipEl ? ipEl.value.trim() : '';
+      if (!alias || !ip) { toast('Both alias and IP are required'); return; }
+      aclState.hosts[alias] = ip;
+      renderAclHosts();
+      if (aliasEl) aliasEl.value = '';
+      if (ipEl) ipEl.value = '';
+      toast('Host alias added (unsaved)');
+    }
+
+    function removeAclHost(name) {
+      delete aclState.hosts[name];
+      renderAclHosts();
+      toast('Host alias removed (unsaved)');
+    }
+
+    async function saveAcl() {
+      if (!state.currentTenant) return;
+      var policy = {
+        acls: aclState.acls,
+        groups: aclState.groups,
+        hosts: aclState.hosts,
+      };
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/acl', {
+        method: 'PUT',
+        body: JSON.stringify(policy),
+      });
+      if (result) {
+        toast('ACL policy saved');
+        loadAcl();
+      }
+    }
+
+    async function resetAclToAllowAll() {
+      if (!state.currentTenant) return;
+      if (!confirm('Reset ACL to allow-all? This removes all rules, groups, and hosts.')) return;
+      var policy = {
+        acls: [{ action: 'accept', src: ['*'], dst: ['*:*'] }],
+      };
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/acl', {
+        method: 'PUT',
+        body: JSON.stringify(policy),
+      });
+      if (result) {
+        toast('ACL reset to allow-all');
+        loadAcl();
+      }
+    }
+
     async function loadSecurity() {
       if (!state.currentTenant) return;
       if (hasPerm('manage_settings')) {
@@ -1552,6 +1827,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         tenant_deleted: 'deleted tenant',
         tenant_started: 'started tenant',
         tenant_stopped: 'stopped tenant',
+        acl_updated: 'updated ACL policy',
       };
       el.innerHTML = data.entries.map(function(e) {
         var label = actionLabels[e.action] || e.action;
@@ -1601,6 +1877,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         service_removed: 'removed service',
         agent_token_created: 'created agent token', agent_token_revoked: 'revoked agent token',
         tenant_deleted: 'deleted tenant', tenant_started: 'started tenant', tenant_stopped: 'stopped tenant',
+        acl_updated: 'updated ACL policy',
       };
       var html = data.entries.map(function(e) {
         var label = actionLabels[e.action] || e.action;
@@ -1788,6 +2065,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         if (state.tab === 'services') loadServices();
         if (state.tab === 'board') loadBoard();
         if (state.tab === 'agents') loadAgents();
+        if (state.tab === 'acl') loadAcl();
         if (state.tab === 'roles') loadRoles();
         if (state.tab === 'security') loadSecurity();
         if (state.tab === 'audit') loadAuditLog();

@@ -22,6 +22,7 @@ import {
   ORIGINATOR_PERMISSIONS,
   DEFAULT_CITIZEN_PERMISSIONS,
 } from "./permissions.js";
+import { logger } from "../logger.js";
 
 /**
  * Router for authentication routes: login initiation, OAuth callback,
@@ -140,16 +141,16 @@ async function provisionTenant(
           acls: [{ action: "accept", src: ["*"], dst: ["*:*"] }],
         })
         .catch((err) =>
-          console.error(`Failed to set default policy for ${slug}:`, err),
+          logger.error({ tenantSlug: slug, err }, "failed to set default policy"),
         );
 
       await addTenantRoute(slug, port).catch((err) =>
-        console.error(`Failed to add Caddy route for ${slug}:`, err),
+        logger.error({ tenantSlug: slug, err }, "failed to add Caddy route"),
       );
 
-      console.log(`Tenant ${slug} provisioned on port ${port}`);
+      logger.info({ tenantSlug: slug, port }, "tenant provisioned");
     } catch (err) {
-      console.error(`Failed to provision tenant ${slug}:`, err);
+      logger.error({ tenantSlug: slug, err }, "failed to provision tenant");
       await db
         .update(tenants)
         .set({ status: "error", updatedAt: new Date() })
@@ -178,7 +179,7 @@ authRouter.get("/auth/login", async (req, res) => {
 
     res.redirect(url.toString());
   } catch (err) {
-    console.error("Login error:", err);
+    logger.error({ err }, "login initiation failed");
     res.status(500).json({ error: "Failed to initiate login" });
   }
 });
@@ -216,7 +217,7 @@ authRouter.get("/auth/callback", async (req, res) => {
     const dest = req.session.postLoginRedirect || "/";
     req.session.regenerate((err) => {
       if (err) {
-        console.error("Session regeneration failed:", err);
+        logger.error({ err }, "session regeneration failed");
         res.status(500).json({ error: "Authentication failed" });
         return;
       }
@@ -231,7 +232,7 @@ authRouter.get("/auth/callback", async (req, res) => {
       });
     });
   } catch (err) {
-    console.error("Callback error:", err);
+    logger.error({ err }, "OAuth callback failed");
     res.status(500).json({ error: "Authentication failed" });
   }
 });
@@ -251,7 +252,7 @@ authRouter.get("/.well-known/jwks.json", async (_req, res) => {
     const jwks = await getPublicJwks();
     res.json(jwks);
   } catch (err) {
-    console.error("Failed to generate JWKS:", err);
+    logger.error({ err }, "failed to generate JWKS");
     res.status(500).json({ error: "JWKS not available" });
   }
 });
