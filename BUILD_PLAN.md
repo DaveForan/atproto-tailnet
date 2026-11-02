@@ -294,7 +294,7 @@ See `docs/adr/` for rationale behind each choice:
 
 - ~~Custom DERP relays per tenant~~ ✅ Implemented (custom regions, embedded toggle, public relay toggle)
 - ~~Per-tenant IP range configuration~~ ✅ Implemented (v4/v6 prefixes, sequential/random allocation)
-- Exit nodes / subnet routers management UI
+- ~~Exit nodes / subnet routers management UI~~ ✅ Implemented (list/enable/disable/delete routes, split exit nodes vs subnets)
 - Billing / usage metering
 - Federation between tailnets
 - Headscale fork for true single-process multi-tenancy (see ADR-0002 — escape hatch)

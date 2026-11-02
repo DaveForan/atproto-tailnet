@@ -107,6 +107,9 @@ export const auditActionEnum = pgEnum("audit_action", [
   "acl_updated",
   "derp_updated",
   "ip_config_updated",
+  "route_enabled",
+  "route_disabled",
+  "route_deleted",
 ]);
 
 export const deviceApprovalStatusEnum = pgEnum("device_approval_status", [

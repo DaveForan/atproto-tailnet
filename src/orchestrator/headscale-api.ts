@@ -31,6 +31,22 @@ const headscaleUserSchema = z.object({
   createdAt: z.string().optional(),
 });
 
+const headscaleRouteSchema = z.object({
+  id: z.string(),
+  node: z.object({
+    id: z.string(),
+    name: z.string(),
+    givenName: z.string().optional(),
+    online: z.boolean().optional(),
+  }).optional(),
+  prefix: z.string(),
+  advertised: z.boolean().optional(),
+  enabled: z.boolean().optional(),
+  isPrimary: z.boolean().optional(),
+  createdAt: z.string().optional(),
+  updatedAt: z.string().optional(),
+});
+
 const headscalePreAuthKeySchema = z.object({
   id: z.string().optional(),
   key: z.string(),
@@ -48,6 +64,8 @@ export type HeadscaleNode = z.infer<typeof headscaleNodeSchema>;
 export type HeadscaleUser = z.infer<typeof headscaleUserSchema>;
 /** A pre-authentication key used to register nodes without interactive login. */
 export type HeadscalePreAuthKey = z.infer<typeof headscalePreAuthKeySchema>;
+/** An advertised route (subnet or exit node) from a device. */
+export type HeadscaleRoute = z.infer<typeof headscaleRouteSchema>;
 
 /**
  * Authenticated REST client for a single Headscale instance.
@@ -176,6 +194,38 @@ export class HeadscaleApiClient {
     await this.request("PUT", "/api/v1/policy", {
       policy: JSON.stringify(policy),
     });
+  }
+
+  /** List all routes across all nodes. */
+  async listRoutes(): Promise<HeadscaleRoute[]> {
+    const data = (await this.request("GET", "/api/v1/routes")) as {
+      routes: unknown[];
+    };
+    return (data.routes ?? []).map((r) => headscaleRouteSchema.parse(r));
+  }
+
+  /** Enable (approve) an advertised route. */
+  async enableRoute(routeId: string): Promise<void> {
+    await this.request(
+      "POST",
+      `/api/v1/routes/${encodeURIComponent(routeId)}/enable`,
+    );
+  }
+
+  /** Disable an advertised route. */
+  async disableRoute(routeId: string): Promise<void> {
+    await this.request(
+      "POST",
+      `/api/v1/routes/${encodeURIComponent(routeId)}/disable`,
+    );
+  }
+
+  /** Delete a route. */
+  async deleteRoute(routeId: string): Promise<void> {
+    await this.request(
+      "DELETE",
+      `/api/v1/routes/${encodeURIComponent(routeId)}`,
+    );
   }
 
   /** Returns true if the Headscale API is reachable and authenticated. */

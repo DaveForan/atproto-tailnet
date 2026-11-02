@@ -74,6 +74,7 @@ npm run dev                      # http://localhost:3000
 - Custom DERP relays: `GET/PUT /api/tenants/:id/derp` — per-tenant DERP regions (YAML files hot-reloaded by Headscale), embedded DERP toggle (requires restart), public relay toggle; gated by `manage_acl`; region IDs 900-999
 - DERP config writes: `updateInstanceConfig()` in `orchestrator/headscale.ts` rewrites config.yaml + derp-custom.yaml; `writeDerpRegionsFile()` generates the YAML paths file
 - Per-tenant IP ranges: `GET/PUT /api/tenants/:id/ip-config` — customize IPv4/IPv6 CIDR prefixes and allocation strategy (sequential/random); gated by `manage_settings`; changes trigger container restart
+- Exit nodes / subnet routers: `GET /api/tenants/:id/routes` returns `{ exitNodes, subnets }` from Headscale; `POST .../routes/:routeId/enable|disable`, `DELETE .../routes/:routeId`; gated by `manage_devices`; routes are advertised by devices, admin approves/rejects
 
 ## File layout
 
@@ -105,7 +106,8 @@ src/
     acl.ts                 — ACL policy GET/PUT (manage_acl permission, Zod-validated)
     derp.ts                — Custom DERP relay management (regions, embedded toggle, public relay toggle)
     ip-config.ts           — Per-tenant IP range configuration (v4/v6 prefixes, allocation strategy)
-    dashboard.ts           — Inline SPA (tabbed: Devices, Members, Invite, Add Device, Services, Board, Agents, ACL, DERP, IP Ranges, Roles, Security, Audit) + /join/:slug
+    routes.ts              — Exit node and subnet router management (enable/disable/delete routes)
+    dashboard.ts           — Inline SPA (tabbed: Status, DERP, IP Ranges, Routes, Devices, Members, Invite, Add Device, Services, Board, Agents, ACL, Roles, Security, Audit) + /join/:slug
     helpers.ts             — Shared middleware, param(), permission checks, agent token resolution, hs username/URL helpers
     audit.ts               — Fire-and-forget audit log writer
 docs/adr/                  — Architecture Decision Records (0001-0005)

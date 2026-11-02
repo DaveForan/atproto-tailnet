@@ -788,6 +788,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       var canBoard = hasPerm('manage_board') || hasPerm('create_posts');
       var canAgents = state.settings && state.settings.allowAgentTokens;
       var canAcl = hasPerm('manage_acl');
+      var canDevices = hasPerm('manage_devices');
       var canSettings = hasPerm('manage_settings');
       var hasManageGroup = hasPerm('invite') || canServices || canBoard;
       var hasAccessGroup = canRoles || canAgents || canAcl;
@@ -811,6 +812,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
             '<button class="nav-item' + (state.tab === 'status' ? ' active' : '') + '" onclick="switchTab(\\'status\\')">Status</button>' +
             (canAcl ? '<button class="nav-item' + (state.tab === 'derp' ? ' active' : '') + '" onclick="switchTab(\\'derp\\')">DERP Relays</button>' : '') +
             (canSettings ? '<button class="nav-item' + (state.tab === 'ipconfig' ? ' active' : '') + '" onclick="switchTab(\\'ipconfig\\')">IP Ranges</button>' : '') +
+            (canDevices ? '<button class="nav-item' + (state.tab === 'routes' ? ' active' : '') + '" onclick="switchTab(\\'routes\\')">Routes</button>' : '') +
             '<button class="nav-item' + (state.tab === 'devices' ? ' active' : '') + '" onclick="switchTab(\\'devices\\')">Devices</button>' +
             '<button class="nav-item' + (state.tab === 'members' ? ' active' : '') + '" onclick="switchTab(\\'members\\')">Members</button>' +
             '<button class="nav-item' + (state.tab === 'connect' ? ' active' : '') + '" onclick="switchTab(\\'connect\\')">Add Device</button>' +
@@ -906,6 +908,18 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
                 '<div style="margin-top:16px">' +
                   '<button onclick="saveIpConfig()">Save IP Configuration</button>' +
                 '</div>' +
+              '</div>' +
+            '</div>' : '') +
+
+          (canDevices ?
+            '<div id="tab-routes" class="' + (state.tab !== 'routes' ? 'hidden' : '') + '">' +
+              '<div class="card">' +
+                '<div class="card-header"><h3>Exit Nodes</h3></div>' +
+                '<div id="routes-exit-nodes">Loading...</div>' +
+              '</div>' +
+              '<div class="card" style="margin-top:12px">' +
+                '<div class="card-header"><h3>Subnet Routers</h3></div>' +
+                '<div id="routes-subnets">Loading...</div>' +
               '</div>' +
             '</div>' : '') +
 
@@ -1146,6 +1160,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (tab === 'acl') loadAcl();
       if (tab === 'derp') loadDerp();
       if (tab === 'ipconfig') loadIpConfig();
+      if (tab === 'routes') loadRoutes();
       if (tab === 'roles') loadRoles();
       if (tab === 'security') loadSecurity();
       if (tab === 'audit') loadAuditLog();
@@ -2063,6 +2078,82 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       }
     }
 
+    // ── Routes tab ─────────────────────────────────────────────────
+
+    async function loadRoutes() {
+      if (!state.currentTenant) return;
+      var data = await api('/api/tenants/' + state.currentTenant.id + '/routes');
+      if (!data) return;
+
+      var exitEl = document.getElementById('routes-exit-nodes');
+      if (exitEl) {
+        var exits = data.exitNodes || [];
+        if (exits.length === 0) {
+          exitEl.innerHTML = '<div class="empty-state" style="padding:16px">No exit nodes advertised. Devices can advertise as exit nodes with <code style="color:var(--accent)">tailscale up --advertise-exit-node</code>.</div>';
+        } else {
+          exitEl.innerHTML = exits.map(function(r) {
+            var online = r.node && r.node.online;
+            var nodeName = r.node ? (r.node.givenName || r.node.name) : 'unknown';
+            return '<div class="device-item">' +
+              '<div style="display:flex;align-items:center;gap:8px">' +
+                '<span class="online-dot ' + (online ? 'on' : 'off') + '"></span>' +
+                '<span class="device-name">' + esc(nodeName) + '</span>' +
+                '<span class="device-ip">' + esc(r.prefix) + '</span>' +
+              '</div>' +
+              '<div style="display:flex;align-items:center;gap:6px">' +
+                '<button class="btn-sm ' + (r.enabled ? '' : 'btn-ghost') + '" style="' + (r.enabled ? 'background:var(--success)' : '') + '" onclick="toggleRoute(\\'' + r.id + '\\', ' + !!r.enabled + ')">' + (r.enabled ? 'Enabled' : 'Disabled') + '</button>' +
+                '<button class="btn-sm btn-danger" onclick="deleteRoute(\\'' + r.id + '\\')">Delete</button>' +
+              '</div>' +
+            '</div>';
+          }).join('');
+        }
+      }
+
+      var subEl = document.getElementById('routes-subnets');
+      if (subEl) {
+        var subnets = data.subnets || [];
+        if (subnets.length === 0) {
+          subEl.innerHTML = '<div class="empty-state" style="padding:16px">No subnet routes advertised. Devices can advertise subnets with <code style="color:var(--accent)">tailscale up --advertise-routes=192.168.1.0/24</code>.</div>';
+        } else {
+          subEl.innerHTML = subnets.map(function(r) {
+            var online = r.node && r.node.online;
+            var nodeName = r.node ? (r.node.givenName || r.node.name) : 'unknown';
+            return '<div class="device-item">' +
+              '<div style="display:flex;align-items:center;gap:8px">' +
+                '<span class="online-dot ' + (online ? 'on' : 'off') + '"></span>' +
+                '<span class="device-name">' + esc(nodeName) + '</span>' +
+                '<span class="device-ip">' + esc(r.prefix) + '</span>' +
+              '</div>' +
+              '<div style="display:flex;align-items:center;gap:6px">' +
+                '<button class="btn-sm ' + (r.enabled ? '' : 'btn-ghost') + '" style="' + (r.enabled ? 'background:var(--success)' : '') + '" onclick="toggleRoute(\\'' + r.id + '\\', ' + !!r.enabled + ')">' + (r.enabled ? 'Enabled' : 'Disabled') + '</button>' +
+                '<button class="btn-sm btn-danger" onclick="deleteRoute(\\'' + r.id + '\\')">Delete</button>' +
+              '</div>' +
+            '</div>';
+          }).join('');
+        }
+      }
+    }
+
+    async function toggleRoute(routeId, currentlyEnabled) {
+      if (!state.currentTenant) return;
+      var action = currentlyEnabled ? 'disable' : 'enable';
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/routes/' + routeId + '/' + action, { method: 'POST' });
+      if (result) {
+        toast('Route ' + result.status);
+        loadRoutes();
+      }
+    }
+
+    async function deleteRoute(routeId) {
+      if (!state.currentTenant) return;
+      if (!confirm('Delete this route? The device will need to re-advertise it.')) return;
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/routes/' + routeId, { method: 'DELETE' });
+      if (result) {
+        toast('Route deleted');
+        loadRoutes();
+      }
+    }
+
     async function loadSecurity() {
       if (!state.currentTenant) return;
       if (hasPerm('manage_settings')) {
@@ -2291,6 +2382,9 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         acl_updated: 'updated ACL policy',
         derp_updated: 'updated DERP relay config',
         ip_config_updated: 'updated IP prefix config',
+        route_enabled: 'enabled route',
+        route_disabled: 'disabled route',
+        route_deleted: 'deleted route',
       };
       el.innerHTML = data.entries.map(function(e) {
         var label = actionLabels[e.action] || e.action;
@@ -2344,6 +2438,9 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         acl_updated: 'updated ACL policy',
         derp_updated: 'updated DERP relay config',
         ip_config_updated: 'updated IP prefix config',
+        route_enabled: 'enabled route',
+        route_disabled: 'disabled route',
+        route_deleted: 'deleted route',
       };
       var html = data.entries.map(function(e) {
         var label = actionLabels[e.action] || e.action;
@@ -2729,6 +2826,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           if (state.tab === 'acl') loadAcl();
           if (state.tab === 'derp') loadDerp();
           if (state.tab === 'ipconfig') loadIpConfig();
+          if (state.tab === 'routes') loadRoutes();
           if (state.tab === 'roles') loadRoles();
           if (state.tab === 'security') loadSecurity();
           if (state.tab === 'audit') loadAuditLog();

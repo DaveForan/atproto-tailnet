@@ -26,6 +26,7 @@ Built on [Headscale](https://github.com/juanfont/headscale) (open-source Tailsca
 - **ACL management** — visual editor for Headscale access control rules, groups, and hosts
 - **Custom DERP relays** — per-tenant relay regions, embedded DERP server toggle, public relay control
 - **IP range configuration** — per-tenant IPv4/IPv6 CIDR prefixes and allocation strategy
+- **Exit nodes & subnet routers** — approve, enable, disable, and delete advertised routes
 - **Agent API tokens** — scoped Bearer tokens for AI agents and automation
 - **Health monitoring** — background checks with auto-restart for failed instances
 - **Instance hibernation** — auto-stop idle tenants after configurable days of inactivity
