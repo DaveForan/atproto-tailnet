@@ -72,7 +72,8 @@ npm run dev                      # http://localhost:3000
 - Instance hibernation: `hibernateAfterDays` setting (0 = disabled), `lastActivityAt` updated on API access (debounced 5 min); monitor sweep auto-stops idle tenants past threshold
 - `getTenantForUser` touches `lastActivityAt` fire-and-forget when >5 min stale
 - Custom DERP relays: `GET/PUT /api/tenants/:id/derp` — per-tenant DERP regions (YAML files hot-reloaded by Headscale), embedded DERP toggle (requires restart), public relay toggle; gated by `manage_acl`; region IDs 900-999
-- DERP config writes: `updateDerpConfig()` in `orchestrator/headscale.ts` rewrites config.yaml + derp-custom.yaml; `writeDerpRegionsFile()` generates the YAML paths file
+- DERP config writes: `updateInstanceConfig()` in `orchestrator/headscale.ts` rewrites config.yaml + derp-custom.yaml; `writeDerpRegionsFile()` generates the YAML paths file
+- Per-tenant IP ranges: `GET/PUT /api/tenants/:id/ip-config` — customize IPv4/IPv6 CIDR prefixes and allocation strategy (sequential/random); gated by `manage_settings`; changes trigger container restart
 
 ## File layout
 
@@ -103,7 +104,8 @@ src/
     agents.ts              — Agent token CRUD (create, list, revoke)
     acl.ts                 — ACL policy GET/PUT (manage_acl permission, Zod-validated)
     derp.ts                — Custom DERP relay management (regions, embedded toggle, public relay toggle)
-    dashboard.ts           — Inline SPA (tabbed: Devices, Members, Invite, Add Device, Services, Board, Agents, ACL, DERP, Roles, Security, Audit) + /join/:slug
+    ip-config.ts           — Per-tenant IP range configuration (v4/v6 prefixes, allocation strategy)
+    dashboard.ts           — Inline SPA (tabbed: Devices, Members, Invite, Add Device, Services, Board, Agents, ACL, DERP, IP Ranges, Roles, Security, Audit) + /join/:slug
     helpers.ts             — Shared middleware, param(), permission checks, agent token resolution, hs username/URL helpers
     audit.ts               — Fire-and-forget audit log writer
 docs/adr/                  — Architecture Decision Records (0001-0005)

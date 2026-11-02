@@ -27,14 +27,22 @@ export interface DerpConfigOptions {
   hasCustomRegions?: boolean;
 }
 
+export interface HeadscaleConfigOptions {
+  derp?: DerpConfigOptions;
+  ipv4Prefix?: string;
+  ipv6Prefix?: string;
+  ipAllocation?: string;
+}
+
 function generateHeadscaleConfig(
   slug: string,
   port: number,
-  derp: DerpConfigOptions = {},
+  opts: HeadscaleConfigOptions = {},
 ): string {
   const publicProto = config.publicUrl.startsWith("https") ? "https" : "http";
   const serverUrl = `${publicProto}://${slug}.${config.baseDomain}`;
 
+  const derp = opts.derp ?? {};
   const urlsLine = derp.usePublicDerp === false
     ? "  urls: []"
     : "  urls:\n    - https://controlplane.tailscale.com/derpmap/default";
@@ -45,6 +53,10 @@ function generateHeadscaleConfig(
 
   const updateFreq = derp.hasCustomRegions ? "5m" : "24h";
 
+  const v4 = opts.ipv4Prefix || "100.64.0.0/10";
+  const v6 = opts.ipv6Prefix || "fd7a:115c:a1e0::/48";
+  const alloc = opts.ipAllocation || "sequential";
+
   return `---
 server_url: ${serverUrl}
 listen_addr: 0.0.0.0:8080
@@ -52,9 +64,9 @@ metrics_listen_addr: 0.0.0.0:9090
 noise:
   private_key_path: /etc/headscale/noise_private.key
 prefixes:
-  v4: 100.64.0.0/10
-  v6: fd7a:115c:a1e0::/48
-  allocation: sequential
+  v4: ${v4}
+  v6: ${v6}
+  allocation: ${alloc}
 derp:
   server:
     enabled: ${derp.embeddedDerpEnabled ? "true" : "false"}
@@ -106,20 +118,19 @@ export async function writeDerpRegionsFile(
   );
 }
 
-export async function updateDerpConfig(
+export async function updateInstanceConfig(
   slug: string,
   port: number,
-  regions: DerpRegion[],
-  opts: DerpConfigOptions,
+  opts: HeadscaleConfigOptions,
+  regions?: DerpRegion[],
 ): Promise<void> {
   const dataDir = resolve(config.headscale.dataDir, slug);
   await mkdir(dataDir, { recursive: true });
-  const cfgContent = generateHeadscaleConfig(slug, port, {
-    ...opts,
-    hasCustomRegions: regions.length > 0,
-  });
+  const cfgContent = generateHeadscaleConfig(slug, port, opts);
   await writeFile(join(dataDir, "config.yaml"), cfgContent);
-  await writeDerpRegionsFile(slug, regions);
+  if (regions !== undefined) {
+    await writeDerpRegionsFile(slug, regions);
+  }
 }
 
 async function waitForReady(

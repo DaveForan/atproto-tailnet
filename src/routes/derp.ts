@@ -11,7 +11,7 @@ import { eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { tenants, type DerpRegion } from "../db/schema.js";
 import {
-  updateDerpConfig,
+  updateInstanceConfig,
   stopInstance,
   startInstance,
 } from "../orchestrator/headscale.js";
@@ -106,10 +106,21 @@ derpRouter.put(
     const embeddedChanged = embeddedDerpEnabled !== tenant.embeddedDerpEnabled;
 
     try {
-      await updateDerpConfig(tenant.slug, tenant.port, regions, {
-        embeddedDerpEnabled,
-        usePublicDerp,
-      });
+      await updateInstanceConfig(
+        tenant.slug,
+        tenant.port,
+        {
+          derp: {
+            embeddedDerpEnabled,
+            usePublicDerp,
+            hasCustomRegions: regions.length > 0,
+          },
+          ipv4Prefix: tenant.ipv4Prefix,
+          ipv6Prefix: tenant.ipv6Prefix,
+          ipAllocation: tenant.ipAllocation,
+        },
+        regions,
+      );
 
       await db
         .update(tenants)

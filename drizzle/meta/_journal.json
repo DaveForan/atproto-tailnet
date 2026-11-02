@@ -85,6 +85,13 @@
       "when": 1793655026708,
       "tag": "0011_bouncy_lady_ursula",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1793655645116,
+      "tag": "0012_amazing_manta",
+      "breakpoints": true
     }
   ]
 }

@@ -788,6 +788,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       var canBoard = hasPerm('manage_board') || hasPerm('create_posts');
       var canAgents = state.settings && state.settings.allowAgentTokens;
       var canAcl = hasPerm('manage_acl');
+      var canSettings = hasPerm('manage_settings');
       var hasManageGroup = hasPerm('invite') || canServices || canBoard;
       var hasAccessGroup = canRoles || canAgents || canAcl;
       var hasAdminGroup = canSecurity || canAudit;
@@ -809,6 +810,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
             '<div class="nav-group-header">Network</div>' +
             '<button class="nav-item' + (state.tab === 'status' ? ' active' : '') + '" onclick="switchTab(\\'status\\')">Status</button>' +
             (canAcl ? '<button class="nav-item' + (state.tab === 'derp' ? ' active' : '') + '" onclick="switchTab(\\'derp\\')">DERP Relays</button>' : '') +
+            (canSettings ? '<button class="nav-item' + (state.tab === 'ipconfig' ? ' active' : '') + '" onclick="switchTab(\\'ipconfig\\')">IP Ranges</button>' : '') +
             '<button class="nav-item' + (state.tab === 'devices' ? ' active' : '') + '" onclick="switchTab(\\'devices\\')">Devices</button>' +
             '<button class="nav-item' + (state.tab === 'members' ? ' active' : '') + '" onclick="switchTab(\\'members\\')">Members</button>' +
             '<button class="nav-item' + (state.tab === 'connect' ? ' active' : '') + '" onclick="switchTab(\\'connect\\')">Add Device</button>' +
@@ -873,6 +875,37 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
               '</div>' +
               '<div style="margin-top:12px">' +
                 '<button onclick="saveDerp()">Save DERP Configuration</button>' +
+              '</div>' +
+            '</div>' : '') +
+
+          (canSettings ?
+            '<div id="tab-ipconfig" class="' + (state.tab !== 'ipconfig' ? 'hidden' : '') + '">' +
+              '<div class="card">' +
+                '<div class="card-header"><h3>IP Range Configuration</h3></div>' +
+                '<p style="color:var(--text-dim);font-size:13px;margin-bottom:12px">Configure the IP address prefixes and allocation strategy for this tailnet.</p>' +
+                '<div style="background:#f59e0b15;border:1px solid #f59e0b40;border-radius:6px;padding:12px 16px;margin-bottom:16px;color:var(--warning);font-size:13px">' +
+                  'Warning: Changing IP ranges will restart the Headscale container. All connected devices will need to re-register.' +
+                '</div>' +
+                '<div style="display:flex;flex-direction:column;gap:12px">' +
+                  '<div>' +
+                    '<label style="font-size:13px;color:var(--text-dim);display:block;margin-bottom:4px">IPv4 Prefix</label>' +
+                    '<input type="text" id="ipconfig-v4" placeholder="100.64.0.0/10" />' +
+                  '</div>' +
+                  '<div>' +
+                    '<label style="font-size:13px;color:var(--text-dim);display:block;margin-bottom:4px">IPv6 Prefix</label>' +
+                    '<input type="text" id="ipconfig-v6" placeholder="fd7a:115c:a1e0::/48" />' +
+                  '</div>' +
+                  '<div>' +
+                    '<label style="font-size:13px;color:var(--text-dim);display:block;margin-bottom:4px">IP Allocation Strategy</label>' +
+                    '<select id="ipconfig-alloc">' +
+                      '<option value="sequential">Sequential</option>' +
+                      '<option value="random">Random</option>' +
+                    '</select>' +
+                  '</div>' +
+                '</div>' +
+                '<div style="margin-top:16px">' +
+                  '<button onclick="saveIpConfig()">Save IP Configuration</button>' +
+                '</div>' +
               '</div>' +
             '</div>' : '') +
 
@@ -1112,6 +1145,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (tab === 'agents') loadAgents();
       if (tab === 'acl') loadAcl();
       if (tab === 'derp') loadDerp();
+      if (tab === 'ipconfig') loadIpConfig();
       if (tab === 'roles') loadRoles();
       if (tab === 'security') loadSecurity();
       if (tab === 'audit') loadAuditLog();
@@ -1993,6 +2027,42 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       }
     }
 
+    // ── IP Config tab ─────────────────────────────────────────────
+
+    async function loadIpConfig() {
+      if (!state.currentTenant) return;
+      var data = await api('/api/tenants/' + state.currentTenant.id + '/ip-config');
+      if (!data) return;
+      var v4El = document.getElementById('ipconfig-v4');
+      var v6El = document.getElementById('ipconfig-v6');
+      var allocEl = document.getElementById('ipconfig-alloc');
+      if (v4El) v4El.value = data.ipv4Prefix || '';
+      if (v6El) v6El.value = data.ipv6Prefix || '';
+      if (allocEl) allocEl.value = data.ipAllocation || 'sequential';
+    }
+
+    async function saveIpConfig() {
+      if (!state.currentTenant) return;
+      var v4El = document.getElementById('ipconfig-v4');
+      var v6El = document.getElementById('ipconfig-v6');
+      var allocEl = document.getElementById('ipconfig-alloc');
+      var ipv4Prefix = v4El ? v4El.value.trim() : '';
+      var ipv6Prefix = v6El ? v6El.value.trim() : '';
+      var ipAllocation = allocEl ? allocEl.value : 'sequential';
+      if (!ipv4Prefix || !ipv6Prefix) { toast('Both IPv4 and IPv6 prefixes are required'); return; }
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/ip-config', {
+        method: 'PUT',
+        body: JSON.stringify({ ipv4Prefix: ipv4Prefix, ipv6Prefix: ipv6Prefix, ipAllocation: ipAllocation }),
+      });
+      if (result) {
+        if (result.containerRestarted) {
+          toast('IP configuration saved \\u2014 container restarted');
+        } else {
+          toast('IP configuration saved');
+        }
+      }
+    }
+
     async function loadSecurity() {
       if (!state.currentTenant) return;
       if (hasPerm('manage_settings')) {
@@ -2220,6 +2290,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         tenant_hibernated: 'tenant auto-hibernated',
         acl_updated: 'updated ACL policy',
         derp_updated: 'updated DERP relay config',
+        ip_config_updated: 'updated IP prefix config',
       };
       el.innerHTML = data.entries.map(function(e) {
         var label = actionLabels[e.action] || e.action;
@@ -2272,6 +2343,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         tenant_hibernated: 'tenant auto-hibernated',
         acl_updated: 'updated ACL policy',
         derp_updated: 'updated DERP relay config',
+        ip_config_updated: 'updated IP prefix config',
       };
       var html = data.entries.map(function(e) {
         var label = actionLabels[e.action] || e.action;
@@ -2656,6 +2728,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           if (state.tab === 'agents') loadAgents();
           if (state.tab === 'acl') loadAcl();
           if (state.tab === 'derp') loadDerp();
+          if (state.tab === 'ipconfig') loadIpConfig();
           if (state.tab === 'roles') loadRoles();
           if (state.tab === 'security') loadSecurity();
           if (state.tab === 'audit') loadAuditLog();

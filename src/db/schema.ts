@@ -106,6 +106,7 @@ export const auditActionEnum = pgEnum("audit_action", [
   "tenant_hibernated",
   "acl_updated",
   "derp_updated",
+  "ip_config_updated",
 ]);
 
 export const deviceApprovalStatusEnum = pgEnum("device_approval_status", [
@@ -214,6 +215,12 @@ export const tenants = pgTable("tenants", {
   embeddedDerpEnabled: boolean("embedded_derp_enabled").notNull().default(false),
   /** When false, Tailscale's public DERP relays are disabled — only custom regions are used. */
   usePublicDerp: boolean("use_public_derp").notNull().default(true),
+  /** IPv4 CIDR prefix for the tailnet (default: 100.64.0.0/10). */
+  ipv4Prefix: text("ipv4_prefix").notNull().default("100.64.0.0/10"),
+  /** IPv6 CIDR prefix for the tailnet (default: fd7a:115c:a1e0::/48). */
+  ipv6Prefix: text("ipv6_prefix").notNull().default("fd7a:115c:a1e0::/48"),
+  /** IP allocation strategy: sequential or random. */
+  ipAllocation: text("ip_allocation").notNull().default("sequential"),
   /** Role assigned to new members on invitation acceptance. */
   defaultRoleId: uuid("default_role_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),

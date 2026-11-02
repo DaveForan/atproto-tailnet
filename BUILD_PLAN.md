@@ -293,7 +293,7 @@ See `docs/adr/` for rationale behind each choice:
 ## Out of scope (for now)
 
 - ~~Custom DERP relays per tenant~~ ✅ Implemented (custom regions, embedded toggle, public relay toggle)
-- Per-tenant IP range configuration
+- ~~Per-tenant IP range configuration~~ ✅ Implemented (v4/v6 prefixes, sequential/random allocation)
 - Exit nodes / subnet routers management UI
 - Billing / usage metering
 - Federation between tailnets

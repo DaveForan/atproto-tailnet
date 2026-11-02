@@ -30,6 +30,7 @@ import { boardRouter } from "./routes/board.js";
 import { agentsRouter } from "./routes/agents.js";
 import { aclRouter } from "./routes/acl.js";
 import { derpRouter } from "./routes/derp.js";
+import { ipConfigRouter } from "./routes/ip-config.js";
 import { dashboardRouter } from "./routes/dashboard.js";
 import { resolveAgentToken, enforceAgentScope } from "./routes/helpers.js";
 import { startHealthMonitor } from "./orchestrator/monitor.js";
@@ -92,6 +93,7 @@ app.use(boardRouter);
 app.use(agentsRouter);
 app.use(aclRouter);
 app.use(derpRouter);
+app.use(ipConfigRouter);
 
 app.listen(config.port, () => {
   logger.info({ port: config.port, url: config.publicUrl }, "atproto-tailnet running");
