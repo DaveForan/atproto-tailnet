@@ -808,6 +808,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           '<nav>' +
             '<div class="nav-group-header">Network</div>' +
             '<button class="nav-item' + (state.tab === 'status' ? ' active' : '') + '" onclick="switchTab(\\'status\\')">Status</button>' +
+            (canAcl ? '<button class="nav-item' + (state.tab === 'derp' ? ' active' : '') + '" onclick="switchTab(\\'derp\\')">DERP Relays</button>' : '') +
             '<button class="nav-item' + (state.tab === 'devices' ? ' active' : '') + '" onclick="switchTab(\\'devices\\')">Devices</button>' +
             '<button class="nav-item' + (state.tab === 'members' ? ' active' : '') + '" onclick="switchTab(\\'members\\')">Members</button>' +
             '<button class="nav-item' + (state.tab === 'connect' ? ' active' : '') + '" onclick="switchTab(\\'connect\\')">Add Device</button>' +
@@ -838,6 +839,42 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           '<div id="tab-status" class="' + (state.tab !== 'status' ? 'hidden' : '') + '">' +
             '<div class="card"><div id="status-content">Loading...</div></div>' +
           '</div>' +
+
+          (canAcl ?
+            '<div id="tab-derp" class="' + (state.tab !== 'derp' ? 'hidden' : '') + '">' +
+              '<div class="card">' +
+                '<div class="card-header"><h3>DERP Relay Configuration</h3></div>' +
+                '<p style="color:var(--text-dim);font-size:13px;margin-bottom:12px">DERP (Designated Encrypted Relay for Packets) relays help devices communicate when direct connections are not possible.</p>' +
+                '<div id="derp-toggles">Loading...</div>' +
+              '</div>' +
+              '<div class="card" style="margin-top:12px">' +
+                '<div class="card-header"><h3>Custom DERP Regions</h3></div>' +
+                '<div id="derp-regions-list">Loading...</div>' +
+                '<div style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border)">' +
+                  '<h4 style="margin-bottom:8px;font-size:14px">Add Region</h4>' +
+                  '<div style="display:flex;flex-direction:column;gap:8px">' +
+                    '<div class="inline-form">' +
+                      '<input type="text" id="derp-region-id" placeholder="Region ID (900-999)" style="max-width:180px" />' +
+                      '<input type="text" id="derp-region-code" placeholder="Region code (e.g. mycolo)" style="max-width:180px" />' +
+                      '<input type="text" id="derp-region-name" placeholder="Region name" />' +
+                    '</div>' +
+                    '<div style="font-size:13px;color:var(--text-dim)">Initial node (at least one required):</div>' +
+                    '<div class="inline-form">' +
+                      '<input type="text" id="derp-node-name" placeholder="Node name" style="max-width:160px" />' +
+                      '<input type="text" id="derp-node-host" placeholder="Hostname" />' +
+                    '</div>' +
+                    '<div class="inline-form">' +
+                      '<input type="text" id="derp-node-stun" placeholder="STUN port (optional)" style="max-width:180px" />' +
+                      '<input type="text" id="derp-node-derp" placeholder="DERP port (optional)" style="max-width:180px" />' +
+                      '<button onclick="addDerpRegion()">Add Region</button>' +
+                    '</div>' +
+                  '</div>' +
+                '</div>' +
+              '</div>' +
+              '<div style="margin-top:12px">' +
+                '<button onclick="saveDerp()">Save DERP Configuration</button>' +
+              '</div>' +
+            '</div>' : '') +
 
           '<div id="tab-devices" class="' + (state.tab !== 'devices' ? 'hidden' : '') + '">' +
             '<div class="card"><div id="device-list">Loading...</div></div>' +
@@ -1074,6 +1111,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (tab === 'board') loadBoard();
       if (tab === 'agents') loadAgents();
       if (tab === 'acl') loadAcl();
+      if (tab === 'derp') loadDerp();
       if (tab === 'roles') loadRoles();
       if (tab === 'security') loadSecurity();
       if (tab === 'audit') loadAuditLog();
@@ -1790,6 +1828,171 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       }
     }
 
+    // ── DERP Relays tab ─────────────────────────────────────────────
+
+    var derpState = { regions: [], embeddedDerpEnabled: false, usePublicDerp: true };
+
+    async function loadDerp() {
+      if (!state.currentTenant) return;
+      var data = await api('/api/tenants/' + state.currentTenant.id + '/derp');
+      if (!data) return;
+      derpState.regions = data.regions || [];
+      derpState.embeddedDerpEnabled = !!data.embeddedDerpEnabled;
+      derpState.usePublicDerp = !!data.usePublicDerp;
+      renderDerpToggles();
+      renderDerpRegions();
+    }
+
+    function renderDerpToggles() {
+      var el = document.getElementById('derp-toggles');
+      if (!el) return;
+      el.innerHTML =
+        '<div class="toggle-row">' +
+          '<div class="toggle-label"><span>Use public DERP relays</span><span>Allow connections through public relay infrastructure</span></div>' +
+          '<label class="toggle"><input type="checkbox" ' + (derpState.usePublicDerp ? 'checked' : '') +
+            ' onchange="derpState.usePublicDerp=this.checked" /><span class="slider"></span></label>' +
+        '</div>' +
+        '<div class="toggle-row">' +
+          '<div class="toggle-label"><span>Embedded DERP server</span><span>Run a DERP relay inside this Headscale container (requires restart)</span></div>' +
+          '<label class="toggle"><input type="checkbox" ' + (derpState.embeddedDerpEnabled ? 'checked' : '') +
+            ' onchange="derpState.embeddedDerpEnabled=this.checked" /><span class="slider"></span></label>' +
+        '</div>';
+    }
+
+    function renderDerpRegions() {
+      var el = document.getElementById('derp-regions-list');
+      if (!el) return;
+      if (derpState.regions.length === 0) {
+        el.innerHTML = '<div class="empty-state" style="padding:16px">No custom DERP regions defined</div>';
+        return;
+      }
+      el.innerHTML = derpState.regions.map(function(region, rIdx) {
+        var nodesHtml = region.nodes.map(function(node, nIdx) {
+          return '<div class="approval-item" style="font-size:13px">' +
+            '<div>' +
+              '<strong>' + esc(node.name) + '</strong>' +
+              '<span style="color:var(--text-dim);margin-left:8px;font-family:monospace">' + esc(node.hostname) + '</span>' +
+              (node.stunPort ? '<span style="color:var(--text-dim);margin-left:8px;font-size:12px">STUN:' + esc(String(node.stunPort)) + '</span>' : '') +
+              (node.derpPort ? '<span style="color:var(--text-dim);margin-left:8px;font-size:12px">DERP:' + esc(String(node.derpPort)) + '</span>' : '') +
+            '</div>' +
+            '<button class="btn-sm btn-danger" onclick="removeDerpNode(' + rIdx + ',' + nIdx + ')">Del</button>' +
+          '</div>';
+        }).join('');
+
+        return '<div class="role-card">' +
+          '<div class="role-card-header">' +
+            '<div>' +
+              '<strong>' + esc(region.regionName) + '</strong>' +
+              '<span class="badge badge-role" style="margin-left:8px">' + esc(region.regionCode) + '</span>' +
+              '<span style="color:var(--text-dim);font-size:12px;margin-left:8px">ID: ' + esc(String(region.regionId)) + '</span>' +
+            '</div>' +
+            '<button class="btn-sm btn-danger" onclick="removeDerpRegion(' + rIdx + ')">Remove</button>' +
+          '</div>' +
+          nodesHtml +
+          '<div class="inline-form" style="margin-top:8px">' +
+            '<input type="text" id="derp-add-node-name-' + rIdx + '" placeholder="Node name" style="max-width:140px" />' +
+            '<input type="text" id="derp-add-node-host-' + rIdx + '" placeholder="Hostname" />' +
+            '<input type="text" id="derp-add-node-stun-' + rIdx + '" placeholder="STUN port" style="max-width:100px" />' +
+            '<input type="text" id="derp-add-node-derp-' + rIdx + '" placeholder="DERP port" style="max-width:100px" />' +
+            '<button class="btn-sm" onclick="addDerpNode(' + rIdx + ')">Add Node</button>' +
+          '</div>' +
+        '</div>';
+      }).join('');
+    }
+
+    function addDerpRegion() {
+      var idEl = document.getElementById('derp-region-id');
+      var codeEl = document.getElementById('derp-region-code');
+      var nameEl = document.getElementById('derp-region-name');
+      var nodeNameEl = document.getElementById('derp-node-name');
+      var nodeHostEl = document.getElementById('derp-node-host');
+      var nodeStunEl = document.getElementById('derp-node-stun');
+      var nodeDerpEl = document.getElementById('derp-node-derp');
+
+      var regionId = parseInt(idEl.value);
+      var regionCode = codeEl.value.trim();
+      var regionName = nameEl.value.trim();
+      var nodeName = nodeNameEl.value.trim();
+      var nodeHost = nodeHostEl.value.trim();
+
+      if (!regionId || regionId < 900 || regionId > 999) { toast('Region ID must be between 900 and 999'); return; }
+      if (!regionCode) { toast('Region code is required'); return; }
+      if (!regionName) { toast('Region name is required'); return; }
+      if (!nodeName || !nodeHost) { toast('At least one node with name and hostname is required'); return; }
+
+      var node = { name: nodeName, hostname: nodeHost };
+      var stunPort = parseInt(nodeStunEl.value);
+      var derpPort = parseInt(nodeDerpEl.value);
+      if (stunPort) node.stunPort = stunPort;
+      if (derpPort) node.derpPort = derpPort;
+
+      derpState.regions.push({
+        regionId: regionId,
+        regionCode: regionCode,
+        regionName: regionName,
+        nodes: [node],
+      });
+
+      idEl.value = '';
+      codeEl.value = '';
+      nameEl.value = '';
+      nodeNameEl.value = '';
+      nodeHostEl.value = '';
+      nodeStunEl.value = '';
+      nodeDerpEl.value = '';
+      renderDerpRegions();
+      toast('Region added (unsaved)');
+    }
+
+    function removeDerpRegion(idx) {
+      derpState.regions.splice(idx, 1);
+      renderDerpRegions();
+      toast('Region removed (unsaved)');
+    }
+
+    function addDerpNode(regionIdx) {
+      var nameEl = document.getElementById('derp-add-node-name-' + regionIdx);
+      var hostEl = document.getElementById('derp-add-node-host-' + regionIdx);
+      var stunEl = document.getElementById('derp-add-node-stun-' + regionIdx);
+      var derpEl = document.getElementById('derp-add-node-derp-' + regionIdx);
+
+      var name = nameEl.value.trim();
+      var hostname = hostEl.value.trim();
+      if (!name || !hostname) { toast('Node name and hostname are required'); return; }
+
+      var node = { name: name, hostname: hostname };
+      var stunPort = parseInt(stunEl.value);
+      var derpPort = parseInt(derpEl.value);
+      if (stunPort) node.stunPort = stunPort;
+      if (derpPort) node.derpPort = derpPort;
+
+      derpState.regions[regionIdx].nodes.push(node);
+      renderDerpRegions();
+      toast('Node added (unsaved)');
+    }
+
+    function removeDerpNode(regionIdx, nodeIdx) {
+      derpState.regions[regionIdx].nodes.splice(nodeIdx, 1);
+      renderDerpRegions();
+      toast('Node removed (unsaved)');
+    }
+
+    async function saveDerp() {
+      if (!state.currentTenant) return;
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/derp', {
+        method: 'PUT',
+        body: JSON.stringify({
+          regions: derpState.regions,
+          embeddedDerpEnabled: derpState.embeddedDerpEnabled,
+          usePublicDerp: derpState.usePublicDerp,
+        }),
+      });
+      if (result) {
+        toast('DERP configuration saved');
+        loadDerp();
+      }
+    }
+
     async function loadSecurity() {
       if (!state.currentTenant) return;
       if (hasPerm('manage_settings')) {
@@ -2016,6 +2219,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         tenant_stopped: 'stopped tenant',
         tenant_hibernated: 'tenant auto-hibernated',
         acl_updated: 'updated ACL policy',
+        derp_updated: 'updated DERP relay config',
       };
       el.innerHTML = data.entries.map(function(e) {
         var label = actionLabels[e.action] || e.action;
@@ -2067,6 +2271,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         tenant_deleted: 'deleted tenant', tenant_started: 'started tenant', tenant_stopped: 'stopped tenant',
         tenant_hibernated: 'tenant auto-hibernated',
         acl_updated: 'updated ACL policy',
+        derp_updated: 'updated DERP relay config',
       };
       var html = data.entries.map(function(e) {
         var label = actionLabels[e.action] || e.action;
@@ -2450,6 +2655,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           if (state.tab === 'board') loadBoard();
           if (state.tab === 'agents') loadAgents();
           if (state.tab === 'acl') loadAcl();
+          if (state.tab === 'derp') loadDerp();
           if (state.tab === 'roles') loadRoles();
           if (state.tab === 'security') loadSecurity();
           if (state.tab === 'audit') loadAuditLog();

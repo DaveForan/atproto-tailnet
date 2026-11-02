@@ -27,6 +27,20 @@ import {
   index,
 } from "drizzle-orm/pg-core";
 
+export interface DerpRegionNode {
+  name: string;
+  hostname: string;
+  stunPort?: number;
+  derpPort?: number;
+}
+
+export interface DerpRegion {
+  regionId: number;
+  regionCode: string;
+  regionName: string;
+  nodes: DerpRegionNode[];
+}
+
 export const tenantStatusEnum = pgEnum("tenant_status", [
   "provisioning",
   "running",
@@ -91,6 +105,7 @@ export const auditActionEnum = pgEnum("audit_action", [
   "tenant_stopped",
   "tenant_hibernated",
   "acl_updated",
+  "derp_updated",
 ]);
 
 export const deviceApprovalStatusEnum = pgEnum("device_approval_status", [
@@ -193,6 +208,12 @@ export const tenants = pgTable("tenants", {
   hibernateAfterDays: integer("hibernate_after_days").notNull().default(0),
   /** Last time a member or agent accessed this tenant's API. Updated at most once per 5 minutes. */
   lastActivityAt: timestamp("last_activity_at").defaultNow().notNull(),
+  /** Custom DERP relay regions for this tenant's Headscale instance. */
+  customDerpRegions: jsonb("custom_derp_regions").$type<DerpRegion[]>().notNull().default([]),
+  /** When true, Headscale runs an embedded DERP server (requires container restart). */
+  embeddedDerpEnabled: boolean("embedded_derp_enabled").notNull().default(false),
+  /** When false, Tailscale's public DERP relays are disabled — only custom regions are used. */
+  usePublicDerp: boolean("use_public_derp").notNull().default(true),
   /** Role assigned to new members on invitation acceptance. */
   defaultRoleId: uuid("default_role_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),

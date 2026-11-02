@@ -9,6 +9,7 @@ import Docker from "dockerode";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { config } from "../config.js";
+import type { DerpRegion } from "../db/schema.js";
 
 const docker = new Docker();
 
@@ -20,9 +21,30 @@ export interface TenantInstance {
   containerId: string;
 }
 
-function generateHeadscaleConfig(slug: string, port: number): string {
+export interface DerpConfigOptions {
+  embeddedDerpEnabled?: boolean;
+  usePublicDerp?: boolean;
+  hasCustomRegions?: boolean;
+}
+
+function generateHeadscaleConfig(
+  slug: string,
+  port: number,
+  derp: DerpConfigOptions = {},
+): string {
   const publicProto = config.publicUrl.startsWith("https") ? "https" : "http";
   const serverUrl = `${publicProto}://${slug}.${config.baseDomain}`;
+
+  const urlsLine = derp.usePublicDerp === false
+    ? "  urls: []"
+    : "  urls:\n    - https://controlplane.tailscale.com/derpmap/default";
+
+  const pathsLine = derp.hasCustomRegions
+    ? "  paths:\n    - /etc/headscale/derp-custom.yaml"
+    : "";
+
+  const updateFreq = derp.hasCustomRegions ? "5m" : "24h";
+
   return `---
 server_url: ${serverUrl}
 listen_addr: 0.0.0.0:8080
@@ -35,11 +57,10 @@ prefixes:
   allocation: sequential
 derp:
   server:
-    enabled: false
-  urls:
-    - https://controlplane.tailscale.com/derpmap/default
-  auto_update_enabled: true
-  update_frequency: 24h
+    enabled: ${derp.embeddedDerpEnabled ? "true" : "false"}
+${urlsLine}
+${pathsLine ? pathsLine + "\n" : ""}  auto_update_enabled: true
+  update_frequency: ${updateFreq}
 database:
   type: sqlite
   sqlite:
@@ -56,6 +77,49 @@ log:
 policy:
   mode: database
 `;
+}
+
+function derpRegionToYaml(region: DerpRegion): string {
+  const nodesYaml = region.nodes
+    .map(
+      (n) =>
+        `        - name: ${n.name}\n          regionid: ${region.regionId}\n          hostname: ${n.hostname}\n          stunport: ${n.stunPort ?? 0}\n          derpport: ${n.derpPort ?? 0}`,
+    )
+    .join("\n");
+  return `    ${region.regionId}:\n      regionid: ${region.regionId}\n      regioncode: ${region.regionCode}\n      regionname: ${region.regionName}\n      nodes:\n${nodesYaml}`;
+}
+
+export async function writeDerpRegionsFile(
+  slug: string,
+  regions: DerpRegion[],
+): Promise<void> {
+  const dataDir = resolve(config.headscale.dataDir, slug);
+  await mkdir(dataDir, { recursive: true });
+  if (regions.length === 0) {
+    await writeFile(join(dataDir, "derp-custom.yaml"), "regions: {}\n");
+    return;
+  }
+  const body = regions.map(derpRegionToYaml).join("\n");
+  await writeFile(
+    join(dataDir, "derp-custom.yaml"),
+    `regions:\n${body}\n`,
+  );
+}
+
+export async function updateDerpConfig(
+  slug: string,
+  port: number,
+  regions: DerpRegion[],
+  opts: DerpConfigOptions,
+): Promise<void> {
+  const dataDir = resolve(config.headscale.dataDir, slug);
+  await mkdir(dataDir, { recursive: true });
+  const cfgContent = generateHeadscaleConfig(slug, port, {
+    ...opts,
+    hasCustomRegions: regions.length > 0,
+  });
+  await writeFile(join(dataDir, "config.yaml"), cfgContent);
+  await writeDerpRegionsFile(slug, regions);
 }
 
 async function waitForReady(
@@ -123,6 +187,7 @@ export async function createInstance(
 
   const configContent = generateHeadscaleConfig(slug, port);
   await writeFile(join(dataDir, "config.yaml"), configContent);
+  await writeFile(join(dataDir, "derp-custom.yaml"), "regions: {}\n");
 
   const container = await docker.createContainer({
     Image: config.headscale.image,

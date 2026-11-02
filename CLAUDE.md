@@ -71,6 +71,8 @@ npm run dev                      # http://localhost:3000
 - Structured logging: `pino` via `src/logger.ts`; `LOG_LEVEL` env var (default: info); replaces all console.log/error
 - Instance hibernation: `hibernateAfterDays` setting (0 = disabled), `lastActivityAt` updated on API access (debounced 5 min); monitor sweep auto-stops idle tenants past threshold
 - `getTenantForUser` touches `lastActivityAt` fire-and-forget when >5 min stale
+- Custom DERP relays: `GET/PUT /api/tenants/:id/derp` — per-tenant DERP regions (YAML files hot-reloaded by Headscale), embedded DERP toggle (requires restart), public relay toggle; gated by `manage_acl`; region IDs 900-999
+- DERP config writes: `updateDerpConfig()` in `orchestrator/headscale.ts` rewrites config.yaml + derp-custom.yaml; `writeDerpRegionsFile()` generates the YAML paths file
 
 ## File layout
 
@@ -84,7 +86,7 @@ src/
   db/index.ts              — Database connection + pool export
   logger.ts                — Pino structured logger (LOG_LEVEL env)
   orchestrator/
-    headscale.ts           — Docker lifecycle (create/start/stop/destroy), CLI exec
+    headscale.ts           — Docker lifecycle (create/start/stop/destroy), CLI exec, DERP config writer
     headscale-api.ts       — REST client for running Headscale instances (includes getPolicy/setPolicy)
     caddy.ts               — Caddy admin API (dynamic route add/remove)
     ports.ts               — Port allocator
@@ -100,7 +102,8 @@ src/
     board.ts               — Board posts CRUD, public board API + /board/:slug page
     agents.ts              — Agent token CRUD (create, list, revoke)
     acl.ts                 — ACL policy GET/PUT (manage_acl permission, Zod-validated)
-    dashboard.ts           — Inline SPA (tabbed: Devices, Members, Invite, Add Device, Services, Board, Agents, ACL, Roles, Security, Audit) + /join/:slug
+    derp.ts                — Custom DERP relay management (regions, embedded toggle, public relay toggle)
+    dashboard.ts           — Inline SPA (tabbed: Devices, Members, Invite, Add Device, Services, Board, Agents, ACL, DERP, Roles, Security, Audit) + /join/:slug
     helpers.ts             — Shared middleware, param(), permission checks, agent token resolution, hs username/URL helpers
     audit.ts               — Fire-and-forget audit log writer
 docs/adr/                  — Architecture Decision Records (0001-0005)

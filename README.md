@@ -24,6 +24,7 @@ Built on [Headscale](https://github.com/juanfont/headscale) (open-source Tailsca
 - **Public board** — `/board/<slug>` page for advertising services to the world
 - **Join requests** — public `/join/<slug>` page so people can request access
 - **ACL management** — visual editor for Headscale access control rules, groups, and hosts
+- **Custom DERP relays** — per-tenant relay regions, embedded DERP server toggle, public relay control
 - **Agent API tokens** — scoped Bearer tokens for AI agents and automation
 - **Health monitoring** — background checks with auto-restart for failed instances
 - **Instance hibernation** — auto-stop idle tenants after configurable days of inactivity
