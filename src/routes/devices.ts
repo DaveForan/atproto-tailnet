@@ -31,6 +31,7 @@ import {
   authUserId,
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
+import { logger } from "../logger.js";
 
 /**
  * Router for device listing, auth-key generation, node removal,
@@ -86,7 +87,7 @@ devicesRouter.get(
         total: nodes.length,
       });
     } catch (err) {
-      console.error("Failed to list devices:", err);
+      logger.error({ err }, "failed to list devices");
       res.status(502).json({ error: "Failed to reach Headscale instance" });
     }
   },
@@ -183,7 +184,7 @@ devicesRouter.post(
         loginServer,
       });
     } catch (err) {
-      console.error("Failed to create pre-auth key:", err);
+      logger.error({ err }, "failed to create pre-auth key");
       res.status(502).json({ error: "Failed to create auth key" });
     }
   },
@@ -240,7 +241,7 @@ devicesRouter.delete(
 
       res.json({ status: "deleted" });
     } catch (err) {
-      console.error("Failed to delete device:", err);
+      logger.error({ err }, "failed to delete device");
       res.status(502).json({ error: "Failed to delete device" });
     }
   },
@@ -345,10 +346,7 @@ devicesRouter.delete(
         }
         await client.deleteUser(hsUsername);
       } catch (err) {
-        console.error(
-          `Failed to clean up Headscale for user ${hsUsername}:`,
-          err,
-        );
+        logger.error({ err, hsUsername }, "failed to clean up Headscale for user");
       }
     }
 

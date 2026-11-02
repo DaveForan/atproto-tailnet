@@ -7,6 +7,7 @@
 
 import { db } from "../db/index.js";
 import { auditLogs, auditActionEnum } from "../db/schema.js";
+import { logger } from "../logger.js";
 
 type AuditAction = (typeof auditActionEnum.enumValues)[number];
 
@@ -31,5 +32,5 @@ export function logAudit(params: {
       targetId: params.targetId ?? null,
       metadata: params.metadata ?? null,
     })
-    .catch((err) => console.error("Audit log write failed:", err));
+    .catch((err) => logger.error({ err }, "audit log write failed"));
 }

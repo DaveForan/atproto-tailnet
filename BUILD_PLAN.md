@@ -272,7 +272,7 @@ See `docs/adr/` for rationale behind each choice:
 - [x] Hibernation settings in Security tab with relative-time last-activity display
 
 ### 4.3 Production deployment
-- [ ] Real domain + wildcard TLS (Let's Encrypt via Caddy)
+- [x] Production Caddy config with wildcard TLS (Caddyfile.production, DNS challenge)
 - [x] Client metadata hosted at `/.well-known/atproto-client-metadata.json`
 - [x] JWKS endpoint for production OAuth (`/.well-known/jwks.json`)
 - [x] Rate limiting (express-rate-limit: auth + .well-known 10/min, API 60/min)
@@ -281,10 +281,12 @@ See `docs/adr/` for rationale behind each choice:
 - [x] Structured logging (Pino, `LOG_LEVEL` env, replaces all console.log/error)
 
 ### 4.4 UX polish
-- [ ] Real UI design (not just functional)
-- [ ] Mobile-friendly
-- [ ] Setup wizard for first-time users
-- [ ] Network status / connectivity diagnostics
+- [x] Sidebar navigation (replaced wrapping tab bar with grouped vertical nav)
+- [x] Mobile-responsive (hamburger menu, sidebar overlay, stacking stat cards)
+- [x] Setup wizard (3-step onboarding: tailnet ready → connect device → invite someone)
+- [x] Network status tab (instance health + device online/offline counts)
+- [x] Stat summary bar (devices, members, tenant status, health at a glance)
+- [x] Structured logging: all console.error replaced with Pino logger across all route files
 
 ---
 

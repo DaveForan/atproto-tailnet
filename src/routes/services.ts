@@ -30,6 +30,7 @@ import {
   authUserId,
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
+import { logger } from "../logger.js";
 
 /**
  * Router for service device registration/approval and service CRUD/approval.
@@ -185,7 +186,7 @@ servicesRouter.post(
         command,
       });
     } catch (err) {
-      console.error("Failed to create service device auth key:", err);
+      logger.error({ err }, "failed to create service device auth key");
       res.status(502).json({ error: "Failed to generate auth key" });
     }
   },
@@ -268,7 +269,7 @@ servicesRouter.post(
 
       res.json({ status: "approved", preAuthKey: authKey.key, command });
     } catch (err) {
-      console.error("Failed to approve service device:", err);
+      logger.error({ err }, "failed to approve service device");
       res.status(502).json({ error: "Failed to generate auth key" });
     }
   },

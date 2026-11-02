@@ -62,7 +62,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       border-radius: 50%;
     }
     .user-info span { color: var(--text-dim); font-size: 14px; }
-    main { max-width: 960px; margin: 0 auto; padding: 24px; }
+    main { flex: 1; min-width: 0; padding: 24px; max-width: 100%; overflow-y: auto; }
     .section { margin-bottom: 32px; }
     .section h2 {
       font-size: 16px;
@@ -211,24 +211,169 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       padding: 32px;
       color: var(--text-dim);
     }
-    .tab-bar {
+    .hidden { display: none; }
+    .dashboard-layout {
       display: flex;
-      gap: 4px;
-      margin-bottom: 16px;
-      flex-wrap: wrap;
+      min-height: calc(100vh - 60px);
     }
-    .tab {
-      padding: 6px 14px;
-      border-radius: 6px;
-      cursor: pointer;
+    .sidebar {
+      width: 240px;
+      flex-shrink: 0;
+      background: var(--surface);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+    }
+    .sidebar-tenant {
+      padding: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    .sidebar-tenant h3 {
+      font-size: 15px;
+      font-weight: 600;
+      margin-bottom: 6px;
+    }
+    .nav-group-header {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      padding: 16px 16px 6px;
+    }
+    .nav-item {
+      display: block;
+      width: 100%;
+      text-align: left;
+      padding: 8px 16px;
       font-size: 14px;
       color: var(--text-dim);
       background: transparent;
       border: none;
+      border-left: 3px solid transparent;
+      cursor: pointer;
+      transition: background 0.15s, color 0.15s;
+      border-radius: 0;
     }
-    .tab.active { background: var(--surface); color: var(--text); }
-    .tab:hover { color: var(--text); }
-    .hidden { display: none; }
+    .nav-item:hover {
+      color: var(--text);
+      background: rgba(99, 102, 241, 0.05);
+    }
+    .nav-item.active {
+      color: var(--text);
+      background: rgba(99, 102, 241, 0.08);
+      border-left-color: var(--accent);
+    }
+    .hamburger-btn {
+      display: none;
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text);
+      font-size: 20px;
+      padding: 4px 8px;
+      border-radius: 6px;
+      cursor: pointer;
+      line-height: 1;
+    }
+    .hamburger-btn:hover { background: var(--surface); }
+    .sidebar-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.5);
+      z-index: 99;
+    }
+    .sidebar-overlay.open { display: block; }
+    .stat-row {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 16px;
+      flex: 1;
+      min-width: 140px;
+    }
+    .stat-label {
+      font-size: 12px;
+      color: var(--text-dim);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 4px;
+    }
+    .stat-value { font-size: 22px; font-weight: 600; }
+    .stat-detail { font-size: 12px; color: var(--text-dim); margin-top: 2px; }
+    .health-dot {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      margin-right: 6px;
+      vertical-align: middle;
+    }
+    .health-dot.healthy { background: var(--success); }
+    .health-dot.unhealthy { background: var(--danger); }
+    .wizard-overlay {
+      position: fixed;
+      inset: 0;
+      background: var(--bg);
+      z-index: 200;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .wizard-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 32px;
+      max-width: 600px;
+      width: 100%;
+    }
+    .wizard-card h2 { font-size: 20px; font-weight: 600; margin-bottom: 8px; }
+    .wizard-card p { color: var(--text-dim); font-size: 14px; margin-bottom: 16px; }
+    .wizard-steps {
+      display: flex;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 24px;
+    }
+    .wizard-step-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--border);
+    }
+    .wizard-step-dot.active { background: var(--accent); }
+    .wizard-nav {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 24px;
+      gap: 8px;
+    }
+    @media (max-width: 768px) {
+      .hamburger-btn { display: inline-flex; }
+      .sidebar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        z-index: 100;
+        transform: translateX(-100%);
+        transition: transform 0.25s ease;
+      }
+      .sidebar.open { transform: translateX(0); }
+      main { width: 100%; }
+      .stat-row { flex-direction: column; }
+      .stat-card { min-width: unset; }
+    }
     #login-page {
       display: flex;
       flex-direction: column;
@@ -400,6 +545,10 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       settings: null,
       roles: [],
       allPerms: [],
+      showWizard: false,
+      wizardStep: 1,
+      wizardDismissed: false,
+      stats: null,
     };
 
     function esc(s) {
@@ -470,6 +619,10 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         if (state.currentTenant) {
           state.settings = await api('/api/tenants/' + state.currentTenant.id + '/settings');
           state.roles = await api('/api/tenants/' + state.currentTenant.id + '/roles') || [];
+          await loadStats();
+          if (state.currentTenant.status === 'running' && state.stats && state.stats.totalDevices === 0 && !state.wizardDismissed) {
+            state.showWizard = true;
+          }
         }
         if (state.tenants.some(function(t) { return t.status === 'provisioning'; })) {
           if (!pollTimer) pollTimer = setInterval(function() { init(); }, 3000);
@@ -596,8 +749,12 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 
     function renderDashboard() {
       var t = state.currentTenant;
+      if (state.showWizard && t) return renderWizard(t);
       return '<header>' +
-        '<h1>atproto-tailnet</h1>' +
+        '<div style="display:flex;align-items:center;gap:12px">' +
+          '<button class="hamburger-btn" onclick="toggleSidebar()">&#9776;</button>' +
+          '<h1>atproto-tailnet</h1>' +
+        '</div>' +
         '<div class="user-info">' +
           (safeUrl(state.user.avatarUrl) ? '<img src="' + safeUrl(state.user.avatarUrl) + '" />' : '') +
           '<span>' + esc(state.user.handle) + '</span>' +
@@ -605,26 +762,23 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         '</div>' +
       '</header>' +
       renderLockdownBanner() +
-      '<main>' +
-        renderInvitationsReceived() +
-        (t ? renderTenantView(t) : '<div class="empty-state">No tailnets. This shouldn\\'t happen!</div>') +
-      '</main>';
+      (t ? renderTenantView(t) : '<main style="max-width:960px;margin:0 auto;padding:24px"><div class="empty-state">No tailnets. This shouldn\\'t happen!</div></main>');
     }
 
     function renderTenantView(t) {
       if (t.status === 'provisioning') {
-        return '<div class="section"><div class="card">' +
+        return '<main style="max-width:960px;margin:0 auto;padding:24px"><div class="section"><div class="card">' +
           '<div class="card-header"><h3>' + esc(t.name) + '</h3>' +
             '<span class="badge" style="background:#f59e0b20;color:#f59e0b">provisioning</span></div>' +
           '<p style="color:var(--text-dim);margin-top:8px">Your tailnet is being set up. This usually takes 10-15 seconds. The page will refresh automatically.</p>' +
-        '</div></div>';
+        '</div></div></main>';
       }
       if (t.status === 'error') {
-        return '<div class="section"><div class="card">' +
+        return '<main style="max-width:960px;margin:0 auto;padding:24px"><div class="section"><div class="card">' +
           '<div class="card-header"><h3>' + esc(t.name) + '</h3>' +
             '<span class="badge" style="background:#ef444420;color:#ef4444">error</span></div>' +
           '<p style="color:var(--text-dim);margin-top:8px">Something went wrong provisioning your tailnet. Try signing out and back in, or contact support.</p>' +
-        '</div></div>';
+        '</div></div></main>';
       }
 
       var canSecurity = hasPerm('manage_settings') || hasPerm('approve_devices') || hasPerm('approve_joins') || hasPerm('approve_services');
@@ -634,42 +788,60 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       var canBoard = hasPerm('manage_board') || hasPerm('create_posts');
       var canAgents = state.settings && state.settings.allowAgentTokens;
       var canAcl = hasPerm('manage_acl');
-
-      var tabBar = '<div class="tab-bar">' +
-        '<button class="tab ' + (state.tab === 'devices' ? 'active' : '') + '" onclick="switchTab(\\'devices\\')">Devices</button>' +
-        '<button class="tab ' + (state.tab === 'members' ? 'active' : '') + '" onclick="switchTab(\\'members\\')">Members</button>' +
-        (hasPerm('invite') ? '<button class="tab ' + (state.tab === 'invite' ? 'active' : '') + '" onclick="switchTab(\\'invite\\')">Invite</button>' : '') +
-        '<button class="tab ' + (state.tab === 'connect' ? 'active' : '') + '" onclick="switchTab(\\'connect\\')">Add Device</button>' +
-        (canServices ? '<button class="tab ' + (state.tab === 'services' ? 'active' : '') + '" onclick="switchTab(\\'services\\')">Services</button>' : '') +
-        (canBoard ? '<button class="tab ' + (state.tab === 'board' ? 'active' : '') + '" onclick="switchTab(\\'board\\')">Board</button>' : '') +
-        (canRoles ? '<button class="tab ' + (state.tab === 'roles' ? 'active' : '') + '" onclick="switchTab(\\'roles\\')">Roles</button>' : '') +
-        (canAgents ? '<button class="tab ' + (state.tab === 'agents' ? 'active' : '') + '" onclick="switchTab(\\'agents\\')">Agents</button>' : '') +
-        (canAcl ? '<button class="tab ' + (state.tab === 'acl' ? 'active' : '') + '" onclick="switchTab(\\'acl\\')">ACL</button>' : '') +
-        (canSecurity ? '<button class="tab ' + (state.tab === 'security' ? 'active' : '') + '" onclick="switchTab(\\'security\\')">Security</button>' : '') +
-        (canAudit ? '<button class="tab ' + (state.tab === 'audit' ? 'active' : '') + '" onclick="switchTab(\\'audit\\')">Audit Log</button>' : '') +
-      '</div>';
+      var hasManageGroup = hasPerm('invite') || canServices || canBoard;
+      var hasAccessGroup = canRoles || canAgents || canAcl;
+      var hasAdminGroup = canSecurity || canAudit;
 
       var roleBadge = t.isOriginator
         ? '<span class="badge badge-originator">originator</span>'
         : '<span class="badge badge-role">' + esc(t.roleName || 'citizen') + '</span>';
 
-      return '<div class="section">' +
-        '<div class="card">' +
-          '<div class="card-header">' +
+      return '<div class="dashboard-layout">' +
+        '<aside id="sidebar" class="sidebar">' +
+          '<div class="sidebar-tenant">' +
             '<h3>' + esc(t.name) + '</h3>' +
-            '<div style="display:flex;gap:8px">' +
+            '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">' +
               '<span class="badge badge-' + t.status + '">' + t.status + '</span>' +
               roleBadge +
             '</div>' +
           '</div>' +
-        '</div>' +
-      '</div>' +
+          '<nav>' +
+            '<div class="nav-group-header">Network</div>' +
+            '<button class="nav-item' + (state.tab === 'status' ? ' active' : '') + '" onclick="switchTab(\\'status\\')">Status</button>' +
+            '<button class="nav-item' + (state.tab === 'devices' ? ' active' : '') + '" onclick="switchTab(\\'devices\\')">Devices</button>' +
+            '<button class="nav-item' + (state.tab === 'members' ? ' active' : '') + '" onclick="switchTab(\\'members\\')">Members</button>' +
+            '<button class="nav-item' + (state.tab === 'connect' ? ' active' : '') + '" onclick="switchTab(\\'connect\\')">Add Device</button>' +
+            (hasManageGroup ?
+              '<div class="nav-group-header">Manage</div>' +
+              (hasPerm('invite') ? '<button class="nav-item' + (state.tab === 'invite' ? ' active' : '') + '" onclick="switchTab(\\'invite\\')">Invite</button>' : '') +
+              (canServices ? '<button class="nav-item' + (state.tab === 'services' ? ' active' : '') + '" onclick="switchTab(\\'services\\')">Services</button>' : '') +
+              (canBoard ? '<button class="nav-item' + (state.tab === 'board' ? ' active' : '') + '" onclick="switchTab(\\'board\\')">Board</button>' : '')
+            : '') +
+            (hasAccessGroup ?
+              '<div class="nav-group-header">Access Control</div>' +
+              (canRoles ? '<button class="nav-item' + (state.tab === 'roles' ? ' active' : '') + '" onclick="switchTab(\\'roles\\')">Roles</button>' : '') +
+              (canAgents ? '<button class="nav-item' + (state.tab === 'agents' ? ' active' : '') + '" onclick="switchTab(\\'agents\\')">Agents</button>' : '') +
+              (canAcl ? '<button class="nav-item' + (state.tab === 'acl' ? ' active' : '') + '" onclick="switchTab(\\'acl\\')">ACL</button>' : '')
+            : '') +
+            (hasAdminGroup ?
+              '<div class="nav-group-header">Admin</div>' +
+              (canSecurity ? '<button class="nav-item' + (state.tab === 'security' ? ' active' : '') + '" onclick="switchTab(\\'security\\')">Security</button>' : '') +
+              (canAudit ? '<button class="nav-item' + (state.tab === 'audit' ? ' active' : '') + '" onclick="switchTab(\\'audit\\')">Audit Log</button>' : '')
+            : '') +
+          '</nav>' +
+        '</aside>' +
+        '<div id="sidebar-overlay" class="sidebar-overlay" onclick="toggleSidebar()"></div>' +
+        '<main>' +
+          renderInvitationsReceived() +
+          renderStatsSummary() +
 
-      tabBar +
+          '<div id="tab-status" class="' + (state.tab !== 'status' ? 'hidden' : '') + '">' +
+            '<div class="card"><div id="status-content">Loading...</div></div>' +
+          '</div>' +
 
-      '<div id="tab-devices" class="' + (state.tab !== 'devices' ? 'hidden' : '') + '">' +
-        '<div class="card"><div id="device-list">Loading...</div></div>' +
-      '</div>' +
+          '<div id="tab-devices" class="' + (state.tab !== 'devices' ? 'hidden' : '') + '">' +
+            '<div class="card"><div id="device-list">Loading...</div></div>' +
+          '</div>' +
 
       '<div id="tab-members" class="' + (state.tab !== 'members' ? 'hidden' : '') + '">' +
         '<div class="card"><div id="member-list">Loading...</div></div>' +
@@ -882,12 +1054,19 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       (canAudit ?
         '<div id="tab-audit" class="' + (state.tab !== 'audit' ? 'hidden' : '') + '">' +
           '<div class="card"><div id="audit-log">Loading...</div></div>' +
-        '</div>' : '');
+        '</div>' : '') +
+      '</main>' +
+      '</div>';
     }
 
     function switchTab(tab) {
       state.tab = tab;
+      var sb = document.getElementById('sidebar');
+      var ov = document.getElementById('sidebar-overlay');
+      if (sb) sb.classList.remove('open');
+      if (ov) ov.classList.remove('open');
       render();
+      if (tab === 'status') loadStatus();
       if (tab === 'devices') loadDevices();
       if (tab === 'members') loadMembers();
       if (tab === 'invite') loadSentInvitations();
@@ -2095,21 +2274,186 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       await init();
     }
 
+    // ── Sidebar toggle ────────────────────────────────────────────
+    function toggleSidebar() {
+      var sb = document.getElementById('sidebar');
+      var ov = document.getElementById('sidebar-overlay');
+      if (sb) sb.classList.toggle('open');
+      if (ov) ov.classList.toggle('open');
+    }
+
+    // ── Stats ───────────────────────────────────────────────────
+    async function loadStats() {
+      if (!state.currentTenant) return;
+      var tenantId = state.currentTenant.id;
+      var devices = await api('/api/tenants/' + tenantId + '/devices');
+      var members = await api('/api/tenants/' + tenantId + '/members');
+      var health = await api('/api/tenants/' + tenantId + '/health');
+      var totalDevices = 0;
+      var onlineDevices = 0;
+      if (devices && devices.byUser) {
+        devices.byUser.forEach(function(group) {
+          group.devices.forEach(function(d) {
+            totalDevices++;
+            if (d.online) onlineDevices++;
+          });
+        });
+      }
+      state.stats = {
+        totalDevices: totalDevices,
+        onlineDevices: onlineDevices,
+        offlineDevices: totalDevices - onlineDevices,
+        totalMembers: members ? members.length : 0,
+        tenantStatus: state.currentTenant.status,
+        healthy: health ? health.healthy : false,
+      };
+    }
+
+    function renderStatsSummary() {
+      if (!state.stats) return '';
+      var s = state.stats;
+      return '<div class="stat-row">' +
+        '<div class="stat-card">' +
+          '<div class="stat-label">Devices</div>' +
+          '<div class="stat-value">' + s.totalDevices + '</div>' +
+          '<div class="stat-detail">' + s.onlineDevices + ' online / ' + s.offlineDevices + ' offline</div>' +
+        '</div>' +
+        '<div class="stat-card">' +
+          '<div class="stat-label">Members</div>' +
+          '<div class="stat-value">' + s.totalMembers + '</div>' +
+        '</div>' +
+        '<div class="stat-card">' +
+          '<div class="stat-label">Tenant</div>' +
+          '<div class="stat-value"><span class="badge badge-' + s.tenantStatus + '">' + s.tenantStatus + '</span></div>' +
+        '</div>' +
+        '<div class="stat-card">' +
+          '<div class="stat-label">Health</div>' +
+          '<div class="stat-value"><span class="health-dot ' + (s.healthy ? 'healthy' : 'unhealthy') + '"></span>' + (s.healthy ? 'Healthy' : 'Unhealthy') + '</div>' +
+        '</div>' +
+      '</div>';
+    }
+
+    // ── Network Status tab ──────────────────────────────────────
+    async function loadStatus() {
+      if (!state.currentTenant) return;
+      var tenantId = state.currentTenant.id;
+      var health = await api('/api/tenants/' + tenantId + '/health');
+      var devices = await api('/api/tenants/' + tenantId + '/devices');
+      var el = document.getElementById('status-content');
+      if (!el) return;
+
+      var healthHtml = '<div style="margin-bottom:16px">' +
+        '<h4 style="margin-bottom:8px">Instance Health</h4>' +
+        '<div style="display:flex;align-items:center;gap:8px">' +
+          '<span class="health-dot ' + (health && health.healthy ? 'healthy' : 'unhealthy') + '"></span>' +
+          '<span style="font-size:16px;font-weight:500">' + (health && health.healthy ? 'Instance healthy' : 'Instance unhealthy') + '</span>' +
+          '<span class="badge badge-' + state.currentTenant.status + '" style="margin-left:8px">' + state.currentTenant.status + '</span>' +
+        '</div>' +
+      '</div>';
+
+      var totalDevices = 0;
+      var onlineCount = 0;
+      if (devices && devices.byUser) {
+        devices.byUser.forEach(function(group) {
+          group.devices.forEach(function(d) {
+            totalDevices++;
+            if (d.online) onlineCount++;
+          });
+        });
+      }
+
+      var summaryHtml = '<div style="margin-bottom:16px">' +
+        '<h4 style="margin-bottom:8px">Device Summary</h4>' +
+        '<div style="display:flex;gap:16px;color:var(--text-dim);font-size:14px">' +
+          '<span>Total: <strong style="color:var(--text)">' + totalDevices + '</strong></span>' +
+          '<span>Online: <strong style="color:var(--success)">' + onlineCount + '</strong></span>' +
+          '<span>Offline: <strong style="color:var(--text-dim)">' + (totalDevices - onlineCount) + '</strong></span>' +
+        '</div>' +
+      '</div>';
+
+      el.innerHTML = healthHtml + summaryHtml +
+        '<h4 style="margin-bottom:8px">Devices</h4>' +
+        renderDevices(devices);
+    }
+
+    // ── Setup Wizard ────────────────────────────────────────────
+    function renderWizard(t) {
+      var steps = '<div class="wizard-steps">' +
+        '<div class="wizard-step-dot' + (state.wizardStep >= 1 ? ' active' : '') + '"></div>' +
+        '<div class="wizard-step-dot' + (state.wizardStep >= 2 ? ' active' : '') + '"></div>' +
+        '<div class="wizard-step-dot' + (state.wizardStep >= 3 ? ' active' : '') + '"></div>' +
+      '</div>';
+
+      var content = '';
+      if (state.wizardStep === 1) {
+        content = '<h2>Your tailnet is ready!</h2>' +
+          '<p>Your private mesh network has been created and is running.</p>' +
+          '<div style="margin-bottom:16px">' +
+            '<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">' +
+              '<span style="color:var(--text-dim)">Name</span><strong>' + esc(t.name) + '</strong></div>' +
+            '<div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border)">' +
+              '<span style="color:var(--text-dim)">Status</span><span class="badge badge-' + t.status + '">' + t.status + '</span></div>' +
+            '<div style="display:flex;justify-content:space-between;padding:8px 0">' +
+              '<span style="color:var(--text-dim)">Slug</span><span style="font-family:monospace;font-size:13px">' + esc(t.slug) + '</span></div>' +
+          '</div>' +
+          '<div class="wizard-nav"><div></div><button onclick="state.wizardStep=2;render()">Next</button></div>';
+      } else if (state.wizardStep === 2) {
+        content = '<h2>Connect your first device</h2>' +
+          '<p>Generate a one-time auth key to connect a device to your tailnet.</p>' +
+          '<button onclick="generateAuthKey()">Generate Auth Key</button>' +
+          '<div id="auth-key-output" style="margin-top:16px"></div>' +
+          '<div class="wizard-nav">' +
+            '<button class="btn-ghost" onclick="state.wizardStep=1;render()">Back</button>' +
+            '<button onclick="state.wizardStep=3;render()">Next</button>' +
+          '</div>';
+      } else {
+        content = '<h2>Invite someone</h2>' +
+          '<p>Invite a friend or colleague by their Bluesky handle.</p>' +
+          (hasPerm('invite') ?
+            '<div class="inline-form" style="margin-bottom:16px">' +
+              '<input type="text" id="invite-handle" placeholder="friend.bsky.social" />' +
+              '<button onclick="sendInvitation()">Send Invite</button>' +
+            '</div>' +
+            '<div id="sent-invitations"></div>' :
+            '<p style="font-size:13px">You do not have invite permissions yet.</p>') +
+          '<div class="wizard-nav">' +
+            '<button class="btn-ghost" onclick="state.wizardStep=2;render()">Back</button>' +
+            '<div style="display:flex;gap:8px">' +
+              '<button class="btn-ghost" onclick="state.showWizard=false;state.wizardDismissed=true;render()">Skip</button>' +
+              '<button onclick="state.showWizard=false;state.wizardDismissed=true;render()">Finish</button>' +
+            '</div>' +
+          '</div>';
+      }
+
+      return '<div class="wizard-overlay">' +
+        '<div style="position:absolute;top:16px;right:24px">' +
+          '<form action="/auth/logout" method="post" style="display:inline"><button class="btn-sm btn-ghost">Sign out</button></form>' +
+        '</div>' +
+        '<div class="wizard-card">' +
+          steps +
+          content +
+        '</div>' +
+      '</div>';
+    }
+
     function render() {
       if (!state.user) {
         app.innerHTML = renderLogin();
       } else {
         app.innerHTML = renderDashboard();
-        if (state.tab === 'devices') loadDevices();
-        if (state.tab === 'members') loadMembers();
-        if (state.tab === 'invite') loadSentInvitations();
-        if (state.tab === 'services') loadServices();
-        if (state.tab === 'board') loadBoard();
-        if (state.tab === 'agents') loadAgents();
-        if (state.tab === 'acl') loadAcl();
-        if (state.tab === 'roles') loadRoles();
-        if (state.tab === 'security') loadSecurity();
-        if (state.tab === 'audit') loadAuditLog();
+        if (!state.showWizard) {
+          if (state.tab === 'status') loadStatus();
+          if (state.tab === 'devices') loadDevices();
+          if (state.tab === 'members') loadMembers();
+          if (state.tab === 'invite') loadSentInvitations();
+          if (state.tab === 'services') loadServices();
+          if (state.tab === 'board') loadBoard();
+          if (state.tab === 'agents') loadAgents();
+          if (state.tab === 'acl') loadAcl();
+          if (state.tab === 'roles') loadRoles();
+          if (state.tab === 'security') loadSecurity();
+          if (state.tab === 'audit') loadAuditLog();
+        }
       }
     }
 

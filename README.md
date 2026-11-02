@@ -76,6 +76,15 @@ npm run build                 # compiles to dist/
 npm run start                 # runs dist/index.js
 ```
 
+### Production deployment
+
+For a real domain with wildcard TLS:
+
+1. Point your domain's DNS to the server (A record for `tailnets.example.com`, wildcard `*.ts.example.com`)
+2. Copy `Caddyfile.production` to `Caddyfile` and edit the domain names
+3. Set `PUBLIC_URL`, `BASE_DOMAIN`, and `SESSION_SECRET` in `.env`
+4. Caddy auto-provisions TLS via Let's Encrypt (uses DNS challenge for wildcard certs — requires a DNS provider API token, e.g. Cloudflare)
+
 ### Environment variables
 
 See `.env.example` for all options. The defaults work for local development. For production you'll need:
@@ -84,6 +93,7 @@ See `.env.example` for all options. The defaults work for local development. For
 - `PUBLIC_URL` — your public-facing URL (e.g. `https://tailnets.example.com`)
 - `BASE_DOMAIN` — wildcard domain for tenant subdomains (e.g. `ts.example.com`)
 - `ATPROTO_PRIVATE_KEY` — ES256 JWK for AT Proto OAuth client auth
+- `LOG_LEVEL` — `debug`, `info` (default), `warn`, or `error`
 
 ### npm scripts
 

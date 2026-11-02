@@ -32,6 +32,7 @@ import {
   authUserId,
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
+import { logger } from "../logger.js";
 import { ALL_PERMISSIONS, type Permission } from "./permissions.js";
 
 /**
@@ -823,7 +824,7 @@ securityRouter.post(
 
       res.json({ status: "approved", preAuthKey: authKey.key, command });
     } catch (err) {
-      console.error("Failed to generate auth key for approval:", err);
+      logger.error({ err }, "failed to generate auth key for approval");
       res.status(502).json({ error: "Failed to generate auth key" });
     }
   },
@@ -1159,7 +1160,7 @@ securityRouter.post(
         })),
       });
     } catch (err) {
-      console.error("Failed to lock devices:", err);
+      logger.error({ err }, "failed to lock devices");
       res.status(502).json({ error: "Failed to read devices from Headscale" });
     }
   },
