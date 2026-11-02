@@ -792,7 +792,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       var canSettings = hasPerm('manage_settings');
       var hasManageGroup = hasPerm('invite') || canServices || canBoard;
       var hasAccessGroup = canRoles || canAgents || canAcl;
-      var hasAdminGroup = canSecurity || canAudit;
+      var hasAdminGroup = true;
 
       var roleBadge = t.isOriginator
         ? '<span class="badge badge-originator">originator</span>'
@@ -830,6 +830,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
             : '') +
             (hasAdminGroup ?
               '<div class="nav-group-header">Admin</div>' +
+              '<button class="nav-item' + (state.tab === 'usage' ? ' active' : '') + '" onclick="switchTab(\\'usage\\')">Usage</button>' +
               (canSecurity ? '<button class="nav-item' + (state.tab === 'security' ? ' active' : '') + '" onclick="switchTab(\\'security\\')">Security</button>' : '') +
               (canAudit ? '<button class="nav-item' + (state.tab === 'audit' ? ' active' : '') + '" onclick="switchTab(\\'audit\\')">Audit Log</button>' : '')
             : '') +
@@ -1111,6 +1112,22 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           '</div>' +
         '</div>' : '') +
 
+      '<div id="tab-usage" class="' + (state.tab !== 'usage' ? 'hidden' : '') + '">' +
+        '<div class="card">' +
+          '<div class="card-header"><h3>Current Usage</h3></div>' +
+          '<div id="usage-current">Loading...</div>' +
+        '</div>' +
+        (hasPerm('manage_settings') ?
+          '<div class="card" style="margin-top:12px">' +
+            '<div class="card-header"><h3>Plan</h3></div>' +
+            '<div id="usage-plan">Loading...</div>' +
+          '</div>' : '') +
+        '<div class="card" style="margin-top:12px">' +
+          '<div class="card-header"><h3>Usage History</h3></div>' +
+          '<div id="usage-history">Loading...</div>' +
+        '</div>' +
+      '</div>' +
+
       (canSecurity ?
         '<div id="tab-security" class="' + (state.tab !== 'security' ? 'hidden' : '') + '">' +
           (hasPerm('manage_settings') ?
@@ -1162,6 +1179,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (tab === 'ipconfig') loadIpConfig();
       if (tab === 'routes') loadRoutes();
       if (tab === 'roles') loadRoles();
+      if (tab === 'usage') loadUsage();
       if (tab === 'security') loadSecurity();
       if (tab === 'audit') loadAuditLog();
     }
@@ -2154,6 +2172,127 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       }
     }
 
+    // ── Usage tab ──────────────────────────────────────────────────
+
+    async function loadUsage() {
+      if (!state.currentTenant) return;
+      var data = await api('/api/tenants/' + state.currentTenant.id + '/usage');
+      if (!data) return;
+
+      var c = data.current || {};
+      var p = data.plan || {};
+      var l = data.limits || {};
+
+      // Current Usage stats
+      var el = document.getElementById('usage-current');
+      if (el) {
+        var devicesVal = String(c.deviceCount || 0);
+        if (p.maxDevices > 0) devicesVal += ' / ' + p.maxDevices;
+        var membersVal = String(c.memberCount || 0);
+        if (p.maxMembers > 0) membersVal += ' / ' + p.maxMembers;
+        el.innerHTML = '<div class="stat-row">' +
+          '<div class="stat-card">' +
+            '<div class="stat-label">Devices</div>' +
+            '<div class="stat-value" style="' + (l.devicesExceeded ? 'color:var(--danger)' : '') + '">' + esc(devicesVal) + '</div>' +
+          '</div>' +
+          '<div class="stat-card">' +
+            '<div class="stat-label">Online</div>' +
+            '<div class="stat-value">' + (c.onlineDevices || 0) + '</div>' +
+          '</div>' +
+          '<div class="stat-card">' +
+            '<div class="stat-label">Members</div>' +
+            '<div class="stat-value" style="' + (l.membersExceeded ? 'color:var(--danger)' : '') + '">' + esc(membersVal) + '</div>' +
+          '</div>' +
+          '<div class="stat-card">' +
+            '<div class="stat-label">Routes</div>' +
+            '<div class="stat-value">' + (c.routeCount || 0) + '</div>' +
+          '</div>' +
+        '</div>';
+      }
+
+      // Plan management (manage_settings only)
+      if (hasPerm('manage_settings')) {
+        var planEl = document.getElementById('usage-plan');
+        if (planEl) {
+          var planName = p.name || 'free';
+          var plans = ['free', 'starter', 'pro', 'enterprise'];
+          planEl.innerHTML = '<div style="margin-bottom:12px">' +
+            '<span class="badge badge-originator">' + esc(planName) + '</span>' +
+          '</div>' +
+          '<div style="display:flex;flex-direction:column;gap:12px">' +
+            '<div>' +
+              '<label style="font-size:13px;color:var(--text-dim);display:block;margin-bottom:4px">Plan</label>' +
+              '<select id="plan-name">' +
+                plans.map(function(pl) {
+                  return '<option value="' + esc(pl) + '"' + (pl === planName ? ' selected' : '') + '>' + esc(pl) + '</option>';
+                }).join('') +
+              '</select>' +
+            '</div>' +
+            '<div>' +
+              '<label style="font-size:13px;color:var(--text-dim);display:block;margin-bottom:4px">Max Devices (0 = unlimited)</label>' +
+              '<input type="text" id="plan-max-devices" value="' + (p.maxDevices || 0) + '" />' +
+            '</div>' +
+            '<div>' +
+              '<label style="font-size:13px;color:var(--text-dim);display:block;margin-bottom:4px">Max Members (0 = unlimited)</label>' +
+              '<input type="text" id="plan-max-members" value="' + (p.maxMembers || 0) + '" />' +
+            '</div>' +
+            '<div>' +
+              '<button onclick="savePlan()">Save Plan</button>' +
+            '</div>' +
+          '</div>';
+        }
+      }
+
+      // Usage History table
+      var histEl = document.getElementById('usage-history');
+      if (histEl) {
+        var history = (data.history || []).slice(0, 24);
+        if (history.length === 0) {
+          histEl.innerHTML = '<div class="empty-state" style="padding:16px">No usage history recorded yet</div>';
+        } else {
+          histEl.innerHTML = '<div style="overflow-x:auto">' +
+            '<table style="width:100%;border-collapse:collapse;font-size:13px">' +
+              '<thead><tr style="border-bottom:1px solid var(--border)">' +
+                '<th style="text-align:left;padding:8px 12px;color:var(--text-dim)">Time</th>' +
+                '<th style="text-align:right;padding:8px 12px;color:var(--text-dim)">Devices</th>' +
+                '<th style="text-align:right;padding:8px 12px;color:var(--text-dim)">Online</th>' +
+                '<th style="text-align:right;padding:8px 12px;color:var(--text-dim)">Members</th>' +
+                '<th style="text-align:right;padding:8px 12px;color:var(--text-dim)">Routes</th>' +
+              '</tr></thead>' +
+              '<tbody>' + history.map(function(h) {
+                return '<tr style="border-bottom:1px solid var(--border)">' +
+                  '<td style="padding:8px 12px;color:var(--text-dim)">' + new Date(h.recordedAt).toLocaleString() + '</td>' +
+                  '<td style="text-align:right;padding:8px 12px">' + (h.deviceCount || 0) + '</td>' +
+                  '<td style="text-align:right;padding:8px 12px">' + (h.onlineDevices || 0) + '</td>' +
+                  '<td style="text-align:right;padding:8px 12px">' + (h.memberCount || 0) + '</td>' +
+                  '<td style="text-align:right;padding:8px 12px">' + (h.routeCount || 0) + '</td>' +
+                '</tr>';
+              }).join('') + '</tbody>' +
+            '</table>' +
+          '</div>';
+        }
+      }
+    }
+
+    async function savePlan() {
+      if (!state.currentTenant) return;
+      var planNameEl = document.getElementById('plan-name');
+      var maxDevicesEl = document.getElementById('plan-max-devices');
+      var maxMembersEl = document.getElementById('plan-max-members');
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/plan', {
+        method: 'PUT',
+        body: JSON.stringify({
+          planName: planNameEl ? planNameEl.value : undefined,
+          maxDevices: maxDevicesEl ? parseInt(maxDevicesEl.value) || 0 : undefined,
+          maxMembers: maxMembersEl ? parseInt(maxMembersEl.value) || 0 : undefined,
+        }),
+      });
+      if (result) {
+        toast('Plan updated');
+        loadUsage();
+      }
+    }
+
     async function loadSecurity() {
       if (!state.currentTenant) return;
       if (hasPerm('manage_settings')) {
@@ -2385,6 +2524,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         route_enabled: 'enabled route',
         route_disabled: 'disabled route',
         route_deleted: 'deleted route',
+        plan_updated: 'updated plan/limits',
       };
       el.innerHTML = data.entries.map(function(e) {
         var label = actionLabels[e.action] || e.action;
@@ -2441,6 +2581,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         route_enabled: 'enabled route',
         route_disabled: 'disabled route',
         route_deleted: 'deleted route',
+        plan_updated: 'updated plan/limits',
       };
       var html = data.entries.map(function(e) {
         var label = actionLabels[e.action] || e.action;
@@ -2828,6 +2969,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           if (state.tab === 'ipconfig') loadIpConfig();
           if (state.tab === 'routes') loadRoutes();
           if (state.tab === 'roles') loadRoles();
+          if (state.tab === 'usage') loadUsage();
           if (state.tab === 'security') loadSecurity();
           if (state.tab === 'audit') loadAuditLog();
         }

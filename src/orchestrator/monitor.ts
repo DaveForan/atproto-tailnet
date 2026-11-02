@@ -7,9 +7,9 @@
  * Also stops idle tenants whose lastActivityAt exceeds hibernateAfterDays.
  */
 
-import { eq, and, isNotNull, gt, lt } from "drizzle-orm";
+import { eq, and, isNotNull, gt, lt, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { tenants } from "../db/schema.js";
+import { tenants, memberships, usageSnapshots } from "../db/schema.js";
 import { HeadscaleApiClient } from "./headscale-api.js";
 import { startInstance, stopInstance } from "./headscale.js";
 import { logAudit } from "../routes/audit.js";
@@ -125,13 +125,57 @@ export async function checkTenantHealth(
   return { healthy };
 }
 
+/**
+ * Record a usage snapshot for each running tenant.
+ * Counts devices (from Headscale API) and members (from DB).
+ */
+export async function recordUsageSnapshots(): Promise<void> {
+  const running = await db
+    .select({
+      id: tenants.id,
+      port: tenants.port,
+      apiKey: tenants.apiKey,
+    })
+    .from(tenants)
+    .where(and(eq(tenants.status, "running"), isNotNull(tenants.containerId)));
+
+  for (const tenant of running) {
+    try {
+      const client = new HeadscaleApiClient(tenant.port, tenant.apiKey);
+      const [nodes, routes, memberRows] = await Promise.all([
+        client.listNodes(),
+        client.listRoutes().catch(() => []),
+        db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(memberships)
+          .where(eq(memberships.tenantId, tenant.id)),
+      ]);
+
+      await db.insert(usageSnapshots).values({
+        tenantId: tenant.id,
+        deviceCount: nodes.length,
+        onlineDevices: nodes.filter((n) => n.online).length,
+        routeCount: routes.length,
+        memberCount: memberRows[0]?.count ?? 0,
+      });
+    } catch (err) {
+      logger.error({ tenantId: tenant.id, err }, "failed to record usage snapshot");
+    }
+  }
+}
+
 /** Start the background health-check interval. Call once after server listen. */
 export function startHealthMonitor(intervalMs = 60_000): void {
   logger.info({ intervalMs }, "starting health monitor");
+  let tick = 0;
   setInterval(async () => {
+    tick++;
     try {
       await checkAllTenants();
       await hibernateIdleTenants();
+      if (tick % 5 === 0) {
+        await recordUsageSnapshots();
+      }
     } catch (err) {
       logger.error({ err }, "health monitor sweep failed");
     }

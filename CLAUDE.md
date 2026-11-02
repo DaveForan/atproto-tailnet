@@ -75,6 +75,7 @@ npm run dev                      # http://localhost:3000
 - DERP config writes: `updateInstanceConfig()` in `orchestrator/headscale.ts` rewrites config.yaml + derp-custom.yaml; `writeDerpRegionsFile()` generates the YAML paths file
 - Per-tenant IP ranges: `GET/PUT /api/tenants/:id/ip-config` — customize IPv4/IPv6 CIDR prefixes and allocation strategy (sequential/random); gated by `manage_settings`; changes trigger container restart
 - Exit nodes / subnet routers: `GET /api/tenants/:id/routes` returns `{ exitNodes, subnets }` from Headscale; `POST .../routes/:routeId/enable|disable`, `DELETE .../routes/:routeId`; gated by `manage_devices`; routes are advertised by devices, admin approves/rejects
+- Usage metering: `GET /api/tenants/:id/usage` returns live counts + plan limits + 7-day snapshot history (168 entries, every 5 min); `PUT /api/tenants/:id/plan` for plan name + max devices/members; `usage_snapshots` table; monitor records snapshots every 5th tick
 
 ## File layout
 
@@ -107,7 +108,8 @@ src/
     derp.ts                — Custom DERP relay management (regions, embedded toggle, public relay toggle)
     ip-config.ts           — Per-tenant IP range configuration (v4/v6 prefixes, allocation strategy)
     routes.ts              — Exit node and subnet router management (enable/disable/delete routes)
-    dashboard.ts           — Inline SPA (tabbed: Status, DERP, IP Ranges, Routes, Devices, Members, Invite, Add Device, Services, Board, Agents, ACL, Roles, Security, Audit) + /join/:slug
+    usage.ts               — Usage metering and plan/limit management
+    dashboard.ts           — Inline SPA (tabbed: Status, DERP, IP Ranges, Routes, Devices, Members, Invite, Add Device, Services, Board, Agents, ACL, Roles, Usage, Security, Audit) + /join/:slug
     helpers.ts             — Shared middleware, param(), permission checks, agent token resolution, hs username/URL helpers
     audit.ts               — Fire-and-forget audit log writer
 docs/adr/                  — Architecture Decision Records (0001-0005)

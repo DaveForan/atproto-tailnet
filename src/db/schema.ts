@@ -110,6 +110,7 @@ export const auditActionEnum = pgEnum("audit_action", [
   "route_enabled",
   "route_disabled",
   "route_deleted",
+  "plan_updated",
 ]);
 
 export const deviceApprovalStatusEnum = pgEnum("device_approval_status", [
@@ -224,6 +225,12 @@ export const tenants = pgTable("tenants", {
   ipv6Prefix: text("ipv6_prefix").notNull().default("fd7a:115c:a1e0::/48"),
   /** IP allocation strategy: sequential or random. */
   ipAllocation: text("ip_allocation").notNull().default("sequential"),
+  /** Billing plan name (free, starter, pro, enterprise). */
+  planName: text("plan_name").notNull().default("free"),
+  /** Maximum devices allowed (0 = unlimited). */
+  maxDevices: integer("max_devices").notNull().default(0),
+  /** Maximum members allowed (0 = unlimited). */
+  maxMembers: integer("max_members").notNull().default(0),
   /** Role assigned to new members on invitation acceptance. */
   defaultRoleId: uuid("default_role_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -468,4 +475,20 @@ export const auditLogs = pgTable(
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (t) => [index("audit_logs_tenant_created_idx").on(t.tenantId, t.createdAt)],
+);
+
+export const usageSnapshots = pgTable(
+  "usage_snapshots",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    deviceCount: integer("device_count").notNull(),
+    memberCount: integer("member_count").notNull(),
+    routeCount: integer("route_count").notNull().default(0),
+    onlineDevices: integer("online_devices").notNull().default(0),
+    recordedAt: timestamp("recorded_at").defaultNow().notNull(),
+  },
+  (t) => [index("usage_snapshots_tenant_recorded_idx").on(t.tenantId, t.recordedAt)],
 );
