@@ -76,6 +76,7 @@ npm run dev                      # http://localhost:3000
 - Per-tenant IP ranges: `GET/PUT /api/tenants/:id/ip-config` — customize IPv4/IPv6 CIDR prefixes and allocation strategy (sequential/random); gated by `manage_settings`; changes trigger container restart
 - Exit nodes / subnet routers: `GET /api/tenants/:id/routes` returns `{ exitNodes, subnets }` from Headscale; `POST .../routes/:routeId/enable|disable`, `DELETE .../routes/:routeId`; gated by `manage_devices`; routes are advertised by devices, admin approves/rejects
 - Usage metering: `GET /api/tenants/:id/usage` returns live counts + plan limits + 7-day snapshot history (168 entries, every 5 min); `PUT /api/tenants/:id/plan` for plan name + max devices/members; `usage_snapshots` table; monitor records snapshots every 5th tick
+- Federation: `GET/POST /api/tenants/:id/federation` for links; `POST .../federation/:linkId/accept|reject|revoke`; `federation_links` table with bidirectional CIDR sharing; gated by `manage_settings`; both sides can revoke active links
 
 ## File layout
 
@@ -109,7 +110,8 @@ src/
     ip-config.ts           — Per-tenant IP range configuration (v4/v6 prefixes, allocation strategy)
     routes.ts              — Exit node and subnet router management (enable/disable/delete routes)
     usage.ts               — Usage metering and plan/limit management
-    dashboard.ts           — Inline SPA (tabbed: Status, DERP, IP Ranges, Routes, Devices, Members, Invite, Add Device, Services, Board, Agents, ACL, Roles, Usage, Security, Audit) + /join/:slug
+    federation.ts          — Federation link CRUD (request/accept/reject/revoke between tailnets)
+    dashboard.ts           — Inline SPA (tabbed: Status, DERP, IP Ranges, Routes, Devices, Members, Invite, Services, Board, Federation, Agents, ACL, Roles, Usage, Security, Audit) + /join/:slug
     helpers.ts             — Shared middleware, param(), permission checks, agent token resolution, hs username/URL helpers
     audit.ts               — Fire-and-forget audit log writer
 docs/adr/                  — Architecture Decision Records (0001-0005)

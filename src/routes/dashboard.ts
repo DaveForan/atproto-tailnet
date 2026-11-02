@@ -3,7 +3,7 @@
  *
  * Inline single-page application served at `/`. Renders a dark-themed
  * dashboard with tabbed navigation: Devices, Members, Invite, Add Device,
- * Services, Board, Agents, Roles, Security, and Audit Log.
+ * Services, Board, Federation, Agents, Roles, Security, and Audit Log.
  *
  * Also serves the public join page at `/join/:slug` for tailnets that
  * have join requests enabled.
@@ -174,6 +174,19 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     select { cursor: pointer; }
     select option { background: var(--bg); color: var(--text); }
     input[type="text"]::placeholder { color: var(--text-dim); }
+    textarea {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 14px;
+      width: 100%;
+      resize: vertical;
+      min-height: 60px;
+      font-family: inherit;
+    }
+    textarea::placeholder { color: var(--text-dim); }
     .inline-form {
       display: flex;
       gap: 8px;
@@ -790,7 +803,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       var canAcl = hasPerm('manage_acl');
       var canDevices = hasPerm('manage_devices');
       var canSettings = hasPerm('manage_settings');
-      var hasManageGroup = hasPerm('invite') || canServices || canBoard;
+      var hasManageGroup = hasPerm('invite') || canServices || canBoard || canSettings;
       var hasAccessGroup = canRoles || canAgents || canAcl;
       var hasAdminGroup = true;
 
@@ -820,7 +833,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
               '<div class="nav-group-header">Manage</div>' +
               (hasPerm('invite') ? '<button class="nav-item' + (state.tab === 'invite' ? ' active' : '') + '" onclick="switchTab(\\'invite\\')">Invite</button>' : '') +
               (canServices ? '<button class="nav-item' + (state.tab === 'services' ? ' active' : '') + '" onclick="switchTab(\\'services\\')">Services</button>' : '') +
-              (canBoard ? '<button class="nav-item' + (state.tab === 'board' ? ' active' : '') + '" onclick="switchTab(\\'board\\')">Board</button>' : '')
+              (canBoard ? '<button class="nav-item' + (state.tab === 'board' ? ' active' : '') + '" onclick="switchTab(\\'board\\')">Board</button>' : '') +
+              (canSettings ? '<button class="nav-item' + (state.tab === 'federation' ? ' active' : '') + '" onclick="switchTab(\\'federation\\')">Federation</button>' : '')
             : '') +
             (hasAccessGroup ?
               '<div class="nav-group-header">Access Control</div>' +
@@ -1012,6 +1026,33 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           '</div>' +
         '</div>' : '') +
 
+      (canSettings ?
+        '<div id="tab-federation" class="' + (state.tab !== 'federation' ? 'hidden' : '') + '">' +
+          '<div class="card">' +
+            '<div class="card-header"><h3>Request Federation</h3></div>' +
+            '<p style="color:var(--text-dim);font-size:13px;margin-bottom:12px">Connect this tailnet with another by requesting federation. Federated tailnets can route traffic between each other over specified CIDR ranges.</p>' +
+            '<div style="display:flex;flex-direction:column;gap:8px">' +
+              '<input type="text" id="fed-target-slug" placeholder="Target tailnet slug" />' +
+              '<textarea id="fed-message" placeholder="Optional message to the target tailnet admin" rows="2"></textarea>' +
+              '<textarea id="fed-cidrs" placeholder="CIDRs to share (one per line, optional)" rows="2"></textarea>' +
+              '<div><button onclick="requestFederation()">Send Request</button></div>' +
+            '</div>' +
+            '<div id="fed-outgoing" style="margin-top:12px"></div>' +
+          '</div>' +
+          '<div class="card" style="margin-top:12px">' +
+            '<div class="card-header"><h3>Incoming Requests</h3></div>' +
+            '<div id="fed-incoming">Loading...</div>' +
+          '</div>' +
+          '<div class="card" style="margin-top:12px">' +
+            '<div class="card-header"><h3>Active Federations</h3></div>' +
+            '<div id="fed-active">Loading...</div>' +
+          '</div>' +
+          '<div class="card" style="margin-top:12px">' +
+            '<div class="card-header"><h3>History</h3></div>' +
+            '<div id="fed-history">Loading...</div>' +
+          '</div>' +
+        '</div>' : '') +
+
       (canRoles ?
         '<div id="tab-roles" class="' + (state.tab !== 'roles' ? 'hidden' : '') + '">' +
           '<div class="card">' +
@@ -1173,6 +1214,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (tab === 'invite') loadSentInvitations();
       if (tab === 'services') loadServices();
       if (tab === 'board') loadBoard();
+      if (tab === 'federation') loadFederation();
       if (tab === 'agents') loadAgents();
       if (tab === 'acl') loadAcl();
       if (tab === 'derp') loadDerp();
@@ -1574,6 +1616,184 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (!confirm('Remove this post from the board?')) return;
       var result = await api('/api/tenants/' + state.currentTenant.id + '/board-posts/' + postId, { method: 'DELETE' });
       if (result) { toast('Post removed'); loadBoard(); }
+    }
+
+    // ── Federation tab ────────────────────────────────────────────
+
+    async function loadFederation() {
+      if (!state.currentTenant) return;
+      var data = await api('/api/tenants/' + state.currentTenant.id + '/federation');
+      if (!data) return;
+      var links = data.links || [];
+
+      // Outgoing pending (shown below the request form)
+      var outgoing = links.filter(function(l) { return l.direction === 'outgoing' && l.status === 'pending'; });
+      var outEl = document.getElementById('fed-outgoing');
+      if (outEl) {
+        if (outgoing.length === 0) {
+          outEl.innerHTML = '';
+        } else {
+          outEl.innerHTML = '<h4 style="margin-bottom:8px;color:var(--text-dim)">Pending Outgoing</h4>' +
+            outgoing.map(function(l) {
+              return '<div class="role-card" style="border-left:3px solid var(--warning)">' +
+                '<div class="role-card-header">' +
+                  '<div>' +
+                    '<strong>' + esc(l.peerName || l.peerSlug) + '</strong>' +
+                    '<span class="badge" style="background:#f59e0b20;color:var(--warning);margin-left:8px">pending</span>' +
+                  '</div>' +
+                '</div>' +
+                (l.message ? '<div style="font-size:13px;color:var(--text-dim);margin-bottom:4px">' + esc(l.message) + '</div>' : '') +
+                (l.requesterCidrs && l.requesterCidrs.length > 0 ?
+                  '<div style="font-size:12px;color:var(--text-dim)">Your CIDRs: <code style="color:var(--accent)">' + l.requesterCidrs.map(function(c) { return esc(c); }).join(', ') + '</code></div>' : '') +
+                '<div style="font-size:12px;color:var(--text-dim);margin-top:4px">' + new Date(l.createdAt).toLocaleString() + '</div>' +
+              '</div>';
+            }).join('');
+        }
+      }
+
+      // Incoming pending
+      var incoming = links.filter(function(l) { return l.direction === 'incoming' && l.status === 'pending'; });
+      var inEl = document.getElementById('fed-incoming');
+      if (inEl) {
+        if (incoming.length === 0) {
+          inEl.innerHTML = '<div class="empty-state" style="padding:16px">No incoming requests</div>';
+        } else {
+          inEl.innerHTML = incoming.map(function(l) {
+            return '<div class="role-card" style="border-left:3px solid var(--warning)">' +
+              '<div class="role-card-header">' +
+                '<div>' +
+                  '<strong>' + esc(l.peerName || l.peerSlug) + '</strong>' +
+                  '<span class="badge" style="background:#f59e0b20;color:var(--warning);margin-left:8px">pending</span>' +
+                '</div>' +
+              '</div>' +
+              (l.message ? '<div style="font-size:13px;color:var(--text-dim);margin-bottom:8px">' + esc(l.message) + '</div>' : '') +
+              (l.requesterCidrs && l.requesterCidrs.length > 0 ?
+                '<div style="font-size:12px;color:var(--text-dim);margin-bottom:8px">Their CIDRs: <code style="color:var(--accent)">' + l.requesterCidrs.map(function(c) { return esc(c); }).join(', ') + '</code></div>' : '') +
+              '<div style="margin-bottom:8px">' +
+                '<textarea id="fed-accept-cidrs-' + l.id + '" placeholder="Your CIDRs to share (one per line, optional)" rows="2"></textarea>' +
+              '</div>' +
+              '<div style="display:flex;gap:8px">' +
+                '<button class="btn-sm" onclick="acceptFederation(\\'' + l.id + '\\')">Accept</button>' +
+                '<button class="btn-sm btn-danger" onclick="rejectFederation(\\'' + l.id + '\\')">Reject</button>' +
+              '</div>' +
+            '</div>';
+          }).join('');
+        }
+      }
+
+      // Active federations
+      var active = links.filter(function(l) { return l.status === 'active'; });
+      var actEl = document.getElementById('fed-active');
+      if (actEl) {
+        if (active.length === 0) {
+          actEl.innerHTML = '<div class="empty-state" style="padding:16px">No active federations</div>';
+        } else {
+          actEl.innerHTML = active.map(function(l) {
+            return '<div class="role-card" style="border-left:3px solid var(--success)">' +
+              '<div class="role-card-header">' +
+                '<div>' +
+                  '<strong>' + esc(l.peerName || l.peerSlug) + '</strong>' +
+                  '<span class="badge badge-running" style="margin-left:8px">active</span>' +
+                  '<span class="badge badge-role" style="margin-left:4px">' + esc(l.direction) + '</span>' +
+                '</div>' +
+                '<button class="btn-sm btn-danger" onclick="revokeFederation(\\'' + l.id + '\\')">Revoke</button>' +
+              '</div>' +
+              (l.requesterCidrs && l.requesterCidrs.length > 0 ?
+                '<div style="font-size:12px;color:var(--text-dim);margin-bottom:4px">Requester CIDRs: <code style="color:var(--accent)">' + l.requesterCidrs.map(function(c) { return esc(c); }).join(', ') + '</code></div>' : '') +
+              (l.targetCidrs && l.targetCidrs.length > 0 ?
+                '<div style="font-size:12px;color:var(--text-dim)">Target CIDRs: <code style="color:var(--accent)">' + l.targetCidrs.map(function(c) { return esc(c); }).join(', ') + '</code></div>' : '') +
+            '</div>';
+          }).join('');
+        }
+      }
+
+      // History (rejected/revoked)
+      var history = links.filter(function(l) { return l.status === 'rejected' || l.status === 'revoked'; });
+      var histEl = document.getElementById('fed-history');
+      if (histEl) {
+        if (history.length === 0) {
+          histEl.innerHTML = '<div class="empty-state" style="padding:16px">No history</div>';
+        } else {
+          histEl.innerHTML = history.map(function(l) {
+            var statusBadge = l.status === 'rejected'
+              ? '<span class="badge" style="background:#8888a020;color:var(--text-dim);margin-left:8px">rejected</span>'
+              : '<span class="badge" style="background:#8888a020;color:var(--text-dim);margin-left:8px">revoked</span>';
+            return '<div class="role-card" style="border-left:3px solid var(--border);opacity:0.6">' +
+              '<div class="role-card-header">' +
+                '<div>' +
+                  '<strong>' + esc(l.peerName || l.peerSlug) + '</strong>' +
+                  statusBadge +
+                  '<span class="badge badge-role" style="margin-left:4px">' + esc(l.direction) + '</span>' +
+                '</div>' +
+              '</div>' +
+              '<div style="font-size:12px;color:var(--text-dim)">' + new Date(l.updatedAt).toLocaleString() + '</div>' +
+            '</div>';
+          }).join('');
+        }
+      }
+    }
+
+    async function requestFederation() {
+      if (!state.currentTenant) return;
+      var slugEl = document.getElementById('fed-target-slug');
+      var msgEl = document.getElementById('fed-message');
+      var cidrsEl = document.getElementById('fed-cidrs');
+      var targetSlug = slugEl.value.trim();
+      if (!targetSlug) { toast('Target tailnet slug is required'); return; }
+      var cidrs = cidrsEl.value.trim().split('\\n').map(function(c) { return c.trim(); }).filter(function(c) { return c; });
+      var body = { targetSlug: targetSlug };
+      if (msgEl.value.trim()) body.message = msgEl.value.trim();
+      if (cidrs.length > 0) body.cidrs = cidrs;
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/federation', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      if (result) {
+        slugEl.value = '';
+        msgEl.value = '';
+        cidrsEl.value = '';
+        toast('Federation request sent');
+        loadFederation();
+      }
+    }
+
+    async function acceptFederation(linkId) {
+      if (!state.currentTenant) return;
+      var cidrsEl = document.getElementById('fed-accept-cidrs-' + linkId);
+      var cidrs = [];
+      if (cidrsEl && cidrsEl.value.trim()) {
+        cidrs = cidrsEl.value.trim().split('\\n').map(function(c) { return c.trim(); }).filter(function(c) { return c; });
+      }
+      var body = {};
+      if (cidrs.length > 0) body.cidrs = cidrs;
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/federation/' + linkId + '/accept', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      if (result) {
+        toast('Federation accepted');
+        loadFederation();
+      }
+    }
+
+    async function rejectFederation(linkId) {
+      if (!state.currentTenant) return;
+      if (!confirm('Reject this federation request?')) return;
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/federation/' + linkId + '/reject', { method: 'POST' });
+      if (result) {
+        toast('Federation request rejected');
+        loadFederation();
+      }
+    }
+
+    async function revokeFederation(linkId) {
+      if (!state.currentTenant) return;
+      if (!confirm('Revoke this federation? Traffic routing between the tailnets will stop.')) return;
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/federation/' + linkId + '/revoke', { method: 'POST' });
+      if (result) {
+        toast('Federation revoked');
+        loadFederation();
+      }
     }
 
     // ── Agents tab ─────────────────────────────────────────────────
@@ -2525,6 +2745,10 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         route_disabled: 'disabled route',
         route_deleted: 'deleted route',
         plan_updated: 'updated plan/limits',
+        federation_requested: 'requested federation',
+        federation_accepted: 'accepted federation',
+        federation_rejected: 'rejected federation',
+        federation_revoked: 'revoked federation',
       };
       el.innerHTML = data.entries.map(function(e) {
         var label = actionLabels[e.action] || e.action;
@@ -2582,6 +2806,10 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         route_disabled: 'disabled route',
         route_deleted: 'deleted route',
         plan_updated: 'updated plan/limits',
+        federation_requested: 'requested federation',
+        federation_accepted: 'accepted federation',
+        federation_rejected: 'rejected federation',
+        federation_revoked: 'revoked federation',
       };
       var html = data.entries.map(function(e) {
         var label = actionLabels[e.action] || e.action;
@@ -2963,6 +3191,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           if (state.tab === 'invite') loadSentInvitations();
           if (state.tab === 'services') loadServices();
           if (state.tab === 'board') loadBoard();
+          if (state.tab === 'federation') loadFederation();
           if (state.tab === 'agents') loadAgents();
           if (state.tab === 'acl') loadAcl();
           if (state.tab === 'derp') loadDerp();

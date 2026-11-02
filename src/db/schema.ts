@@ -111,6 +111,10 @@ export const auditActionEnum = pgEnum("audit_action", [
   "route_disabled",
   "route_deleted",
   "plan_updated",
+  "federation_requested",
+  "federation_accepted",
+  "federation_rejected",
+  "federation_revoked",
 ]);
 
 export const deviceApprovalStatusEnum = pgEnum("device_approval_status", [
@@ -146,6 +150,13 @@ export const boardPostStatusEnum = pgEnum("board_post_status", [
 /** Agent API token lifecycle states. */
 export const agentTokenStatusEnum = pgEnum("agent_token_status", [
   "active",
+  "revoked",
+]);
+
+export const federationStatusEnum = pgEnum("federation_status", [
+  "pending",
+  "active",
+  "rejected",
   "revoked",
 ]);
 
@@ -491,4 +502,31 @@ export const usageSnapshots = pgTable(
     recordedAt: timestamp("recorded_at").defaultNow().notNull(),
   },
   (t) => [index("usage_snapshots_tenant_recorded_idx").on(t.tenantId, t.recordedAt)],
+);
+
+export const federationLinks = pgTable(
+  "federation_links",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    requesterTenantId: uuid("requester_tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    targetTenantId: uuid("target_tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    status: federationStatusEnum("status").notNull().default("pending"),
+    /** Optional note from the requester. */
+    message: text("message"),
+    /** CIDRs the requester is willing to share (JSONB array). */
+    requesterCidrs: jsonb("requester_cidrs").$type<string[]>().notNull().default([]),
+    /** CIDRs the target is willing to share (set on accept). */
+    targetCidrs: jsonb("target_cidrs").$type<string[]>().notNull().default([]),
+    reviewedById: uuid("reviewed_by_id").references(() => users.id),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => [
+    index("federation_links_requester_idx").on(t.requesterTenantId),
+    index("federation_links_target_idx").on(t.targetTenantId),
+  ],
 );

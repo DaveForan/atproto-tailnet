@@ -28,6 +28,7 @@ Built on [Headscale](https://github.com/juanfont/headscale) (open-source Tailsca
 - **IP range configuration** — per-tenant IPv4/IPv6 CIDR prefixes and allocation strategy
 - **Exit nodes & subnet routers** — approve, enable, disable, and delete advertised routes
 - **Usage metering** — live device/member/route counts, plan limits, 7-day usage history snapshots
+- **Federation** — request, accept, reject, and revoke trust links between tailnets with CIDR sharing
 - **Agent API tokens** — scoped Bearer tokens for AI agents and automation
 - **Health monitoring** — background checks with auto-restart for failed instances
 - **Instance hibernation** — auto-stop idle tenants after configurable days of inactivity

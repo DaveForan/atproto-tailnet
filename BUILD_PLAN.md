@@ -296,7 +296,7 @@ See `docs/adr/` for rationale behind each choice:
 - ~~Per-tenant IP range configuration~~ ✅ Implemented (v4/v6 prefixes, sequential/random allocation)
 - ~~Exit nodes / subnet routers management UI~~ ✅ Implemented (list/enable/disable/delete routes, split exit nodes vs subnets)
 - ~~Billing / usage metering~~ ✅ Implemented (usage snapshots, plan names, device/member limits, history API, dashboard Usage tab)
-- Federation between tailnets
+- ~~Federation between tailnets~~ ✅ Implemented (request/accept/reject/revoke links, bidirectional CIDR sharing, dashboard Federation tab)
 - Headscale fork for true single-process multi-tenancy (see ADR-0002 — escape hatch)
 
 ---
