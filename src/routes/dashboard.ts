@@ -21,6 +21,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="csrf-token" content="" />
   <title>atproto-tailnet</title>
   <style>
     :root {
@@ -574,10 +575,18 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       return '';
     }
 
+    function getCsrfToken() {
+      var meta = document.querySelector('meta[name="csrf-token"]');
+      return meta ? meta.getAttribute('content') : '';
+    }
+
     async function api(path, opts) {
       try {
+        var headers = { 'Content-Type': 'application/json' };
+        var csrfToken = getCsrfToken();
+        if (csrfToken) headers['X-CSRF-Token'] = csrfToken;
         var res = await fetch(path, {
-          headers: { 'Content-Type': 'application/json' },
+          headers: headers,
           ...opts,
         });
         if (res.status === 401) { render(); return null; }
@@ -622,6 +631,12 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
     async function init() {
       state.user = await api('/api/me');
       if (state.user) {
+        // Fetch CSRF token for state-changing requests
+        var csrf = await api('/api/csrf-token');
+        if (csrf && csrf.token) {
+          var meta = document.querySelector('meta[name="csrf-token"]');
+          if (meta) meta.setAttribute('content', csrf.token);
+        }
         state.tenants = await api('/api/tenants') || [];
         state.invitations = await api('/api/invitations') || [];
         state.allPerms = await api('/api/permissions') || [];
@@ -3219,6 +3234,7 @@ const JOIN_PAGE_HTML = `<!DOCTYPE html>
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="csrf-token" content="" />
   <title>Join tailnet — atproto-tailnet</title>
   <style>
     :root {
@@ -3335,10 +3351,18 @@ const JOIN_PAGE_HTML = `<!DOCTYPE html>
       setTimeout(function() { el.remove(); }, 3000);
     }
 
+    function getCsrfToken() {
+      var meta = document.querySelector('meta[name="csrf-token"]');
+      return meta ? meta.getAttribute('content') : '';
+    }
+
     async function api(path, opts) {
       try {
+        var headers = { 'Content-Type': 'application/json' };
+        var csrfToken = getCsrfToken();
+        if (csrfToken) headers['X-CSRF-Token'] = csrfToken;
         var res = await fetch(path, {
-          headers: { 'Content-Type': 'application/json' },
+          headers: headers,
           ...opts,
         });
         if (res.status === 401) return { _unauth: true };
@@ -3380,6 +3404,13 @@ const JOIN_PAGE_HTML = `<!DOCTYPE html>
             '<button type="submit">Sign in</button>' +
           '</form>';
         return;
+      }
+
+      // Fetch CSRF token for state-changing requests
+      var csrf = await api('/api/csrf-token');
+      if (csrf && csrf.token) {
+        var csrfMeta = document.querySelector('meta[name="csrf-token"]');
+        if (csrfMeta) csrfMeta.setAttribute('content', csrf.token);
       }
 
       var mine = await api('/api/tenants/' + tenant.id + '/join-requests/mine');

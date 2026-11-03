@@ -12,5 +12,6 @@ declare module "express-session" {
     userId?: string;
     did?: string;
     postLoginRedirect?: string;
+    csrfToken?: string;
   }
 }
