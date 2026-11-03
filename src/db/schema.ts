@@ -115,6 +115,10 @@ export const auditActionEnum = pgEnum("audit_action", [
   "federation_accepted",
   "federation_rejected",
   "federation_revoked",
+  "sub_collective_created",
+  "sub_collective_detached",
+  "sub_collective_ejected",
+  "floor_policy_updated",
 ]);
 
 export const deviceApprovalStatusEnum = pgEnum("device_approval_status", [
@@ -242,6 +246,30 @@ export const tenants = pgTable("tenants", {
   maxDevices: integer("max_devices").notNull().default(0),
   /** Maximum members allowed (0 = unlimited). */
   maxMembers: integer("max_members").notNull().default(0),
+  /** Parent collective ID for hierarchical nesting. NULL = root collective. */
+  parentId: uuid("parent_id").references((): any => tenants.id, {
+    onDelete: "restrict",
+  }),
+  /** Materialized path for tree queries (e.g., "root_slug.child_slug.grandchild_slug"). */
+  path: text("path"),
+  /** Depth in the collective tree. Root = 0. */
+  depth: integer("depth").notNull().default(0),
+  /** Maximum allowed sub-collectives (0 = unlimited). */
+  maxSubCollectives: integer("max_sub_collectives").notNull().default(10),
+  /** JSONB floor policies that sub-collectives cannot weaken. */
+  floorPolicies: jsonb("floor_policies").$type<Record<string, unknown>>(),
+  /** Egress traversal policy (ADR-0011) — controls outbound cross-collective traffic. */
+  egressPolicy: jsonb("egress_policy").$type<{ rules: unknown[]; default: string }>(),
+  /** Ingress traversal policy (ADR-0011) — controls inbound cross-collective traffic. */
+  ingressPolicy: jsonb("ingress_policy").$type<{ rules: unknown[]; default: string }>(),
+  /** Federation scopes this collective participates in (ADR-0015). */
+  federationScopes: jsonb("federation_scopes").$type<string[]>().default(["regional"]),
+  /** UN M49 region code for regional federation grouping. */
+  federationRegion: text("federation_region"),
+  /** [lat, lon] for proximity-based local discovery. */
+  federationCoordinates: jsonb("federation_coordinates").$type<[number, number]>(),
+  /** Per-scope federation policy overrides. */
+  federationScopePolicies: jsonb("federation_scope_policies").$type<Record<string, { autoAccept: boolean; verification: string }>>(),
   /** Role assigned to new members on invitation acceptance. */
   defaultRoleId: uuid("default_role_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -522,6 +550,14 @@ export const federationLinks = pgTable(
     /** CIDRs the target is willing to share (set on accept). */
     targetCidrs: jsonb("target_cidrs").$type<string[]>().notNull().default([]),
     reviewedById: uuid("reviewed_by_id").references(() => users.id),
+    /** DID-signed request payload (base64url JWS). */
+    signedRequest: text("signed_request"),
+    /** Broker endpoint of the requester at request time. */
+    requesterBrokerEndpoint: text("requester_broker_endpoint"),
+    /** Broker endpoint of the target at accept time. */
+    targetBrokerEndpoint: text("target_broker_endpoint"),
+    /** Protocol version agreed on link establishment. */
+    protocolVersion: integer("protocol_version").notNull().default(1),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
@@ -530,3 +566,84 @@ export const federationLinks = pgTable(
     index("federation_links_target_idx").on(t.targetTenantId),
   ],
 );
+
+export const brokerSessionStatusEnum = pgEnum("broker_session_status", [
+  "connecting",
+  "established",
+  "degraded",
+  "disconnected",
+]);
+
+export const collectiveDids = pgTable("collective_dids", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  tenantId: uuid("tenant_id")
+    .notNull()
+    .references(() => tenants.id)
+    .unique(),
+  did: text("did").notNull().unique(),
+  publicKeyJwk: jsonb("public_key_jwk").notNull(),
+  encryptedPrivateKey: text("encrypted_private_key").notNull(),
+  brokerEndpoint: text("broker_endpoint"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  rotatedAt: timestamp("rotated_at").defaultNow().notNull(),
+});
+
+export const brokerSessions = pgTable(
+  "broker_sessions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    federationLinkId: uuid("federation_link_id")
+      .notNull()
+      .references(() => federationLinks.id),
+    localTenantId: uuid("local_tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    remoteTenantId: uuid("remote_tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    status: brokerSessionStatusEnum("status").notNull().default("connecting"),
+    remoteEndpoint: text("remote_endpoint"),
+    protocolVersion: integer("protocol_version").notNull().default(1),
+    exportedRoutes: jsonb("exported_routes").$type<string[]>().notNull().default([]),
+    importedRoutes: jsonb("imported_routes").$type<string[]>().notNull().default([]),
+    lastKeepalive: timestamp("last_keepalive"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => [
+    index("broker_sessions_link_idx").on(t.federationLinkId),
+    index("broker_sessions_local_idx").on(t.localTenantId),
+  ],
+);
+
+export const relayNodeStatusEnum = pgEnum("relay_node_status", [
+  "provisioning",
+  "active",
+  "unhealthy",
+  "decommissioned",
+]);
+
+export const relayNodes = pgTable(
+  "relay_nodes",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    brokerSessionId: uuid("broker_session_id")
+      .notNull()
+      .references(() => brokerSessions.id),
+    localNodeId: text("local_node_id"),
+    remoteNodeId: text("remote_node_id"),
+    wireguardPublicKey: text("wireguard_public_key"),
+    status: relayNodeStatusEnum("status").notNull().default("provisioning"),
+    lastHealthCheck: timestamp("last_health_check"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (t) => [index("relay_nodes_session_idx").on(t.brokerSessionId)],
+);
+
+export interface FederationRouteEntry {
+  prefix: string;
+  collectiveChain: string[];
+  origin: string;
+  timestamp: string;
+}

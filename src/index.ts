@@ -38,6 +38,9 @@ import { ipConfigRouter } from "./routes/ip-config.js";
 import { routesRouter } from "./routes/routes.js";
 import { usageRouter } from "./routes/usage.js";
 import { federationRouter } from "./routes/federation.js";
+import { collectivesRouter } from "./routes/collectives.js";
+import { traversalRouter } from "./routes/traversal.js";
+import { credentialsRouter } from "./routes/credentials.js";
 import { dashboardRouter } from "./routes/dashboard.js";
 import { resolveAgentToken, enforceAgentScope } from "./routes/helpers.js";
 import { startHealthMonitor } from "./orchestrator/monitor.js";
@@ -163,6 +166,9 @@ app.use(ipConfigRouter);
 app.use(routesRouter);
 app.use(usageRouter);
 app.use(federationRouter);
+app.use(collectivesRouter);
+app.use(traversalRouter);
+app.use(credentialsRouter);
 
 app.listen(config.port, () => {
   logger.info({ port: config.port, url: config.publicUrl }, "atproto-tailnet running");

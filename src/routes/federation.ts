@@ -21,6 +21,16 @@ import {
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
 import { logger } from "../logger.js";
+import {
+  ensureCollectiveDid,
+  rotateCollectiveDid,
+  getBrokerStatus,
+  getRouteTable,
+} from "../orchestrator/federation-broker.js";
+import { collectiveDids } from "../db/schema.js";
+import { config } from "../config.js";
+import { CFP_VERSION } from "../federation/protocol.js";
+import { scopeDeclarationSchema } from "../federation/scoping.js";
 
 export const federationRouter = Router();
 
@@ -389,5 +399,271 @@ federationRouter.post(
     });
 
     res.json({ status: "revoked" });
+  },
+);
+
+/** Get or create the collective DID for this tenant. */
+federationRouter.get(
+  "/api/tenants/:tenantId/federation/did",
+  requireAuth,
+  async (req, res) => {
+    const tenantId = param(req, "tenantId");
+    const result = await getTenantForUser(tenantId, authUserId(req));
+    if (!result) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+
+    if (!hasPermission(result.membership, result.role, "manage_settings", req)) {
+      res.status(403).json({ error: "Insufficient permissions" });
+      return;
+    }
+
+    try {
+      const hostname = new URL(config.publicUrl ?? "http://localhost:3000").hostname;
+      const { did, publicKeyJwk } = await ensureCollectiveDid(tenantId, hostname);
+      res.json({ did, publicKeyJwk });
+    } catch (err) {
+      logger.error({ tenantId, err }, "failed to get/create collective DID");
+      res.status(500).json({ error: "Failed to manage collective DID" });
+    }
+  },
+);
+
+/** Rotate the collective DID keypair. */
+federationRouter.post(
+  "/api/tenants/:tenantId/federation/did/rotate",
+  requireAuth,
+  async (req, res) => {
+    const tenantId = param(req, "tenantId");
+    const result = await getTenantForUser(tenantId, authUserId(req));
+    if (!result) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+
+    if (!result.membership.isOriginator) {
+      res.status(403).json({ error: "Only the originator can rotate the DID key" });
+      return;
+    }
+
+    try {
+      const hostname = new URL(config.publicUrl ?? "http://localhost:3000").hostname;
+      const { did, publicKeyJwk } = await rotateCollectiveDid(tenantId, hostname);
+
+      logAudit({
+        tenantId,
+        actorUserId: authUserId(req),
+        action: "tenant_settings_updated",
+        targetType: "tenant",
+        targetId: tenantId,
+        metadata: { operation: "did_rotation", did },
+      });
+
+      res.json({ did, publicKeyJwk, rotated: true });
+    } catch (err) {
+      logger.error({ tenantId, err }, "failed to rotate collective DID");
+      res.status(500).json({ error: "Failed to rotate DID" });
+    }
+  },
+);
+
+/** Get federation broker session status. */
+federationRouter.get(
+  "/api/tenants/:tenantId/federation/broker",
+  requireAuth,
+  async (req, res) => {
+    const tenantId = param(req, "tenantId");
+    const result = await getTenantForUser(tenantId, authUserId(req));
+    if (!result) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+
+    if (!hasPermission(result.membership, result.role, "manage_settings", req)) {
+      res.status(403).json({ error: "Insufficient permissions" });
+      return;
+    }
+
+    try {
+      const status = await getBrokerStatus(tenantId);
+      res.json(status);
+    } catch (err) {
+      logger.error({ tenantId, err }, "failed to get broker status");
+      res.status(500).json({ error: "Failed to get broker status" });
+    }
+  },
+);
+
+/** Get federation route table for this tenant. */
+federationRouter.get(
+  "/api/tenants/:tenantId/federation/routes",
+  requireAuth,
+  async (req, res) => {
+    const tenantId = param(req, "tenantId");
+    const result = await getTenantForUser(tenantId, authUserId(req));
+    if (!result) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+
+    if (!hasPermission(result.membership, result.role, "manage_settings", req)) {
+      res.status(403).json({ error: "Insufficient permissions" });
+      return;
+    }
+
+    try {
+      const routes = await getRouteTable(tenantId);
+      res.json(routes);
+    } catch (err) {
+      logger.error({ tenantId, err }, "failed to get route table");
+      res.status(500).json({ error: "Failed to get route table" });
+    }
+  },
+);
+
+federationRouter.get(
+  "/.well-known/collective-federation",
+  async (req, res) => {
+    const tenantSlug = req.query.collective as string | undefined;
+    if (!tenantSlug) {
+      res.status(400).json({ error: "?collective=slug required" });
+      return;
+    }
+
+    const tenantRows = await db
+      .select({ id: tenants.id })
+      .from(tenants)
+      .where(eq(tenants.slug, tenantSlug))
+      .limit(1);
+
+    if (tenantRows.length === 0) {
+      res.status(404).json({ error: "Collective not found" });
+      return;
+    }
+
+    const didRows = await db
+      .select({
+        did: collectiveDids.did,
+        brokerEndpoint: collectiveDids.brokerEndpoint,
+      })
+      .from(collectiveDids)
+      .where(eq(collectiveDids.tenantId, tenantRows[0].id))
+      .limit(1);
+
+    if (didRows.length === 0) {
+      res.status(404).json({ error: "No federation DID configured" });
+      return;
+    }
+
+    const scopeRows = await db
+      .select({
+        federationScopes: tenants.federationScopes,
+        federationRegion: tenants.federationRegion,
+        federationCoordinates: tenants.federationCoordinates,
+        federationScopePolicies: tenants.federationScopePolicies,
+      })
+      .from(tenants)
+      .where(eq(tenants.id, tenantRows[0].id))
+      .limit(1);
+
+    const scope = scopeRows[0];
+
+    res.json({
+      collectiveDid: didRows[0].did,
+      cfpVersions: [CFP_VERSION],
+      federationPolicy: "selective",
+      capabilities: ["route-exchange", "dns-forward"],
+      derpEndpoints: [],
+      brokerUrl: didRows[0].brokerEndpoint ?? null,
+      scopes: scope?.federationScopes ?? ["regional"],
+      region: scope?.federationRegion ?? null,
+      coordinates: scope?.federationCoordinates ?? null,
+      scopePolicies: scope?.federationScopePolicies ?? null,
+      signature: "",
+    });
+  },
+);
+
+federationRouter.get(
+  "/api/tenants/:tenantId/federation/scope",
+  requireAuth,
+  async (req, res) => {
+    const tenantId = param(req, "tenantId");
+    const result = await getTenantForUser(tenantId, authUserId(req));
+    if (!result) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+
+    if (!hasPermission(result.membership, result.role, "manage_settings", req)) {
+      res.status(403).json({ error: "Insufficient permissions" });
+      return;
+    }
+
+    const rows = await db
+      .select({
+        federationScopes: tenants.federationScopes,
+        federationRegion: tenants.federationRegion,
+        federationCoordinates: tenants.federationCoordinates,
+        federationScopePolicies: tenants.federationScopePolicies,
+      })
+      .from(tenants)
+      .where(eq(tenants.id, tenantId))
+      .limit(1);
+
+    const row = rows[0];
+    res.json({
+      scopes: row?.federationScopes ?? ["regional"],
+      region: row?.federationRegion ?? null,
+      coordinates: row?.federationCoordinates ?? null,
+      scopePolicies: row?.federationScopePolicies ?? null,
+    });
+  },
+);
+
+federationRouter.put(
+  "/api/tenants/:tenantId/federation/scope",
+  requireAuth,
+  async (req, res) => {
+    const tenantId = param(req, "tenantId");
+    const result = await getTenantForUser(tenantId, authUserId(req));
+    if (!result) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+
+    if (!hasPermission(result.membership, result.role, "manage_settings", req)) {
+      res.status(403).json({ error: "Insufficient permissions" });
+      return;
+    }
+
+    const parsed = scopeDeclarationSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid scope declaration", details: parsed.error.issues });
+      return;
+    }
+
+    await db
+      .update(tenants)
+      .set({
+        federationScopes: parsed.data.scopes,
+        federationRegion: parsed.data.region ?? null,
+        federationCoordinates: parsed.data.coordinates ?? null,
+        federationScopePolicies: parsed.data.scopePolicies ?? null,
+        updatedAt: new Date(),
+      })
+      .where(eq(tenants.id, tenantId));
+
+    logAudit({
+      tenantId,
+      actorUserId: authUserId(req),
+      action: "tenant_settings_updated",
+      targetType: "tenant",
+      targetId: tenantId,
+      metadata: { operation: "federation_scope_update", scopes: parsed.data.scopes },
+    });
+
+    res.json({ saved: true, ...parsed.data });
   },
 );

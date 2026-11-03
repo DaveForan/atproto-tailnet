@@ -818,7 +818,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       var canAcl = hasPerm('manage_acl');
       var canDevices = hasPerm('manage_devices');
       var canSettings = hasPerm('manage_settings');
-      var hasManageGroup = hasPerm('invite') || canServices || canBoard || canSettings;
+      var canSubCollectives = hasPerm('manage_sub_collectives');
+      var hasManageGroup = hasPerm('invite') || canServices || canBoard || canSettings || canSubCollectives;
       var hasAccessGroup = canRoles || canAgents || canAcl;
       var hasAdminGroup = true;
 
@@ -849,7 +850,9 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
               (hasPerm('invite') ? '<button class="nav-item' + (state.tab === 'invite' ? ' active' : '') + '" onclick="switchTab(\\'invite\\')">Invite</button>' : '') +
               (canServices ? '<button class="nav-item' + (state.tab === 'services' ? ' active' : '') + '" onclick="switchTab(\\'services\\')">Services</button>' : '') +
               (canBoard ? '<button class="nav-item' + (state.tab === 'board' ? ' active' : '') + '" onclick="switchTab(\\'board\\')">Board</button>' : '') +
-              (canSettings ? '<button class="nav-item' + (state.tab === 'federation' ? ' active' : '') + '" onclick="switchTab(\\'federation\\')">Federation</button>' : '')
+              (canSettings ? '<button class="nav-item' + (state.tab === 'federation' ? ' active' : '') + '" onclick="switchTab(\\'federation\\')">Federation</button>' : '') +
+              (canSubCollectives ? '<button class="nav-item' + (state.tab === 'collectives' ? ' active' : '') + '" onclick="switchTab(\\'collectives\\')">Sub-Collectives</button>' : '') +
+              (canSettings ? '<button class="nav-item' + (state.tab === 'traversal' ? ' active' : '') + '" onclick="switchTab(\\'traversal\\')">Traversal Policy</button>' : '')
             : '') +
             (hasAccessGroup ?
               '<div class="nav-group-header">Access Control</div>' +
@@ -1068,6 +1071,65 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           '</div>' +
         '</div>' : '') +
 
+      (canSubCollectives ?
+        '<div id="tab-collectives" class="' + (state.tab !== 'collectives' ? 'hidden' : '') + '">' +
+          '<div class="card">' +
+            '<div class="card-header"><h3>Create Sub-Collective</h3></div>' +
+            '<div style="display:flex;gap:8px;align-items:end">' +
+              '<input type="text" id="sub-name" placeholder="Name" style="flex:1" />' +
+              '<input type="text" id="sub-slug" placeholder="slug (a-z, 0-9, _)" style="flex:1" />' +
+              '<button onclick="createSubCollective()">Create</button>' +
+            '</div>' +
+          '</div>' +
+          '<div class="card" style="margin-top:12px">' +
+            '<div class="card-header"><h3>Hierarchy</h3></div>' +
+            '<div id="coll-ancestors" style="margin-bottom:8px"></div>' +
+            '<div id="coll-children">Loading...</div>' +
+          '</div>' +
+          '<div class="card" style="margin-top:12px">' +
+            '<div class="card-header"><h3>Compliance</h3></div>' +
+            '<div id="coll-compliance">Loading...</div>' +
+          '</div>' +
+        '</div>' : '') +
+
+      (canSettings ?
+        '<div id="tab-traversal" class="' + (state.tab !== 'traversal' ? 'hidden' : '') + '">' +
+          '<div class="card">' +
+            '<div class="card-header"><h3>Traversal Policy Engine</h3></div>' +
+            '<p style="color:var(--text-dim);font-size:13px;margin-bottom:12px">Control cross-collective traffic with egress and ingress rules. Rules are evaluated top-to-bottom; first match wins. Parent floor policies are prepended and cannot be weakened.</p>' +
+          '</div>' +
+          '<div class="card" style="margin-top:12px">' +
+            '<div class="card-header"><h3>Egress Policy</h3></div>' +
+            '<p style="color:var(--text-dim);font-size:13px;margin-bottom:8px">Controls outbound traffic from this collective to federated peers.</p>' +
+            '<textarea id="egress-policy" rows="12" style="width:100%;font-family:monospace;font-size:12px" placeholder=\'{"rules":[],"default":"deny"}\'></textarea>' +
+            '<div style="margin-top:8px;display:flex;gap:8px">' +
+              '<button onclick="saveTraversalPolicy(\\'egress\\')">Save Egress</button>' +
+              '<span id="egress-status" style="color:var(--text-dim);font-size:12px;align-self:center"></span>' +
+            '</div>' +
+          '</div>' +
+          '<div class="card" style="margin-top:12px">' +
+            '<div class="card-header"><h3>Ingress Policy</h3></div>' +
+            '<p style="color:var(--text-dim);font-size:13px;margin-bottom:8px">Controls inbound traffic from federated peers to this collective.</p>' +
+            '<textarea id="ingress-policy" rows="12" style="width:100%;font-family:monospace;font-size:12px" placeholder=\'{"rules":[],"default":"deny"}\'></textarea>' +
+            '<div style="margin-top:8px;display:flex;gap:8px">' +
+              '<button onclick="saveTraversalPolicy(\\'ingress\\')">Save Ingress</button>' +
+              '<span id="ingress-status" style="color:var(--text-dim);font-size:12px;align-self:center"></span>' +
+            '</div>' +
+          '</div>' +
+          '<div class="card" style="margin-top:12px">' +
+            '<div class="card-header"><h3>Test Evaluation</h3></div>' +
+            '<p style="color:var(--text-dim);font-size:13px;margin-bottom:8px">Dry-run a traversal request against the saved policies.</p>' +
+            '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:8px">' +
+              '<input type="text" id="eval-identity" placeholder="Identity (e.g. did:plc:abc)" />' +
+              '<input type="text" id="eval-resources" placeholder="Resources (comma-sep CIDRs)" />' +
+              '<input type="text" id="eval-source" placeholder="Source collective ID" />' +
+              '<input type="text" id="eval-dest" placeholder="Destination collective ID" />' +
+            '</div>' +
+            '<button onclick="testTraversal()">Evaluate</button>' +
+            '<pre id="eval-result" style="margin-top:8px;font-size:12px;max-height:300px;overflow:auto;background:var(--surface);padding:8px;border-radius:4px;display:none"></pre>' +
+          '</div>' +
+        '</div>' : '') +
+
       (canRoles ?
         '<div id="tab-roles" class="' + (state.tab !== 'roles' ? 'hidden' : '') + '">' +
           '<div class="card">' +
@@ -1239,6 +1301,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (tab === 'usage') loadUsage();
       if (tab === 'security') loadSecurity();
       if (tab === 'audit') loadAuditLog();
+      if (tab === 'collectives') loadCollectives();
+      if (tab === 'traversal') loadTraversalPolicy();
     }
 
     async function loadDevices() {
@@ -1808,6 +1872,151 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (result) {
         toast('Federation revoked');
         loadFederation();
+      }
+    }
+
+    // ── Sub-Collectives tab ──────────────────────────────────────────
+
+    async function loadCollectives() {
+      if (!state.currentTenant) return;
+      var tid = state.currentTenant.id;
+
+      var ancestorsData = await api('/api/tenants/' + tid + '/ancestors');
+      var ancestorsEl = document.getElementById('coll-ancestors');
+      if (ancestorsEl && ancestorsData) {
+        var chain = (ancestorsData.ancestors || []);
+        if (chain.length > 0) {
+          ancestorsEl.innerHTML = '<div style="font-size:13px;color:var(--text-dim)">Path: ' +
+            chain.map(function(a) { return '<a href="/dashboard/' + esc(a.slug) + '" style="color:var(--accent)">' + esc(a.name) + '</a>'; }).join(' &gt; ') +
+            ' &gt; <strong>' + esc(state.currentTenant.name) + '</strong></div>';
+        } else {
+          ancestorsEl.innerHTML = '<div style="font-size:13px;color:var(--text-dim)">Root collective</div>';
+        }
+      }
+
+      var childrenData = await api('/api/tenants/' + tid + '/collectives');
+      var childrenEl = document.getElementById('coll-children');
+      if (childrenEl && childrenData) {
+        var kids = childrenData.children || [];
+        if (kids.length === 0) {
+          childrenEl.innerHTML = '<div class="empty-state" style="padding:16px">No sub-collectives</div>';
+        } else {
+          childrenEl.innerHTML = '<table class="data-table"><thead><tr>' +
+            '<th>Name</th><th>Slug</th><th>Members</th><th>Status</th><th>Actions</th>' +
+            '</tr></thead><tbody>' +
+            kids.map(function(c) {
+              return '<tr>' +
+                '<td><a href="/dashboard/' + esc(c.slug) + '" style="color:var(--accent)">' + esc(c.name) + '</a></td>' +
+                '<td>' + esc(c.slug) + '</td>' +
+                '<td>' + c.memberCount + '</td>' +
+                '<td><span class="badge">' + esc(c.status) + '</span></td>' +
+                '<td><button class="btn-sm btn-danger" onclick="ejectChild(\\'' + c.id + '\\')">Eject</button></td>' +
+              '</tr>';
+            }).join('') +
+            '</tbody></table>';
+        }
+      }
+
+      var complianceData = await api('/api/tenants/' + tid + '/compliance');
+      var complianceEl = document.getElementById('coll-compliance');
+      if (complianceEl && complianceData) {
+        if (complianceData.allCompliant) {
+          complianceEl.innerHTML = '<div style="color:var(--success)">All sub-collectives are compliant with floor policies.</div>';
+        } else {
+          complianceEl.innerHTML = complianceData.children.filter(function(c) { return !c.compliant; }).map(function(c) {
+            return '<div style="margin-bottom:8px;padding:8px;border-left:3px solid var(--error);background:var(--surface)">' +
+              '<strong>' + esc(c.name) + '</strong> (' + esc(c.slug) + ')<ul style="margin:4px 0 0 16px">' +
+              c.violations.map(function(v) { return '<li style="color:var(--error)">' + esc(v) + '</li>'; }).join('') +
+              '</ul></div>';
+          }).join('');
+        }
+      }
+    }
+
+    async function createSubCollective() {
+      if (!state.currentTenant) return;
+      var name = document.getElementById('sub-name').value.trim();
+      var slug = document.getElementById('sub-slug').value.trim();
+      if (!name || !slug) { toast('Name and slug are required', true); return; }
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/collectives', {
+        method: 'POST',
+        body: JSON.stringify({ name: name, slug: slug }),
+      });
+      if (result) {
+        toast('Sub-collective created');
+        document.getElementById('sub-name').value = '';
+        document.getElementById('sub-slug').value = '';
+        loadCollectives();
+      }
+    }
+
+    async function ejectChild(childId) {
+      if (!state.currentTenant) return;
+      if (!confirm('Eject this sub-collective? It will become an independent root collective.')) return;
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/collectives/' + childId + '/eject', { method: 'POST' });
+      if (result) {
+        toast('Sub-collective ejected');
+        loadCollectives();
+      }
+    }
+
+    // ── Traversal Policy tab ────────────────────────────────────────
+
+    async function loadTraversalPolicy() {
+      if (!state.currentTenant) return;
+      var data = await api('/api/tenants/' + state.currentTenant.id + '/traversal-policy');
+      if (!data) return;
+      var egressEl = document.getElementById('egress-policy');
+      var ingressEl = document.getElementById('ingress-policy');
+      if (egressEl) egressEl.value = data.egress ? JSON.stringify(data.egress, null, 2) : '';
+      if (ingressEl) ingressEl.value = data.ingress ? JSON.stringify(data.ingress, null, 2) : '';
+    }
+
+    async function saveTraversalPolicy(direction) {
+      if (!state.currentTenant) return;
+      var el = document.getElementById(direction + '-policy');
+      var statusEl = document.getElementById(direction + '-status');
+      if (!el) return;
+      var raw = el.value.trim();
+      var body = {};
+      if (raw === '') {
+        body[direction] = null;
+      } else {
+        try { body[direction] = JSON.parse(raw); }
+        catch (e) { if (statusEl) statusEl.textContent = 'Invalid JSON'; return; }
+      }
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/traversal-policy', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (result && result.saved) {
+        if (statusEl) statusEl.textContent = 'Saved';
+        toast(direction.charAt(0).toUpperCase() + direction.slice(1) + ' policy saved');
+      } else if (result && result.details) {
+        if (statusEl) statusEl.textContent = result.details.join('; ');
+      }
+    }
+
+    async function testTraversal() {
+      if (!state.currentTenant) return;
+      var identity = document.getElementById('eval-identity')?.value || '';
+      var source = document.getElementById('eval-source')?.value || '';
+      var dest = document.getElementById('eval-dest')?.value || '';
+      var resources = (document.getElementById('eval-resources')?.value || '').split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+      var resultEl = document.getElementById('eval-result');
+      if (!identity || !source || !dest) {
+        if (resultEl) { resultEl.style.display = 'block'; resultEl.textContent = 'Fill in identity, source, and destination.'; }
+        return;
+      }
+      var data = await api('/api/tenants/' + state.currentTenant.id + '/traversal-policy/evaluate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ identity: identity, sourceCollective: source, destinationCollective: dest, requestedResources: resources }),
+      });
+      if (resultEl) {
+        resultEl.style.display = 'block';
+        resultEl.textContent = data ? JSON.stringify(data.trace, null, 2) : 'Evaluation failed';
       }
     }
 
@@ -3216,6 +3425,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           if (state.tab === 'usage') loadUsage();
           if (state.tab === 'security') loadSecurity();
           if (state.tab === 'audit') loadAuditLog();
+          if (state.tab === 'collectives') loadCollectives();
+          if (state.tab === 'traversal') loadTraversalPolicy();
         }
       }
     }
