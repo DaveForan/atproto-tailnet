@@ -27,21 +27,21 @@ import { logger } from "../logger.js";
 
 export const derpRouter = Router();
 
-const derpNodeSchema = z.object({
+export const derpNodeSchema = z.object({
   name: z.string().min(1).max(50),
   hostname: z.string().min(1).max(253),
   stunPort: z.number().int().min(0).max(65535).optional(),
   derpPort: z.number().int().min(0).max(65535).optional(),
 });
 
-const derpRegionSchema = z.object({
+export const derpRegionSchema = z.object({
   regionId: z.number().int().min(900).max(999),
   regionCode: z.string().min(1).max(10),
   regionName: z.string().min(1).max(100),
   nodes: z.array(derpNodeSchema).min(1).max(10),
 });
 
-const derpConfigBody = z.object({
+export const derpConfigBody = z.object({
   regions: z.array(derpRegionSchema).max(20).optional(),
   embeddedDerpEnabled: z.boolean().optional(),
   usePublicDerp: z.boolean().optional(),

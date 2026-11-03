@@ -34,7 +34,7 @@ export interface HeadscaleConfigOptions {
   ipAllocation?: string;
 }
 
-function generateHeadscaleConfig(
+export function generateHeadscaleConfig(
   slug: string,
   port: number,
   opts: HeadscaleConfigOptions = {},

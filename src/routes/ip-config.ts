@@ -29,10 +29,10 @@ import { logger } from "../logger.js";
 
 export const ipConfigRouter = Router();
 
-const CIDR_V4_RE = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
-const CIDR_V6_RE = /^[0-9a-fA-F:]+\/\d{1,3}$/;
+export const CIDR_V4_RE = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
+export const CIDR_V6_RE = /^[0-9a-fA-F:]+\/\d{1,3}$/;
 
-const ipConfigBody = z.object({
+export const ipConfigBody = z.object({
   ipv4Prefix: z
     .string()
     .regex(CIDR_V4_RE, "Must be a valid IPv4 CIDR (e.g. 100.64.0.0/10)")

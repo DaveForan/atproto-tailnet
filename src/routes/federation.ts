@@ -100,7 +100,7 @@ federationRouter.get(
   },
 );
 
-const createFederationBody = z.object({
+export const createFederationBody = z.object({
   targetSlug: z.string().min(1).max(100),
   message: z.string().max(500).optional(),
   cidrs: z.array(z.string().min(1)).max(20).optional(),
@@ -202,7 +202,7 @@ federationRouter.post(
   },
 );
 
-const respondBody = z.object({
+export const respondBody = z.object({
   cidrs: z.array(z.string().min(1)).max(20).optional(),
 });
 
