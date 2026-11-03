@@ -1,0 +1,95 @@
+# docker-compose.production.yml  --  atproto-tailnet production stack
+#
+# Usage:
+#   cp .env.example .env   # then edit with real values
+#   docker compose -f docker-compose.production.yml up -d
+#
+# Prerequisites:
+#   - Docker Engine with Compose v2
+#   - Wildcard DNS pointing *.ts.yourdomain.com to this host
+#   - Cloudflare API token for DNS-01 TLS challenge (set CF_API_TOKEN in .env)
+
+services:
+  # ---------- Application -------------------------------------------------
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-atproto_tailnet}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-atproto_tailnet}
+      SESSION_SECRET: ${SESSION_SECRET}
+      PORT: "3000"
+      PUBLIC_URL: ${PUBLIC_URL}
+      BASE_DOMAIN: ${BASE_DOMAIN}
+      CADDY_ADMIN_URL: http://caddy:2019
+      HEADSCALE_IMAGE: ${HEADSCALE_IMAGE:-headscale/headscale:0.29.1}
+      HEADSCALE_PORT_RANGE_START: ${HEADSCALE_PORT_RANGE_START:-10001}
+      HEADSCALE_PORT_RANGE_END: ${HEADSCALE_PORT_RANGE_END:-10100}
+      HEADSCALE_DATA_DIR: /data/headscale
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      ATPROTO_PRIVATE_KEY: ${ATPROTO_PRIVATE_KEY:-}
+    volumes:
+      # Docker socket -- required to manage per-tenant Headscale containers
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Persistent Headscale tenant data (configs + SQLite DBs)
+      - headscale_data:/data/headscale
+    networks:
+      - internal
+    expose:
+      - "3000"
+
+  # ---------- PostgreSQL --------------------------------------------------
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-atproto_tailnet}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-atproto_tailnet}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-atproto_tailnet}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ---------- Caddy reverse proxy ----------------------------------------
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"   # HTTP/3 / QUIC
+    expose:
+      - "2019"           # Admin API (internal only)
+    environment:
+      CF_API_TOKEN: ${CF_API_TOKEN:-}
+    volumes:
+      - ./Caddyfile.production:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - internal
+
+  # ---------- Headscale port range ----------------------------------------
+  # Headscale containers are created dynamically by the app via Docker socket.
+  # Ports 10001-10100 must be available on the host. The app binds them when
+  # spinning up tenant containers. No static service definition needed here.
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
+  headscale_data:
+
+networks:
+  internal:
+    driver: bridge

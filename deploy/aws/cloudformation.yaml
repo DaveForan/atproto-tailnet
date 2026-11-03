@@ -1,0 +1,306 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  atproto-tailnet -- EC2 + RDS deployment.
+  Provisions a Docker-ready EC2 instance with Docker socket access (required
+  for per-tenant Headscale containers) and a managed RDS PostgreSQL database.
+
+Parameters:
+  InstanceType:
+    Type: String
+    Default: t3.medium
+    AllowedValues: [t3.small, t3.medium, t3.large, t3.xlarge]
+    Description: EC2 instance size (t3.medium recommended for production)
+
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: SSH key pair for EC2 access
+
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC to deploy into
+
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: Public subnet for the EC2 instance
+
+  PrivateSubnetId1:
+    Type: AWS::EC2::Subnet::Id
+    Description: First private subnet for RDS
+
+  PrivateSubnetId2:
+    Type: AWS::EC2::Subnet::Id
+    Description: Second private subnet for RDS (different AZ)
+
+  DBPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 16
+    Description: PostgreSQL master password (>= 16 characters)
+
+  SessionSecret:
+    Type: String
+    NoEcho: true
+    MinLength: 32
+    Description: Session signing secret (>= 32 characters)
+
+  PublicUrl:
+    Type: String
+    Description: "Public URL (e.g., https://tailnets.yourdomain.com)"
+
+  BaseDomain:
+    Type: String
+    Default: ts.yourdomain.com
+    Description: "Base domain for tenant subdomains (e.g., ts.yourdomain.com)"
+
+  CfApiToken:
+    Type: String
+    NoEcho: true
+    Default: ""
+    Description: Cloudflare API token for DNS-01 TLS challenges (optional)
+
+  DataVolumeSize:
+    Type: Number
+    Default: 20
+    MinValue: 10
+    Description: EBS volume size in GB for persistent data
+
+Resources:
+  # ---------- Security Groups ---------------------------------------------
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: atproto-tailnet application server
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 0.0.0.0/0
+          Description: SSH
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP (Caddy redirect)
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS
+        - IpProtocol: udp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTP/3 QUIC
+        - IpProtocol: tcp
+          FromPort: 10001
+          ToPort: 10100
+          CidrIp: 0.0.0.0/0
+          Description: Headscale tenant ports
+      Tags:
+        - Key: Name
+          Value: atproto-tailnet-app-sg
+
+  DBSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: atproto-tailnet RDS PostgreSQL
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref AppSecurityGroup
+          Description: PostgreSQL from app server
+      Tags:
+        - Key: Name
+          Value: atproto-tailnet-db-sg
+
+  # ---------- IAM Role for EC2 --------------------------------------------
+  InstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: atproto-tailnet-ec2-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        # CloudWatch agent for logs/metrics (optional but recommended)
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+        # SSM for Session Manager access (alternative to SSH)
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+
+  InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref InstanceRole
+
+  # ---------- EBS Data Volume ---------------------------------------------
+  DataVolume:
+    Type: AWS::EC2::Volume
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Size: !Ref DataVolumeSize
+      VolumeType: gp3
+      Encrypted: true
+      Tags:
+        - Key: Name
+          Value: atproto-tailnet-data
+
+  # ---------- EC2 Instance ------------------------------------------------
+  AppInstance:
+    Type: AWS::EC2::Instance
+    DependsOn: DBInstance
+    Properties:
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyPairName
+      IamInstanceProfile: !Ref InstanceProfile
+      ImageId: !FindInMap [RegionAMI, !Ref "AWS::Region", AMI]
+      SubnetId: !Ref SubnetId
+      SecurityGroupIds:
+        - !Ref AppSecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: /dev/sda1
+          Ebs:
+            VolumeSize: 20
+            VolumeType: gp3
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euo pipefail
+          exec > /var/log/user-data.log 2>&1
+
+          # Attach and mount data volume
+          DEVICE="/dev/xvdf"
+          MOUNT="/data"
+          aws ec2 attach-volume --volume-id ${DataVolume} --instance-id $(curl -s http://169.254.169.254/latest/meta-data/instance-id) --device $DEVICE --region ${AWS::Region} || true
+          sleep 10
+          if ! blkid $DEVICE; then mkfs.ext4 $DEVICE; fi
+          mkdir -p $MOUNT
+          mount $DEVICE $MOUNT
+          echo "$DEVICE $MOUNT ext4 defaults,nofail 0 2" >> /etc/fstab
+          mkdir -p $MOUNT/headscale
+
+          # Install Docker
+          apt-get update -y
+          apt-get install -y apt-transport-https ca-certificates curl gnupg
+          curl -fsSL https://get.docker.com | sh
+          systemctl enable --now docker
+
+          # Install Docker Compose plugin
+          apt-get install -y docker-compose-plugin
+
+          # Clone and configure
+          apt-get install -y git
+          git clone https://github.com/your-org/atproto-tailnet.git /opt/atproto-tailnet
+          cd /opt/atproto-tailnet
+
+          cat > .env <<'ENVEOF'
+          DATABASE_URL=postgresql://atproto_tailnet:${DBPassword}@${DBInstance.Endpoint.Address}:5432/atproto_tailnet
+          SESSION_SECRET=${SessionSecret}
+          PORT=3000
+          PUBLIC_URL=${PublicUrl}
+          BASE_DOMAIN=${BaseDomain}
+          HEADSCALE_IMAGE=headscale/headscale:0.29.1
+          HEADSCALE_PORT_RANGE_START=10001
+          HEADSCALE_PORT_RANGE_END=10100
+          HEADSCALE_DATA_DIR=/data/headscale
+          CADDY_ADMIN_URL=http://caddy:2019
+          LOG_LEVEL=info
+          CF_API_TOKEN=${CfApiToken}
+          POSTGRES_PASSWORD=${DBPassword}
+          ENVEOF
+
+          # Start services (skip local postgres -- using RDS)
+          docker compose -f docker-compose.production.yml up -d app caddy
+      Tags:
+        - Key: Name
+          Value: atproto-tailnet
+
+  # ---------- Elastic IP --------------------------------------------------
+  AppEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      InstanceId: !Ref AppInstance
+
+  # ---------- RDS PostgreSQL ----------------------------------------------
+  DBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: atproto-tailnet RDS subnets
+      SubnetIds:
+        - !Ref PrivateSubnetId1
+        - !Ref PrivateSubnetId2
+
+  DBInstance:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBInstanceIdentifier: atproto-tailnet-db
+      Engine: postgres
+      EngineVersion: "17.2"
+      DBInstanceClass: db.t3.micro
+      AllocatedStorage: 20
+      StorageType: gp3
+      MasterUsername: atproto_tailnet
+      MasterUserPassword: !Ref DBPassword
+      DBName: atproto_tailnet
+      VPCSecurityGroups:
+        - !Ref DBSecurityGroup
+      DBSubnetGroup: !Ref DBSubnetGroup
+      MultiAZ: false
+      StorageEncrypted: true
+      BackupRetentionPeriod: 7
+      DeletionProtection: true
+      Tags:
+        - Key: Name
+          Value: atproto-tailnet-db
+
+  # ---------- Region -> AMI mapping (Ubuntu 22.04 LTS) --------------------
+Mappings:
+  RegionAMI:
+    us-east-1:
+      AMI: ami-0c7217cdde317cfec
+    us-east-2:
+      AMI: ami-05fb0b8c1424f266b
+    us-west-1:
+      AMI: ami-0ce2cb35386fc22e9
+    us-west-2:
+      AMI: ami-008fe2fc65df48dac
+    eu-west-1:
+      AMI: ami-0905a3c97561e0b69
+    eu-central-1:
+      AMI: ami-0faab6bdbac9486fb
+    ap-southeast-1:
+      AMI: ami-078c1149d8ad719a7
+
+Outputs:
+  AppPublicIP:
+    Description: Elastic IP of the application server
+    Value: !Ref AppEIP
+
+  AppInstanceId:
+    Description: EC2 instance ID
+    Value: !Ref AppInstance
+
+  DatabaseEndpoint:
+    Description: RDS PostgreSQL endpoint
+    Value: !GetAtt DBInstance.Endpoint.Address
+
+  DatabasePort:
+    Description: RDS PostgreSQL port
+    Value: !GetAtt DBInstance.Endpoint.Port
+
+  SSHCommand:
+    Description: SSH into the instance
+    Value: !Sub "ssh ubuntu@${AppEIP}"
+
+  DNSSetup:
+    Description: Point these DNS records to the Elastic IP
+    Value: !Sub >
+      A record: tailnets.yourdomain.com -> ${AppEIP}
+      A record: *.${BaseDomain} -> ${AppEIP}

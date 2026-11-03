@@ -1,0 +1,68 @@
+{
+  "_comment": [
+    "ECS Fargate task definition for atproto-tailnet.",
+    "",
+    "LIMITATION: Fargate does not provide Docker socket access. The app",
+    "cannot manage per-tenant Headscale containers from within Fargate.",
+    "This definition is provided for the web tier only. You must run",
+    "Headscale containers on a separate EC2 host and set DOCKER_HOST.",
+    "",
+    "For full functionality, use the EC2 CloudFormation template instead."
+  ],
+  "family": "atproto-tailnet",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/atproto-tailnet-task-role",
+  "containerDefinitions": [
+    {
+      "name": "app",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/atproto-tailnet:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 3000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "PORT", "value": "3000" },
+        { "name": "LOG_LEVEL", "value": "info" },
+        { "name": "HEADSCALE_IMAGE", "value": "headscale/headscale:0.29.1" },
+        { "name": "HEADSCALE_PORT_RANGE_START", "value": "10001" },
+        { "name": "HEADSCALE_PORT_RANGE_END", "value": "10100" }
+      ],
+      "secrets": [
+        {
+          "name": "DATABASE_URL",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:atproto-tailnet/database-url"
+        },
+        {
+          "name": "SESSION_SECRET",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:atproto-tailnet/session-secret"
+        },
+        {
+          "name": "ATPROTO_PRIVATE_KEY",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:atproto-tailnet/atproto-private-key"
+        }
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "wget -qO- http://localhost:3000/health || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 30
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/atproto-tailnet",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "app"
+        }
+      }
+    }
+  ]
+}

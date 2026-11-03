@@ -1,0 +1,61 @@
+# DigitalOcean App Platform spec
+#
+# LIMITATION: App Platform does not provide Docker socket access. This spec
+# deploys the web tier only. Headscale container orchestration requires a
+# Droplet deployment (see droplet-setup.sh).
+#
+# Usage:
+#   doctl apps create --spec deploy/digitalocean/.do/app.yaml
+
+name: atproto-tailnet
+region: nyc
+
+services:
+  - name: app
+    dockerfile_path: Dockerfile
+    github:
+      repo: your-org/atproto-tailnet
+      branch: main
+      deploy_on_push: true
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    http_port: 3000
+    health_check:
+      http_path: /health
+      initial_delay_seconds: 15
+      period_seconds: 10
+    envs:
+      - key: SESSION_SECRET
+        scope: RUN_TIME
+        type: SECRET
+      - key: PUBLIC_URL
+        scope: RUN_TIME
+        value: "${APP_URL}"
+      - key: BASE_DOMAIN
+        scope: RUN_TIME
+        value: ts.yourdomain.com
+      - key: HEADSCALE_IMAGE
+        scope: RUN_TIME
+        value: headscale/headscale:0.29.1
+      - key: HEADSCALE_PORT_RANGE_START
+        scope: RUN_TIME
+        value: "10001"
+      - key: HEADSCALE_PORT_RANGE_END
+        scope: RUN_TIME
+        value: "10100"
+      - key: LOG_LEVEL
+        scope: RUN_TIME
+        value: info
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        value: "${db.DATABASE_URL}"
+      - key: CADDY_ADMIN_URL
+        scope: RUN_TIME
+        value: http://localhost:2019
+
+databases:
+  - name: db
+    engine: PG
+    version: "16"
+    size: db-s-dev-database
+    num_nodes: 1
