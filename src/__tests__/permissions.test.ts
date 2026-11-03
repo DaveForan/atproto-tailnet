@@ -14,8 +14,8 @@ import {
 } from "../routes/permissions.js";
 
 describe("ALL_PERMISSIONS", () => {
-  it("contains exactly 16 permissions", () => {
-    expect(ALL_PERMISSIONS).toHaveLength(16);
+  it("contains exactly 17 permissions", () => {
+    expect(ALL_PERMISSIONS).toHaveLength(17);
   });
 
   it("has no duplicate entries", () => {
