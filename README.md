@@ -153,7 +153,7 @@ See [ADR-0005](docs/adr/0005-security-management.md) for the full security desig
 
 ## Status
 
-This is an active development project. Phases 1-3 (auth, networking, invitations), Phase 5 (security management, services, board, agent tokens), and most of Phase 4 (ACL management, health monitoring, structured logging) are complete. Remaining Phase 4 items: instance hibernation and real UI design.
+Feature-complete. All build phases (auth, networking, invitations, security management, services/board/agents, ACL, health monitoring, structured logging, UI polish) and advanced features (custom DERP relays, per-tenant IP ranges, exit node/subnet router management, usage metering with plan limits, federation between tailnets) are implemented. The only remaining architectural item is the optional Headscale fork for single-process multi-tenancy (see ADR-0002).
 
 See `BUILD_PLAN.md` for the full roadmap.
 
