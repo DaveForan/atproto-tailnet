@@ -25,6 +25,9 @@ Track ADRs like stories on a board. Each ADR moves through a lifecycle:
 | 0013 | Multi-tenant Headscale fork | 2026-11-03 | — | 0001, 0009 |
 | 0014 | Federation protocol specification | 2026-11-03 | — | 0010, 0011 |
 | 0015 | Global / regional / local federation scoping | 2026-11-03 | — | 0014 |
+| 0016 | Federation transport and broker integration | 2026-11-04 | — | 0010, 0014 |
+| 0017 | DID resolution and identity verification | 2026-11-04 | — | 0003, 0012 |
+| 0018 | Dashboard completeness and correctness | 2026-11-04 | — | 0016, 0017 |
 
 ### In Progress
 
@@ -36,7 +39,11 @@ Track ADRs like stories on a board. Each ADR moves through a lifecycle:
 
 ### Proposed
 
-(empty)
+| ID | Title | Date | Supersedes | Depends On |
+|----|-------|------|------------|------------|
+| 0019 | Cross-instance federation links | 2026-11-04 | — | 0014, 0016, 0017 |
+| 0020 | Federation relay data plane | 2026-11-04 | — | 0006, 0010, 0016, 0019 |
+| 0021 | Holder binding for AT Proto accounts | 2026-11-04 | — | 0003, 0012, 0017 |
 
 ### Superseded
 
