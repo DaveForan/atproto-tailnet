@@ -14,6 +14,7 @@ import {
   getTenantForUser,
   hasPermission,
   authUserId,
+  isLockedDown,
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
 import { logger } from "../logger.js";
@@ -69,6 +70,11 @@ traversalRouter.put(
 
     if (!hasPermission(result.membership, result.role, "manage_settings", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
+      return;
+    }
+
+    if (isLockedDown(result.tenant)) {
+      res.status(403).json({ error: "Tenant is in lockdown mode" });
       return;
     }
 

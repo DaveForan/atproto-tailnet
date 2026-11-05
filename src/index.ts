@@ -41,9 +41,11 @@ import { federationRouter } from "./routes/federation.js";
 import { collectivesRouter } from "./routes/collectives.js";
 import { traversalRouter } from "./routes/traversal.js";
 import { credentialsRouter } from "./routes/credentials.js";
+import { federationMessagesRouter } from "./routes/federation-messages.js";
 import { dashboardRouter } from "./routes/dashboard.js";
 import { resolveAgentToken, enforceAgentScope } from "./routes/helpers.js";
 import { startHealthMonitor } from "./orchestrator/monitor.js";
+import { startBroker } from "./orchestrator/federation-broker.js";
 import { logger } from "./logger.js";
 
 const app = express();
@@ -103,6 +105,14 @@ const apiLimiter = rateLimit({
   message: { error: "Too many requests, try again later" },
 });
 
+const federationLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 600,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { error: "Too many requests, try again later" },
+});
+
 // ── CSRF token endpoint ───────────────────────────────────────────────
 app.get("/api/csrf-token", (req: Request, res: Response) => {
   if (!req.session.userId) {
@@ -150,6 +160,13 @@ app.use("/auth", authLimiter);
 app.use("/.well-known", authLimiter);
 app.use(authRouter);
 
+// Broker-to-broker CFP messages (ADR-0016): authenticated by DID signature,
+// not sessions or agent tokens. Keepalives for every session arrive from the
+// peer broker's single address, so they get their own, higher limit.
+app.use("/api/federation/messages", federationLimiter);
+app.use(federationMessagesRouter);
+
+app.use("/collective", apiLimiter);
 app.use("/api", apiLimiter);
 app.use(resolveAgentToken);
 app.use(enforceAgentScope);
@@ -173,4 +190,5 @@ app.use(credentialsRouter);
 app.listen(config.port, () => {
   logger.info({ port: config.port, url: config.publicUrl }, "atproto-tailnet running");
   startHealthMonitor();
+  startBroker();
 });

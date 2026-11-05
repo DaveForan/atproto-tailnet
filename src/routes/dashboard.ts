@@ -820,7 +820,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       var canSettings = hasPerm('manage_settings');
       var canSubCollectives = hasPerm('manage_sub_collectives');
       var hasManageGroup = hasPerm('invite') || canServices || canBoard || canSettings || canSubCollectives;
-      var hasAccessGroup = canRoles || canAgents || canAcl;
+      var hasAccessGroup = canRoles || canAgents || canAcl || canSettings;
       var hasAdminGroup = true;
 
       var roleBadge = t.isOriginator
@@ -858,7 +858,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
               '<div class="nav-group-header">Access Control</div>' +
               (canRoles ? '<button class="nav-item' + (state.tab === 'roles' ? ' active' : '') + '" onclick="switchTab(\\'roles\\')">Roles</button>' : '') +
               (canAgents ? '<button class="nav-item' + (state.tab === 'agents' ? ' active' : '') + '" onclick="switchTab(\\'agents\\')">Agents</button>' : '') +
-              (canAcl ? '<button class="nav-item' + (state.tab === 'acl' ? ' active' : '') + '" onclick="switchTab(\\'acl\\')">ACL</button>' : '')
+              (canAcl ? '<button class="nav-item' + (state.tab === 'acl' ? ' active' : '') + '" onclick="switchTab(\\'acl\\')">ACL</button>' : '') +
+              (canSettings ? '<button class="nav-item' + (state.tab === 'credentials' ? ' active' : '') + '" onclick="switchTab(\\'credentials\\')">Credentials</button>' : '')
             : '') +
             (hasAdminGroup ?
               '<div class="nav-group-header">Admin</div>' +
@@ -1069,6 +1070,39 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
             '<div class="card-header"><h3>History</h3></div>' +
             '<div id="fed-history">Loading...</div>' +
           '</div>' +
+          '<div class="card" style="margin-top:12px">' +
+            '<div class="card-header"><h3>Federation Scoping</h3></div>' +
+            '<div id="fed-scope-info" style="margin-bottom:12px"></div>' +
+            '<div style="display:flex;flex-direction:column;gap:12px">' +
+              '<div>' +
+                '<div style="font-size:13px;color:var(--text-dim);margin-bottom:6px">Scopes</div>' +
+                '<label style="display:inline-flex;align-items:center;gap:4px;margin-right:12px;font-size:14px;cursor:pointer"><input type="checkbox" id="fed-scope-local" /> local</label>' +
+                '<label style="display:inline-flex;align-items:center;gap:4px;margin-right:12px;font-size:14px;cursor:pointer"><input type="checkbox" id="fed-scope-regional" /> regional</label>' +
+                '<label style="display:inline-flex;align-items:center;gap:4px;font-size:14px;cursor:pointer"><input type="checkbox" id="fed-scope-global" /> global</label>' +
+              '</div>' +
+              '<div>' +
+                '<label style="font-size:13px;color:var(--text-dim);display:block;margin-bottom:4px">Region</label>' +
+                '<input type="text" id="fed-scope-region" placeholder="e.g. us-east, eu-west" />' +
+              '</div>' +
+              '<div>' +
+                '<label style="font-size:13px;color:var(--text-dim);display:block;margin-bottom:4px">Coordinates (lat, lon)</label>' +
+                '<input type="text" id="fed-scope-coords" placeholder="e.g. 40.7128,-74.0060" />' +
+              '</div>' +
+              '<div><button onclick="saveFederationScope()">Save Scoping</button></div>' +
+            '</div>' +
+          '</div>' +
+          '<div class="card" style="margin-top:12px">' +
+            '<div class="card-header"><h3>Collective Identity</h3></div>' +
+            '<div id="fed-identity-content">Loading...</div>' +
+          '</div>' +
+          '<div class="card" style="margin-top:12px">' +
+            '<div class="card-header"><h3>Broker Sessions</h3></div>' +
+            '<div id="fed-broker-sessions">Loading...</div>' +
+          '</div>' +
+          '<div class="card" style="margin-top:12px">' +
+            '<div class="card-header"><h3>Federation Route Table</h3></div>' +
+            '<div id="fed-broker-routes">Loading...</div>' +
+          '</div>' +
         '</div>' : '') +
 
       (canSubCollectives ?
@@ -1101,7 +1135,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           '<div class="card" style="margin-top:12px">' +
             '<div class="card-header"><h3>Egress Policy</h3></div>' +
             '<p style="color:var(--text-dim);font-size:13px;margin-bottom:8px">Controls outbound traffic from this collective to federated peers.</p>' +
-            '<textarea id="egress-policy" rows="12" style="width:100%;font-family:monospace;font-size:12px" placeholder=\'{"rules":[],"default":"deny"}\'></textarea>' +
+            '<textarea id="egress-policy" rows="12" style="width:100%;font-family:monospace;font-size:12px" placeholder=\\'{"rules":[],"default":"deny"}\\'></textarea>' +
             '<div style="margin-top:8px;display:flex;gap:8px">' +
               '<button onclick="saveTraversalPolicy(\\'egress\\')">Save Egress</button>' +
               '<span id="egress-status" style="color:var(--text-dim);font-size:12px;align-self:center"></span>' +
@@ -1110,7 +1144,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           '<div class="card" style="margin-top:12px">' +
             '<div class="card-header"><h3>Ingress Policy</h3></div>' +
             '<p style="color:var(--text-dim);font-size:13px;margin-bottom:8px">Controls inbound traffic from federated peers to this collective.</p>' +
-            '<textarea id="ingress-policy" rows="12" style="width:100%;font-family:monospace;font-size:12px" placeholder=\'{"rules":[],"default":"deny"}\'></textarea>' +
+            '<textarea id="ingress-policy" rows="12" style="width:100%;font-family:monospace;font-size:12px" placeholder=\\'{"rules":[],"default":"deny"}\\'></textarea>' +
             '<div style="margin-top:8px;display:flex;gap:8px">' +
               '<button onclick="saveTraversalPolicy(\\'ingress\\')">Save Ingress</button>' +
               '<span id="ingress-status" style="color:var(--text-dim);font-size:12px;align-self:center"></span>' +
@@ -1274,6 +1308,49 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
         '<div id="tab-audit" class="' + (state.tab !== 'audit' ? 'hidden' : '') + '">' +
           '<div class="card"><div id="audit-log">Loading...</div></div>' +
         '</div>' : '') +
+
+      (canSettings ?
+        '<div id="tab-credentials" class="' + (state.tab !== 'credentials' ? 'hidden' : '') + '">' +
+          '<div class="card">' +
+            '<div class="card-header"><h3>Issue Membership Credential</h3></div>' +
+            '<p style="color:var(--text-dim);font-size:13px;margin-bottom:12px">Issue a verifiable membership credential to a user.</p>' +
+            '<div class="inline-form">' +
+              '<input type="text" id="cred-membership-did" placeholder="User DID (did:plc:...)" />' +
+              '<button onclick="issueMembership()">Issue</button>' +
+            '</div>' +
+          '</div>' +
+          '<div class="card" style="margin-top:12px">' +
+            '<div class="card-header"><h3>Issue Role Attestation</h3></div>' +
+            '<p style="color:var(--text-dim);font-size:13px;margin-bottom:12px">Issue a role attestation with specific permissions.</p>' +
+            '<div style="display:flex;flex-direction:column;gap:8px">' +
+              '<input type="text" id="cred-role-did" placeholder="User DID (did:plc:...)" />' +
+              '<input type="text" id="cred-role-perms" placeholder="Permissions (comma-separated)" />' +
+              '<div><button onclick="issueRole()">Issue</button></div>' +
+            '</div>' +
+          '</div>' +
+          '<div class="card" style="margin-top:12px">' +
+            '<div class="card-header"><h3>Issue Capability Token</h3></div>' +
+            '<p style="color:var(--text-dim);font-size:13px;margin-bottom:12px">Issue a scoped capability token.</p>' +
+            '<div style="display:flex;flex-direction:column;gap:8px">' +
+              '<input type="text" id="cred-cap-did" placeholder="User DID (did:plc:...)" />' +
+              '<input type="text" id="cred-cap-scope" placeholder="Scope (comma-separated)" />' +
+              '<div><button onclick="issueCapability()">Issue</button></div>' +
+            '</div>' +
+          '</div>' +
+          '<div class="card" style="margin-top:12px">' +
+            '<div class="card-header"><h3>Verify Credential</h3></div>' +
+            '<p style="color:var(--text-dim);font-size:13px;margin-bottom:12px">Paste a JWT credential to verify its authenticity and claims.</p>' +
+            '<textarea id="cred-verify-jwt" placeholder="Paste JWT here..." rows="4"></textarea>' +
+            '<div style="margin-top:8px"><button onclick="verifyCredential()">Verify</button></div>' +
+          '</div>' +
+          '<div class="card" style="margin-top:12px">' +
+            '<div class="card-header"><h3>Holder Binding Challenge</h3></div>' +
+            '<p style="color:var(--text-dim);font-size:13px;margin-bottom:12px">Generate a cryptographic challenge for holder binding verification.</p>' +
+            '<button onclick="generateChallenge()">Generate Challenge</button>' +
+          '</div>' +
+          '<div id="cred-result" style="margin-top:12px"></div>' +
+        '</div>' : '') +
+
       '</main>' +
       '</div>';
     }
@@ -1810,6 +1887,11 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
           }).join('');
         }
       }
+
+      // Load federation sub-sections
+      loadFederationScoping();
+      loadFederationIdentity();
+      loadBrokerStatus();
     }
 
     async function requestFederation() {
@@ -1872,6 +1954,234 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       if (result) {
         toast('Federation revoked');
         loadFederation();
+      }
+    }
+
+    // ── Credentials tab ──────────────────────────────────────────────
+
+    async function issueMembership() {
+      if (!state.currentTenant) return;
+      var didEl = document.getElementById('cred-membership-did');
+      var userDid = didEl.value.trim();
+      if (!userDid) { toast('User DID is required'); return; }
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/credentials/membership', {
+        method: 'POST',
+        body: JSON.stringify({ userDid: userDid }),
+      });
+      if (result) {
+        didEl.value = '';
+        showCredResult(result);
+      }
+    }
+
+    async function issueRole() {
+      if (!state.currentTenant) return;
+      var didEl = document.getElementById('cred-role-did');
+      var permsEl = document.getElementById('cred-role-perms');
+      var userDid = didEl.value.trim();
+      var permissions = permsEl.value.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+      if (!userDid) { toast('User DID is required'); return; }
+      if (permissions.length === 0) { toast('At least one permission is required'); return; }
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/credentials/role', {
+        method: 'POST',
+        body: JSON.stringify({ userDid: userDid, permissions: permissions }),
+      });
+      if (result) {
+        didEl.value = '';
+        permsEl.value = '';
+        showCredResult(result);
+      }
+    }
+
+    async function issueCapability() {
+      if (!state.currentTenant) return;
+      var didEl = document.getElementById('cred-cap-did');
+      var scopeEl = document.getElementById('cred-cap-scope');
+      var userDid = didEl.value.trim();
+      var scope = scopeEl.value.split(',').map(function(s) { return s.trim(); }).filter(Boolean);
+      if (!userDid) { toast('User DID is required'); return; }
+      if (scope.length === 0) { toast('At least one scope is required'); return; }
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/credentials/capability', {
+        method: 'POST',
+        body: JSON.stringify({ userDid: userDid, scope: scope }),
+      });
+      if (result) {
+        didEl.value = '';
+        scopeEl.value = '';
+        showCredResult(result);
+      }
+    }
+
+    async function verifyCredential() {
+      var jwtEl = document.getElementById('cred-verify-jwt');
+      var jwt = jwtEl.value.trim();
+      if (!jwt) { toast('JWT is required'); return; }
+      var result = await api('/api/credentials/verify', {
+        method: 'POST',
+        body: JSON.stringify({ jwt: jwt }),
+      });
+      if (result) {
+        showCredResult(result);
+      }
+    }
+
+    async function generateChallenge() {
+      if (!state.currentTenant) return;
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/credentials/challenge');
+      if (result) {
+        showCredResult(result);
+      }
+    }
+
+    function showCredResult(data) {
+      var el = document.getElementById('cred-result');
+      if (el) {
+        el.innerHTML = '<div class="card" style="background:var(--bg)">' +
+          '<div class="card-header"><h3>Result</h3></div>' +
+          '<pre style="font-size:12px;max-height:400px;overflow:auto;white-space:pre-wrap;word-break:break-all;color:var(--success);font-family:monospace">' + esc(JSON.stringify(data, null, 2)) + '</pre>' +
+        '</div>';
+      }
+    }
+
+    // ── Federation Scoping / Identity / Broker ──────────────────────
+
+    async function loadFederationScoping() {
+      if (!state.currentTenant) return;
+      var data = await api('/api/tenants/' + state.currentTenant.id + '/federation/scope');
+      if (!data) return;
+      var scopes = data.scopes || [];
+      var localCb = document.getElementById('fed-scope-local');
+      var regionalCb = document.getElementById('fed-scope-regional');
+      var globalCb = document.getElementById('fed-scope-global');
+      if (localCb) localCb.checked = scopes.indexOf('local') !== -1;
+      if (regionalCb) regionalCb.checked = scopes.indexOf('regional') !== -1;
+      if (globalCb) globalCb.checked = scopes.indexOf('global') !== -1;
+      var regionEl = document.getElementById('fed-scope-region');
+      var coordsEl = document.getElementById('fed-scope-coords');
+      if (regionEl) regionEl.value = data.region || '';
+      if (coordsEl) coordsEl.value = data.coordinates ? data.coordinates.join(',') : '';
+      var infoEl = document.getElementById('fed-scope-info');
+      if (infoEl) {
+        infoEl.innerHTML = '<div style="font-size:13px;color:var(--text-dim)">' +
+          'Current scopes: <strong style="color:var(--text)">' + esc(scopes.join(', ') || 'none') + '</strong>' +
+          (data.region ? ' | Region: <strong style="color:var(--text)">' + esc(data.region) + '</strong>' : '') +
+          (data.coordinates ? ' | Coordinates: <strong style="color:var(--text)">' + esc(data.coordinates.join(', ')) + '</strong>' : '') +
+        '</div>';
+      }
+    }
+
+    async function saveFederationScope() {
+      if (!state.currentTenant) return;
+      var scopes = [];
+      var localCb = document.getElementById('fed-scope-local');
+      var regionalCb = document.getElementById('fed-scope-regional');
+      var globalCb = document.getElementById('fed-scope-global');
+      if (localCb && localCb.checked) scopes.push('local');
+      if (regionalCb && regionalCb.checked) scopes.push('regional');
+      if (globalCb && globalCb.checked) scopes.push('global');
+      var regionEl = document.getElementById('fed-scope-region');
+      var coordsEl = document.getElementById('fed-scope-coords');
+      var region = regionEl ? regionEl.value.trim() : '';
+      var coordsRaw = coordsEl ? coordsEl.value.trim() : '';
+      var body = { scopes: scopes };
+      if (region) body.region = region;
+      if (coordsRaw) {
+        var coordinates = coordsRaw.split(',').map(function(s) { return parseFloat(s.trim()); });
+        if (coordinates.some(isNaN)) { toast('Coordinates must be numbers (lat,lon)'); return; }
+        body.coordinates = coordinates;
+      }
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/federation/scope', {
+        method: 'PUT',
+        body: JSON.stringify(body),
+      });
+      if (result) {
+        toast('Federation scope saved');
+        loadFederationScoping();
+      }
+    }
+
+    async function loadFederationIdentity() {
+      if (!state.currentTenant) return;
+      var data = await api('/api/tenants/' + state.currentTenant.id + '/federation/did');
+      var el = document.getElementById('fed-identity-content');
+      if (!el) return;
+      if (!data) { el.innerHTML = '<div class="empty-state" style="padding:16px">Could not load identity</div>'; return; }
+      el.innerHTML = '<div style="margin-bottom:8px">' +
+        '<div style="font-size:13px;color:var(--text-dim);margin-bottom:4px">Collective DID</div>' +
+        '<div class="code-block" onclick="copyToClipboard(this.textContent)" style="font-size:12px">' + esc(data.did || 'Not assigned') + '</div>' +
+      '</div>' +
+      (data.publicKeyFingerprint ? '<div style="margin-bottom:12px">' +
+        '<div style="font-size:13px;color:var(--text-dim);margin-bottom:4px">Public Key Fingerprint</div>' +
+        '<div style="font-family:monospace;font-size:12px;color:var(--text-dim)">' + esc(data.publicKeyFingerprint) + '</div>' +
+      '</div>' : '') +
+      '<button onclick="rotateDid()">Rotate DID</button>';
+    }
+
+    async function rotateDid() {
+      if (!state.currentTenant) return;
+      if (!confirm('Rotate the collective DID? Active federation links may need to be re-established.')) return;
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/federation/did/rotate', { method: 'POST' });
+      if (result) {
+        toast('DID rotated');
+        loadFederationIdentity();
+      }
+    }
+
+    async function loadBrokerStatus() {
+      if (!state.currentTenant) return;
+      var broker = await api('/api/tenants/' + state.currentTenant.id + '/federation/broker');
+      var routes = await api('/api/tenants/' + state.currentTenant.id + '/federation/routes');
+
+      var brokerEl = document.getElementById('fed-broker-sessions');
+      if (brokerEl) {
+        if (!broker || !broker.sessions || broker.sessions.length === 0) {
+          brokerEl.innerHTML = '<div class="empty-state" style="padding:16px">No broker sessions</div>';
+        } else {
+          brokerEl.innerHTML = '<div style="font-size:13px;color:var(--text-dim);margin-bottom:8px">Sessions: <strong style="color:var(--text)">' + broker.sessions.length + '</strong></div>' +
+            broker.sessions.map(function(s) {
+              var statusBadge = s.status === 'established'
+                ? '<span class="badge badge-running">' + esc(s.status) + '</span>'
+                : '<span class="badge badge-stopped">' + esc(s.status) + '</span>';
+              return '<div class="approval-item">' +
+                '<div>' +
+                  '<strong>' + esc(s.remoteSlug || s.remoteTenantId) + '</strong> ' + statusBadge +
+                  (s.lastKeepalive ? '<br><span style="color:var(--text-dim);font-size:12px">Last keepalive: ' + esc(new Date(s.lastKeepalive).toLocaleString()) + '</span>' : '') +
+                '</div>' +
+              '</div>';
+            }).join('');
+        }
+      }
+
+      var routesEl = document.getElementById('fed-broker-routes');
+      if (routesEl) {
+        var exp = (routes && routes.exported) || [];
+        var imp = (routes && routes.imported) || [];
+        if (exp.length === 0 && imp.length === 0) {
+          routesEl.innerHTML = '<div class="empty-state" style="padding:16px">No federation routes</div>';
+        } else {
+          var html = '';
+          if (exp.length > 0) {
+            html += '<div style="font-size:12px;color:var(--text-dim);padding:6px 0;font-weight:600">Exported CIDRs</div>';
+            html += exp.map(function(r) {
+              var cidr = typeof r === 'string' ? r : r.cidr;
+              var peer = typeof r === 'string' ? '' : r.peer;
+              return '<div class="approval-item" style="font-size:13px"><span style="font-family:monospace;color:var(--accent)">' + esc(cidr) + '</span>' +
+                (peer ? '<span style="color:var(--text-dim);margin-left:8px">' + esc(peer) + '</span>' : '') +
+              '</div>';
+            }).join('');
+          }
+          if (imp.length > 0) {
+            html += '<div style="font-size:12px;color:var(--text-dim);padding:6px 0;font-weight:600;margin-top:8px">Imported CIDRs</div>';
+            html += imp.map(function(r) {
+              var cidr = typeof r === 'string' ? r : r.cidr;
+              var peer = typeof r === 'string' ? '' : r.peer;
+              return '<div class="approval-item" style="font-size:13px"><span style="font-family:monospace;color:var(--accent)">' + esc(cidr) + '</span>' +
+                (peer ? '<span style="color:var(--text-dim);margin-left:8px">' + esc(peer) + '</span>' : '') +
+              '</div>';
+            }).join('');
+          }
+          routesEl.innerHTML = html;
+        }
       }
     }
 

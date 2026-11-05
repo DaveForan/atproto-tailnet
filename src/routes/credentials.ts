@@ -6,7 +6,14 @@
 import { Router } from "express";
 import { eq, and } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { tenants, memberships, roles, collectiveDids } from "../db/schema.js";
+import {
+  tenants,
+  memberships,
+  roles,
+  collectiveDids,
+  credentialRevocations,
+  holderBindingChallenges,
+} from "../db/schema.js";
 import {
   requireAuth,
   param,
@@ -14,6 +21,7 @@ import {
   hasPermission,
   authUserId,
   authUserDid,
+  isLockedDown,
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
 import { logger } from "../logger.js";
@@ -23,53 +31,19 @@ import {
   issueCapabilityToken,
   assembleBundle,
   generateHolderChallenge,
-  importIssuerKeyPair,
+  type IssuerKeyPair,
 } from "../credentials/issuer.js";
-import { verifyCredential } from "../credentials/verifier.js";
+import { loadCollectiveKeyPair } from "../orchestrator/federation-broker.js";
+import { verifyCredential, verifyHolderBinding } from "../credentials/verifier.js";
+import { getResolver } from "../identity/resolver.js";
 import { config } from "../config.js";
 import * as jose from "jose";
 
 export const credentialsRouter = Router();
 
-async function getCollectiveIssuerKeys(tenantId: string) {
-  const rows = await db
-    .select({
-      did: collectiveDids.did,
-      publicKeyJwk: collectiveDids.publicKeyJwk,
-      encryptedPrivateKey: collectiveDids.encryptedPrivateKey,
-    })
-    .from(collectiveDids)
-    .where(eq(collectiveDids.tenantId, tenantId))
-    .limit(1);
-
-  if (rows.length === 0) return null;
-  const row = rows[0];
-
-  const encKey = process.env.FEDERATION_KEY_ENCRYPTION_KEY;
-  let privateKeyJwk: jose.JWK;
-
-  if (encKey) {
-    const { createDecipheriv } = await import("node:crypto");
-    const keyBuf = Buffer.from(encKey, "base64");
-    const raw = Buffer.from(row.encryptedPrivateKey, "base64");
-    const iv = raw.subarray(0, 12);
-    const tag = raw.subarray(raw.length - 16);
-    const ciphertext = raw.subarray(12, raw.length - 16);
-    const decipher = createDecipheriv("aes-256-gcm", keyBuf, iv);
-    decipher.setAuthTag(tag);
-    const decrypted = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-    privateKeyJwk = JSON.parse(decrypted.toString("utf8"));
-  } else {
-    privateKeyJwk = JSON.parse(
-      Buffer.from(row.encryptedPrivateKey, "base64").toString("utf8"),
-    );
-  }
-
-  const publicKeyJwk = typeof row.publicKeyJwk === "string"
-    ? JSON.parse(row.publicKeyJwk)
-    : row.publicKeyJwk;
-
-  return importIssuerKeyPair(row.did, privateKeyJwk, publicKeyJwk);
+/** The collective's issuer identity, or null if it has no DID yet. */
+async function getCollectiveIssuerKeys(tenantId: string): Promise<IssuerKeyPair | null> {
+  return loadCollectiveKeyPair(tenantId);
 }
 
 credentialsRouter.post(
@@ -85,6 +59,11 @@ credentialsRouter.post(
 
     if (!hasPermission(result.membership, result.role, "manage_settings", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
+      return;
+    }
+
+    if (isLockedDown(result.tenant)) {
+      res.status(403).json({ error: "Tenant is in lockdown mode" });
       return;
     }
 
@@ -157,6 +136,11 @@ credentialsRouter.post(
       return;
     }
 
+    if (isLockedDown(result.tenant)) {
+      res.status(403).json({ error: "Tenant is in lockdown mode" });
+      return;
+    }
+
     const { userDid, permissions } = req.body ?? {};
     if (!userDid || !Array.isArray(permissions)) {
       res.status(400).json({ error: "userDid and permissions[] are required" });
@@ -204,6 +188,11 @@ credentialsRouter.post(
       return;
     }
 
+    if (isLockedDown(result.tenant)) {
+      res.status(403).json({ error: "Tenant is in lockdown mode" });
+      return;
+    }
+
     const { userDid, scope, traversalPath } = req.body ?? {};
     if (!userDid || !Array.isArray(scope)) {
       res.status(400).json({ error: "userDid and scope[] are required" });
@@ -244,6 +233,11 @@ credentialsRouter.post(
     const result = await getTenantForUser(tenantId, userId);
     if (!result) {
       res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+
+    if (isLockedDown(result.tenant)) {
+      res.status(403).json({ error: "Tenant is in lockdown mode" });
       return;
     }
 
@@ -309,16 +303,238 @@ credentialsRouter.get(
       return;
     }
 
+    const holderDid = req.query.did as string | undefined;
     const challenge = generateHolderChallenge();
+
+    await db.insert(holderBindingChallenges).values({
+      tenantId,
+      nonce: challenge.nonce,
+      holderDid: holderDid ?? null,
+      expiresAt: new Date(challenge.expiresAt),
+    });
+
     res.json({ challenge });
+  },
+);
+
+credentialsRouter.post(
+  "/api/tenants/:tenantId/credentials/challenge/verify",
+  requireAuth,
+  async (req, res) => {
+    const tenantId = param(req, "tenantId");
+    const result = await getTenantForUser(tenantId, authUserId(req));
+    if (!result) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+
+    const { nonce, signature, did: holderDid } = req.body ?? {};
+    if (!nonce || !signature || !holderDid) {
+      res.status(400).json({ error: "nonce, signature, and did are required" });
+      return;
+    }
+
+    if (typeof nonce !== "string" || typeof signature !== "string" || typeof holderDid !== "string") {
+      res.status(400).json({ error: "nonce, signature, and did must be strings" });
+      return;
+    }
+
+    // Claim the challenge in one statement: it is single-use whatever the
+    // outcome, and two concurrent attempts cannot both get it.
+    const rows = await db
+      .update(holderBindingChallenges)
+      .set({ consumed: true })
+      .where(
+        and(
+          eq(holderBindingChallenges.tenantId, tenantId),
+          eq(holderBindingChallenges.nonce, nonce),
+          eq(holderBindingChallenges.consumed, false),
+        ),
+      )
+      .returning();
+
+    if (rows.length === 0) {
+      res.status(404).json({ error: "Challenge not found or already consumed" });
+      return;
+    }
+
+    const challengeRow = rows[0];
+    if (challengeRow.expiresAt < new Date()) {
+      res.status(410).json({ error: "Challenge expired" });
+      return;
+    }
+
+    if (challengeRow.holderDid && challengeRow.holderDid !== holderDid) {
+      res.status(403).json({ error: "DID does not match challenge holder" });
+      return;
+    }
+
+    const resolver = getResolver();
+    const verification = await verifyHolderBinding(
+      { nonce, signature, did: holderDid },
+      {
+        nonce: challengeRow.nonce,
+        issuedAt: challengeRow.createdAt.toISOString(),
+        expiresAt: challengeRow.expiresAt.toISOString(),
+      },
+      resolver,
+    );
+
+    res.json(verification);
+  },
+);
+
+credentialsRouter.post(
+  "/api/credentials/verify",
+  async (req, res) => {
+    const { jwt } = req.body ?? {};
+    if (!jwt || typeof jwt !== "string") {
+      res.status(400).json({ error: "jwt string is required" });
+      return;
+    }
+
+    if (jwt.length > 16_384) {
+      res.status(400).json({ error: "jwt too large" });
+      return;
+    }
+
+    const result = await verifyCredential(jwt, getResolver());
+    if (!result.valid) {
+      res.json(result);
+      return;
+    }
+
+    // A good signature is not enough: the issuer may have revoked it.
+    const { jti, iss } = jose.decodeJwt(jwt);
+    if (jti && iss && (await findRevocation(jti, iss))) {
+      res.json({ ...result, valid: false, revoked: true, error: "Credential revoked" });
+      return;
+    }
+
+    res.json(result);
+  },
+);
+
+/** Revocation record for a credential id, optionally limited to one issuer. */
+async function findRevocation(credentialId: string, issuerDid?: string) {
+  const [row] = await db
+    .select({ revokedAt: credentialRevocations.revokedAt })
+    .from(credentialRevocations)
+    .where(
+      issuerDid
+        ? and(
+            eq(credentialRevocations.credentialId, credentialId),
+            eq(credentialRevocations.issuerDid, issuerDid),
+          )
+        : eq(credentialRevocations.credentialId, credentialId),
+    )
+    .limit(1);
+  return row ?? null;
+}
+
+/**
+ * Revoke a credential this collective issued. The caller presents the
+ * credential itself: only a JWT signed by this collective's key, whose `jti`
+ * is the id being revoked, is accepted — so one tenant can never mark another
+ * issuer's credential as revoked.
+ */
+credentialsRouter.post(
+  "/api/tenants/:tenantId/credentials/:credentialId/revoke",
+  requireAuth,
+  async (req, res) => {
+    const tenantId = param(req, "tenantId");
+    const credentialId = param(req, "credentialId");
+    const result = await getTenantForUser(tenantId, authUserId(req));
+    if (!result) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+
+    if (!hasPermission(result.membership, result.role, "manage_settings", req)) {
+      res.status(403).json({ error: "Insufficient permissions" });
+      return;
+    }
+
+    if (isLockedDown(result.tenant)) {
+      res.status(403).json({ error: "Tenant is in lockdown mode" });
+      return;
+    }
+
+    const { jwt, reason } = req.body ?? {};
+    if (typeof jwt !== "string" || !jwt) {
+      res.status(400).json({ error: "jwt (the credential being revoked) is required" });
+      return;
+    }
+    if (reason !== undefined && (typeof reason !== "string" || reason.length > 500)) {
+      res.status(400).json({ error: "reason must be a string of at most 500 characters" });
+      return;
+    }
+
+    const issuer = await getCollectiveIssuerKeys(tenantId);
+    if (!issuer) {
+      res.status(412).json({ error: "Collective DID not configured" });
+      return;
+    }
+
+    try {
+      // Expired credentials may still be revoked; everything else must check out.
+      const { payload } = await jose.jwtVerify(jwt, issuer.publicKey, {
+        algorithms: ["EdDSA"],
+        issuer: issuer.did,
+        currentDate: new Date(0),
+      });
+      if (payload.jti !== credentialId) {
+        res.status(400).json({ error: "Credential id does not match the presented credential" });
+        return;
+      }
+    } catch {
+      res.status(400).json({ error: "Credential was not issued by this collective" });
+      return;
+    }
+
+    try {
+      await db.insert(credentialRevocations).values({
+        credentialId,
+        tenantId,
+        issuerDid: issuer.did,
+        reason: reason ?? null,
+      });
+    } catch (err: unknown) {
+      const pgErr = err as { code?: string; cause?: { code?: string } };
+      if (pgErr.code === "23505" || pgErr.cause?.code === "23505") {
+        res.status(409).json({ error: "Credential already revoked" });
+        return;
+      }
+      throw err;
+    }
+
+    logAudit({
+      tenantId,
+      actorUserId: authUserId(req),
+      action: "credential_revoked",
+      targetType: "credential",
+      targetId: credentialId,
+      metadata: reason ? { reason } : undefined,
+    });
+
+    res.json({ status: "revoked", credentialId });
   },
 );
 
 credentialsRouter.get(
   "/.well-known/collective-credential-status/:credentialId",
-  async (_req, res) => {
-    // Stub: all credentials are valid unless explicitly revoked
-    // Full implementation would check a revocation store
+  async (req, res) => {
+    const revocation = await findRevocation(param(req, "credentialId"));
+
+    if (revocation) {
+      res.json({
+        status: "revoked",
+        revokedAt: revocation.revokedAt.toISOString(),
+        checked: new Date().toISOString(),
+      });
+      return;
+    }
+
     res.json({
       status: "valid",
       checked: new Date().toISOString(),

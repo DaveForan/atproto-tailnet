@@ -26,6 +26,9 @@ import {
   rotateCollectiveDid,
   getBrokerStatus,
   getRouteTable,
+  initiateOutboundHandshake,
+  publicKeyFingerprint,
+  signAsCollective,
 } from "../orchestrator/federation-broker.js";
 import { collectiveDids } from "../db/schema.js";
 import { config } from "../config.js";
@@ -278,6 +281,13 @@ federationRouter.post(
       targetId: linkId,
     });
 
+    const link = linkRows[0];
+    setImmediate(() => {
+      initiateOutboundHandshake(link.id, tenantId).catch((err) => {
+        logger.warn({ linkId: link.id, err }, "failed to initiate outbound handshake");
+      });
+    });
+
     res.json({ status: "accepted" });
   },
 );
@@ -420,9 +430,12 @@ federationRouter.get(
     }
 
     try {
-      const hostname = new URL(config.publicUrl ?? "http://localhost:3000").hostname;
-      const { did, publicKeyJwk } = await ensureCollectiveDid(tenantId, hostname);
-      res.json({ did, publicKeyJwk });
+      const { did, publicKeyJwk } = await ensureCollectiveDid(tenantId);
+      res.json({
+        did,
+        publicKeyJwk,
+        publicKeyFingerprint: await publicKeyFingerprint(publicKeyJwk),
+      });
     } catch (err) {
       logger.error({ tenantId, err }, "failed to get/create collective DID");
       res.status(500).json({ error: "Failed to manage collective DID" });
@@ -448,8 +461,7 @@ federationRouter.post(
     }
 
     try {
-      const hostname = new URL(config.publicUrl ?? "http://localhost:3000").hostname;
-      const { did, publicKeyJwk } = await rotateCollectiveDid(tenantId, hostname);
+      const { did, publicKeyJwk } = await rotateCollectiveDid(tenantId);
 
       logAudit({
         tenantId,
@@ -460,7 +472,12 @@ federationRouter.post(
         metadata: { operation: "did_rotation", did },
       });
 
-      res.json({ did, publicKeyJwk, rotated: true });
+      res.json({
+        did,
+        publicKeyJwk,
+        publicKeyFingerprint: await publicKeyFingerprint(publicKeyJwk),
+        rotated: true,
+      });
     } catch (err) {
       logger.error({ tenantId, err }, "failed to rotate collective DID");
       res.status(500).json({ error: "Failed to rotate DID" });
@@ -569,21 +586,97 @@ federationRouter.get(
 
     const scope = scopeRows[0];
 
-    res.json({
+    const discovery: Record<string, unknown> = {
       collectiveDid: didRows[0].did,
       cfpVersions: [CFP_VERSION],
       federationPolicy: "selective",
       capabilities: ["route-exchange", "dns-forward"],
       derpEndpoints: [],
-      brokerUrl: didRows[0].brokerEndpoint ?? null,
+      brokerUrl: didRows[0].brokerEndpoint ?? config.publicUrl,
       scopes: scope?.federationScopes ?? ["regional"],
       region: scope?.federationRegion ?? null,
       coordinates: scope?.federationCoordinates ?? null,
       scopePolicies: scope?.federationScopePolicies ?? null,
       signature: "",
-    });
+    };
+
+    // Detached JWS by the collective's key over the document as serialized
+    // here with `signature: ""`.
+    try {
+      discovery.signature = await signAsCollective(
+        tenantRows[0].id,
+        JSON.stringify(discovery),
+      );
+    } catch (err) {
+      logger.error({ tenantId: tenantRows[0].id, err }, "failed to sign discovery document");
+      res.status(500).json({ error: "Failed to sign discovery document" });
+      return;
+    }
+
+    res.json(discovery);
   },
 );
+
+/** Build the did:web document of a collective hosted here, or null if it has no DID. */
+async function collectiveDidDocument(slug: string): Promise<object | null> {
+  const rows = await db
+    .select({
+      did: collectiveDids.did,
+      publicKeyJwk: collectiveDids.publicKeyJwk,
+    })
+    .from(collectiveDids)
+    .innerJoin(tenants, eq(tenants.id, collectiveDids.tenantId))
+    .where(eq(tenants.slug, slug))
+    .limit(1);
+
+  if (rows.length === 0) return null;
+
+  const { did, publicKeyJwk } = rows[0];
+  const keyId = `${did}#signing-key`;
+
+  return {
+    "@context": ["https://www.w3.org/ns/did/v1"],
+    id: did,
+    verificationMethod: [
+      {
+        id: keyId,
+        type: "JsonWebKey2020",
+        controller: did,
+        publicKeyJwk,
+      },
+    ],
+    authentication: [keyId],
+    assertionMethod: [keyId],
+  };
+}
+
+/**
+ * did:web resolution endpoint (ADR-0017). Collective DIDs are path-based —
+ * `did:web:<host>:collective:<slug>` — which did:web maps to this URL.
+ */
+federationRouter.get("/collective/:slug/did.json", async (req, res) => {
+  const doc = await collectiveDidDocument(param(req, "slug"));
+  if (!doc) {
+    res.status(404).json({ error: "Collective not found" });
+    return;
+  }
+  res.type("application/did+json").send(JSON.stringify(doc));
+});
+
+/** Convenience alias of the above for tooling that only knows the well-known path. */
+federationRouter.get("/.well-known/did.json", async (req, res) => {
+  const slug = req.query.collective;
+  if (typeof slug !== "string" || !slug) {
+    res.status(400).json({ error: "?collective=slug required" });
+    return;
+  }
+  const doc = await collectiveDidDocument(slug);
+  if (!doc) {
+    res.status(404).json({ error: "Collective not found" });
+    return;
+  }
+  res.type("application/did+json").send(JSON.stringify(doc));
+});
 
 federationRouter.get(
   "/api/tenants/:tenantId/federation/scope",

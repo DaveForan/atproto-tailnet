@@ -118,6 +118,8 @@ export const auditActionEnum = pgEnum("audit_action", [
   "sub_collective_created",
   "sub_collective_detached",
   "sub_collective_ejected",
+  "sub_collective_quota_updated",
+  "credential_revoked",
   "floor_policy_updated",
 ]);
 
@@ -602,6 +604,8 @@ export const brokerSessions = pgTable(
       .notNull()
       .references(() => tenants.id),
     status: brokerSessionStatusEnum("status").notNull().default("connecting"),
+    /** CFP session id agreed in the handshake; identifies the session to the peer. */
+    cfpSessionId: text("cfp_session_id"),
     remoteEndpoint: text("remote_endpoint"),
     protocolVersion: integer("protocol_version").notNull().default(1),
     exportedRoutes: jsonb("exported_routes").$type<string[]>().notNull().default([]),
@@ -613,6 +617,9 @@ export const brokerSessions = pgTable(
   (t) => [
     index("broker_sessions_link_idx").on(t.federationLinkId),
     index("broker_sessions_local_idx").on(t.localTenantId),
+    index("broker_sessions_cfp_idx").on(t.cfpSessionId),
+    /** Each side of a link has exactly one session (its own view of the peer). */
+    uniqueIndex("broker_sessions_link_local_uq").on(t.federationLinkId, t.localTenantId),
   ],
 );
 
@@ -639,6 +646,37 @@ export const relayNodes = pgTable(
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
   (t) => [index("relay_nodes_session_idx").on(t.brokerSessionId)],
+);
+
+export const credentialRevocations = pgTable(
+  "credential_revocations",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    credentialId: text("credential_id").notNull().unique(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    issuerDid: text("issuer_did").notNull(),
+    reason: text("reason"),
+    revokedAt: timestamp("revoked_at").defaultNow().notNull(),
+  },
+  (t) => [index("cred_revocations_cred_idx").on(t.credentialId)],
+);
+
+export const holderBindingChallenges = pgTable(
+  "holder_binding_challenges",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    nonce: text("nonce").notNull().unique(),
+    holderDid: text("holder_did"),
+    expiresAt: timestamp("expires_at").notNull(),
+    consumed: boolean("consumed").notNull().default(false),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [index("holder_challenges_nonce_idx").on(t.nonce)],
 );
 
 export interface FederationRouteEntry {

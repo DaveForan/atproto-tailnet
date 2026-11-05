@@ -83,6 +83,8 @@ export interface KeepaliveMessage {
   sessionId: string;
   sequenceNumber: number;
   timestamp: string;
+  /** Detached JWS by the sender; required by the HTTP transport (ADR-0016). */
+  signature?: string;
 }
 
 export interface RouteAnnouncement {

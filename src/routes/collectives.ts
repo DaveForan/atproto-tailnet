@@ -522,7 +522,7 @@ collectivesRouter.put(
     logAudit({
       tenantId,
       actorUserId: userId,
-      action: "sub_collective_ejected", // reusing closest audit action
+      action: "sub_collective_quota_updated",
       targetType: "tenant",
       targetId: childId,
       metadata: { quotaUpdate: parsed.data },

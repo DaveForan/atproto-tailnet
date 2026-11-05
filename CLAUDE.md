@@ -47,7 +47,7 @@ npm run dev                      # http://localhost:3000
 - `.well-known/atproto-client-metadata.json` and `.well-known/jwks.json` served for production AT Proto OAuth
 - Port allocation retries on unique constraint violation (PG error 23505) up to 3 times
 - Port range 10001-10100 allocated from DB; excludes all non-deleted tenants
-- All config flows through Zod-validated `src/config.ts` (including caddyAdminUrl, databaseUrl, atprotoPrivateKey)
+- All config flows through Zod-validated `src/config.ts` (including caddyAdminUrl, databaseUrl, atprotoPrivateKey, federationKeyEncryptionKey)
 - Device approval: when `requireDeviceApproval` is true, auth-key requests create pending `device_approvals`; owner approves to generate key
 - Device locks: `device_locks` table binds a membership to specific Headscale `machineKey` values — blocks new key generation until unlocked
 - Join requests: `allowJoinRequests` toggle + public `/join/:slug` page; gated by `approve_joins` permission; lockdown blocks requests
@@ -77,6 +77,13 @@ npm run dev                      # http://localhost:3000
 - Exit nodes / subnet routers: `GET /api/tenants/:id/routes` returns `{ exitNodes, subnets }` from Headscale; `POST .../routes/:routeId/enable|disable`, `DELETE .../routes/:routeId`; gated by `manage_devices`; routes are advertised by devices, admin approves/rejects
 - Usage metering: `GET /api/tenants/:id/usage` returns live counts + plan limits + 7-day snapshot history (168 entries, every 5 min); `PUT /api/tenants/:id/plan` for plan name + max devices/members; `usage_snapshots` table; monitor records snapshots every 5th tick
 - Federation: `GET/POST /api/tenants/:id/federation` for links; `POST .../federation/:linkId/accept|reject|revoke`; `federation_links` table with bidirectional CIDR sharing; gated by `manage_settings`; both sides can revoke active links
+- Collective signing keys: one implementation in `src/identity/keys.ts` (`signDetached`/`verifyDetached` detached-JWS EdDSA, `encryptPrivateKey`/`loadPrivateKey`); DB-backed access via `loadCollectiveKeyPair(tenantId)` / `signAsCollective(tenantId, payload)` in `orchestrator/federation-broker.ts` — never decode `collective_dids.encryptedPrivateKey` by hand
+- Collective DIDs: `did:web:<host>:collective:<slug>` (port percent-encoded), document served at `/collective/:slug/did.json`; `getResolver()` (`identity/resolver.ts`) answers local collectives from the DB and refuses did:web hosts that resolve to non-public addresses
+- Federation broker (ADR-0016): two `broker_sessions` per active link (one per side, unique on link + `localTenantId`); accepting side initiates HELLO→CHALLENGE→COMMIT→ESTABLISHED over `POST /api/federation/messages/{hello,commit}`; reconcile loop (30s) retries `connecting` sessions, sends signed keepalives, tears down sessions of inactive links
+- CFP message auth (`federation/auth.ts`): recipient collective named by `CFP-Recipient` header; signatures verified over `req.body` as transmitted (never the Zod output — key order matters); HELLO requires an active link with the sender; keepalive/revoke must be signed by the session's peer
+- Federated routes: only prefixes agreed on the link are imported (`filterImportedPrefixes`); installed as Headscale `autoApprovers.routes` for `tag:federation-relay`
+- Credential revocation: `POST /api/tenants/:id/credentials/:credentialId/revoke` requires the credential `jwt` and only revokes credentials signed by that tenant's collective key
+- Schema changes need `npx drizzle-kit generate` — commit the generated migration with the schema change
 
 ## File layout
 
@@ -89,7 +96,15 @@ src/
   db/schema.ts             — Drizzle schema (users, tenants, roles, memberships, invitations, device_approvals, device_locks, join_requests, service_devices, services, board_posts, agent_tokens, audit_logs)
   db/index.ts              — Database connection + pool export
   logger.ts                — Pino structured logger (LOG_LEVEL env)
+  identity/
+    keys.ts                — Collective key encryption at rest + detached-JWS sign/verify
+    resolver.ts            — did:web / did:plc resolver (local-collective lookup, SSRF guard, cache)
+  federation/
+    auth.ts                — CFP message signing/verification, freshness, imported-route filtering
+    transport.ts           — Outbound CFP messages over HTTP (CFP-Recipient addressing)
+    handshake.ts, protocol.ts, session.ts, route-engine.ts, scoping.ts — CFP state machines and types (ADR-0014/0015)
   orchestrator/
+    federation-broker.ts   — Broker loop, per-link sessions, outbound handshake, collective DID lifecycle, ACL route install
     headscale.ts           — Docker lifecycle (create/start/stop/destroy), CLI exec, DERP config writer
     headscale-api.ts       — REST client for running Headscale instances (includes getPolicy/setPolicy)
     caddy.ts               — Caddy admin API (dynamic route add/remove)
@@ -110,7 +125,9 @@ src/
     ip-config.ts           — Per-tenant IP range configuration (v4/v6 prefixes, allocation strategy)
     routes.ts              — Exit node and subnet router management (enable/disable/delete routes)
     usage.ts               — Usage metering and plan/limit management
-    federation.ts          — Federation link CRUD (request/accept/reject/revoke between tailnets)
+    federation.ts          — Federation link CRUD (request/accept/reject/revoke between tailnets), collective DID + discovery documents
+    federation-messages.ts — Inbound CFP endpoints (hello/commit/keepalive/revoke), DID-signature authenticated
+    credentials.ts         — VC-JWT issuance, public verify, holder-binding challenges, revocation
     dashboard.ts           — Inline SPA (tabbed: Status, DERP, IP Ranges, Routes, Devices, Members, Invite, Services, Board, Federation, Agents, ACL, Roles, Usage, Security, Audit) + /join/:slug
     helpers.ts             — Shared middleware, param(), permission checks, agent token resolution, hs username/URL helpers
     audit.ts               — Fire-and-forget audit log writer

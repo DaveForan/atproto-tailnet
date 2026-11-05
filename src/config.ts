@@ -19,6 +19,11 @@ const configSchema = z.object({
   baseDomain: z.string().default("ts.localhost"),
   caddyAdminUrl: z.string().url().default("http://localhost:2019"),
   atprotoPrivateKey: z.string().optional(),
+  /** 32-byte hex key (AES-256-GCM) encrypting collective DID private keys at rest. */
+  federationKeyEncryptionKey: z
+    .string()
+    .regex(/^[0-9a-fA-F]{64}$/, "must be 64 hex characters (32 bytes)")
+    .optional(),
   headscale: z.object({
     image: z.string().default("headscale/headscale:0.29.1"),
     portRangeStart: z.coerce.number().default(10001),
@@ -36,6 +41,7 @@ export const config = configSchema.parse({
   baseDomain: process.env.BASE_DOMAIN,
   caddyAdminUrl: process.env.CADDY_ADMIN_URL,
   atprotoPrivateKey: process.env.ATPROTO_PRIVATE_KEY,
+  federationKeyEncryptionKey: process.env.FEDERATION_KEY_ENCRYPTION_KEY || undefined,
   headscale: {
     image: process.env.HEADSCALE_IMAGE,
     portRangeStart: process.env.HEADSCALE_PORT_RANGE_START,
@@ -44,8 +50,13 @@ export const config = configSchema.parse({
   },
 });
 
+/** True when the service is served from a loopback address, i.e. local development. */
+export const isLoopbackDeployment = ["localhost", "127.0.0.1", "[::1]"].includes(
+  new URL(config.publicUrl).hostname,
+);
+
 if (
-  !config.publicUrl.includes("localhost") &&
+  !isLoopbackDeployment &&
   (config.sessionSecret === "dev-secret-change-me" ||
     config.sessionSecret.length < 32)
 ) {
