@@ -1,12 +1,14 @@
 /**
  * @module routes/routes
  * Exit node and subnet router management. Lists advertised routes from
- * Headscale and allows enabling/disabling/deleting them.
+ * Headscale and allows approving them or withdrawing approval. Route ids are
+ * synthesized per node + prefix (`routeId()` in orchestrator/headscale-api);
+ * DELETE withdraws approval, since Headscale no longer deletes routes.
  * Gated by the "manage_devices" permission.
  */
 
 import { Router } from "express";
-import { HeadscaleApiClient } from "../orchestrator/headscale-api.js";
+import { HeadscaleApiClient, parseRouteId } from "../orchestrator/headscale-api.js";
 import {
   requireAuth,
   param,
@@ -84,6 +86,11 @@ routesRouter.post(
       return;
     }
 
+    if (!parseRouteId(routeId)) {
+      res.status(404).json({ error: "Route not found" });
+      return;
+    }
+
     try {
       const client = new HeadscaleApiClient(
         result.tenant.port,
@@ -129,6 +136,11 @@ routesRouter.post(
       return;
     }
 
+    if (!parseRouteId(routeId)) {
+      res.status(404).json({ error: "Route not found" });
+      return;
+    }
+
     try {
       const client = new HeadscaleApiClient(
         result.tenant.port,
@@ -171,6 +183,11 @@ routesRouter.delete(
 
     if (!result.tenant.apiKey || !result.tenant.port) {
       res.status(503).json({ error: "Tenant instance not available" });
+      return;
+    }
+
+    if (!parseRouteId(routeId)) {
+      res.status(404).json({ error: "Route not found" });
       return;
     }
 

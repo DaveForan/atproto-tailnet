@@ -2918,10 +2918,10 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 
     async function deleteRoute(routeId) {
       if (!state.currentTenant) return;
-      if (!confirm('Delete this route? The device will need to re-advertise it.')) return;
+      if (!confirm('Remove approval for this route? It stays listed while the device advertises it.')) return;
       var result = await api('/api/tenants/' + state.currentTenant.id + '/routes/' + routeId, { method: 'DELETE' });
       if (result) {
-        toast('Route deleted');
+        toast('Route approval removed');
         loadRoutes();
       }
     }
