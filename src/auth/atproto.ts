@@ -13,7 +13,7 @@ import type {
 } from "@atproto/oauth-client-node";
 import { JoseKey } from "@atproto/jwk-jose";
 import { eq } from "drizzle-orm";
-import { config } from "../config.js";
+import { config, isLoopbackDeployment } from "../config.js";
 import { db } from "../db/index.js";
 import { oauthStates, oauthSessions } from "../db/schema.js";
 
@@ -86,16 +86,19 @@ export async function getOAuthClient(): Promise<NodeOAuthClient> {
   const url = config.publicUrl;
   const enc = encodeURIComponent;
 
-  const isLocalhost =
-    url.includes("://localhost") || url.includes("://127.0.0.1");
+  if (isLoopbackDeployment) {
+    // Loopback clients must be redirected to an IP literal, never the name
+    // "localhost" (RFC 8252 §7.3) — the OAuth client rejects it outright.
+    const callback = new URL("/auth/callback", url);
+    if (callback.hostname === "localhost") callback.hostname = "127.0.0.1";
+    const redirectUri = callback.toString();
 
-  if (isLocalhost) {
     clientInstance = new NodeOAuthClient({
       clientMetadata: {
         client_name: "atproto-tailnet (dev)",
-        client_id: `http://localhost?redirect_uri=${enc(`${url}/auth/callback`)}&scope=${enc("atproto transition:generic")}`,
+        client_id: `http://localhost?redirect_uri=${enc(redirectUri)}&scope=${enc("atproto transition:generic")}`,
         client_uri: url,
-        redirect_uris: [`${url}/auth/callback`],
+        redirect_uris: [redirectUri],
         scope: "atproto transition:generic",
         grant_types: ["authorization_code", "refresh_token"],
         response_types: ["code"],

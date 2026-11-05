@@ -15,7 +15,7 @@ import {
 import { db } from "../db/index.js";
 import { users, tenants, memberships, roles } from "../db/schema.js";
 import { allocatePort } from "../orchestrator/ports.js";
-import { createInstance } from "../orchestrator/headscale.js";
+import { adoptInstance, createInstance } from "../orchestrator/headscale.js";
 import { HeadscaleApiClient } from "../orchestrator/headscale-api.js";
 import { addTenantRoute } from "../orchestrator/caddy.js";
 import {
@@ -121,42 +121,59 @@ async function provisionTenant(
     isOriginator: true,
   });
 
-  setImmediate(async () => {
-    try {
-      const instance = await createInstance(slug, port);
+  setImmediate(() => {
+    void provisionTenantInstance(tenant!.id, slug, port);
+  });
+}
 
-      await db
-        .update(tenants)
-        .set({
-          apiKey: instance.apiKey,
-          containerId: instance.containerId,
-          status: "running",
-          updatedAt: new Date(),
-        })
-        .where(eq(tenants.id, tenant!.id));
+/**
+ * Bring a tenant's Headscale instance up and mark the tenant running:
+ * start the container (or adopt the one a previous, failed attempt left
+ * behind), store its API key, install the default policy and add the Caddy
+ * route. On failure the tenant is marked "error".
+ */
+export async function provisionTenantInstance(
+  tenantId: string,
+  slug: string,
+  port: number,
+): Promise<boolean> {
+  try {
+    const instance =
+      (await adoptInstance(slug, port)) ?? (await createInstance(slug, port));
 
-      const hsClient = new HeadscaleApiClient(port, instance.apiKey);
-      await hsClient
-        .setPolicy({
-          acls: [{ action: "accept", src: ["*"], dst: ["*:*"] }],
-        })
-        .catch((err) =>
-          logger.error({ tenantSlug: slug, err }, "failed to set default policy"),
-        );
+    await db
+      .update(tenants)
+      .set({
+        apiKey: instance.apiKey,
+        containerId: instance.containerId,
+        status: "running",
+        updatedAt: new Date(),
+      })
+      .where(eq(tenants.id, tenantId));
 
-      await addTenantRoute(slug, port).catch((err) =>
-        logger.error({ tenantSlug: slug, err }, "failed to add Caddy route"),
+    const hsClient = new HeadscaleApiClient(port, instance.apiKey);
+    await hsClient
+      .setPolicy({
+        acls: [{ action: "accept", src: ["*"], dst: ["*:*"] }],
+      })
+      .catch((err) =>
+        logger.error({ tenantSlug: slug, err }, "failed to set default policy"),
       );
 
-      logger.info({ tenantSlug: slug, port }, "tenant provisioned");
-    } catch (err) {
-      logger.error({ tenantSlug: slug, err }, "failed to provision tenant");
-      await db
-        .update(tenants)
-        .set({ status: "error", updatedAt: new Date() })
-        .where(eq(tenants.id, tenant!.id));
-    }
-  });
+    await addTenantRoute(slug, port).catch((err) =>
+      logger.error({ tenantSlug: slug, err }, "failed to add Caddy route"),
+    );
+
+    logger.info({ tenantSlug: slug, port }, "tenant provisioned");
+    return true;
+  } catch (err) {
+    logger.error({ tenantSlug: slug, err }, "failed to provision tenant");
+    await db
+      .update(tenants)
+      .set({ status: "error", updatedAt: new Date() })
+      .where(eq(tenants.id, tenantId));
+    return false;
+  }
 }
 
 authRouter.get("/auth/login", async (req, res) => {

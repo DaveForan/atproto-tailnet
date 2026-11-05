@@ -133,42 +133,41 @@ export async function updateInstanceConfig(
   }
 }
 
-async function waitForReady(
-  container: Docker.Container,
-  timeoutMs = 30000,
-): Promise<void> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
-    try {
-      const exec = await container.exec({
-        Cmd: ["headscale", "health"],
-        AttachStdout: true,
-        AttachStderr: true,
-      });
-      const stream = await exec.start({});
-      const chunks: Buffer[] = [];
-      await new Promise<void>((resolve, reject) => {
-        stream.on("data", (chunk: Buffer) => chunks.push(chunk));
-        stream.on("end", resolve);
-        stream.on("error", reject);
-      });
-      const output = Buffer.concat(chunks).toString();
-      if (output.includes("ok") || output.includes("healthy")) {
-        return;
-      }
-    } catch {
-      // not ready yet
+/**
+ * Split a non-TTY `docker exec` stream into stdout and stderr. Docker
+ * multiplexes both onto one connection as frames with an 8-byte header
+ * (stream id, three zero bytes, big-endian payload length). Read as text
+ * without this, the header bytes — including NULs — end up in the output.
+ */
+export function demuxDockerStream(raw: Buffer): { stdout: string; stderr: string } {
+  const out: Buffer[] = [];
+  const err: Buffer[] = [];
+  let offset = 0;
+
+  while (offset + 8 <= raw.length) {
+    const type = raw[offset];
+    const framed =
+      type <= 2 && raw[offset + 1] === 0 && raw[offset + 2] === 0 && raw[offset + 3] === 0;
+    const size = framed ? raw.readUInt32BE(offset + 4) : -1;
+    if (!framed || offset + 8 + size > raw.length) {
+      // Not a multiplexed stream (e.g. the exec was started with a TTY).
+      return { stdout: raw.toString(), stderr: "" };
     }
-    await new Promise((r) => setTimeout(r, 1000));
+    (type === 2 ? err : out).push(raw.subarray(offset + 8, offset + 8 + size));
+    offset += 8 + size;
   }
-  // Give it one more second and proceed anyway — some versions don't have health
-  await new Promise((r) => setTimeout(r, 2000));
+
+  if (offset !== raw.length) {
+    return { stdout: raw.toString(), stderr: "" };
+  }
+  return { stdout: Buffer.concat(out).toString(), stderr: Buffer.concat(err).toString() };
 }
 
+/** Run a command in a container and return its stdout/stderr and exit code. */
 async function execInContainer(
   container: Docker.Container,
   cmd: string[],
-): Promise<string> {
+): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
   const exec = await container.exec({
     Cmd: cmd,
     AttachStdout: true,
@@ -181,7 +180,54 @@ async function execInContainer(
     stream.on("end", resolve);
     stream.on("error", reject);
   });
-  return Buffer.concat(chunks).toString().trim();
+  const { stdout, stderr } = demuxDockerStream(Buffer.concat(chunks));
+  const { ExitCode } = await exec.inspect();
+  return { stdout: stdout.trim(), stderr: stderr.trim(), exitCode: ExitCode };
+}
+
+async function waitForReady(
+  container: Docker.Container,
+  timeoutMs = 30000,
+): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    try {
+      const { stdout, stderr } = await execInContainer(container, ["headscale", "health"]);
+      const output = stdout + stderr;
+      if (output.includes("ok") || output.includes("healthy")) {
+        return;
+      }
+    } catch {
+      // not ready yet
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  // Give it one more second and proceed anyway — some versions don't have health
+  await new Promise((r) => setTimeout(r, 2000));
+}
+
+/** Headscale API keys as printed by the CLI: no whitespace or control characters. */
+const API_KEY_RE = /^[A-Za-z0-9._-]{16,}$/;
+
+/**
+ * Create an API key inside a running Headscale container and return it.
+ * Throws rather than returning something that is not a key — a bad key is
+ * stored on the tenant and every later API call fails with 401.
+ */
+export async function createApiKeyInContainer(containerId: string): Promise<string> {
+  const { stdout, stderr, exitCode } = await execInContainer(
+    docker.getContainer(containerId),
+    ["headscale", "apikeys", "create", "--expiration", "9999d"],
+  );
+
+  // The key is the last non-empty line of stdout.
+  const apiKey = stdout.split("\n").map((l) => l.trim()).filter(Boolean).pop() ?? "";
+  if (exitCode !== 0 || !API_KEY_RE.test(apiKey)) {
+    throw new Error(
+      `headscale apikeys create failed (exit ${exitCode}): ${stderr || "unexpected output"}`,
+    );
+  }
+  return apiKey;
 }
 
 /**
@@ -219,17 +265,7 @@ export async function createInstance(
   await container.start();
   await waitForReady(container);
 
-  const apiKeyOutput = await execInContainer(container, [
-    "headscale",
-    "apikeys",
-    "create",
-    "--expiration",
-    "9999d",
-  ]);
-
-  // The output typically contains the key on the last non-empty line
-  const lines = apiKeyOutput.split("\n").filter((l) => l.trim());
-  const apiKey = lines[lines.length - 1].trim();
+  const apiKey = await createApiKeyInContainer(container.id);
 
   // Create a default user for the tenant owner
   await execInContainer(container, ["headscale", "users", "create", "owner"]);
@@ -240,6 +276,34 @@ export async function createInstance(
     apiKey,
     containerId: container.id,
   };
+}
+
+/**
+ * Take over the tenant's existing Headscale container, if there is one —
+ * left by a provisioning attempt that failed after the container started.
+ * Starts it if stopped and issues a fresh API key. Returns null when the
+ * tenant has no container yet.
+ */
+export async function adoptInstance(
+  slug: string,
+  port: number,
+): Promise<TenantInstance | null> {
+  const container = docker.getContainer(`headscale-${slug}`);
+  let info: Docker.ContainerInspectInfo;
+  try {
+    info = await container.inspect();
+  } catch {
+    return null;
+  }
+
+  if (!info.State.Running) await container.start();
+  await waitForReady(container);
+
+  const apiKey = await createApiKeyInContainer(info.Id);
+  // No-op if the first attempt got as far as creating it.
+  await execInContainer(container, ["headscale", "users", "create", "owner"]);
+
+  return { slug, port, apiKey, containerId: info.Id };
 }
 
 /** Stop and remove a Headscale container. Safe to call if already stopped. */
@@ -298,7 +362,7 @@ export async function createPreAuthKeyInInstance(
   username: string,
 ): Promise<string> {
   const container = docker.getContainer(containerId);
-  const output = await execInContainer(container, [
+  const { stdout, stderr, exitCode } = await execInContainer(container, [
     "headscale",
     "preauthkeys",
     "create",
@@ -307,6 +371,11 @@ export async function createPreAuthKeyInInstance(
     "--expiration",
     "24h",
   ]);
-  const lines = output.split("\n").filter((l) => l.trim());
-  return lines[lines.length - 1].trim();
+  const key = stdout.split("\n").map((l) => l.trim()).filter(Boolean).pop() ?? "";
+  if (exitCode !== 0 || !key) {
+    throw new Error(
+      `headscale preauthkeys create failed (exit ${exitCode}): ${stderr || "no output"}`,
+    );
+  }
+  return key;
 }
