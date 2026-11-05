@@ -18,6 +18,11 @@ const configSchema = z.object({
   sessionSecret: z.string().default("dev-secret-change-me"),
   baseDomain: z.string().default("ts.localhost"),
   caddyAdminUrl: z.string().url().default("http://localhost:2019"),
+  /**
+   * Port devices use to reach tenant URLs, when the proxy is not published on
+   * the scheme's default port (local development: Caddy is on 8180).
+   */
+  tenantPublicPort: z.coerce.number().int().min(1).max(65535).optional(),
   atprotoPrivateKey: z.string().optional(),
   /** 32-byte hex key (AES-256-GCM) encrypting collective DID private keys at rest. */
   federationKeyEncryptionKey: z
@@ -29,6 +34,12 @@ const configSchema = z.object({
     portRangeStart: z.coerce.number().default(10001),
     portRangeEnd: z.coerce.number().default(10100),
     dataDir: z.string().default("./data/headscale"),
+    /**
+     * Docker network shared by Caddy and the tenant containers. When set,
+     * tenant containers join it and Caddy reaches them by container name;
+     * when unset, Caddy must run on the host and dials localhost:<port>.
+     */
+    network: z.string().min(1).optional(),
   }),
 });
 
@@ -40,6 +51,7 @@ export const config = configSchema.parse({
   sessionSecret: process.env.SESSION_SECRET,
   baseDomain: process.env.BASE_DOMAIN,
   caddyAdminUrl: process.env.CADDY_ADMIN_URL,
+  tenantPublicPort: process.env.TENANT_PUBLIC_PORT || undefined,
   atprotoPrivateKey: process.env.ATPROTO_PRIVATE_KEY,
   federationKeyEncryptionKey: process.env.FEDERATION_KEY_ENCRYPTION_KEY || undefined,
   headscale: {
@@ -47,6 +59,7 @@ export const config = configSchema.parse({
     portRangeStart: process.env.HEADSCALE_PORT_RANGE_START,
     portRangeEnd: process.env.HEADSCALE_PORT_RANGE_END,
     dataDir: process.env.HEADSCALE_DATA_DIR,
+    network: process.env.HEADSCALE_NETWORK || undefined,
   },
 });
 
@@ -63,6 +76,16 @@ if (
   throw new Error(
     "SESSION_SECRET must be a strong value (>= 32 chars) in production",
   );
+}
+
+/**
+ * Public URL of a tenant's Headscale (`<proto>://<slug>.<baseDomain>[:port]`):
+ * the login server devices are given, and the instance's own `server_url`.
+ */
+export function tenantPublicUrl(slug: string): string {
+  const proto = config.publicUrl.startsWith("https") ? "https" : "http";
+  const port = config.tenantPublicPort ? `:${config.tenantPublicPort}` : "";
+  return `${proto}://${slug}.${config.baseDomain}${port}`;
 }
 
 /** TypeScript type inferred from the validated config object. */

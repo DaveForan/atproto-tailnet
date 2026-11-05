@@ -67,10 +67,15 @@ cp .env.example .env          # defaults work for local dev
 docker compose up -d          # PostgreSQL + Caddy
 npm install                   # install dependencies
 npm run db:migrate            # apply database migrations
-npm run dev                   # http://localhost:3000
+npm run dev                   # http://127.0.0.1:3000 (reads .env)
 ```
 
-Open `http://localhost:3000` and sign in with your Bluesky handle.
+Open `http://127.0.0.1:3000` and sign in with your Bluesky handle. Use the IP, not `localhost` — AT Proto OAuth redirects loopback clients to it.
+
+Each tailnet's Headscale is served through Caddy at `http://<slug>.ts.localhost:8180`; that is the login server the dashboard gives devices. Two things to know when connecting a device locally:
+
+- It only works from the same machine (`*.localhost` resolves to loopback).
+- The URL is plain HTTP. After a dropped connection the Tailscale client retries over HTTPS on port 443, which nothing local answers, so a device can stay offline after Caddy or the tailnet restarts. Restart `tailscaled` on the device, or run it with `TS_FORCE_NOISE_443=false`. This does not apply to an HTTPS deployment.
 
 > **Note:** If you have `NODE_ENV=production` set globally, use `npm install --include=dev` instead — the dev server and build tools are in devDependencies.
 
@@ -86,9 +91,11 @@ npm run start                 # runs dist/index.js
 For a real domain with wildcard TLS:
 
 1. Point your domain's DNS to the server (A record for `tailnets.example.com`, wildcard `*.ts.example.com`)
-2. Copy `Caddyfile.production` to `Caddyfile` and edit the domain names
-3. Set `PUBLIC_URL`, `BASE_DOMAIN`, and `SESSION_SECRET` in `.env`
-4. Caddy auto-provisions TLS via Let's Encrypt (uses DNS challenge for wildcard certs — requires a DNS provider API token, e.g. Cloudflare)
+2. Edit the two domain names in `Caddyfile.production` (used by `docker-compose.production.yml`)
+3. Set `PUBLIC_URL`, `BASE_DOMAIN`, and `SESSION_SECRET` in `.env`; leave `TENANT_PUBLIC_PORT` unset
+4. Caddy auto-provisions TLS via Let's Encrypt. The wildcard certificate needs a DNS challenge; `Caddyfile.production` does it through Cloudflare (`CF_API_TOKEN`), using the Caddy build in `Dockerfile.caddy`. For another DNS provider, swap the module in both files.
+
+Tenant routes are not written in the Caddyfile: the service keeps one managed route in Caddy (through its admin API) in sync with the database, and re-adds it if Caddy restarts.
 
 ### Environment variables
 

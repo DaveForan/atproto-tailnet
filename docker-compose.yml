@@ -22,8 +22,17 @@ services:
       - caddy_config:/config
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - default
+      - tenants
 
 volumes:
   pgdata:
   caddy_data:
   caddy_config:
+
+networks:
+  # Shared by Caddy and the per-tenant Headscale containers the service
+  # creates, so Caddy can reach them by name. Must match HEADSCALE_NETWORK.
+  tenants:
+    name: atproto-tailnet-tenants

@@ -12,6 +12,7 @@ import { db } from "../db/index.js";
 import { tenants, memberships, usageSnapshots } from "../db/schema.js";
 import { HeadscaleApiClient } from "./headscale-api.js";
 import { startInstance, stopInstance } from "./headscale.js";
+import { syncTenantRoutes } from "./caddy.js";
 import { logAudit } from "../routes/audit.js";
 import { logger } from "../logger.js";
 
@@ -173,6 +174,10 @@ export function startHealthMonitor(intervalMs = 60_000): void {
     try {
       await checkAllTenants();
       await hibernateIdleTenants();
+      // Caddy drops admin-API routes when it restarts from its Caddyfile.
+      await syncTenantRoutes().catch((err) =>
+        logger.warn({ err }, "failed to sync Caddy routes"),
+      );
       if (tick % 5 === 0) {
         await recordUsageSnapshots();
       }

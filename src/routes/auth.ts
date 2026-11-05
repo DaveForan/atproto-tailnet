@@ -17,7 +17,7 @@ import { users, tenants, memberships, roles } from "../db/schema.js";
 import { allocatePort } from "../orchestrator/ports.js";
 import { adoptInstance, createInstance } from "../orchestrator/headscale.js";
 import { HeadscaleApiClient } from "../orchestrator/headscale-api.js";
-import { addTenantRoute } from "../orchestrator/caddy.js";
+import { syncTenantRoutes } from "../orchestrator/caddy.js";
 import {
   ORIGINATOR_PERMISSIONS,
   DEFAULT_CITIZEN_PERMISSIONS,
@@ -129,8 +129,8 @@ async function provisionTenant(
 /**
  * Bring a tenant's Headscale instance up and mark the tenant running:
  * start the container (or adopt the one a previous, failed attempt left
- * behind), store its API key, install the default policy and add the Caddy
- * route. On failure the tenant is marked "error".
+ * behind), store its API key, install the default policy and sync the Caddy
+ * routes. On failure the tenant is marked "error".
  */
 export async function provisionTenantInstance(
   tenantId: string,
@@ -160,8 +160,8 @@ export async function provisionTenantInstance(
         logger.error({ tenantSlug: slug, err }, "failed to set default policy"),
       );
 
-    await addTenantRoute(slug, port).catch((err) =>
-      logger.error({ tenantSlug: slug, err }, "failed to add Caddy route"),
+    await syncTenantRoutes().catch((err) =>
+      logger.error({ tenantSlug: slug, err }, "failed to sync Caddy routes"),
     );
 
     logger.info({ tenantSlug: slug, port }, "tenant provisioned");

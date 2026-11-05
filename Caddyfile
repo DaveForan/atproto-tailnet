@@ -1,7 +1,15 @@
 {
 	admin 0.0.0.0:2019
+
+	# The service adds tenant routes to this server through the admin API
+	# (src/orchestrator/caddy.ts), so it needs a fixed name.
+	servers :80 {
+		name tailnet_proxy
+	}
 }
 
+# Main app, running on the host. Tenant subdomains (<slug>.ts.localhost) are
+# matched by the service's managed route before this one.
 :80 {
 	reverse_proxy host.docker.internal:3000
 }

@@ -20,7 +20,7 @@ docker compose up -d             # PostgreSQL + Caddy
 npm install --include=dev        # NODE_ENV=production is set globally on this box
 npx drizzle-kit generate         # Generate migrations
 npx drizzle-kit migrate          # Apply migrations
-npm run dev                      # http://localhost:3000
+npm run dev                      # http://127.0.0.1:3000 (loads .env via --env-file)
 ```
 
 ## Key patterns
@@ -47,7 +47,7 @@ npm run dev                      # http://localhost:3000
 - `.well-known/atproto-client-metadata.json` and `.well-known/jwks.json` served for production AT Proto OAuth
 - Port allocation retries on unique constraint violation (PG error 23505) up to 3 times
 - Port range 10001-10100 allocated from DB; excludes all non-deleted tenants
-- All config flows through Zod-validated `src/config.ts` (including caddyAdminUrl, databaseUrl, atprotoPrivateKey, federationKeyEncryptionKey)
+- All config flows through Zod-validated `src/config.ts` (including caddyAdminUrl, databaseUrl, atprotoPrivateKey, federationKeyEncryptionKey, tenantPublicPort, headscale.network)
 - Device approval: when `requireDeviceApproval` is true, auth-key requests create pending `device_approvals`; owner approves to generate key
 - Device locks: `device_locks` table binds a membership to specific Headscale `machineKey` values — blocks new key generation until unlocked
 - Join requests: `allowJoinRequests` toggle + public `/join/:slug` page; gated by `approve_joins` permission; lockdown blocks requests
@@ -84,6 +84,10 @@ npm run dev                      # http://localhost:3000
 - CFP message auth (`federation/auth.ts`): recipient collective named by `CFP-Recipient` header; signatures verified over `req.body` as transmitted (never the Zod output — key order matters); HELLO requires an active link with the sender; keepalive/revoke must be signed by the session's peer
 - Federated routes: only prefixes agreed on the link are imported (`filterImportedPrefixes`); installed as Headscale `autoApprovers.routes` for `tag:federation-relay`
 - Credential revocation: `POST /api/tenants/:id/credentials/:credentialId/revoke` requires the credential `jwt` and only revokes credentials signed by that tenant's collective key
+- Tenant URLs: `tenantPublicUrl(slug)` in `config.ts` is the single source for the login server and Headscale `server_url` (`<proto>://<slug>.<BASE_DOMAIN>[:TENANT_PUBLIC_PORT]`)
+- Caddy routing (`orchestrator/caddy.ts`): the service owns one route, `@id: tailnet_tenants`, kept first in the Caddy server named `tailnet_proxy` (named in the Caddyfile via `servers { name tailnet_proxy }`); `syncTenantRoutes()` rewrites it whole from the DB (all non-deleted tenants with a container) — call it after anything that adds/removes a tenant instance; the monitor also calls it every sweep because Caddy forgets admin-API changes on restart. Never add or remove individual routes
+- Caddy admin API calls use `node:http`, not `fetch` — Caddy ≥ 2.11 rejects requests carrying `Sec-Fetch-Mode` (403)
+- Tenant containers join the Docker network `HEADSCALE_NETWORK` (shared with Caddy), and Caddy dials `headscale-<slug>:8080`; without it Caddy dials `localhost:<port>` and must run on the host. `ensureOnTenantNetwork()` attaches older containers at startup
 - Schema changes need `npx drizzle-kit generate` — commit the generated migration with the schema change
 
 ## File layout
@@ -108,7 +112,7 @@ src/
     federation-broker.ts   — Broker loop, per-link sessions, outbound handshake, collective DID lifecycle, ACL route install
     headscale.ts           — Docker lifecycle (create/start/stop/destroy), CLI exec, DERP config writer
     headscale-api.ts       — REST client for running Headscale instances (includes getPolicy/setPolicy)
-    caddy.ts               — Caddy admin API (dynamic route add/remove)
+    caddy.ts               — Caddy admin API: one managed tenant route synced from the DB
     ports.ts               — Port allocator
     monitor.ts             — Background health-check loop + per-tenant health probe
   routes/

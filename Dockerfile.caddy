@@ -1,0 +1,7 @@
+# Caddy with the Cloudflare DNS module, needed for the wildcard certificate in
+# Caddyfile.production (DNS-01 challenge). The stock image does not include it.
+FROM caddy:2-builder AS builder
+RUN xcaddy build --with github.com/caddy-dns/cloudflare
+
+FROM caddy:2-alpine
+COPY --from=builder /usr/bin/caddy /usr/bin/caddy

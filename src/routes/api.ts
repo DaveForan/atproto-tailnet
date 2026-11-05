@@ -14,7 +14,7 @@ import {
   startInstance,
   stopInstance,
 } from "../orchestrator/headscale.js";
-import { removeTenantRoute } from "../orchestrator/caddy.js";
+import { syncTenantRoutes } from "../orchestrator/caddy.js";
 import { requireAuth, param, getTenantForUser, tenantLoginServer, authUserId } from "./helpers.js";
 import { logAudit } from "./audit.js";
 import { checkTenantHealth } from "../orchestrator/monitor.js";
@@ -247,14 +247,15 @@ apiRouter.delete("/api/tenants/:id", requireAuth, async (req, res) => {
       await destroyInstance(result.tenant.containerId);
     }
 
-    await removeTenantRoute(result.tenant.slug).catch((err) =>
-      logger.error({ tenantSlug: result.tenant.slug, err }, "failed to remove Caddy route"),
-    );
-
     await db
       .update(tenants)
       .set({ status: "deleted", containerId: null, updatedAt: new Date() })
       .where(eq(tenants.id, tenantId));
+
+    // Routes are derived from the database, so sync after the tenant is gone.
+    await syncTenantRoutes().catch((err) =>
+      logger.error({ tenantSlug: result.tenant.slug, err }, "failed to sync Caddy routes"),
+    );
 
     logAudit({
       tenantId,

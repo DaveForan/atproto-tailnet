@@ -17,7 +17,7 @@ import type { Request, Response, NextFunction } from "express";
 import { eq, and, ne } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { tenants, memberships, roles, agentTokens, users } from "../db/schema.js";
-import { config } from "../config.js";
+import { tenantPublicUrl } from "../config.js";
 import type { Permission } from "./permissions.js";
 
 /**
@@ -291,6 +291,5 @@ export function toHsUsername(handle: string): string {
 
 /** Builds the login-server URL for a tenant slug (e.g. `https://my-tenant.ts.example.com`). */
 export function tenantLoginServer(slug: string): string {
-  const proto = config.publicUrl.startsWith("https") ? "https" : "http";
-  return `${proto}://${slug}.${config.baseDomain}`;
+  return tenantPublicUrl(slug);
 }

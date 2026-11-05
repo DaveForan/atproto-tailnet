@@ -46,6 +46,7 @@ import { dashboardRouter } from "./routes/dashboard.js";
 import { resolveAgentToken, enforceAgentScope } from "./routes/helpers.js";
 import { startHealthMonitor } from "./orchestrator/monitor.js";
 import { startBroker } from "./orchestrator/federation-broker.js";
+import { reconcileTenantRouting } from "./orchestrator/caddy.js";
 import { logger } from "./logger.js";
 
 const app = express();
@@ -191,4 +192,5 @@ app.listen(config.port, () => {
   logger.info({ port: config.port, url: config.publicUrl }, "atproto-tailnet running");
   startHealthMonitor();
   startBroker();
+  void reconcileTenantRouting();
 });

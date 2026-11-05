@@ -30,6 +30,7 @@ services:
       HEADSCALE_PORT_RANGE_START: ${HEADSCALE_PORT_RANGE_START:-10001}
       HEADSCALE_PORT_RANGE_END: ${HEADSCALE_PORT_RANGE_END:-10100}
       HEADSCALE_DATA_DIR: /data/headscale
+      HEADSCALE_NETWORK: atproto-tailnet-tenants
       LOG_LEVEL: ${LOG_LEVEL:-info}
       ATPROTO_PRIVATE_KEY: ${ATPROTO_PRIVATE_KEY:-}
     volumes:
@@ -62,7 +63,10 @@ services:
 
   # ---------- Caddy reverse proxy ----------------------------------------
   caddy:
-    image: caddy:2-alpine
+    # Stock Caddy plus the Cloudflare DNS module (wildcard cert via DNS-01)
+    build:
+      context: .
+      dockerfile: Dockerfile.caddy
     restart: unless-stopped
     ports:
       - "80:80"
@@ -78,6 +82,7 @@ services:
       - caddy_config:/config
     networks:
       - internal
+      - tenants
 
   # ---------- Headscale port range ----------------------------------------
   # Headscale containers are created dynamically by the app via Docker socket.
@@ -93,3 +98,7 @@ volumes:
 networks:
   internal:
     driver: bridge
+  # Shared by Caddy and the per-tenant Headscale containers the app creates,
+  # so Caddy can reach them by name. Must match HEADSCALE_NETWORK.
+  tenants:
+    name: atproto-tailnet-tenants

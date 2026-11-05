@@ -8,10 +8,18 @@
 import Docker from "dockerode";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { config } from "../config.js";
+import { config, tenantPublicUrl } from "../config.js";
 import type { DerpRegion } from "../db/schema.js";
 
 const docker = new Docker();
+
+/** Port Headscale listens on inside its container. */
+export const HEADSCALE_CONTAINER_PORT = 8080;
+
+/** Docker container name of a tenant's Headscale instance. */
+export function tenantContainerName(slug: string): string {
+  return `headscale-${slug}`;
+}
 
 /** Result of provisioning a new Headscale container for a tenant. */
 export interface TenantInstance {
@@ -39,8 +47,7 @@ export function generateHeadscaleConfig(
   port: number,
   opts: HeadscaleConfigOptions = {},
 ): string {
-  const publicProto = config.publicUrl.startsWith("https") ? "https" : "http";
-  const serverUrl = `${publicProto}://${slug}.${config.baseDomain}`;
+  const serverUrl = tenantPublicUrl(slug);
 
   const derp = opts.derp ?? {};
   const urlsLine = derp.usePublicDerp === false
@@ -59,7 +66,7 @@ export function generateHeadscaleConfig(
 
   return `---
 server_url: ${serverUrl}
-listen_addr: 0.0.0.0:8080
+listen_addr: 0.0.0.0:${HEADSCALE_CONTAINER_PORT}
 metrics_listen_addr: 0.0.0.0:9090
 noise:
   private_key_path: /etc/headscale/noise_private.key
@@ -246,19 +253,24 @@ export async function createInstance(
   await writeFile(join(dataDir, "config.yaml"), configContent);
   await writeFile(join(dataDir, "derp-custom.yaml"), "regions: {}\n");
 
+  const containerPort = `${HEADSCALE_CONTAINER_PORT}/tcp`;
   const container = await docker.createContainer({
     Image: config.headscale.image,
-    name: `headscale-${slug}`,
+    name: tenantContainerName(slug),
     Cmd: ["serve"],
     ExposedPorts: {
-      "8080/tcp": {},
+      [containerPort]: {},
     },
     HostConfig: {
       Binds: [`${dataDir}:/etc/headscale`],
       PortBindings: {
-        "8080/tcp": [{ HostIp: "127.0.0.1", HostPort: String(port) }],
+        [containerPort]: [{ HostIp: "127.0.0.1", HostPort: String(port) }],
       },
       RestartPolicy: { Name: "unless-stopped" },
+      // On the shared network Caddy reaches the container by name.
+      ...(config.headscale.network
+        ? { NetworkMode: config.headscale.network }
+        : {}),
     },
   });
 
@@ -288,7 +300,7 @@ export async function adoptInstance(
   slug: string,
   port: number,
 ): Promise<TenantInstance | null> {
-  const container = docker.getContainer(`headscale-${slug}`);
+  const container = docker.getContainer(tenantContainerName(slug));
   let info: Docker.ContainerInspectInfo;
   try {
     info = await container.inspect();
@@ -296,6 +308,7 @@ export async function adoptInstance(
     return null;
   }
 
+  await ensureOnTenantNetwork(info.Id);
   if (!info.State.Running) await container.start();
   await waitForReady(container);
 
@@ -304,6 +317,19 @@ export async function adoptInstance(
   await execInContainer(container, ["headscale", "users", "create", "owner"]);
 
   return { slug, port, apiKey, containerId: info.Id };
+}
+
+/**
+ * Attach a tenant container to the shared tenant network if it is not on it
+ * already (containers created before `HEADSCALE_NETWORK` was configured).
+ * No-op when no network is configured.
+ */
+export async function ensureOnTenantNetwork(containerId: string): Promise<void> {
+  const network = config.headscale.network;
+  if (!network) return;
+  const info = await docker.getContainer(containerId).inspect();
+  if (info.NetworkSettings.Networks[network]) return;
+  await docker.getNetwork(network).connect({ Container: info.Id });
 }
 
 /** Stop and remove a Headscale container. Safe to call if already stopped. */
