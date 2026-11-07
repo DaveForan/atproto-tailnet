@@ -5,11 +5,12 @@ Tailscale-as-a-service where users authenticate with their AT Protocol (Bluesky)
 ## Architecture
 
 - **Service API**: TypeScript / Express 5 / Drizzle ORM / PostgreSQL
-- **Control plane**: One Headscale Docker container per tenant (see ADR-0002)
+- **Control plane**: One Headscale Docker container per tenant (see ADR-0002) — being replaced by Rust coordinator (ADR-0023)
+- **Coordinator** (in progress): Rust workspace at `coordinator/` — purpose-built mesh coordinator replacing Headscale (ADR-0023). 9 crates: coord-core (types/traits), coord-noise (Noise IK handshake via `snow`, transport via direct `chacha20poly1305` with Tailscale-compatible BE nonces), coord-proto (Tailscale control protocol messages), coord-netmap, coord-acl (PolicyEngine with per-tenant rules → Tailscale FilterRule), coord-store (in-memory with broadcast events, PostgreSQL planned), coord-api (axum + hyper H2), coord-federation, coord-server (binary, TOML config + env vars). Protocol: JSON over HTTP/2 over Noise IK (`Noise_IK_25519_ChaChaPoly_BLAKE2s`). Key endpoints: `GET /key` (JSON mkey format), `POST /ts2021` (upgrade → Noise → H2), `POST /machine/register` (pre-auth key, node key rotation via OldNodeKey), `POST /machine/map` (streaming long-poll with zstd framing, delta PeersChanged/PeersRemoved, 60s keepalives, disco key propagation, HomeDERP field). Admin: `POST /api/preauth-keys`, `GET /api/nodes`, `POST /api/acl`. Configurable DERP map (JSON file or env `COORD_DERP_MAP`), listen addr (`COORD_LISTEN`), TOML config file as CLI arg. 28 Rust tests + Go interop test verified against real Tailscale client libraries. Port 8443 is used by tailscale on this machine — do NOT use it
 - **Auth**: AT Protocol OAuth via `@atproto/oauth-client-node` (see ADR-0003)
 - **Reverse proxy**: Caddy with admin API for dynamic subdomain routing
 - **Security model**: Composable role-based permissions, device approval, lockdown (see ADR-0005)
-- **ADRs**: `docs/adr/0001-0005` — read these before changing architecture
+- **ADRs**: `docs/adr/0001-0023` — read these before changing architecture. ADR-0013 (Go fork) superseded by ADR-0023 (Rust coordinator). ADR-0024 (purpose-built client) is proposed/future
 
 ## Development
 
@@ -84,6 +85,8 @@ npm run dev                      # http://127.0.0.1:3000 (loads .env via --env-f
 - CFP message auth (`federation/auth.ts`): recipient collective named by `CFP-Recipient` header; signatures verified over `req.body` as transmitted (never the Zod output — key order matters); HELLO requires an active link with the sender; keepalive/revoke must be signed by the session's peer
 - Federated routes: only prefixes agreed on the link are imported (`filterImportedPrefixes`); installed as Headscale `autoApprovers.routes` for `tag:federation-relay`
 - Credential revocation: `POST /api/tenants/:id/credentials/:credentialId/revoke` requires the credential `jwt` and only revokes credentials signed by that tenant's collective key
+- Service-auth holder binding (ADR-0021): AT Proto accounts prove identity via `getServiceAuth` JWT (ES256K/ES256, `#atproto` key); verifier in `credentials/service-auth.ts` checks aud/lxm/exp/jti/signature via `@atproto/crypto.verifySignature`; BFF helper in `credentials/service-auth-bff.ts` calls `getServiceAuth` through stored OAuth session; JTI replay cache in `service_auth_jti_cache` table, swept by monitor
+- Typed resolver keys (ADR-0021 §4): `resolveTyped(did, opts)` on `DIDResolver` returns `{key, algorithm, methodId, didKey?}` with `publicKeyMultibase` multikey decoding (secp256k1/P-256 via `@atproto/crypto`); callers filter by methodId and algorithms
 - Tenant URLs: `tenantPublicUrl(slug)` in `config.ts` is the single source for the login server and Headscale `server_url` (`<proto>://<slug>.<BASE_DOMAIN>[:TENANT_PUBLIC_PORT]`)
 - Caddy routing (`orchestrator/caddy.ts`): the service owns one route, `@id: tailnet_tenants`, kept first in the Caddy server named `tailnet_proxy` (named in the Caddyfile via `servers { name tailnet_proxy }`); `syncTenantRoutes()` rewrites it whole from the DB (all non-deleted tenants with a container) — call it after anything that adds/removes a tenant instance; the monitor also calls it every sweep because Caddy forgets admin-API changes on restart. Never add or remove individual routes
 - Caddy admin API calls use `node:http`, not `fetch` — Caddy ≥ 2.11 rejects requests carrying `Sec-Fetch-Mode` (403)
@@ -101,9 +104,15 @@ src/
   db/schema.ts             — Drizzle schema (users, tenants, roles, memberships, invitations, device_approvals, device_locks, join_requests, service_devices, services, board_posts, agent_tokens, audit_logs)
   db/index.ts              — Database connection + pool export
   logger.ts                — Pino structured logger (LOG_LEVEL env)
+  credentials/
+    verifier.ts            — VC-JWT and holder-binding verification, PublicKeyResolver interface, ResolvedKey type
+    issuer.ts              — VC-JWT issuance (membership, role, capability), bundle assembly, challenge generation
+    service-auth.ts        — AT Proto service-auth JWT verification (ES256K/ES256 via @atproto/crypto), JTI replay cache
+    service-auth-bff.ts    — BFF helper: obtains service-auth token via user's OAuth session
+    types.ts               — Credential type definitions
   identity/
     keys.ts                — Collective key encryption at rest + detached-JWS sign/verify
-    resolver.ts            — did:web / did:plc resolver (local-collective lookup, SSRF guard, cache)
+    resolver.ts            — did:web / did:plc resolver (local-collective lookup, SSRF guard, typed multikey decoding, cache)
   federation/
     auth.ts                — CFP message signing/verification, freshness, imported-route filtering
     transport.ts           — Outbound CFP messages over HTTP (CFP-Recipient addressing)
@@ -132,10 +141,21 @@ src/
     usage.ts               — Usage metering and plan/limit management
     federation.ts          — Federation link CRUD (request/accept/reject/revoke between tailnets), collective DID + discovery documents
     federation-messages.ts — Inbound CFP endpoints (hello/commit/keepalive/revoke), DID-signature authenticated
-    credentials.ts         — VC-JWT issuance, public verify, holder-binding challenges, revocation
+    credentials.ts         — VC-JWT issuance, public verify, holder-binding challenges, revocation, service-auth presentation + BFF token minting
     dashboard.ts           — Inline SPA (tabbed: Status, DERP, IP Ranges, Routes, Devices, Members, Invite, Services, Board, Federation, Agents, ACL, Roles, Usage, Security, Audit) + /join/:slug
     helpers.ts             — Shared middleware, param(), permission checks, agent token resolution, hs username/URL helpers
     audit.ts               — Fire-and-forget audit log writer
-docs/adr/                  — Architecture Decision Records (0001-0005)
+docs/adr/                  — Architecture Decision Records (0001-0024)
 BUILD_PLAN.md              — Phased build tracker
+coordinator/               — Rust mesh coordinator workspace (ADR-0023)
+  crates/
+    coord-core/            — TenantId, NodeId, ControlKey, MachineKey, error types
+    coord-noise/           — Noise IK handshake + encrypted transport (snow-based)
+    coord-proto/           — Tailscale control protocol messages (RegisterRequest/Response, MapRequest/Response)
+    coord-netmap/          — Per-tenant netmap generation (trait)
+    coord-acl/             — ACL policy engine (trait)
+    coord-store/           — PostgreSQL storage (sqlx)
+    coord-api/             — REST management API (axum)
+    coord-federation/      — Federation broker (future)
+    coord-server/          — Binary entrypoint
 ```
