@@ -281,6 +281,9 @@ async fn handle_streaming_map(
 
         loop {
             tokio::select! {
+                _ = tx.closed() => {
+                    break;
+                }
                 event = peer_rx.recv() => {
                     let event = match event {
                         Ok(e) => e,

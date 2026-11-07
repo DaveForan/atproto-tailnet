@@ -39,32 +39,22 @@ impl PgStore {
     }
 
     pub async fn validate_preauth_key(&self, key: &str) -> Option<TenantId> {
-        let row = sqlx::query_as::<_, (uuid::Uuid, bool, bool, Option<chrono::DateTime<chrono::Utc>>)>(
-            "SELECT tenant_id, used, reusable, expires_at FROM coord_preauth_keys WHERE key = $1"
+        // Atomic: UPDATE with all conditions in WHERE, RETURNING tenant_id.
+        // Only succeeds if the key exists, is not expired, and is either
+        // unused or reusable. Prevents double-use race on single-use keys.
+        let tenant_uuid: Option<uuid::Uuid> = sqlx::query_scalar(
+            "UPDATE coord_preauth_keys SET used = TRUE \
+             WHERE key = $1 \
+               AND (used = FALSE OR reusable = TRUE) \
+               AND (expires_at IS NULL OR expires_at > NOW()) \
+             RETURNING tenant_id"
         )
             .bind(key)
             .fetch_optional(&self.pool)
             .await
-            .ok()??;
-
-        let (tenant_uuid, used, reusable, expires_at) = row;
-
-        if used && !reusable {
-            return None;
-        }
-        if let Some(expires) = expires_at {
-            if chrono::Utc::now() > expires {
-                return None;
-            }
-        }
-
-        sqlx::query("UPDATE coord_preauth_keys SET used = TRUE WHERE key = $1")
-            .bind(key)
-            .execute(&self.pool)
-            .await
             .ok()?;
 
-        Some(TenantId::new(tenant_uuid))
+        tenant_uuid.map(TenantId::new)
     }
 
     pub async fn register_node(
@@ -73,73 +63,65 @@ impl PgStore {
         machine_key: [u8; 32],
         info: NodeInfo,
     ) -> (NodeId, Ipv4Addr) {
-        let existing = sqlx::query_as::<_, (i64, String)>(
-            "SELECT id, ipv4 FROM coord_nodes WHERE machine_key = $1"
-        )
-            .bind(&machine_key[..])
-            .fetch_optional(&self.pool)
-            .await
-            .expect("query existing node");
+        let endpoints_json = serde_json::to_value(&info.endpoints).unwrap();
 
-        if let Some((id, ip_str)) = existing {
-            let ipv4: Ipv4Addr = ip_str.parse().expect("valid stored IPv4");
-
-            sqlx::query(
-                "UPDATE coord_nodes SET node_key = $1, disco_key = $2, hostname = $3, os = $4, \
-                 online = TRUE, last_seen = NOW() WHERE id = $5"
-            )
-                .bind(&info.node_key)
-                .bind(&info.disco_key)
-                .bind(&info.hostname)
-                .bind(&info.os)
-                .bind(id)
-                .execute(&self.pool)
-                .await
-                .expect("update node");
-
-            let node_id = NodeId::new(id);
-            let _ = self.peer_tx.send(PeerEvent::NodeUpdated {
-                tenant_id,
-                node_id,
-            });
-            return (node_id, ipv4);
-        }
-
+        // Allocate IP in Rust from a single nextval, then do atomic upsert.
         let ip_offset: i64 = sqlx::query_scalar("SELECT nextval('coord_ipv4_seq')")
             .fetch_one(&self.pool)
             .await
             .expect("allocate IP");
 
         let base_ip = u32::from(Ipv4Addr::new(100, 64, 0, 0));
-        let ipv4 = Ipv4Addr::from(base_ip + ip_offset as u32);
-        let stable_id = generate_random_id();
-        let ip_str = ipv4.to_string();
+        let new_ipv4 = Ipv4Addr::from(base_ip + ip_offset as u32);
+        let max_cgnat = u32::from(Ipv4Addr::new(100, 127, 255, 255));
+        assert!(u32::from(new_ipv4) <= max_cgnat, "CGNAT address space exhausted");
+        let new_ip_str = new_ipv4.to_string();
 
-        let node_id: i64 = sqlx::query_scalar(
+        // ON CONFLICT keeps the existing ipv4/stable_id but updates mutable fields.
+        // The pre-allocated IP is wasted on conflict (acceptable — sequence gaps are fine).
+        let row = sqlx::query_as::<_, (i64, String, bool)>(
             "INSERT INTO coord_nodes (tenant_id, machine_key, node_key, disco_key, stable_id, ipv4, hostname, os, endpoints) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) \
-             RETURNING id"
+             ON CONFLICT (machine_key) DO UPDATE SET \
+                 node_key = EXCLUDED.node_key, \
+                 disco_key = EXCLUDED.disco_key, \
+                 hostname = EXCLUDED.hostname, \
+                 os = EXCLUDED.os, \
+                 endpoints = EXCLUDED.endpoints, \
+                 online = TRUE, \
+                 last_seen = NOW() \
+             RETURNING id, ipv4, (xmax = 0) AS is_insert"
         )
             .bind(tenant_id.as_uuid())
             .bind(&machine_key[..])
             .bind(&info.node_key)
             .bind(&info.disco_key)
-            .bind(&stable_id)
-            .bind(&ip_str)
+            .bind(&generate_random_id())
+            .bind(&new_ip_str)
             .bind(&info.hostname)
             .bind(&info.os)
-            .bind(serde_json::to_value(&info.endpoints).unwrap())
+            .bind(&endpoints_json)
             .fetch_one(&self.pool)
             .await
-            .expect("insert node");
+            .expect("upsert node");
 
-        let nid = NodeId::new(node_id);
-        let _ = self.peer_tx.send(PeerEvent::NodeJoined {
-            tenant_id,
-            node_id: nid,
-        });
+        let (id, ip_str, is_insert) = row;
+        let ipv4: Ipv4Addr = ip_str.parse().expect("valid stored IPv4");
 
-        (nid, ipv4)
+        let node_id = NodeId::new(id);
+        if is_insert {
+            let _ = self.peer_tx.send(PeerEvent::NodeJoined {
+                tenant_id,
+                node_id,
+            });
+        } else {
+            let _ = self.peer_tx.send(PeerEvent::NodeUpdated {
+                tenant_id,
+                node_id,
+            });
+        }
+
+        (node_id, ipv4)
     }
 
     pub async fn rotate_node_key(
@@ -339,7 +321,12 @@ impl PgStore {
             .expect("update online status");
 
         if let Some(tenant_uuid) = result {
-            if !online {
+            if online {
+                let _ = self.peer_tx.send(PeerEvent::NodeUpdated {
+                    tenant_id: TenantId::new(tenant_uuid),
+                    node_id,
+                });
+            } else {
                 let _ = self.peer_tx.send(PeerEvent::NodeOffline {
                     tenant_id: TenantId::new(tenant_uuid),
                     node_id,

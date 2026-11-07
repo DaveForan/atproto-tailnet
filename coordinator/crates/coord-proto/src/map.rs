@@ -123,6 +123,7 @@ pub struct DerpMap {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct DerpRegion {
+    #[serde(rename = "RegionID")]
     pub region_id: i32,
     pub region_code: String,
     pub region_name: String,
@@ -133,6 +134,7 @@ pub struct DerpRegion {
 #[serde(rename_all = "PascalCase")]
 pub struct DerpNode {
     pub name: String,
+    #[serde(rename = "RegionID")]
     pub region_id: i32,
     pub host_name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

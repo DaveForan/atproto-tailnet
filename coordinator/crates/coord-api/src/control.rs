@@ -166,7 +166,7 @@ pub async fn handle_map(
         .map(|p| peer_info_to_map_node(p))
         .collect();
 
-    let home_region = state.derp_map.regions.keys().next().copied().unwrap_or(1);
+    let home_region = state.derp_map.regions.keys().min().copied().unwrap_or(1);
 
     let self_node = MapNode {
         id: node_id.as_i64(),
@@ -238,6 +238,7 @@ pub fn build_delta_response(
                 hex::encode(&info.node_key)
             };
 
+            let home_region = state.derp_map.regions.keys().min().copied().unwrap_or(1);
             let peer = MapNode {
                 id: node_id.as_i64(),
                 stable_id,
@@ -249,8 +250,8 @@ pub fn build_delta_response(
                 addresses: vec![format!("{}/32", ipv4)],
                 allowed_ips: vec![format!("{}/32", ipv4)],
                 endpoints: info.endpoints.clone(),
-                derp: Some("127.3.3.40:1".into()),
-                home_derp: Some(1),
+                derp: Some(format!("127.3.3.40:{}", home_region)),
+                home_derp: Some(home_region),
                 hostinfo: None,
                 online: Some(true),
                 last_seen: None,
