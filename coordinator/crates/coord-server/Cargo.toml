@@ -1,0 +1,28 @@
+[package]
+name = "coord-server"
+description = "Coordinator binary entrypoint"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "coordinator"
+path = "src/main.rs"
+
+[dependencies]
+coord-core = { workspace = true }
+coord-noise = { workspace = true }
+coord-proto = { workspace = true }
+coord-api = { workspace = true }
+coord-store = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+axum = { workspace = true }
+hex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+anyhow = { workspace = true }
