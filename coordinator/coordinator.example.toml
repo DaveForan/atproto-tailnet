@@ -1,0 +1,17 @@
+# Coordinator configuration
+# Copy to coordinator.toml and customize
+
+# Listen address (also overridable via COORD_LISTEN env var)
+listen = "127.0.0.1:9443"
+
+# Mesh domain suffix
+domain = "mesh.local"
+
+# Path to a JSON DERP map file (also overridable via COORD_DERP_MAP env var)
+# If unset, uses the default Tailscale DERP region 1 (derp1.tailscale.com)
+# For self-hosted DERP, use region IDs 900-999.
+# derp_map_file = "/etc/coordinator/derp-map.json"
+
+# PostgreSQL connection URL (also overridable via DATABASE_URL env var)
+# When set, runs migrations and initializes the PgStore backend.
+# database_url = "postgres://coord:coord@localhost/coordinator"
