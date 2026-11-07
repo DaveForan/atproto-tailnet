@@ -399,6 +399,7 @@ dependencies = [
  "snow",
  "thiserror",
  "tokio",
+ "tokio-util",
  "tracing",
 ]
 

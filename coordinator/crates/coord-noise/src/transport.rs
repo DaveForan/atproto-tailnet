@@ -40,6 +40,11 @@ impl NoiseTransport {
     }
 
     pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, NoiseError> {
+        if plaintext.len() > MAX_PLAINTEXT_SIZE {
+            return Err(NoiseError::Transport(format!(
+                "plaintext {} exceeds max {}", plaintext.len(), MAX_PLAINTEXT_SIZE
+            )));
+        }
         if self.tx_nonce == u64::MAX {
             return Err(NoiseError::Transport("tx nonce exhausted".into()));
         }
@@ -133,16 +138,26 @@ where
     let (tcp_read, tcp_write) = tokio::io::split(io);
     let (duplex_read, duplex_write) = tokio::io::split(duplex_bridge);
 
+    // When either bridge task exits, cancel the token so the other
+    // shuts down too. Without this, tokio::io::split's Arc prevents
+    // the DuplexStream from being dropped, so the surviving task and
+    // the H2 connection hang forever.
+    let cancel = tokio_util::sync::CancellationToken::new();
+
     let tr = transport.clone();
+    let cancel_in = cancel.clone();
     tokio::spawn(async move {
-        if let Err(e) = bridge_inbound(tcp_read, duplex_write, tr).await {
+        let _guard = cancel_in.clone().drop_guard();
+        if let Err(e) = bridge_inbound(tcp_read, duplex_write, tr, cancel_in).await {
             tracing::debug!(error = %e, "noise bridge inbound ended");
         }
     });
 
     let tw = transport;
+    let cancel_out = cancel;
     tokio::spawn(async move {
-        if let Err(e) = bridge_outbound(duplex_read, tcp_write, tw).await {
+        let _guard = cancel_out.clone().drop_guard();
+        if let Err(e) = bridge_outbound(duplex_read, tcp_write, tw, cancel_out).await {
             tracing::debug!(error = %e, "noise bridge outbound ended");
         }
     });
@@ -155,6 +170,7 @@ async fn bridge_inbound<R, W>(
     mut tcp_read: R,
     mut duplex_write: W,
     transport: Arc<Mutex<NoiseTransport>>,
+    cancel: tokio_util::sync::CancellationToken,
 ) -> Result<(), NoiseError>
 where
     R: AsyncRead + Unpin,
@@ -162,13 +178,18 @@ where
 {
     let mut frame_count = 0u64;
     loop {
-        let ciphertext = match read_record_frame(&mut tcp_read).await {
-            Ok(ct) => ct,
-            Err(NoiseError::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                tracing::debug!(frames = frame_count, "noise bridge inbound: EOF");
-                return Ok(());
+        let ciphertext = tokio::select! {
+            _ = cancel.cancelled() => return Ok(()),
+            result = read_record_frame(&mut tcp_read) => {
+                match result {
+                    Ok(ct) => ct,
+                    Err(NoiseError::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                        tracing::debug!(frames = frame_count, "noise bridge inbound: EOF");
+                        return Ok(());
+                    }
+                    Err(e) => return Err(e),
+                }
             }
-            Err(e) => return Err(e),
         };
 
         tracing::debug!(
@@ -199,6 +220,7 @@ async fn bridge_outbound<R, W>(
     mut duplex_read: R,
     mut tcp_write: W,
     transport: Arc<Mutex<NoiseTransport>>,
+    cancel: tokio_util::sync::CancellationToken,
 ) -> Result<(), NoiseError>
 where
     R: AsyncRead + Unpin,
@@ -207,7 +229,10 @@ where
     let mut buf = vec![0u8; MAX_PLAINTEXT_SIZE];
     let mut frame_count = 0u64;
     loop {
-        let n = duplex_read.read(&mut buf).await?;
+        let n = tokio::select! {
+            _ = cancel.cancelled() => return Ok(()),
+            result = duplex_read.read(&mut buf) => result?,
+        };
         if n == 0 {
             tracing::debug!(frames = frame_count, "noise bridge outbound: duplex closed");
             return Ok(());
