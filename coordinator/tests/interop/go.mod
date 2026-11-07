@@ -1,0 +1,16 @@
+module interop-test
+
+go 1.26.4
+
+require (
+	go4.org/mem v0.0.0-20240501181205-ae6ca9944745
+	tailscale.com v1.101.0-pre
+)
+
+require (
+	github.com/go-json-experiment/json v0.0.0-20260214004413-d219187c3433 // indirect
+	github.com/klauspost/compress v1.20.3 // indirect
+	golang.org/x/crypto v0.52.0 // indirect
+	golang.org/x/exp v0.0.0-20250620022241-b7579e27df2b // indirect
+	golang.org/x/sys v0.45.0 // indirect
+)
