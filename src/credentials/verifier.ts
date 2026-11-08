@@ -14,8 +14,19 @@ import type {
 
 type VerifyKey = jose.CryptoKey | jose.KeyObject;
 
+export interface ResolvedKey {
+  key: VerifyKey;
+  algorithm: string;
+  methodId: string;
+  didKey?: string;
+}
+
 export interface PublicKeyResolver {
   resolve(did: string): Promise<VerifyKey | null>;
+  resolveTyped?(
+    did: string,
+    opts?: { methodId?: string; algorithms?: string[] },
+  ): Promise<ResolvedKey | null>;
 }
 
 export async function verifyCredential(

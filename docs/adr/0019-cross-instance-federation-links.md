@@ -1,6 +1,6 @@
 # ADR-0019: Cross-instance federation links
 
-**Status:** Proposed
+**Status:** In Progress
 **Date:** 2026-11-04
 **Priority:** P0
 **Depends On:** ADR-0014 (federation protocol), ADR-0016 (federation transport), ADR-0017 (DID resolution)

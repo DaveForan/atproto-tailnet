@@ -5,15 +5,27 @@
  */
 
 import * as jose from "jose";
+import * as crypto from "node:crypto";
 import * as net from "node:net";
 import { lookup } from "node:dns/promises";
+import {
+  parseMultikey,
+  formatDidKey,
+  p256Plugin,
+  secp256k1Plugin,
+} from "@atproto/crypto";
 import { logger } from "../logger.js";
-import type { PublicKeyResolver } from "../credentials/verifier.js";
+import type { PublicKeyResolver, ResolvedKey } from "../credentials/verifier.js";
 
 type VerifyKey = jose.CryptoKey | jose.KeyObject;
 
 interface CacheEntry {
   key: VerifyKey;
+  expiresAt: number;
+}
+
+interface TypedCacheEntry {
+  resolved: ResolvedKey;
   expiresAt: number;
 }
 
@@ -41,6 +53,7 @@ export interface DIDResolverOptions {
 
 export class DIDResolver implements PublicKeyResolver {
   private cache = new Map<string, CacheEntry>();
+  private typedCache = new Map<string, TypedCacheEntry>();
   private cacheTtlMs: number;
   private localLookup?: (did: string) => Promise<jose.JWK | null>;
   private hostCheck: (host: string) => Promise<boolean>;
@@ -146,12 +159,119 @@ export class DIDResolver implements PublicKeyResolver {
     });
   }
 
+  /**
+   * Resolve a specific verification method from a DID document, returning the
+   * key with its algorithm and method ID. Used for method-specific resolution
+   * (e.g. `#atproto` for ES256K/ES256 account keys).
+   */
+  async resolveTyped(
+    did: string,
+    opts?: { methodId?: string; algorithms?: string[] },
+  ): Promise<ResolvedKey | null> {
+    if (typeof did !== "string" || did.length > MAX_DID_LENGTH) return null;
+
+    const cacheKey = `${did}|${opts?.methodId ?? "*"}|${(opts?.algorithms ?? []).join(",")}`;
+    const cached = this.typedCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) return cached.resolved;
+
+    // For local collectives, resolve as EdDSA (they always use #signing-key)
+    if (this.localLookup && (!opts?.methodId || opts.methodId === "#signing-key")) {
+      const jwk = await this.localLookup(did);
+      if (jwk) {
+        const key = await importEd25519Jwk(jwk);
+        if (key) {
+          const resolved: ResolvedKey = { key, algorithm: "EdDSA", methodId: "#signing-key" };
+          this.cacheTypedKey(cacheKey, resolved);
+          return resolved;
+        }
+      }
+    }
+
+    const doc = await this.fetchDidDocument(did);
+    if (!doc) return null;
+
+    const resolved = await extractTypedKey(doc, opts);
+    if (resolved) {
+      this.cacheTypedKey(cacheKey, resolved);
+    }
+    return resolved;
+  }
+
+  private async fetchDidDocument(did: string): Promise<DIDDocument | null> {
+    if (did.startsWith("did:web:")) return this.fetchDidWebDoc(did);
+    if (did.startsWith("did:plc:")) return this.fetchDidPlcDoc(did);
+    logger.warn({ did }, "unsupported DID method");
+    return null;
+  }
+
+  private async fetchDidWebDoc(did: string): Promise<DIDDocument | null> {
+    try {
+      const url = didWebToUrl(did);
+      if (!(await this.hostCheck(new URL(url).host))) {
+        logger.warn({ did }, "did:web host refused (not a public address)");
+        return null;
+      }
+      const res = await fetch(url, {
+        signal: AbortSignal.timeout(RESOLUTION_TIMEOUT_MS),
+        headers: { Accept: "application/did+json,application/json" },
+        redirect: "error",
+      });
+      if (!res.ok) {
+        logger.warn({ did, status: res.status }, "did:web resolution failed");
+        return null;
+      }
+      const doc = (await res.json()) as DIDDocument;
+      if (doc.id !== did) {
+        logger.warn({ did, docId: doc.id }, "did:web document id mismatch");
+        return null;
+      }
+      return doc;
+    } catch (err) {
+      logger.warn({ did, err }, "did:web resolution error");
+      return null;
+    }
+  }
+
+  private async fetchDidPlcDoc(did: string): Promise<DIDDocument | null> {
+    try {
+      const url = `${PLC_DIRECTORY}/${encodeURIComponent(did)}`;
+      const res = await fetch(url, {
+        signal: AbortSignal.timeout(RESOLUTION_TIMEOUT_MS),
+        headers: { Accept: "application/did+json,application/json" },
+        redirect: "error",
+      });
+      if (!res.ok) {
+        logger.warn({ did, status: res.status }, "did:plc resolution failed");
+        return null;
+      }
+      return (await res.json()) as DIDDocument;
+    } catch (err) {
+      logger.warn({ did, err }, "did:plc resolution error");
+      return null;
+    }
+  }
+
+  private cacheTypedKey(cacheKey: string, resolved: ResolvedKey): void {
+    if (this.typedCache.size >= MAX_CACHE_SIZE) {
+      const oldest = this.typedCache.keys().next().value;
+      if (oldest) this.typedCache.delete(oldest);
+    }
+    this.typedCache.set(cacheKey, {
+      resolved,
+      expiresAt: Date.now() + this.cacheTtlMs,
+    });
+  }
+
   clearCache(): void {
     this.cache.clear();
+    this.typedCache.clear();
   }
 
   invalidate(did: string): void {
     this.cache.delete(did);
+    for (const key of this.typedCache.keys()) {
+      if (key.startsWith(did + "|")) this.typedCache.delete(key);
+    }
   }
 }
 
@@ -206,6 +326,105 @@ async function extractSigningKey(doc: DIDDocument): Promise<VerifyKey | null> {
     if (!method?.publicKeyJwk) continue;
     const key = await importEd25519Jwk(method.publicKeyJwk);
     if (key) return key;
+  }
+
+  return null;
+}
+
+const ALG_TO_CRV: Record<string, string> = {
+  ES256K: "secp256k1",
+  ES256: "P-256",
+};
+
+async function importMultikey(
+  multibase: string,
+): Promise<{ key: VerifyKey; jwtAlg: string; didKey: string } | null> {
+  try {
+    const { jwtAlg, keyBytes } = parseMultikey(multibase);
+    const didKey = formatDidKey(jwtAlg, keyBytes);
+
+    const crv = ALG_TO_CRV[jwtAlg];
+    if (!crv) return null;
+
+    let x: Uint8Array;
+    let y: Uint8Array;
+    if (keyBytes.length === 65 && keyBytes[0] === 0x04) {
+      x = keyBytes.slice(1, 33);
+      y = keyBytes.slice(33, 65);
+    } else if (keyBytes.length === 33) {
+      const plugin = jwtAlg === "ES256K" ? secp256k1Plugin : p256Plugin;
+      const uncompressed = plugin.decompressPubkey(keyBytes);
+      x = uncompressed.slice(1, 33);
+      y = uncompressed.slice(33, 65);
+    } else {
+      return null;
+    }
+
+    const jwk = {
+      kty: "EC" as const,
+      crv,
+      x: jose.base64url.encode(x),
+      y: jose.base64url.encode(y),
+    };
+    const key = crypto.createPublicKey({ key: jwk, format: "jwk" });
+    return { key, jwtAlg, didKey };
+  } catch (err) {
+    logger.debug({ err, multibase: multibase.slice(0, 12) }, "multikey import failed");
+    return null;
+  }
+}
+
+async function extractTypedKey(
+  doc: DIDDocument,
+  opts?: { methodId?: string; algorithms?: string[] },
+): Promise<ResolvedKey | null> {
+  const methods = doc.verificationMethod ?? [];
+  const candidates = opts?.methodId
+    ? methods.filter((m) => m.id === `${doc.id}${opts.methodId}` || m.id === opts.methodId)
+    : methods;
+
+  for (const method of candidates) {
+    if (method.publicKeyMultibase) {
+      const result = await importMultikey(method.publicKeyMultibase);
+      if (!result) continue;
+      if (opts?.algorithms && !opts.algorithms.includes(result.jwtAlg)) continue;
+      const methodId = method.id.startsWith(doc.id)
+        ? method.id.slice(doc.id.length)
+        : method.id;
+      return {
+        key: result.key,
+        algorithm: result.jwtAlg,
+        methodId,
+        didKey: result.didKey,
+      };
+    }
+
+    if (method.publicKeyJwk) {
+      const jwk = method.publicKeyJwk;
+      if (jwk.kty === "OKP" && jwk.crv === "Ed25519") {
+        if (opts?.algorithms && !opts.algorithms.includes("EdDSA")) continue;
+        const key = await importEd25519Jwk(jwk);
+        if (!key) continue;
+        const methodId = method.id.startsWith(doc.id)
+          ? method.id.slice(doc.id.length)
+          : method.id;
+        return { key, algorithm: "EdDSA", methodId };
+      }
+      if (jwk.kty === "EC") {
+        const alg = jwk.crv === "secp256k1" ? "ES256K" : jwk.crv === "P-256" ? "ES256" : null;
+        if (!alg) continue;
+        if (opts?.algorithms && !opts.algorithms.includes(alg)) continue;
+        try {
+          const key = crypto.createPublicKey({ key: jwk, format: "jwk" });
+          const methodId = method.id.startsWith(doc.id)
+            ? method.id.slice(doc.id.length)
+            : method.id;
+          return { key, algorithm: alg, methodId };
+        } catch {
+          continue;
+        }
+      }
+    }
   }
 
   return null;

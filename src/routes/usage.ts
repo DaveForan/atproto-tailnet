@@ -10,7 +10,7 @@ import { z } from "zod";
 import { eq, desc, sql, and } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { tenants, memberships, usageSnapshots } from "../db/schema.js";
-import { HeadscaleApiClient } from "../orchestrator/headscale-api.js";
+import { getControlClient } from "../orchestrator/control-client.js";
 import {
   requireAuth,
   param,
@@ -42,7 +42,7 @@ usageRouter.get(
 
     if (tenant.apiKey && tenant.port && tenant.status === "running") {
       try {
-        const client = new HeadscaleApiClient(tenant.port, tenant.apiKey);
+        const client = getControlClient(tenant);
         const [nodes, routes] = await Promise.all([
           client.listNodes(),
           client.listRoutes().catch(() => []),

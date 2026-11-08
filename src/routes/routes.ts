@@ -8,7 +8,8 @@
  */
 
 import { Router } from "express";
-import { HeadscaleApiClient, parseRouteId } from "../orchestrator/headscale-api.js";
+import { parseRouteId } from "../orchestrator/headscale-api.js";
+import { getControlClient } from "../orchestrator/control-client.js";
 import {
   requireAuth,
   param,
@@ -43,10 +44,7 @@ routesRouter.get(
     }
 
     try {
-      const client = new HeadscaleApiClient(
-        result.tenant.port,
-        result.tenant.apiKey,
-      );
+      const client = getControlClient(result.tenant);
       const routes = await client.listRoutes();
 
       const exitNodes = routes.filter(
@@ -92,10 +90,7 @@ routesRouter.post(
     }
 
     try {
-      const client = new HeadscaleApiClient(
-        result.tenant.port,
-        result.tenant.apiKey,
-      );
+      const client = getControlClient(result.tenant);
       await client.enableRoute(routeId);
 
       logAudit({
@@ -108,6 +103,10 @@ routesRouter.post(
 
       res.json({ status: "enabled" });
     } catch (err) {
+      if (err instanceof Error && err.message.includes("not yet supported")) {
+        res.status(501).json({ error: "Route management not available in coordinator mode" });
+        return;
+      }
       logger.error({ tenantId, routeId, err }, "failed to enable route");
       res.status(502).json({ error: "Failed to enable route" });
     }
@@ -142,10 +141,7 @@ routesRouter.post(
     }
 
     try {
-      const client = new HeadscaleApiClient(
-        result.tenant.port,
-        result.tenant.apiKey,
-      );
+      const client = getControlClient(result.tenant);
       await client.disableRoute(routeId);
 
       logAudit({
@@ -158,6 +154,10 @@ routesRouter.post(
 
       res.json({ status: "disabled" });
     } catch (err) {
+      if (err instanceof Error && err.message.includes("not yet supported")) {
+        res.status(501).json({ error: "Route management not available in coordinator mode" });
+        return;
+      }
       logger.error({ tenantId, routeId, err }, "failed to disable route");
       res.status(502).json({ error: "Failed to disable route" });
     }
@@ -192,10 +192,7 @@ routesRouter.delete(
     }
 
     try {
-      const client = new HeadscaleApiClient(
-        result.tenant.port,
-        result.tenant.apiKey,
-      );
+      const client = getControlClient(result.tenant);
       await client.deleteRoute(routeId);
 
       logAudit({
@@ -208,6 +205,10 @@ routesRouter.delete(
 
       res.json({ status: "deleted" });
     } catch (err) {
+      if (err instanceof Error && err.message.includes("not yet supported")) {
+        res.status(501).json({ error: "Route management not available in coordinator mode" });
+        return;
+      }
       logger.error({ tenantId, routeId, err }, "failed to delete route");
       res.status(502).json({ error: "Failed to delete route" });
     }

@@ -5,6 +5,7 @@ use axum::response::IntoResponse;
 use bytes::Bytes;
 use http_body_util::Full;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::io::AsyncWriteExt;
 use tracing::{error, info, warn};
 
@@ -121,13 +122,19 @@ async fn run_noise_session(
 
     let h2_io = hyper_util::rt::TokioIo::new(cleartext_stream);
 
+    // Session generation is set during /machine/register inside the H2 service.
+    // Shared via atomic so the disconnect handler can read it.
+    let session_gen = Arc::new(AtomicU64::new(0));
+
     let state_for_disconnect = state.clone();
     let state_for_service = state;
+    let session_gen_for_service = session_gen.clone();
     let service = hyper::service::service_fn(move |req: Request<hyper::body::Incoming>| {
         let state = state_for_service.clone();
         let mk = machine_key;
+        let sg = session_gen_for_service.clone();
         async move {
-            handle_control_request(state, mk, req).await
+            handle_control_request(state, mk, sg, req).await
         }
     });
 
@@ -135,9 +142,12 @@ async fn run_noise_session(
         .serve_connection(h2_io, service)
         .await;
 
-    if let Some(node_id) = state_for_disconnect.store.get_node_by_machine_key(&machine_key) {
-        info!(node = %node_id, "noise session ended, marking node offline");
-        state_for_disconnect.store.set_node_online(node_id, false);
+    let sess_gen = session_gen.load(Ordering::Acquire);
+    if sess_gen > 0 {
+        if let Some(node_id) = state_for_disconnect.store.get_node_by_machine_key(&machine_key).await {
+            info!(node = %node_id, generation = sess_gen, "noise session ended, marking node offline");
+            state_for_disconnect.store.set_node_offline_if_current(node_id, sess_gen).await;
+        }
     }
 
     result?;
@@ -163,6 +173,7 @@ fn json_error(status: StatusCode, msg: &str) -> Response<BoxBody> {
 async fn handle_control_request(
     state: Arc<CoordinatorState>,
     machine_key: [u8; 32],
+    session_gen: Arc<AtomicU64>,
     req: Request<hyper::body::Incoming>,
 ) -> Result<Response<BoxBody>, std::io::Error> {
     let path = req.uri().path().to_string();
@@ -177,7 +188,7 @@ async fn handle_control_request(
     let body_str = String::from_utf8_lossy(&body_bytes);
 
     match path.as_str() {
-        "/machine/register" => Ok(handle_register_request(state, machine_key, &body_str).await),
+        "/machine/register" => Ok(handle_register_request(state, machine_key, session_gen, &body_str).await),
         "/machine/map" => Ok(handle_map_request(state, machine_key, &body_str).await),
         _ => Ok(json_error(StatusCode::NOT_FOUND, "not found")),
     }
@@ -186,14 +197,20 @@ async fn handle_control_request(
 async fn handle_register_request(
     state: Arc<CoordinatorState>,
     machine_key: [u8; 32],
+    session_gen: Arc<AtomicU64>,
     body: &str,
 ) -> Response<BoxBody> {
     match control::handle_register(&state, &machine_key, body).await {
-        Ok(response_body) => Response::builder()
-            .status(StatusCode::OK)
-            .header("Content-Type", "application/json")
-            .body(full_body(Bytes::from(response_body)))
-            .unwrap(),
+        Ok((response_body, generation)) => {
+            if let Some(g) = generation {
+                session_gen.store(g, Ordering::Release);
+            }
+            Response::builder()
+                .status(StatusCode::OK)
+                .header("Content-Type", "application/json")
+                .body(full_body(Bytes::from(response_body)))
+                .unwrap()
+        }
         Err(e) => {
             warn!(error = %e, "register request failed");
             json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string())
@@ -259,12 +276,12 @@ async fn handle_streaming_map(
         }
     };
 
-    let node_id = match state.store.get_node_by_machine_key(&machine_key) {
+    let node_id = match state.store.get_node_by_machine_key(&machine_key).await {
         Some(id) => id,
         None => return json_error(StatusCode::NOT_FOUND, "node not registered"),
     };
 
-    let tenant_id = match state.store.get_node_tenant(node_id) {
+    let tenant_id = match state.store.get_node_tenant(node_id).await {
         Some(tid) => tid,
         None => return json_error(StatusCode::NOT_FOUND, "node has no tenant"),
     };
@@ -274,6 +291,17 @@ async fn handle_streaming_map(
     let initial_frame = frame_map_response(initial.as_bytes());
     let _ = tx.send(Ok(hyper::body::Frame::data(Bytes::from(initial_frame)))).await;
     let state_clone = state.clone();
+
+    // Collect child tenant IDs for federation-aware streaming.
+    // Refreshed periodically (on keepalive tick) and after lag recovery.
+    let mut child_tenant_ids: Vec<coord_core::TenantId> = state_clone
+        .store
+        .get_child_tenants(tenant_id)
+        .await
+        .into_iter()
+        .filter(|t| t.federation_posture != coord_core::FederationPosture::Closed)
+        .map(|t| t.id)
+        .collect();
 
     tokio::spawn(async move {
         use std::time::Duration;
@@ -289,12 +317,18 @@ async fn handle_streaming_map(
                         Ok(e) => e,
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                             tracing::warn!(skipped = n, "map stream lagged, sending full update");
-                            if let Ok(json) = control::handle_map(&state_clone, &machine_key, &body).await {
+                            if let Ok(json) = control::build_map_snapshot(&state_clone, &machine_key).await {
                                 let framed = frame_map_response(json.as_bytes());
                                 if tx.send(Ok(hyper::body::Frame::data(Bytes::from(framed)))).await.is_err() {
                                     break;
                                 }
                             }
+                            // Refresh child tenant IDs after lag recovery
+                            child_tenant_ids = state_clone.store.get_child_tenants(tenant_id).await
+                                .into_iter()
+                                .filter(|t| t.federation_posture != coord_core::FederationPosture::Closed)
+                                .map(|t| t.id)
+                                .collect();
                             continue;
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
@@ -306,7 +340,7 @@ async fn handle_streaming_map(
                         coord_store::PeerEvent::NodeOffline { tenant_id: t, .. } => *t,
                     };
 
-                    if event_tenant != tenant_id {
+                    if event_tenant != tenant_id && !child_tenant_ids.contains(&event_tenant) {
                         continue;
                     }
 
@@ -325,7 +359,7 @@ async fn handle_streaming_map(
                         &state_clone,
                         &machine_key,
                         &event,
-                    );
+                    ).await;
 
                     if let Some(json) = delta {
                         let framed = frame_map_response(json.as_bytes());
@@ -340,6 +374,12 @@ async fn handle_streaming_map(
                     if tx.send(Ok(hyper::body::Frame::data(Bytes::from(framed)))).await.is_err() {
                         break;
                     }
+                    // Refresh child tenant IDs alongside keepalive
+                    child_tenant_ids = state_clone.store.get_child_tenants(tenant_id).await
+                        .into_iter()
+                        .filter(|t| t.federation_posture != coord_core::FederationPosture::Closed)
+                        .map(|t| t.id)
+                        .collect();
                 }
             }
         }

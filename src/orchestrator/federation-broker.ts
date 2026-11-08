@@ -10,9 +10,9 @@
  * handshake for sessions that are not yet established, exchanges keepalives,
  * and tears down sessions whose link is no longer active.
  *
- * Every active link has two sessions — one per side, each holding that
- * tenant's view (`localTenantId`) of its peer. The side that accepted the
- * link (the target) initiates the handshake.
+ * Every active link row represents one side of a federation — `localTenantId`
+ * is the local collective, `peerDid` is the remote. The side whose link has
+ * direction "incoming" (the acceptor) initiates the outbound handshake.
  */
 
 import * as crypto from "node:crypto";
@@ -93,6 +93,7 @@ async function brokerTick(): Promise<void> {
     await reconcileActiveSessions();
     await sendKeepalives();
     await checkSessionHealth();
+    await checkRelayHealth();
   } catch (err) {
     logger.error({ err }, "federation broker tick failed");
   } finally {
@@ -102,42 +103,49 @@ async function brokerTick(): Promise<void> {
 
 // ── Link ↔ session reconciliation ────────────────────────────────────────
 
-/** One tenant's view of a federation link. */
+/**
+ * One tenant's view of a federation link.
+ *
+ * In the per-side schema each link row IS one side, so this is a thin
+ * projection with a default broker URL filled in when the link has none.
+ */
 export interface LinkSide {
   localTenantId: string;
-  remoteTenantId: string;
+  peerDid: string;
   /** CIDRs this side shares with the peer. */
   localCidrs: string[];
   /** CIDRs the peer agreed to share with this side. */
-  remoteCidrs: string[];
+  peerCidrs: string[];
   /** Base URL of the peer's broker. */
-  remoteEndpoint: string;
+  peerBrokerUrl: string;
 }
 
+/**
+ * Extract the local side's view from a federation link. In the per-side
+ * schema each link row already represents one side, so this just projects
+ * the relevant fields and fills in a default broker URL.
+ *
+ * The `_localTenantId` parameter is accepted for call-site compatibility
+ * but is not used — the link's own `localTenantId` is authoritative.
+ */
 export function linkSide(
   link: Pick<
     FederationLink,
-    | "requesterTenantId"
-    | "targetTenantId"
-    | "requesterCidrs"
-    | "targetCidrs"
-    | "requesterBrokerEndpoint"
-    | "targetBrokerEndpoint"
+    | "localTenantId"
+    | "peerDid"
+    | "localCidrs"
+    | "peerCidrs"
+    | "peerBrokerUrl"
   >,
-  localTenantId: string,
+  _localTenantId?: string,
   defaultEndpoint: string = config.publicUrl,
 ): LinkSide {
-  const isRequester = link.requesterTenantId === localTenantId;
   return {
-    localTenantId,
-    remoteTenantId: isRequester ? link.targetTenantId : link.requesterTenantId,
-    localCidrs: isRequester ? link.requesterCidrs : link.targetCidrs,
-    remoteCidrs: isRequester ? link.targetCidrs : link.requesterCidrs,
-    // Both collectives of a link live on this instance unless the link
-    // recorded another broker, so the peer's broker defaults to ourselves.
-    remoteEndpoint:
-      (isRequester ? link.targetBrokerEndpoint : link.requesterBrokerEndpoint) ??
-      defaultEndpoint,
+    localTenantId: link.localTenantId,
+    peerDid: link.peerDid,
+    localCidrs: link.localCidrs,
+    peerCidrs: link.peerCidrs,
+    peerBrokerUrl: link.peerBrokerUrl ?? defaultEndpoint,
   };
 }
 
@@ -160,56 +168,56 @@ async function reconcileActiveSessions(): Promise<void> {
   }
 
   // Retry handshakes that have not completed (peer was unreachable, the
-  // process restarted mid-handshake, …). The accepting side initiates.
+  // process restarted mid-handshake, …). The accepting (incoming) side initiates.
   for (const link of activeLinks) {
+    if (link.direction !== "incoming") continue;
+
     const [pending] = await db
       .select({ id: brokerSessions.id })
       .from(brokerSessions)
       .where(
         and(
           eq(brokerSessions.federationLinkId, link.id),
-          eq(brokerSessions.localTenantId, link.targetTenantId),
+          eq(brokerSessions.localTenantId, link.localTenantId),
           eq(brokerSessions.status, "connecting"),
         ),
       )
       .limit(1);
 
     if (pending) {
-      await initiateOutboundHandshake(link.id, link.targetTenantId).catch((err) => {
+      await initiateOutboundHandshake(link.id, link.localTenantId).catch((err) => {
         logger.warn({ linkId: link.id, err }, "federation handshake attempt failed");
       });
     }
   }
 }
 
-/** Create the per-side session rows of an active link if they are missing. */
+/** Create the session row for an active link if it is missing. */
 async function ensureSessionsForLink(link: FederationLink): Promise<void> {
-  for (const localTenantId of [link.requesterTenantId, link.targetTenantId]) {
-    const side = linkSide(link, localTenantId);
-    const [session] = await db
-      .insert(brokerSessions)
-      .values({
-        federationLinkId: link.id,
-        localTenantId: side.localTenantId,
-        remoteTenantId: side.remoteTenantId,
-        status: "connecting",
-        remoteEndpoint: side.remoteEndpoint,
-        protocolVersion: link.protocolVersion,
-        exportedRoutes: side.localCidrs,
-        // Filled in from the peer's announcements when the handshake completes.
-        importedRoutes: [],
-      })
-      .onConflictDoNothing()
-      .returning();
+  const [session] = await db
+    .insert(brokerSessions)
+    .values({
+      federationLinkId: link.id,
+      localTenantId: link.localTenantId,
+      peerDid: link.peerDid,
+      status: "connecting",
+      remoteEndpoint: link.peerBrokerUrl ?? config.publicUrl,
+      protocolVersion: link.protocolVersion,
+      exportedRoutes: link.localCidrs,
+      // Filled in from the peer's announcements when the handshake completes.
+      importedRoutes: [],
+    })
+    .onConflictDoNothing()
+    .returning();
 
-    if (session) {
-      logger.info(
-        { linkId: link.id, sessionId: session.id, localTenantId },
-        "created broker session for federation link",
-      );
-      if (localTenantId === link.requesterTenantId) {
-        await provisionRelayNode(session.id, link);
-      }
+  if (session) {
+    logger.info(
+      { linkId: link.id, sessionId: session.id, localTenantId: link.localTenantId },
+      "created broker session for federation link",
+    );
+    // Provision relay for outgoing links (we requested the federation).
+    if (link.direction === "outgoing") {
+      await provisionRelayNode(session.id, link);
     }
   }
 }
@@ -223,19 +231,68 @@ async function provisionRelayNode(
     "provisioning relay node for broker session",
   );
 
-  await db.insert(relayNodes).values({
-    brokerSessionId: sessionId,
-    status: "provisioning",
-  });
+  const [relay] = await db
+    .insert(relayNodes)
+    .values({
+      brokerSessionId: sessionId,
+      advertisedRoutes: link.peerCidrs,
+      status: "provisioning",
+    })
+    .returning();
 
-  // TODO: Actually provision a WireGuard relay container/process,
-  // register it in both Headscale instances (tagged FEDERATION_RELAY_TAG),
-  // and populate localNodeId, remoteNodeId, and wireguardPublicKey.
-  //
-  // For now this creates the DB record so the session is tracked.
-  // The relay provisioning requires Headscale API integration
-  // (creating pre-auth keys on both sides, starting a tailscale
-  // process dual-homed across both instances).
+  try {
+    const { getControlClient } = await import("./control-client.js");
+    const [tenant] = await db
+      .select({ slug: tenants.slug, port: tenants.port, apiKey: tenants.apiKey, status: tenants.status, coordinatorTenantId: tenants.coordinatorTenantId })
+      .from(tenants)
+      .where(eq(tenants.id, link.localTenantId))
+      .limit(1);
+
+    if (!tenant?.port || tenant.status !== "running") {
+      logger.warn({ tenantId: link.localTenantId }, "tenant not running, deferring relay provisioning");
+      return;
+    }
+
+    const client = getControlClient(tenant);
+
+    const authKey = await client.createTaggedPreAuthKey([FEDERATION_RELAY_TAG], {
+      expirationSeconds: 300,
+    });
+
+    const { createRelayHalf } = await import("./relay.js");
+    const { tenantPublicUrl } = await import("../config.js");
+
+    const containerId = await createRelayHalf({
+      tenantSlug: tenant.slug,
+      loginServer: tenantPublicUrl(tenant.slug),
+      authKey: authKey.key,
+      advertisedRoutes: link.peerCidrs,
+      localCidrs: link.localCidrs,
+      peerCidrs: link.peerCidrs,
+      linkId: link.id,
+      side: "local",
+    });
+
+    await db
+      .update(relayNodes)
+      .set({
+        containerId,
+        status: "active",
+        updatedAt: new Date(),
+      })
+      .where(eq(relayNodes.id, relay.id));
+
+    logger.info(
+      { sessionId, linkId: link.id, containerId },
+      "relay half provisioned and active",
+    );
+  } catch (err) {
+    logger.error({ sessionId, linkId: link.id, err }, "relay half provisioning failed");
+    await db
+      .update(relayNodes)
+      .set({ status: "unhealthy", updatedAt: new Date() })
+      .where(eq(relayNodes.id, relay.id));
+  }
 }
 
 async function teardownBrokerSession(stale: BrokerSession): Promise<void> {
@@ -251,28 +308,59 @@ async function teardownBrokerSession(stale: BrokerSession): Promise<void> {
 
   if (session.cfpSessionId && session.remoteEndpoint && session.status !== "disconnected") {
     try {
-      const remoteDid = await getCollectiveDid(session.remoteTenantId);
-      if (remoteDid) {
-        const revoke = await signMessage(
-          {
-            type: "REVOKE" as const,
-            sessionId: session.cfpSessionId,
-            reason: "link deactivated",
-            permanent: false,
-            timestamp: new Date().toISOString(),
-          },
-          (payload) => signAsCollective(session.localTenantId, payload),
-        );
-        await sendRevoke(session.remoteEndpoint, revoke, remoteDid);
-      }
+      const revoke = await signMessage(
+        {
+          type: "REVOKE" as const,
+          sessionId: session.cfpSessionId,
+          reason: "link deactivated",
+          permanent: false,
+          timestamp: new Date().toISOString(),
+        },
+        (payload) => signAsCollective(session.localTenantId, payload),
+      );
+      await sendRevoke(session.remoteEndpoint, revoke, session.peerDid);
     } catch (err) {
       logger.warn({ sessionId: session.id, err }, "failed to notify peer of revocation");
     }
   }
 
-  // relay_nodes rows reference the session, so they go first.
-  // TODO: shut down the relay node process/container and deregister it from
-  // both Headscale instances once relay provisioning exists.
+  // Tear down relay containers and deregister from Headscale.
+  const relays = await db
+    .select()
+    .from(relayNodes)
+    .where(eq(relayNodes.brokerSessionId, session.id));
+
+  for (const relay of relays) {
+    try {
+      if (relay.containerId) {
+        const { destroyRelayHalf } = await import("./relay.js");
+        await destroyRelayHalf(relay.containerId);
+      }
+      if (relay.headscaleNodeId) {
+        const { getControlClient } = await import("./control-client.js");
+        const [tenant] = await db
+          .select({ port: tenants.port, apiKey: tenants.apiKey, status: tenants.status, coordinatorTenantId: tenants.coordinatorTenantId })
+          .from(tenants)
+          .where(eq(tenants.id, session.localTenantId))
+          .limit(1);
+        if (tenant?.port && tenant.status === "running") {
+          const client = getControlClient(tenant);
+          try {
+            await client.deleteNode(relay.headscaleNodeId);
+          } catch (deleteErr) {
+            if (deleteErr instanceof Error && deleteErr.message.includes("not yet supported")) {
+              logger.warn({ relayId: relay.id }, "node deletion not supported in coordinator mode, skipping");
+            } else {
+              throw deleteErr;
+            }
+          }
+        }
+      }
+    } catch (err) {
+      logger.warn({ relayId: relay.id, err }, "failed to clean up relay half");
+    }
+  }
+
   await db.delete(relayNodes).where(eq(relayNodes.brokerSessionId, session.id));
   await db.delete(brokerSessions).where(eq(brokerSessions.id, session.id));
 
@@ -291,9 +379,6 @@ async function sendKeepalives(): Promise<void> {
     if (!session.remoteEndpoint || !session.cfpSessionId) continue;
 
     try {
-      const remoteDid = await getCollectiveDid(session.remoteTenantId);
-      if (!remoteDid) continue;
-
       const keepalive = await signMessage(
         {
           type: "KEEPALIVE" as const,
@@ -305,7 +390,7 @@ async function sendKeepalives(): Promise<void> {
       );
 
       // A successful round-trip proves the peer still holds the session.
-      if (await sendKeepalive(session.remoteEndpoint, keepalive, remoteDid)) {
+      if (await sendKeepalive(session.remoteEndpoint, keepalive, session.peerDid)) {
         await db
           .update(brokerSessions)
           .set({ status: "established", lastKeepalive: new Date(), updatedAt: new Date() })
@@ -342,6 +427,42 @@ async function checkSessionHealth(): Promise<void> {
         .update(brokerSessions)
         .set({ status: "degraded", updatedAt: new Date() })
         .where(eq(brokerSessions.id, session.id));
+    }
+  }
+}
+
+async function checkRelayHealth(): Promise<void> {
+  const relays = await db
+    .select()
+    .from(relayNodes)
+    .where(inArray(relayNodes.status, ["active", "unhealthy", "provisioning"]));
+
+  for (const relay of relays) {
+    if (!relay.containerId) continue;
+
+    try {
+      const { isRelayHalfRunning } = await import("./relay.js");
+      const running = await isRelayHalfRunning(relay.containerId);
+
+      if (running && relay.status !== "active") {
+        await db
+          .update(relayNodes)
+          .set({ status: "active", lastHealthCheck: new Date(), updatedAt: new Date() })
+          .where(eq(relayNodes.id, relay.id));
+      } else if (!running && relay.status === "active") {
+        logger.warn({ relayId: relay.id, containerId: relay.containerId }, "relay half not running");
+        await db
+          .update(relayNodes)
+          .set({ status: "unhealthy", lastHealthCheck: new Date(), updatedAt: new Date() })
+          .where(eq(relayNodes.id, relay.id));
+      } else {
+        await db
+          .update(relayNodes)
+          .set({ lastHealthCheck: new Date() })
+          .where(eq(relayNodes.id, relay.id));
+      }
+    } catch (err) {
+      logger.warn({ relayId: relay.id, err }, "relay health check failed");
     }
   }
 }
@@ -458,31 +579,24 @@ export async function signAsCollective(
 
 // ── Outbound handshake ───────────────────────────────────────────────────
 
-/** The active federation link between two local tenants, if any. */
+/** The active federation link from a local tenant to a specific peer DID. */
 export async function findActiveLink(
-  tenantA: string,
-  tenantB: string,
+  localTenantId: string,
+  peerDid: string,
 ): Promise<FederationLink | null> {
-  const links = await db
+  const [link] = await db
     .select()
     .from(federationLinks)
     .where(
       and(
         eq(federationLinks.status, "active"),
-        inArray(federationLinks.requesterTenantId, [tenantA, tenantB]),
-        inArray(federationLinks.targetTenantId, [tenantA, tenantB]),
+        eq(federationLinks.localTenantId, localTenantId),
+        eq(federationLinks.peerDid, peerDid),
       ),
     )
-    .limit(5);
+    .limit(1);
 
-  return (
-    links.find(
-      (l) =>
-        l.requesterTenantId !== l.targetTenantId &&
-        [l.requesterTenantId, l.targetTenantId].includes(tenantA) &&
-        [l.requesterTenantId, l.targetTenantId].includes(tenantB),
-    ) ?? null
-  );
+  return link ?? null;
 }
 
 /**
@@ -538,17 +652,16 @@ export async function initiateOutboundHandshake(
       logger.warn({ linkId }, "cannot initiate handshake: link not active");
       return false;
     }
-    if (![link.requesterTenantId, link.targetTenantId].includes(localTenantId)) {
+    if (link.localTenantId !== localTenantId) {
       logger.warn({ linkId, localTenantId }, "cannot initiate handshake: not a party to the link");
       return false;
     }
 
     await ensureSessionsForLink(link);
-    const side = linkSide(link, localTenantId);
 
-    // Both parties are tenants of this instance; make sure each has a DID.
     const { did: localDid } = await ensureCollectiveDid(localTenantId);
-    const { did: remoteDid } = await ensureCollectiveDid(side.remoteTenantId);
+    const remoteDid = link.peerDid;
+    const peerBrokerUrl = link.peerBrokerUrl ?? config.publicUrl;
 
     const sign = (payload: string) => signAsCollective(localTenantId, payload);
     const resolver = getResolver();
@@ -556,20 +669,20 @@ export async function initiateOutboundHandshake(
       sign,
       resolver,
       evaluatePolicy: async () => true,
-      routes: await buildAnnouncements(localDid, side.localCidrs, sign),
+      routes: await buildAnnouncements(localDid, link.localCidrs, sign),
     });
 
     const hello = await initiateHello(
       createHandshake(localDid),
       remoteDid,
       "peer",
-      side.localCidrs,
+      link.localCidrs,
       LOCAL_CAPABILITIES,
       callbacks,
     );
 
-    logger.info({ linkId, remoteDid, endpoint: side.remoteEndpoint }, "sending HELLO");
-    const helloResult = await sendMessage(side.remoteEndpoint, hello.message, remoteDid);
+    logger.info({ linkId, remoteDid, endpoint: peerBrokerUrl }, "sending HELLO");
+    const helloResult = await sendMessage(peerBrokerUrl, hello.message, remoteDid);
     if (!helloResult.ok) {
       logger.warn({ linkId, error: helloResult.error }, "HELLO rejected");
       return false;
@@ -592,7 +705,7 @@ export async function initiateOutboundHandshake(
       return false;
     }
 
-    const commitResult = await sendMessage(side.remoteEndpoint, commit.message, remoteDid);
+    const commitResult = await sendMessage(peerBrokerUrl, commit.message, remoteDid);
     if (!commitResult.ok) {
       logger.warn({ linkId, error: commitResult.error }, "COMMIT rejected");
       return false;
@@ -620,7 +733,7 @@ export async function initiateOutboundHandshake(
       linkId,
       localTenantId,
       finalState.sessionId,
-      filterImportedPrefixes(established.initialRoutes, side.remoteCidrs, remoteDid),
+      filterImportedPrefixes(established.initialRoutes, link.peerCidrs, remoteDid),
     );
 
     logger.info(
@@ -672,16 +785,16 @@ async function updateTenantPolicy(
   tenantId: string,
   update: (policy: AclPolicy) => AclPolicy,
 ): Promise<boolean> {
-  const { HeadscaleApiClient } = await import("./headscale-api.js");
+  const { getControlClient } = await import("./control-client.js");
   const [tenant] = await db
-    .select({ port: tenants.port, apiKey: tenants.apiKey, status: tenants.status })
+    .select({ port: tenants.port, apiKey: tenants.apiKey, status: tenants.status, coordinatorTenantId: tenants.coordinatorTenantId })
     .from(tenants)
     .where(eq(tenants.id, tenantId))
     .limit(1);
 
   if (!tenant?.port || tenant.status !== "running") return false;
 
-  const client = new HeadscaleApiClient(tenant.port, tenant.apiKey);
+  const client = getControlClient(tenant);
   const policy = (await client.getPolicy()) as AclPolicy;
   await client.setPolicy(update(policy));
   return true;
@@ -760,8 +873,8 @@ export async function getRouteTable(
 export async function getBrokerStatus(tenantId: string): Promise<{
   sessions: Array<{
     id: string;
-    remoteTenantId: string;
-    remoteSlug: string | null;
+    peerDid: string;
+    peerName: string | null;
     status: string;
     exportedRoutes: string[];
     importedRoutes: string[];
@@ -776,15 +889,15 @@ export async function getBrokerStatus(tenantId: string): Promise<{
   const sessions = await db
     .select({
       id: brokerSessions.id,
-      remoteTenantId: brokerSessions.remoteTenantId,
-      remoteSlug: tenants.slug,
+      peerDid: brokerSessions.peerDid,
+      peerName: federationLinks.peerName,
       status: brokerSessions.status,
       exportedRoutes: brokerSessions.exportedRoutes,
       importedRoutes: brokerSessions.importedRoutes,
       lastKeepalive: brokerSessions.lastKeepalive,
     })
     .from(brokerSessions)
-    .leftJoin(tenants, eq(tenants.id, brokerSessions.remoteTenantId))
+    .leftJoin(federationLinks, eq(federationLinks.id, brokerSessions.federationLinkId))
     .where(eq(brokerSessions.localTenantId, tenantId))
     .orderBy(brokerSessions.createdAt)
     .limit(200);

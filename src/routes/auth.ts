@@ -16,8 +16,8 @@ import { db } from "../db/index.js";
 import { users, tenants, memberships, roles } from "../db/schema.js";
 import { allocatePort } from "../orchestrator/ports.js";
 import { adoptInstance, createInstance } from "../orchestrator/headscale.js";
-import { HeadscaleApiClient } from "../orchestrator/headscale-api.js";
 import { syncTenantRoutes } from "../orchestrator/caddy.js";
+import { getControlClient, useCoordinator } from "../orchestrator/control-client.js";
 import {
   ORIGINATOR_PERMISSIONS,
   DEFAULT_CITIZEN_PERMISSIONS,
@@ -57,6 +57,8 @@ async function provisionTenant(
   handle: string,
 ): Promise<void> {
   const slug = await generateUniqueSlug(handle);
+  const { allocateTenantPrefixes } = await import("../orchestrator/prefix-allocator.js");
+  const prefixes = await allocateTenantPrefixes();
 
   let tenant: typeof tenants.$inferSelect | undefined;
   let port = 0;
@@ -72,6 +74,8 @@ async function provisionTenant(
           port,
           apiKey: "",
           status: "provisioning",
+          ipv4Prefix: prefixes.ipv4Prefix,
+          ipv6Prefix: prefixes.ipv6Prefix,
         })
         .returning();
       tenant = inserted;
@@ -127,10 +131,15 @@ async function provisionTenant(
 }
 
 /**
- * Bring a tenant's Headscale instance up and mark the tenant running:
- * start the container (or adopt the one a previous, failed attempt left
- * behind), store its API key, install the default policy and sync the Caddy
- * routes. On failure the tenant is marked "error".
+ * Bring a tenant's control-plane instance up and mark the tenant running.
+ *
+ * In coordinator mode: creates the tenant in the Rust coordinator via REST,
+ * stores the coordinator-side tenant UUID, sets default policy.
+ *
+ * In Headscale mode: starts a Docker container (or adopts a leftover one),
+ * stores its API key, installs the default ACL policy.
+ *
+ * Both modes sync Caddy routes at the end. On failure the tenant is marked "error".
  */
 export async function provisionTenantInstance(
   tenantId: string,
@@ -138,33 +147,17 @@ export async function provisionTenantInstance(
   port: number,
 ): Promise<boolean> {
   try {
-    const instance =
-      (await adoptInstance(slug, port)) ?? (await createInstance(slug, port));
-
-    await db
-      .update(tenants)
-      .set({
-        apiKey: instance.apiKey,
-        containerId: instance.containerId,
-        status: "running",
-        updatedAt: new Date(),
-      })
-      .where(eq(tenants.id, tenantId));
-
-    const hsClient = new HeadscaleApiClient(port, instance.apiKey);
-    await hsClient
-      .setPolicy({
-        acls: [{ action: "accept", src: ["*"], dst: ["*:*"] }],
-      })
-      .catch((err) =>
-        logger.error({ tenantSlug: slug, err }, "failed to set default policy"),
-      );
+    if (useCoordinator) {
+      await provisionViaCoordinator(tenantId, slug, port);
+    } else {
+      await provisionViaHeadscale(tenantId, slug, port);
+    }
 
     await syncTenantRoutes().catch((err) =>
       logger.error({ tenantSlug: slug, err }, "failed to sync Caddy routes"),
     );
 
-    logger.info({ tenantSlug: slug, port }, "tenant provisioned");
+    logger.info({ tenantSlug: slug, port, mode: useCoordinator ? "coordinator" : "headscale" }, "tenant provisioned");
     return true;
   } catch (err) {
     logger.error({ tenantSlug: slug, err }, "failed to provision tenant");
@@ -174,6 +167,107 @@ export async function provisionTenantInstance(
       .where(eq(tenants.id, tenantId));
     return false;
   }
+}
+
+/** Sentinel value stored in apiKey for coordinator-mode tenants. */
+const COORDINATOR_API_KEY_SENTINEL = "__coordinator__";
+
+async function provisionViaCoordinator(
+  tenantId: string,
+  slug: string,
+  _port: number,
+): Promise<void> {
+  const { config } = await import("../config.js");
+  const coordUrl = config.coordinatorUrl!;
+
+  const res = await fetch(`${coordUrl}/api/tenants`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      ...(config.coordinatorApiKey
+        ? { Authorization: `Bearer ${config.coordinatorApiKey}` }
+        : {}),
+    },
+    body: JSON.stringify({ slug }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Coordinator tenant creation failed (${res.status}): ${text}`);
+  }
+
+  const coordTenant = (await res.json()) as { id: string };
+
+  try {
+    await db
+      .update(tenants)
+      .set({
+        coordinatorTenantId: coordTenant.id,
+        apiKey: COORDINATOR_API_KEY_SENTINEL,
+        status: "running",
+        updatedAt: new Date(),
+      })
+      .where(eq(tenants.id, tenantId));
+
+    const client = getControlClient({
+      port: 0,
+      apiKey: COORDINATOR_API_KEY_SENTINEL,
+      coordinatorTenantId: coordTenant.id,
+    });
+
+    await client
+      .setPolicy({
+        acls: [{ action: "accept", src: ["*"], dst: ["*:*"] }],
+      })
+      .catch((err) =>
+        logger.error({ tenantSlug: slug, err }, "failed to set default policy"),
+      );
+  } catch (err) {
+    // Compensating delete — best effort
+    try {
+      await fetch(`${coordUrl}/api/tenants/${coordTenant.id}`, {
+        method: "DELETE",
+        headers: config.coordinatorApiKey
+          ? { Authorization: `Bearer ${config.coordinatorApiKey}` }
+          : {},
+      });
+    } catch {
+      // Best-effort cleanup; log the original error
+    }
+    throw err;
+  }
+}
+
+async function provisionViaHeadscale(
+  tenantId: string,
+  slug: string,
+  port: number,
+): Promise<void> {
+  const instance =
+    (await adoptInstance(slug, port)) ?? (await createInstance(slug, port));
+
+  await db
+    .update(tenants)
+    .set({
+      apiKey: instance.apiKey,
+      containerId: instance.containerId,
+      status: "running",
+      updatedAt: new Date(),
+    })
+    .where(eq(tenants.id, tenantId));
+
+  const client = getControlClient({
+    port,
+    apiKey: instance.apiKey,
+  });
+
+  await client
+    .setPolicy({
+      acls: [{ action: "accept", src: ["*"], dst: ["*:*"] }],
+    })
+    .catch((err) =>
+      logger.error({ tenantSlug: slug, err }, "failed to set default policy"),
+    );
 }
 
 authRouter.get("/auth/login", async (req, res) => {

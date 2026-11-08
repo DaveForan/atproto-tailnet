@@ -15,7 +15,7 @@ pub async fn handle_register(
     state: &Arc<CoordinatorState>,
     machine_key: &[u8; 32],
     body: &str,
-) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+) -> Result<(String, Option<u64>), Box<dyn std::error::Error + Send + Sync>> {
     let req: RegisterRequest = serde_json::from_str(body)?;
 
     let auth_key = req
@@ -24,7 +24,7 @@ pub async fn handle_register(
         .and_then(|a| a.auth_key.as_deref());
 
     let tenant_id = match auth_key {
-        Some(key) => match state.store.validate_preauth_key(key) {
+        Some(key) => match state.store.validate_preauth_key(key).await {
             Some(tid) => tid,
             None => {
                 warn!(auth_key = key, "invalid pre-auth key");
@@ -36,7 +36,7 @@ pub async fn handle_register(
                     auth_url: String::new(),
                     error: "invalid or expired pre-auth key".into(),
                 };
-                return Ok(serde_json::to_string(&resp)?);
+                return Ok((serde_json::to_string(&resp)?, None));
             }
         },
         None => {
@@ -48,7 +48,7 @@ pub async fn handle_register(
                 auth_url: "https://example.com/register".into(),
                 error: String::new(),
             };
-            return Ok(serde_json::to_string(&resp)?);
+            return Ok((serde_json::to_string(&resp)?, None));
         }
     };
 
@@ -57,7 +57,7 @@ pub async fn handle_register(
     if let Some(ref old_key_str) = req.old_node_key {
         if let Ok(old_key) = parse_key_from_request(old_key_str) {
             if old_key != [0u8; 32] {
-                state.store.rotate_node_key(machine_key, &old_key, &node_key_bytes);
+                state.store.rotate_node_key(machine_key, &old_key, &node_key_bytes).await;
                 info!(
                     old_key = hex::encode(&old_key[..8]),
                     new_key = hex::encode(&node_key_bytes[..8]),
@@ -86,7 +86,7 @@ pub async fn handle_register(
         ipv6: None,
     };
 
-    let (node_id, ipv4) = state.store.register_node(tenant_id, *machine_key, node_info);
+    let (node_id, ipv4, generation) = state.store.register_node(tenant_id, *machine_key, node_info).await?;
 
     info!(
         node_id = node_id.as_i64(),
@@ -112,7 +112,7 @@ pub async fn handle_register(
         error: String::new(),
     };
 
-    Ok(serde_json::to_string(&resp)?)
+    Ok((serde_json::to_string(&resp)?, Some(generation)))
 }
 
 pub async fn handle_map(
@@ -130,37 +130,59 @@ pub async fn handle_map(
         return Ok(serde_json::to_string(&resp)?);
     }
 
-    if let Some(node_id) = state.store.get_node_by_machine_key(machine_key) {
+    if let Some(node_id) = state.store.get_node_by_machine_key(machine_key).await {
         if req.endpoints.is_some() || req.disco_key.is_some() {
             state.store.update_endpoints(
                 node_id,
                 req.endpoints.clone().unwrap_or_default(),
                 req.disco_key.clone(),
-            );
+            ).await;
         }
     }
 
+    build_map_snapshot(state, machine_key).await
+}
+
+/// Build a full MapResponse from current store state without processing
+/// any request body. Used for initial map responses and lag recovery.
+pub async fn build_map_snapshot(
+    state: &Arc<CoordinatorState>,
+    machine_key: &[u8; 32],
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let node_id = state
         .store
-        .get_node_by_machine_key(machine_key)
+        .get_node_by_machine_key(machine_key).await
         .ok_or("node not registered")?;
 
     let tenant_id = state
         .store
-        .get_node_tenant(node_id)
+        .get_node_tenant(node_id).await
         .ok_or("node has no tenant")?;
 
     let ipv4 = state
         .store
-        .get_node_ipv4(node_id)
+        .get_node_ipv4(node_id).await
         .ok_or("node has no IP")?;
 
-    let stable_id = state
+    let (_, _, stable_id, node_info) = state
         .store
-        .get_node_stable_id(node_id)
-        .unwrap_or_default();
+        .get_node_info(node_id).await
+        .ok_or("node info not found")?;
 
-    let peers = state.store.get_peers(tenant_id, node_id);
+    let node_key_str = if node_info.node_key.len() == 32 {
+        let mut k = [0u8; 32];
+        k.copy_from_slice(&node_info.node_key);
+        format_node_key(&k)
+    } else {
+        hex::encode(&node_info.node_key)
+    };
+
+    let children = state.store.get_child_tenants(tenant_id).await;
+    let peers = if children.is_empty() {
+        state.store.get_peers(tenant_id, node_id).await
+    } else {
+        state.store.get_peers_with_children(tenant_id, node_id).await
+    };
     let peer_nodes: Vec<MapNode> = peers
         .iter()
         .map(|p| peer_info_to_map_node(p))
@@ -173,7 +195,7 @@ pub async fn handle_map(
         stable_id,
         name: format!("node-{}.mesh.local.", node_id.as_i64()),
         user: 1,
-        key: req.node_key.clone(),
+        key: node_key_str,
         machine: format_machine_key(&coord_core::MachineKey(*machine_key)),
         disco_key: None,
         addresses: vec![format!("{}/32", ipv4)],
@@ -222,14 +244,14 @@ pub async fn handle_map(
 
 /// Build a delta MapResponse for a peer event.
 /// Returns None if the event doesn't produce a meaningful delta.
-pub fn build_delta_response(
+pub async fn build_delta_response(
     state: &Arc<CoordinatorState>,
     _machine_key: &[u8; 32],
     event: &PeerEvent,
 ) -> Option<String> {
     match event {
         PeerEvent::NodeJoined { node_id, .. } | PeerEvent::NodeUpdated { node_id, .. } => {
-            let (_, ipv4, stable_id, info) = state.store.get_node_info(*node_id)?;
+            let (_, ipv4, stable_id, info) = state.store.get_node_info(*node_id).await?;
             let node_key = if info.node_key.len() == 32 {
                 let mut k = [0u8; 32];
                 k.copy_from_slice(&info.node_key);

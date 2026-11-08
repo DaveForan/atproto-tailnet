@@ -75,10 +75,14 @@ async fn main() -> anyhow::Result<()> {
         let pool = sqlx::PgPool::connect(url).await?;
         let pg_store = coord_store::PgStore::new(pool).await?;
         tracing::info!("PostgreSQL store initialized, migrations applied");
-        // PgStore is available but not yet wired into handlers (requires
-        // async store trait extraction). Keeping it alive for migration.
-        std::mem::forget(pg_store);
+        coordinator = coordinator.with_store(coord_store::Store::Pg(pg_store));
     }
+
+    let admin_key = std::env::var("COORD_ADMIN_KEY").ok();
+    if admin_key.is_some() {
+        tracing::info!("admin API key authentication enabled");
+    }
+    coordinator = coordinator.with_admin_api_key(admin_key);
 
     let state = Arc::new(coordinator);
     let app = coord_api::router(state);

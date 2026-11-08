@@ -14,6 +14,7 @@
  * migration SQL files by hand.
  */
 
+import { sql } from "drizzle-orm";
 import {
   pgTable,
   uuid,
@@ -166,6 +167,17 @@ export const federationStatusEnum = pgEnum("federation_status", [
   "revoked",
 ]);
 
+export const linkDirectionEnum = pgEnum("link_direction", [
+  "outgoing",
+  "incoming",
+]);
+
+export const federationPostureEnum = pgEnum("federation_posture", [
+  "closed",
+  "selective",
+  "open",
+]);
+
 export const users = pgTable("users", {
   id: uuid("id").defaultRandom().primaryKey(),
   did: text("did").notNull().unique(),
@@ -264,6 +276,8 @@ export const tenants = pgTable("tenants", {
   egressPolicy: jsonb("egress_policy").$type<{ rules: unknown[]; default: string }>(),
   /** Ingress traversal policy (ADR-0011) — controls inbound cross-collective traffic. */
   ingressPolicy: jsonb("ingress_policy").$type<{ rules: unknown[]; default: string }>(),
+  /** Federation posture: closed (no inbound), selective (queue for operator), open (auto-accept). */
+  federationPosture: federationPostureEnum("federation_posture").notNull().default("selective"),
   /** Federation scopes this collective participates in (ADR-0015). */
   federationScopes: jsonb("federation_scopes").$type<string[]>().default(["regional"]),
   /** UN M49 region code for regional federation grouping. */
@@ -272,6 +286,8 @@ export const tenants = pgTable("tenants", {
   federationCoordinates: jsonb("federation_coordinates").$type<[number, number]>(),
   /** Per-scope federation policy overrides. */
   federationScopePolicies: jsonb("federation_scope_policies").$type<Record<string, { autoAccept: boolean; verification: string }>>(),
+  /** UUID of this tenant in the Rust mesh coordinator (ADR-0023). NULL when using Headscale. */
+  coordinatorTenantId: text("coordinator_tenant_id"),
   /** Role assigned to new members on invitation acceptance. */
   defaultRoleId: uuid("default_role_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -538,34 +554,39 @@ export const federationLinks = pgTable(
   "federation_links",
   {
     id: uuid("id").defaultRandom().primaryKey(),
-    requesterTenantId: uuid("requester_tenant_id")
+    /** The local collective that owns this side of the link. */
+    localTenantId: uuid("local_tenant_id")
       .notNull()
       .references(() => tenants.id),
-    targetTenantId: uuid("target_tenant_id")
-      .notNull()
-      .references(() => tenants.id),
+    /** The remote collective's DID (may be on another instance). */
+    peerDid: text("peer_did").notNull(),
+    /** Where the peer's broker is reachable (from discovery). */
+    peerBrokerUrl: text("peer_broker_url"),
+    /** Display name from the peer's discovery document. */
+    peerName: text("peer_name"),
+    /** Who initiated: outgoing = we asked, incoming = they asked. */
+    direction: linkDirectionEnum("direction").notNull(),
     status: federationStatusEnum("status").notNull().default("pending"),
     /** Optional note from the requester. */
     message: text("message"),
-    /** CIDRs the requester is willing to share (JSONB array). */
-    requesterCidrs: jsonb("requester_cidrs").$type<string[]>().notNull().default([]),
-    /** CIDRs the target is willing to share (set on accept). */
-    targetCidrs: jsonb("target_cidrs").$type<string[]>().notNull().default([]),
+    /** CIDRs we share with the peer (JSONB array). */
+    localCidrs: jsonb("local_cidrs").$type<string[]>().notNull().default([]),
+    /** CIDRs the peer shares with us (JSONB array). */
+    peerCidrs: jsonb("peer_cidrs").$type<string[]>().notNull().default([]),
     reviewedById: uuid("reviewed_by_id").references(() => users.id),
     /** DID-signed request payload (base64url JWS). */
     signedRequest: text("signed_request"),
-    /** Broker endpoint of the requester at request time. */
-    requesterBrokerEndpoint: text("requester_broker_endpoint"),
-    /** Broker endpoint of the target at accept time. */
-    targetBrokerEndpoint: text("target_broker_endpoint"),
     /** Protocol version agreed on link establishment. */
     protocolVersion: integer("protocol_version").notNull().default(1),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
   (t) => [
-    index("federation_links_requester_idx").on(t.requesterTenantId),
-    index("federation_links_target_idx").on(t.targetTenantId),
+    index("federation_links_local_idx").on(t.localTenantId),
+    index("federation_links_peer_did_idx").on(t.peerDid),
+    uniqueIndex("federation_links_local_peer_active_uq")
+      .on(t.localTenantId, t.peerDid)
+      .where(sql`status IN ('pending', 'active')`),
   ],
 );
 
@@ -600,9 +621,7 @@ export const brokerSessions = pgTable(
     localTenantId: uuid("local_tenant_id")
       .notNull()
       .references(() => tenants.id),
-    remoteTenantId: uuid("remote_tenant_id")
-      .notNull()
-      .references(() => tenants.id),
+    peerDid: text("peer_did").notNull(),
     status: brokerSessionStatusEnum("status").notNull().default("connecting"),
     /** CFP session id agreed in the handshake; identifies the session to the peer. */
     cfpSessionId: text("cfp_session_id"),
@@ -637,9 +656,12 @@ export const relayNodes = pgTable(
     brokerSessionId: uuid("broker_session_id")
       .notNull()
       .references(() => brokerSessions.id),
+    containerId: text("container_id"),
+    headscaleNodeId: text("headscale_node_id"),
     localNodeId: text("local_node_id"),
     remoteNodeId: text("remote_node_id"),
     wireguardPublicKey: text("wireguard_public_key"),
+    advertisedRoutes: jsonb("advertised_routes").$type<string[]>().notNull().default([]),
     status: relayNodeStatusEnum("status").notNull().default("provisioning"),
     lastHealthCheck: timestamp("last_health_check"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -677,6 +699,18 @@ export const holderBindingChallenges = pgTable(
     createdAt: timestamp("created_at").defaultNow().notNull(),
   },
   (t) => [index("holder_challenges_nonce_idx").on(t.nonce)],
+);
+
+export const serviceAuthJtiCache = pgTable(
+  "service_auth_jti_cache",
+  {
+    jti: text("jti").primaryKey(),
+    issuerDid: text("issuer_did").notNull(),
+    audienceDid: text("audience_did").notNull(),
+    expiresAt: timestamp("expires_at").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [index("service_auth_jti_expires_idx").on(t.expiresAt)],
 );
 
 export interface FederationRouteEntry {

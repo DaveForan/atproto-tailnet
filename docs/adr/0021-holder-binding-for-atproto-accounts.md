@@ -1,6 +1,6 @@
 # ADR-0021: Holder binding for AT Proto accounts
 
-**Status:** Proposed
+**Status:** In Progress
 **Date:** 2026-11-04
 **Priority:** P1
 **Depends On:** ADR-0003 (AT Proto OAuth), ADR-0012 (identity passport), ADR-0017 (DID resolution)

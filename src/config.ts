@@ -4,6 +4,7 @@
  * All env vars flow through here; nothing reads process.env directly elsewhere.
  * Throws at startup if production invariants are violated (e.g. weak session secret).
  */
+import * as net from "node:net";
 import { z } from "zod";
 
 /** Zod schema defining every config knob and its default. */
@@ -29,6 +30,12 @@ const configSchema = z.object({
     .string()
     .regex(/^[0-9a-fA-F]{64}$/, "must be 64 hex characters (32 bytes)")
     .optional(),
+  /**
+   * URL of the Rust mesh coordinator (ADR-0023). When set, tenant control-plane
+   * operations go to the coordinator instead of per-tenant Headscale containers.
+   */
+  coordinatorUrl: z.string().url().optional(),
+  coordinatorApiKey: z.string().min(1).optional(),
   headscale: z.object({
     image: z.string().default("headscale/headscale:0.29.1"),
     portRangeStart: z.coerce.number().default(10001),
@@ -52,6 +59,8 @@ export const config = configSchema.parse({
   baseDomain: process.env.BASE_DOMAIN,
   caddyAdminUrl: process.env.CADDY_ADMIN_URL,
   tenantPublicPort: process.env.TENANT_PUBLIC_PORT || undefined,
+  coordinatorUrl: process.env.COORDINATOR_URL || undefined,
+  coordinatorApiKey: process.env.COORDINATOR_API_KEY || undefined,
   atprotoPrivateKey: process.env.ATPROTO_PRIVATE_KEY,
   federationKeyEncryptionKey: process.env.FEDERATION_KEY_ENCRYPTION_KEY || undefined,
   headscale: {
@@ -62,6 +71,40 @@ export const config = configSchema.parse({
     network: process.env.HEADSCALE_NETWORK || undefined,
   },
 });
+
+// ── SSRF protection for coordinatorUrl ──
+if (config.coordinatorUrl) {
+  const coordUrl = new URL(config.coordinatorUrl);
+  if (!["http:", "https:"].includes(coordUrl.protocol)) {
+    throw new Error(
+      `COORDINATOR_URL must use http or https protocol, got ${coordUrl.protocol}`,
+    );
+  }
+  // Block non-public IPs. Mirrors the BlockList in identity/resolver.ts
+  // (duplicated here to avoid async/circular imports in the config module).
+  const _bl = new net.BlockList();
+  for (const [a, p] of [
+    ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8],
+    ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.168.0.0", 16],
+    ["198.18.0.0", 15], ["224.0.0.0", 3],
+  ] as const) {
+    _bl.addSubnet(a, p, "ipv4");
+  }
+  for (const [a, p] of [
+    ["::", 127], ["64:ff9b::", 96], ["fc00::", 7], ["fe80::", 10], ["ff00::", 8],
+  ] as const) {
+    _bl.addSubnet(a, p, "ipv6");
+  }
+  const hostname = coordUrl.hostname.replace(/^\[|\]$/g, "");
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(hostname);
+  const checkAddr = mapped ? mapped[1] : hostname;
+  const family = net.isIP(checkAddr);
+  if (family !== 0 && _bl.check(checkAddr, family === 4 ? "ipv4" : "ipv6")) {
+    throw new Error(
+      `COORDINATOR_URL points to a non-public address (${hostname}) — private, loopback, link-local, and metadata addresses are blocked`,
+    );
+  }
+}
 
 /** True when the service is served from a loopback address, i.e. local development. */
 export const isLoopbackDeployment = ["localhost", "127.0.0.1", "[::1]"].includes(

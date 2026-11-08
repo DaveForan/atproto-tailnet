@@ -174,6 +174,8 @@ collectivesRouter.post(
 
     const childPath = tenant.path ? `${tenant.path}.${slug}` : slug;
     const childDepth = tenant.depth + 1;
+    const { allocateTenantPrefixes } = await import("../orchestrator/prefix-allocator.js");
+    const prefixes = await allocateTenantPrefixes();
 
     try {
       const [child] = await db
@@ -189,8 +191,8 @@ collectivesRouter.post(
           path: childPath,
           depth: childDepth,
           maxSubCollectives: 10,
-          ipv4Prefix: tenant.ipv4Prefix,
-          ipv6Prefix: tenant.ipv6Prefix,
+          ipv4Prefix: prefixes.ipv4Prefix,
+          ipv6Prefix: prefixes.ipv6Prefix,
           ipAllocation: tenant.ipAllocation,
           planName: "free",
         })

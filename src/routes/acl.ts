@@ -7,7 +7,7 @@
 
 import { Router } from "express";
 import { z } from "zod";
-import { HeadscaleApiClient } from "../orchestrator/headscale-api.js";
+import { getControlClient } from "../orchestrator/control-client.js";
 import {
   requireAuth,
   param,
@@ -68,10 +68,7 @@ aclRouter.get(
     }
 
     try {
-      const client = new HeadscaleApiClient(
-        result.tenant.port,
-        result.tenant.apiKey,
-      );
+      const client = getControlClient(result.tenant);
       const policy = await client.getPolicy();
 
       const users = await client.listUsers();
@@ -115,10 +112,7 @@ aclRouter.put(
     }
 
     try {
-      const client = new HeadscaleApiClient(
-        result.tenant.port,
-        result.tenant.apiKey,
-      );
+      const client = getControlClient(result.tenant);
       await client.setPolicy(parsed.data);
 
       logAudit({

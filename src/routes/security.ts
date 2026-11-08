@@ -20,7 +20,7 @@ import {
   deviceLocks,
   auditLogs,
 } from "../db/schema.js";
-import { HeadscaleApiClient } from "../orchestrator/headscale-api.js";
+import { getControlClient } from "../orchestrator/control-client.js";
 import {
   requireAuth,
   param,
@@ -794,10 +794,7 @@ securityRouter.post(
     }
 
     try {
-      const client = new HeadscaleApiClient(
-        result.tenant.port,
-        result.tenant.apiKey,
-      );
+      const client = getControlClient(result.tenant);
       const authKey = await client.createPreAuthKey(approval.hsUsername);
       const loginServer = tenantLoginServer(result.tenant.slug);
       const command = `tailscale up --login-server ${loginServer} --authkey ${authKey.key}`;
@@ -970,10 +967,7 @@ securityRouter.post(
     const hsUsername = toHsUsername(requester.handle);
 
     try {
-      const client = new HeadscaleApiClient(
-        result.tenant.port,
-        result.tenant.apiKey,
-      );
+      const client = getControlClient(result.tenant);
       await client.createUser(hsUsername);
     } catch {
       // User might already exist
@@ -1116,10 +1110,7 @@ securityRouter.post(
         : toHsUsername(targetUser.handle);
 
     try {
-      const client = new HeadscaleApiClient(
-        result.tenant.port,
-        result.tenant.apiKey,
-      );
+      const client = getControlClient(result.tenant);
       const nodes = await client.listNodes();
       const userNodes = nodes.filter((n) => n.user?.name === hsUsername);
 

@@ -1,9 +1,10 @@
 # ADR-0013: Multi-tenant Headscale fork
 
-**Status:** Implemented
+**Status:** Superseded
 **Date:** 2026-11-02
 **Priority:** P1
 **Depends On:** ADR-0001 (control plane choice), ADR-0009 (hierarchical tenancy)
+**Superseded By:** ADR-0023 (Rust mesh coordinator)
 
 ## Context
 

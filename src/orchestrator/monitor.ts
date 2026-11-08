@@ -10,17 +10,24 @@
 import { eq, and, isNotNull, gt, lt, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { tenants, memberships, usageSnapshots } from "../db/schema.js";
-import { HeadscaleApiClient } from "./headscale-api.js";
+import { getControlClient, useCoordinator } from "./control-client.js";
 import { startInstance, stopInstance } from "./headscale.js";
 import { syncTenantRoutes } from "./caddy.js";
+import { sweepExpiredJtis } from "../credentials/service-auth.js";
 import { logAudit } from "../routes/audit.js";
 import { logger } from "../logger.js";
+
+/** Track consecutive health-check failures for coordinator-mode tenants. */
+const coordinatorFailCounts = new Map<string, number>();
 
 /**
  * Run a single health-check sweep across all running tenants.
  * Exported for the per-tenant endpoint to reuse (and for testability).
  */
 export async function checkAllTenants(): Promise<void> {
+  const whereClause = useCoordinator
+    ? eq(tenants.status, "running")
+    : and(eq(tenants.status, "running"), isNotNull(tenants.containerId));
   const running = await db
     .select({
       id: tenants.id,
@@ -28,16 +35,39 @@ export async function checkAllTenants(): Promise<void> {
       port: tenants.port,
       apiKey: tenants.apiKey,
       containerId: tenants.containerId,
+      coordinatorTenantId: tenants.coordinatorTenantId,
     })
     .from(tenants)
-    .where(and(eq(tenants.status, "running"), isNotNull(tenants.containerId)));
+    .where(whereClause);
 
   for (const tenant of running) {
-    const client = new HeadscaleApiClient(tenant.port, tenant.apiKey);
+    const client = getControlClient(tenant);
     const healthy = await client.healthcheck();
 
     if (healthy) {
       logger.debug({ tenantSlug: tenant.slug }, "health check passed");
+      coordinatorFailCounts.delete(tenant.id);
+      continue;
+    }
+
+    if (useCoordinator) {
+      const count = (coordinatorFailCounts.get(tenant.id) ?? 0) + 1;
+      coordinatorFailCounts.set(tenant.id, count);
+      if (count >= 3) {
+        logger.error(
+          { tenantSlug: tenant.slug, consecutiveFailures: count },
+          "coordinator health check failed repeatedly, marking error",
+        );
+        await db
+          .update(tenants)
+          .set({ status: "error", updatedAt: new Date() })
+          .where(eq(tenants.id, tenant.id));
+      } else {
+        logger.warn(
+          { tenantSlug: tenant.slug, consecutiveFailures: count },
+          "coordinator health check failed",
+        );
+      }
       continue;
     }
 
@@ -118,10 +148,9 @@ export async function hibernateIdleTenants(): Promise<void> {
  * Returns a status object suitable for the per-tenant health endpoint.
  */
 export async function checkTenantHealth(
-  port: number,
-  apiKey: string,
+  tenant: { port: number; apiKey: string; coordinatorTenantId?: string | null },
 ): Promise<{ healthy: boolean }> {
-  const client = new HeadscaleApiClient(port, apiKey);
+  const client = getControlClient(tenant);
   const healthy = await client.healthcheck();
   return { healthy };
 }
@@ -131,18 +160,22 @@ export async function checkTenantHealth(
  * Counts devices (from Headscale API) and members (from DB).
  */
 export async function recordUsageSnapshots(): Promise<void> {
+  const usageWhere = useCoordinator
+    ? eq(tenants.status, "running")
+    : and(eq(tenants.status, "running"), isNotNull(tenants.containerId));
   const running = await db
     .select({
       id: tenants.id,
       port: tenants.port,
       apiKey: tenants.apiKey,
+      coordinatorTenantId: tenants.coordinatorTenantId,
     })
     .from(tenants)
-    .where(and(eq(tenants.status, "running"), isNotNull(tenants.containerId)));
+    .where(usageWhere);
 
   for (const tenant of running) {
     try {
-      const client = new HeadscaleApiClient(tenant.port, tenant.apiKey);
+      const client = getControlClient(tenant);
       const [nodes, routes, memberRows] = await Promise.all([
         client.listNodes(),
         client.listRoutes().catch(() => []),
@@ -180,6 +213,9 @@ export function startHealthMonitor(intervalMs = 60_000): void {
       );
       if (tick % 5 === 0) {
         await recordUsageSnapshots();
+        await sweepExpiredJtis().catch((err) =>
+          logger.warn({ err }, "failed to sweep expired JTIs"),
+        );
       }
     } catch (err) {
       logger.error({ err }, "health monitor sweep failed");

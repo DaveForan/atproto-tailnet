@@ -1071,6 +1071,18 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
             '<div id="fed-history">Loading...</div>' +
           '</div>' +
           '<div class="card" style="margin-top:12px">' +
+            '<div class="card-header"><h3>Federation Posture</h3></div>' +
+            '<p style="color:var(--text-dim);font-size:13px;margin-bottom:12px">Controls how this collective handles inbound federation requests.</p>' +
+            '<div style="display:flex;gap:8px;align-items:center">' +
+              '<select id="fed-posture" style="flex:1">' +
+                '<option value="closed">Closed &mdash; reject all inbound requests</option>' +
+                '<option value="selective">Selective &mdash; hold for manual review</option>' +
+                '<option value="open">Open &mdash; auto-accept (not recommended)</option>' +
+              '</select>' +
+              '<button onclick="saveFederationPosture()">Save</button>' +
+            '</div>' +
+          '</div>' +
+          '<div class="card" style="margin-top:12px">' +
             '<div class="card-header"><h3>Federation Scoping</h3></div>' +
             '<div id="fed-scope-info" style="margin-bottom:12px"></div>' +
             '<div style="display:flex;flex-direction:column;gap:12px">' +
@@ -1799,8 +1811,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
                   '</div>' +
                 '</div>' +
                 (l.message ? '<div style="font-size:13px;color:var(--text-dim);margin-bottom:4px">' + esc(l.message) + '</div>' : '') +
-                (l.requesterCidrs && l.requesterCidrs.length > 0 ?
-                  '<div style="font-size:12px;color:var(--text-dim)">Your CIDRs: <code style="color:var(--accent)">' + l.requesterCidrs.map(function(c) { return esc(c); }).join(', ') + '</code></div>' : '') +
+                (l.localCidrs && l.localCidrs.length > 0 ?
+                  '<div style="font-size:12px;color:var(--text-dim)">Your CIDRs: <code style="color:var(--accent)">' + l.localCidrs.map(function(c) { return esc(c); }).join(', ') + '</code></div>' : '') +
                 '<div style="font-size:12px;color:var(--text-dim);margin-top:4px">' + new Date(l.createdAt).toLocaleString() + '</div>' +
               '</div>';
             }).join('');
@@ -1823,8 +1835,8 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
                 '</div>' +
               '</div>' +
               (l.message ? '<div style="font-size:13px;color:var(--text-dim);margin-bottom:8px">' + esc(l.message) + '</div>' : '') +
-              (l.requesterCidrs && l.requesterCidrs.length > 0 ?
-                '<div style="font-size:12px;color:var(--text-dim);margin-bottom:8px">Their CIDRs: <code style="color:var(--accent)">' + l.requesterCidrs.map(function(c) { return esc(c); }).join(', ') + '</code></div>' : '') +
+              (l.peerCidrs && l.peerCidrs.length > 0 ?
+                '<div style="font-size:12px;color:var(--text-dim);margin-bottom:8px">Their CIDRs: <code style="color:var(--accent)">' + l.peerCidrs.map(function(c) { return esc(c); }).join(', ') + '</code></div>' : '') +
               '<div style="margin-bottom:8px">' +
                 '<textarea id="fed-accept-cidrs-' + l.id + '" placeholder="Your CIDRs to share (one per line, optional)" rows="2"></textarea>' +
               '</div>' +
@@ -1854,10 +1866,10 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
                 '</div>' +
                 '<button class="btn-sm btn-danger" onclick="revokeFederation(\\'' + l.id + '\\')">Revoke</button>' +
               '</div>' +
-              (l.requesterCidrs && l.requesterCidrs.length > 0 ?
-                '<div style="font-size:12px;color:var(--text-dim);margin-bottom:4px">Requester CIDRs: <code style="color:var(--accent)">' + l.requesterCidrs.map(function(c) { return esc(c); }).join(', ') + '</code></div>' : '') +
-              (l.targetCidrs && l.targetCidrs.length > 0 ?
-                '<div style="font-size:12px;color:var(--text-dim)">Target CIDRs: <code style="color:var(--accent)">' + l.targetCidrs.map(function(c) { return esc(c); }).join(', ') + '</code></div>' : '') +
+              (l.localCidrs && l.localCidrs.length > 0 ?
+                '<div style="font-size:12px;color:var(--text-dim);margin-bottom:4px">Local CIDRs: <code style="color:var(--accent)">' + l.localCidrs.map(function(c) { return esc(c); }).join(', ') + '</code></div>' : '') +
+              (l.peerCidrs && l.peerCidrs.length > 0 ?
+                '<div style="font-size:12px;color:var(--text-dim)">Peer CIDRs: <code style="color:var(--accent)">' + l.peerCidrs.map(function(c) { return esc(c); }).join(', ') + '</code></div>' : '') +
             '</div>';
           }).join('');
         }
@@ -1889,9 +1901,30 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
       }
 
       // Load federation sub-sections
+      loadFederationPosture();
       loadFederationScoping();
       loadFederationIdentity();
       loadBrokerStatus();
+    }
+
+    async function loadFederationPosture() {
+      if (!state.currentTenant) return;
+      var data = await api('/api/tenants/' + state.currentTenant.id + '/federation/posture');
+      if (data) {
+        var sel = document.getElementById('fed-posture');
+        if (sel) sel.value = data.posture || 'selective';
+      }
+    }
+
+    async function saveFederationPosture() {
+      if (!state.currentTenant) return;
+      var sel = document.getElementById('fed-posture');
+      if (!sel) return;
+      var result = await api('/api/tenants/' + state.currentTenant.id + '/federation/posture', {
+        method: 'PUT',
+        body: JSON.stringify({ posture: sel.value }),
+      });
+      if (result) toast('Federation posture updated');
     }
 
     async function requestFederation() {
@@ -2144,7 +2177,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
                 : '<span class="badge badge-stopped">' + esc(s.status) + '</span>';
               return '<div class="approval-item">' +
                 '<div>' +
-                  '<strong>' + esc(s.remoteSlug || s.remoteTenantId) + '</strong> ' + statusBadge +
+                  '<strong>' + esc(s.peerName || s.peerDid) + '</strong> ' + statusBadge +
                   (s.lastKeepalive ? '<br><span style="color:var(--text-dim);font-size:12px">Last keepalive: ' + esc(new Date(s.lastKeepalive).toLocaleString()) + '</span>' : '') +
                 '</div>' +
               '</div>';

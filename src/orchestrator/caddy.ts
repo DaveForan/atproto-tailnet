@@ -26,6 +26,7 @@ import {
   ensureOnTenantNetwork,
   tenantContainerName,
 } from "./headscale.js";
+import { useCoordinator } from "./control-client.js";
 
 /** Name of the Caddy HTTP server tenant routes live in — set in the Caddyfile. */
 export const CADDY_SERVER = "tailnet_proxy";
@@ -37,6 +38,11 @@ const SERVER_PATH = `/config/apps/http/servers/${CADDY_SERVER}`;
 interface CaddyHandler {
   handler: string;
   upstreams?: Array<{ dial: string }>;
+  headers?: {
+    request?: {
+      set?: Record<string, string[]>;
+    };
+  };
   routes?: CaddyRoute[];
   status_code?: number;
   body?: string;
@@ -117,14 +123,18 @@ function fail(method: string, path: string, res: CaddyResponse): Error {
 }
 
 /**
- * Where Caddy reaches a tenant's Headscale. With a shared Docker network
- * (`HEADSCALE_NETWORK`) that is the container by name; otherwise the port
- * published on localhost, which only works when Caddy runs on the host.
+ * Where Caddy reaches a tenant's control plane. In coordinator mode all
+ * tenants share a single upstream (the coordinator); in Headscale mode each
+ * tenant has its own Docker container upstream.
  */
 export function tenantUpstream(
   tenant: RoutableTenant,
   network = config.headscale.network,
 ): string {
+  if (useCoordinator && config.coordinatorUrl) {
+    const url = new URL(config.coordinatorUrl);
+    return `${url.hostname}:${url.port || (url.protocol === "https:" ? "443" : "80")}`;
+  }
   return network
     ? `${tenantContainerName(tenant.slug)}:${HEADSCALE_CONTAINER_PORT}`
     : `localhost:${tenant.port}`;
@@ -156,6 +166,15 @@ export function buildTenantRouter(
               {
                 handler: "reverse_proxy",
                 upstreams: [{ dial: tenantUpstream(t, network) }],
+                ...(useCoordinator
+                  ? {
+                      headers: {
+                        request: {
+                          set: { "X-Tenant-Slug": [t.slug] },
+                        },
+                      },
+                    }
+                  : {}),
               },
             ],
           })),
@@ -214,10 +233,13 @@ export async function applyTenantRouter(
   return "created";
 }
 
-/** Tenants that have an instance to route to: everything not deleted with a container. */
+/** Tenants that have an instance to route to. */
 async function listRoutableTenants(): Promise<
   Array<RoutableTenant & { containerId: string | null }>
 > {
+  const whereClause = useCoordinator
+    ? ne(tenants.status, "deleted")
+    : and(ne(tenants.status, "deleted"), isNotNull(tenants.containerId));
   return db
     .select({
       slug: tenants.slug,
@@ -225,7 +247,7 @@ async function listRoutableTenants(): Promise<
       containerId: tenants.containerId,
     })
     .from(tenants)
-    .where(and(ne(tenants.status, "deleted"), isNotNull(tenants.containerId)))
+    .where(whereClause)
     .orderBy(tenants.slug);
 }
 
@@ -258,13 +280,17 @@ export function syncTenantRoutes(): Promise<void> {
  */
 export async function reconcileTenantRouting(): Promise<void> {
   try {
-    for (const tenant of await listRoutableTenants()) {
-      await ensureOnTenantNetwork(tenant.containerId!).catch((err) =>
-        logger.error(
-          { tenantSlug: tenant.slug, err },
-          "failed to attach tenant container to the tenant network",
-        ),
-      );
+    if (!useCoordinator) {
+      for (const tenant of await listRoutableTenants()) {
+        if (tenant.containerId) {
+          await ensureOnTenantNetwork(tenant.containerId).catch((err) =>
+            logger.error(
+              { tenantSlug: tenant.slug, err },
+              "failed to attach tenant container to the tenant network",
+            ),
+          );
+        }
+      }
     }
     await syncTenantRoutes();
   } catch (err) {

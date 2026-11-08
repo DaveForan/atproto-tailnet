@@ -353,7 +353,7 @@ apiRouter.get(
     }
 
     try {
-      const health = await checkTenantHealth(result.tenant.port, result.tenant.apiKey);
+      const health = await checkTenantHealth(result.tenant);
       res.json({ status: result.tenant.status, healthy: health.healthy });
     } catch (err) {
       logger.error({ tenantId: result.tenant.id, err }, "tenant health check failed");

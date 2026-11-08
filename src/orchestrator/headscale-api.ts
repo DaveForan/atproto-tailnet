@@ -219,6 +219,27 @@ export class HeadscaleApiClient {
     return headscalePreAuthKeySchema.parse(data.preAuthKey);
   }
 
+  /**
+   * Create a tagged pre-auth key (no user). Used for relay nodes that belong
+   * to no member — they register as tagged devices governed only by ACL.
+   */
+  async createTaggedPreAuthKey(
+    aclTags: string[],
+    opts?: { expirationSeconds?: number },
+  ): Promise<HeadscalePreAuthKey> {
+    const expiration = new Date(
+      Date.now() + (opts?.expirationSeconds ?? 300) * 1000,
+    ).toISOString();
+
+    const data = (await this.request("POST", "/api/v1/preauthkey", {
+      aclTags,
+      reusable: false,
+      ephemeral: false,
+      expiration,
+    })) as { preAuthKey: unknown };
+    return headscalePreAuthKeySchema.parse(data.preAuthKey);
+  }
+
   /** List all registered nodes across all users. */
   async listNodes(): Promise<HeadscaleNode[]> {
     const data = (await this.request("GET", "/api/v1/node")) as {

@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 use coord_api::CoordinatorState;
@@ -12,6 +13,11 @@ fn setup() -> (axum::Router, Arc<CoordinatorState>) {
     let state = Arc::new(CoordinatorState::new(key));
     let app = coord_api::router(state.clone());
     (app, state)
+}
+
+/// Create a tenant in the store and return its ID (tests need real tenants since R6).
+async fn create_test_tenant(state: &Arc<CoordinatorState>, slug: &str) -> coord_core::TenantId {
+    state.store.create_tenant(slug.into(), None).await.unwrap().id
 }
 
 #[tokio::test]
@@ -80,8 +86,8 @@ async fn create_preauth_key_auto_tenant() {
 #[tokio::test]
 async fn register_with_preauth_key() {
     let (_, state) = setup();
-    let tenant_id = coord_core::TenantId::generate();
-    let auth_key = state.store.create_preauth_key(tenant_id, false);
+    let tenant_id = create_test_tenant(&state, "register-test").await;
+    let auth_key = state.store.create_preauth_key(tenant_id, false).await.unwrap();
 
     let machine_key = [42u8; 32];
     let node_key_hex = hex::encode([7u8; 32]);
@@ -135,8 +141,8 @@ async fn register_rejects_bad_key() {
 #[tokio::test]
 async fn map_returns_netmap() {
     let (_, state) = setup();
-    let tenant_id = coord_core::TenantId::generate();
-    let auth_key = state.store.create_preauth_key(tenant_id, true);
+    let tenant_id = create_test_tenant(&state, "map-netmap").await;
+    let auth_key = state.store.create_preauth_key(tenant_id, true).await.unwrap();
 
     let machine_key_1 = [10u8; 32];
     let machine_key_2 = [20u8; 32];
@@ -181,8 +187,8 @@ async fn map_returns_netmap() {
 #[tokio::test]
 async fn map_keepalive() {
     let (_, state) = setup();
-    let tenant_id = coord_core::TenantId::generate();
-    let auth_key = state.store.create_preauth_key(tenant_id, false);
+    let tenant_id = create_test_tenant(&state, "map-keepalive").await;
+    let auth_key = state.store.create_preauth_key(tenant_id, false).await.unwrap();
     let machine_key = [99u8; 32];
 
     let reg_body = serde_json::json!({
@@ -213,10 +219,10 @@ async fn map_keepalive() {
 async fn tenant_isolation_in_map() {
     let (_, state) = setup();
 
-    let t1 = coord_core::TenantId::generate();
-    let t2 = coord_core::TenantId::generate();
-    let key1 = state.store.create_preauth_key(t1, false);
-    let key2 = state.store.create_preauth_key(t2, false);
+    let t1 = create_test_tenant(&state, "iso-t1").await;
+    let t2 = create_test_tenant(&state, "iso-t2").await;
+    let key1 = state.store.create_preauth_key(t1, false).await.unwrap();
+    let key2 = state.store.create_preauth_key(t2, false).await.unwrap();
 
     let mk1 = [50u8; 32];
     let mk2 = [60u8; 32];
@@ -259,8 +265,8 @@ async fn tenant_isolation_in_map() {
 #[tokio::test]
 async fn delta_response_on_peer_join() {
     let (_, state) = setup();
-    let tenant_id = coord_core::TenantId::generate();
-    let auth_key = state.store.create_preauth_key(tenant_id, true);
+    let tenant_id = create_test_tenant(&state, "delta-join").await;
+    let auth_key = state.store.create_preauth_key(tenant_id, true).await.unwrap();
 
     let mk1 = [70u8; 32];
     let mk2 = [80u8; 32];
@@ -285,13 +291,13 @@ async fn delta_response_on_peer_join() {
         .await
         .unwrap();
 
-    let node2_id = state.store.get_node_by_machine_key(&mk2).unwrap();
+    let node2_id = state.store.get_node_by_machine_key(&mk2).await.unwrap();
     let event = coord_store::PeerEvent::NodeJoined {
         tenant_id,
         node_id: node2_id,
     };
 
-    let delta = coord_api::__test_build_delta(&state, &mk1, &event);
+    let delta = coord_api::__test_build_delta(&state, &mk1, &event).await;
     assert!(delta.is_some());
     let resp: serde_json::Value = serde_json::from_str(&delta.unwrap()).unwrap();
     let changed = resp["PeersChanged"].as_array().unwrap();
@@ -305,8 +311,8 @@ async fn delta_response_on_peer_join() {
 #[tokio::test]
 async fn delta_response_on_peer_offline() {
     let (_, state) = setup();
-    let tenant_id = coord_core::TenantId::generate();
-    let auth_key = state.store.create_preauth_key(tenant_id, true);
+    let tenant_id = create_test_tenant(&state, "delta-offline").await;
+    let auth_key = state.store.create_preauth_key(tenant_id, true).await.unwrap();
 
     let mk1 = [90u8; 32];
     let reg1 = serde_json::json!({
@@ -319,13 +325,13 @@ async fn delta_response_on_peer_offline() {
         .await
         .unwrap();
 
-    let node_id = state.store.get_node_by_machine_key(&mk1).unwrap();
+    let node_id = state.store.get_node_by_machine_key(&mk1).await.unwrap();
     let event = coord_store::PeerEvent::NodeOffline {
         tenant_id,
         node_id,
     };
 
-    let delta = coord_api::__test_build_delta(&state, &[0u8; 32], &event);
+    let delta = coord_api::__test_build_delta(&state, &[0u8; 32], &event).await;
     assert!(delta.is_some());
     let resp: serde_json::Value = serde_json::from_str(&delta.unwrap()).unwrap();
     let removed = resp["PeersRemoved"].as_array().unwrap();
@@ -336,8 +342,8 @@ async fn delta_response_on_peer_offline() {
 #[tokio::test]
 async fn map_with_endpoints() {
     let (_, state) = setup();
-    let tenant_id = coord_core::TenantId::generate();
-    let auth_key = state.store.create_preauth_key(tenant_id, true);
+    let tenant_id = create_test_tenant(&state, "map-endpoints").await;
+    let auth_key = state.store.create_preauth_key(tenant_id, true).await.unwrap();
 
     let mk1 = [110u8; 32];
     let mk2 = [120u8; 32];
@@ -386,8 +392,8 @@ async fn map_with_endpoints() {
 #[tokio::test]
 async fn node_key_rotation() {
     let (_, state) = setup();
-    let tenant_id = coord_core::TenantId::generate();
-    let auth_key = state.store.create_preauth_key(tenant_id, true);
+    let tenant_id = create_test_tenant(&state, "key-rotation").await;
+    let auth_key = state.store.create_preauth_key(tenant_id, true).await.unwrap();
 
     let machine_key = [130u8; 32];
     let old_node_key = [131u8; 32];
@@ -404,8 +410,8 @@ async fn node_key_rotation() {
         .await
         .unwrap();
 
-    let node_id = state.store.get_node_by_machine_key(&machine_key).unwrap();
-    let (_, _, _, info_before) = state.store.get_node_info(node_id).unwrap();
+    let node_id = state.store.get_node_by_machine_key(&machine_key).await.unwrap();
+    let (_, _, _, info_before) = state.store.get_node_info(node_id).await.unwrap();
     assert_eq!(info_before.node_key, old_node_key.to_vec());
 
     // Re-register with new node key, providing OldNodeKey
@@ -423,19 +429,19 @@ async fn node_key_rotation() {
     assert_eq!(resp["MachineAuthorized"], true);
 
     // Verify the node key was updated
-    let (_, _, _, info_after) = state.store.get_node_info(node_id).unwrap();
+    let (_, _, _, info_after) = state.store.get_node_info(node_id).await.unwrap();
     assert_eq!(info_after.node_key, new_node_key.to_vec());
 
     // Same node ID and IP should be preserved
-    let same_node_id = state.store.get_node_by_machine_key(&machine_key).unwrap();
+    let same_node_id = state.store.get_node_by_machine_key(&machine_key).await.unwrap();
     assert_eq!(node_id, same_node_id);
 }
 
 #[tokio::test]
 async fn map_includes_home_derp() {
     let (_, state) = setup();
-    let tenant_id = coord_core::TenantId::generate();
-    let auth_key = state.store.create_preauth_key(tenant_id, false);
+    let tenant_id = create_test_tenant(&state, "home-derp").await;
+    let auth_key = state.store.create_preauth_key(tenant_id, false).await.unwrap();
     let machine_key = [140u8; 32];
 
     let reg = serde_json::json!({
@@ -477,8 +483,8 @@ async fn map_includes_home_derp() {
 #[tokio::test]
 async fn disco_key_propagation() {
     let (_, state) = setup();
-    let tenant_id = coord_core::TenantId::generate();
-    let auth_key = state.store.create_preauth_key(tenant_id, true);
+    let tenant_id = create_test_tenant(&state, "disco-key").await;
+    let auth_key = state.store.create_preauth_key(tenant_id, true).await.unwrap();
 
     let mk1 = [160u8; 32];
     let mk2 = [170u8; 32];
@@ -527,8 +533,8 @@ async fn disco_key_propagation() {
 #[tokio::test]
 async fn acl_policy_restricts_filter() {
     let (_, state) = setup();
-    let tenant_id = coord_core::TenantId::generate();
-    let auth_key = state.store.create_preauth_key(tenant_id, false);
+    let tenant_id = create_test_tenant(&state, "acl-test").await;
+    let auth_key = state.store.create_preauth_key(tenant_id, false).await.unwrap();
     let machine_key = [180u8; 32];
 
     let reg = serde_json::json!({
@@ -617,8 +623,8 @@ async fn custom_derp_map() {
     };
 
     let state = Arc::new(CoordinatorState::new(key).with_derp_map(custom_derp));
-    let tenant_id = coord_core::TenantId::generate();
-    let auth_key = state.store.create_preauth_key(tenant_id, false);
+    let tenant_id = create_test_tenant(&state, "custom-derp").await;
+    let auth_key = state.store.create_preauth_key(tenant_id, false).await.unwrap();
     let machine_key = [150u8; 32];
 
     let reg = serde_json::json!({
@@ -649,4 +655,315 @@ async fn custom_derp_map() {
     // Node's HomeDERP should reference region 900
     assert_eq!(resp["Node"]["HomeDERP"], 900);
     assert_eq!(resp["Node"]["DERP"], "127.3.3.40:900");
+}
+
+// ── Tenant CRUD tests ──
+
+async fn json_body(resp: axum::http::Response<Body>) -> serde_json::Value {
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
+#[tokio::test]
+async fn tenant_crud_lifecycle() {
+    let (app, _state) = setup();
+
+    // Create a tenant
+    let resp = app.clone().oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/tenants")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"slug":"test-collective"}"#))
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = json_body(resp).await;
+    let tenant_id = body["id"].as_str().unwrap().to_string();
+    assert_eq!(body["slug"], "test-collective");
+    assert!(body["parent_id"].is_null());
+
+    // List tenants
+    let resp = app.clone().oneshot(
+        Request::builder()
+            .uri("/api/tenants")
+            .body(Body::empty())
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert!(body["count"].as_u64().unwrap() >= 1);
+
+    // Get single tenant
+    let resp = app.clone().oneshot(
+        Request::builder()
+            .uri(format!("/api/tenants/{}", tenant_id))
+            .body(Body::empty())
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert_eq!(body["tenant"]["slug"], "test-collective");
+    assert!(body["children"].as_array().unwrap().is_empty());
+
+    // Delete
+    let resp = app.clone().oneshot(
+        Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/tenants/{}", tenant_id))
+            .body(Body::empty())
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Verify deleted
+    let resp = app.clone().oneshot(
+        Request::builder()
+            .uri(format!("/api/tenants/{}", tenant_id))
+            .body(Body::empty())
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn tenant_duplicate_slug_rejected() {
+    let (app, _) = setup();
+
+    let create = |slug: &str| {
+        Request::builder()
+            .method("POST")
+            .uri("/api/tenants")
+            .header("content-type", "application/json")
+            .body(Body::from(format!(r#"{{"slug":"{}"}}"#, slug)))
+            .unwrap()
+    };
+
+    let resp = app.clone().oneshot(create("dup-test")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+
+    let resp = app.clone().oneshot(create("dup-test")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn tenant_parent_child_creation() {
+    let (app, _) = setup();
+
+    // Create parent
+    let resp = app.clone().oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/tenants")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"slug":"parent-org"}"#))
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let parent = json_body(resp).await;
+    let parent_id = parent["id"].as_str().unwrap().to_string();
+
+    // Create child
+    let resp = app.clone().oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/tenants")
+            .header("content-type", "application/json")
+            .body(Body::from(format!(r#"{{"slug":"child-team","parent_id":"{}"}}"#, parent_id)))
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let child = json_body(resp).await;
+    assert_eq!(child["parent_id"], parent_id);
+
+    // Get parent — should list the child
+    let resp = app.clone().oneshot(
+        Request::builder()
+            .uri(format!("/api/tenants/{}", parent_id))
+            .body(Body::empty())
+            .unwrap(),
+    ).await.unwrap();
+    let body = json_body(resp).await;
+    let children = body["children"].as_array().unwrap();
+    assert_eq!(children.len(), 1);
+    assert_eq!(children[0]["slug"], "child-team");
+}
+
+// ── Hierarchy route aggregation tests ──
+
+async fn register_node_for(
+    state: &Arc<CoordinatorState>,
+    tenant_id: coord_core::TenantId,
+    machine_key: [u8; 32],
+    nkey_byte: u8,
+    hostname: &str,
+) {
+    let auth_key = state.store.create_preauth_key(tenant_id, true).await.unwrap();
+    let body = serde_json::json!({
+        "Version": 2,
+        "NodeKey": format!("nodekey:{}", hex::encode([nkey_byte; 32])),
+        "Auth": { "AuthKey": &auth_key },
+        "Hostinfo": { "Hostname": hostname, "OS": "linux" }
+    });
+    coord_api::__test_handle_register(state, &machine_key, &body.to_string())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn hierarchy_parent_sees_child_peers_when_open() {
+    let (_, state) = setup();
+
+    // Create parent tenant and child with Open posture
+    let parent = state.store.create_tenant("hier-parent".into(), None).await.unwrap();
+    let child = state.store.create_tenant("hier-child".into(), Some(parent.id)).await.unwrap();
+
+    // Set child posture to Open (MemoryStore: update in place)
+    {
+        let store = &state.store;
+        if let coord_store::Store::Memory(m) = store.as_ref() {
+            let mut tenants = m.tenants_for_test().lock().unwrap();
+            tenants.get_mut(&child.id).unwrap().federation_posture =
+                coord_core::FederationPosture::Open;
+        }
+    }
+
+    // Register nodes: one in parent, one in child
+    register_node_for(&state, parent.id, [200u8; 32], 201, "parent-node").await;
+    register_node_for(&state, child.id, [210u8; 32], 211, "child-node").await;
+
+    // Parent node maps — should see child-node as a peer
+    let map_body = serde_json::json!({
+        "Version": 2,
+        "NodeKey": format!("nodekey:{}", hex::encode([201u8; 32])),
+    });
+    let result = coord_api::__test_handle_map(&state, &[200u8; 32], &map_body.to_string())
+        .await
+        .unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&result).unwrap();
+    let peers = resp["Peers"].as_array().unwrap();
+    assert_eq!(peers.len(), 1, "parent should see child node as peer");
+    assert_eq!(peers[0]["Name"], "child-node");
+}
+
+#[tokio::test]
+async fn hierarchy_parent_blocked_when_child_closed() {
+    let (_, state) = setup();
+
+    let parent = state.store.create_tenant("closed-parent".into(), None).await.unwrap();
+    let child = state.store.create_tenant("closed-child".into(), Some(parent.id)).await.unwrap();
+
+    // Child stays Closed (default)
+    assert_eq!(child.federation_posture, coord_core::FederationPosture::Closed);
+
+    register_node_for(&state, parent.id, [220u8; 32], 221, "parent-closed").await;
+    register_node_for(&state, child.id, [230u8; 32], 231, "child-closed").await;
+
+    // Parent node maps — should NOT see child node (closed posture)
+    let map_body = serde_json::json!({
+        "Version": 2,
+        "NodeKey": format!("nodekey:{}", hex::encode([221u8; 32])),
+    });
+    let result = coord_api::__test_handle_map(&state, &[220u8; 32], &map_body.to_string())
+        .await
+        .unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&result).unwrap();
+    assert!(
+        resp["Peers"].is_null(),
+        "parent should NOT see child peers when posture is Closed"
+    );
+}
+
+#[tokio::test]
+async fn hierarchy_child_does_not_see_parent_peers() {
+    let (_, state) = setup();
+
+    let parent = state.store.create_tenant("uni-parent".into(), None).await.unwrap();
+    let child = state.store.create_tenant("uni-child".into(), Some(parent.id)).await.unwrap();
+
+    // Set child to Open
+    if let coord_store::Store::Memory(m) = state.store.as_ref() {
+        let mut tenants = m.tenants_for_test().lock().unwrap();
+        tenants.get_mut(&child.id).unwrap().federation_posture =
+            coord_core::FederationPosture::Open;
+    }
+
+    register_node_for(&state, parent.id, [240u8; 32], 241, "parent-uni").await;
+    register_node_for(&state, child.id, [250u8; 32], 251, "child-uni").await;
+
+    // Child node maps — should NOT see parent node (hierarchy is parent→child only)
+    let map_body = serde_json::json!({
+        "Version": 2,
+        "NodeKey": format!("nodekey:{}", hex::encode([251u8; 32])),
+    });
+    let result = coord_api::__test_handle_map(&state, &[250u8; 32], &map_body.to_string())
+        .await
+        .unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&result).unwrap();
+    assert!(
+        resp["Peers"].is_null(),
+        "child should NOT see parent peers — route aggregation is parent→child only"
+    );
+}
+
+#[tokio::test]
+async fn hierarchy_selective_posture_allows_visibility() {
+    let (_, state) = setup();
+
+    let parent = state.store.create_tenant("sel-parent".into(), None).await.unwrap();
+    let child = state.store.create_tenant("sel-child".into(), Some(parent.id)).await.unwrap();
+
+    // Set child to Selective
+    if let coord_store::Store::Memory(m) = state.store.as_ref() {
+        let mut tenants = m.tenants_for_test().lock().unwrap();
+        tenants.get_mut(&child.id).unwrap().federation_posture =
+            coord_core::FederationPosture::Selective;
+    }
+
+    register_node_for(&state, parent.id, [41u8; 32], 42, "parent-sel").await;
+    register_node_for(&state, child.id, [43u8; 32], 44, "child-sel").await;
+
+    let map_body = serde_json::json!({
+        "Version": 2,
+        "NodeKey": format!("nodekey:{}", hex::encode([42u8; 32])),
+    });
+    let result = coord_api::__test_handle_map(&state, &[41u8; 32], &map_body.to_string())
+        .await
+        .unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&result).unwrap();
+    let peers = resp["Peers"].as_array().unwrap();
+    assert_eq!(peers.len(), 1, "selective posture should allow parent to see child");
+    assert_eq!(peers[0]["Name"], "child-sel");
+}
+
+#[tokio::test]
+async fn hierarchy_routes_endpoint() {
+    let (app, state) = setup();
+
+    let parent = state.store.create_tenant("route-parent".into(), None).await.unwrap();
+    let child = state.store.create_tenant("route-child".into(), Some(parent.id)).await.unwrap();
+
+    // Set child to Open
+    if let coord_store::Store::Memory(m) = state.store.as_ref() {
+        let mut tenants = m.tenants_for_test().lock().unwrap();
+        tenants.get_mut(&child.id).unwrap().federation_posture =
+            coord_core::FederationPosture::Open;
+    }
+
+    register_node_for(&state, parent.id, [31u8; 32], 32, "rp-node").await;
+    register_node_for(&state, child.id, [33u8; 32], 34, "rc-node").await;
+
+    let resp = app.clone().oneshot(
+        Request::builder()
+            .uri(format!("/api/tenants/{}/routes", parent.id))
+            .body(Body::empty())
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert!(!body["own_routes"].as_array().unwrap().is_empty());
+    let agg = body["aggregated_child_routes"].as_array().unwrap();
+    assert_eq!(agg.len(), 1);
+    assert_eq!(agg[0]["slug"], "route-child");
+    assert!(agg[0]["node_count"].as_u64().unwrap() >= 1);
 }

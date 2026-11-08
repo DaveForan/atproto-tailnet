@@ -15,7 +15,7 @@ import {
   memberships,
   invitations,
 } from "../db/schema.js";
-import { HeadscaleApiClient } from "../orchestrator/headscale-api.js";
+import { getControlClient } from "../orchestrator/control-client.js";
 import {
   requireAuth,
   param,
@@ -299,7 +299,7 @@ invitationsRouter.post(
       .toLowerCase();
 
     try {
-      const client = new HeadscaleApiClient(tenant.port, tenant.apiKey);
+      const client = getControlClient(tenant);
       await client.createUser(hsUsername);
     } catch {
       // User might already exist if they were previously a member

@@ -35,6 +35,8 @@ import {
 } from "../credentials/issuer.js";
 import { loadCollectiveKeyPair } from "../orchestrator/federation-broker.js";
 import { verifyCredential, verifyHolderBinding } from "../credentials/verifier.js";
+import { verifyServiceAuth } from "../credentials/service-auth.js";
+import { obtainServiceAuthToken } from "../credentials/service-auth-bff.js";
 import { getResolver } from "../identity/resolver.js";
 import { config } from "../config.js";
 import * as jose from "jose";
@@ -518,6 +520,117 @@ credentialsRouter.post(
     });
 
     res.json({ status: "revoked", credentialId });
+  },
+);
+
+credentialsRouter.post(
+  "/api/tenants/:tenantId/credentials/present",
+  requireAuth,
+  async (req, res) => {
+    const tenantId = param(req, "tenantId");
+    const result = await getTenantForUser(tenantId, authUserId(req));
+    if (!result) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+
+    const { credentials, serviceAuthToken } = req.body ?? {};
+    if (!Array.isArray(credentials) || credentials.length === 0) {
+      res.status(400).json({ error: "credentials[] is required" });
+      return;
+    }
+    if (credentials.length > 10) {
+      res.status(400).json({ error: "Too many credentials (max 10)" });
+      return;
+    }
+
+    if (!serviceAuthToken || typeof serviceAuthToken !== "string") {
+      res.status(400).json({ error: "serviceAuthToken is required" });
+      return;
+    }
+
+    const [collectiveDidRow] = await db
+      .select({ did: collectiveDids.did })
+      .from(collectiveDids)
+      .where(eq(collectiveDids.tenantId, tenantId))
+      .limit(1);
+
+    if (!collectiveDidRow) {
+      res.status(412).json({ error: "Collective DID not configured" });
+      return;
+    }
+
+    const authResult = await verifyServiceAuth(
+      serviceAuthToken,
+      collectiveDidRow.did,
+    );
+    if (!authResult.valid) {
+      res.status(401).json({ error: `Service-auth failed: ${authResult.error}` });
+      return;
+    }
+
+    const resolver = getResolver();
+    const verificationResults = [];
+    const errors: string[] = [];
+
+    for (const jwt of credentials) {
+      if (typeof jwt !== "string") {
+        errors.push("credential must be a string");
+        continue;
+      }
+      const result = await verifyCredential(jwt, resolver);
+      verificationResults.push(result);
+      if (!result.valid) {
+        errors.push(result.error ?? "verification failed");
+        continue;
+      }
+      if (result.subject !== authResult.issuerDid) {
+        errors.push(
+          `credential subject ${result.subject} does not match presenter ${authResult.issuerDid}`,
+        );
+        result.valid = false;
+      }
+    }
+
+    res.json({
+      valid: errors.length === 0,
+      presenterDid: authResult.issuerDid,
+      results: verificationResults,
+      errors,
+    });
+  },
+);
+
+credentialsRouter.post(
+  "/api/tenants/:tenantId/credentials/service-auth-token",
+  requireAuth,
+  async (req, res) => {
+    const tenantId = param(req, "tenantId");
+    const result = await getTenantForUser(tenantId, authUserId(req));
+    if (!result) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+
+    const userDid = await authUserDid(req);
+    if (!userDid) {
+      res.status(400).json({ error: "Could not resolve user DID" });
+      return;
+    }
+
+    const { audienceDid } = req.body ?? {};
+    if (!audienceDid || typeof audienceDid !== "string") {
+      res.status(400).json({ error: "audienceDid is required" });
+      return;
+    }
+
+    const token = await obtainServiceAuthToken(userDid, audienceDid);
+    if (!token) {
+      res.status(502).json({ error: "Failed to obtain service-auth token from PDS" });
+      return;
+    }
+
+    res.json({ token: token.token });
   },
 );
 

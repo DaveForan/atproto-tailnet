@@ -26,5 +26,6 @@ bytes = { workspace = true }
 hex = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
+rand = { workspace = true }
 zstd = { workspace = true }
 tokio-stream = { workspace = true }

@@ -1,10 +1,11 @@
 /**
  * @module routes/federation
- * Federation link management between tailnets. Allows tenants to establish
- * trust relationships with shared CIDR exposure. The requester sends a
- * federation request to a target tenant by slug; the target's originator
- * or manage_settings holder accepts/rejects. Either side can revoke.
- * Gated by the "manage_settings" permission.
+ * Federation link management between collectives. Each side stores its own
+ * view of the link (per-side model): localTenantId owns the row, peerDid
+ * identifies the remote collective, direction records who initiated. The
+ * requester sends a federation request to a target tenant by slug; the
+ * target's originator or manage_settings holder accepts/rejects. Either
+ * side can revoke.  Gated by the "manage_settings" permission.
  */
 
 import { Router } from "express";
@@ -18,6 +19,7 @@ import {
   getTenantForUser,
   hasPermission,
   authUserId,
+  isLockedDown,
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
 import { logger } from "../logger.js";
@@ -56,60 +58,27 @@ federationRouter.get(
     }
 
     const links = await db
-      .select({
-        id: federationLinks.id,
-        requesterTenantId: federationLinks.requesterTenantId,
-        targetTenantId: federationLinks.targetTenantId,
-        status: federationLinks.status,
-        message: federationLinks.message,
-        requesterCidrs: federationLinks.requesterCidrs,
-        targetCidrs: federationLinks.targetCidrs,
-        createdAt: federationLinks.createdAt,
-        updatedAt: federationLinks.updatedAt,
-        requesterSlug: tenants.slug,
-        requesterName: tenants.name,
-      })
+      .select()
       .from(federationLinks)
-      .innerJoin(tenants, eq(tenants.id, federationLinks.requesterTenantId))
-      .where(
-        or(
-          eq(federationLinks.requesterTenantId, tenantId),
-          eq(federationLinks.targetTenantId, tenantId),
-        ),
-      )
+      .where(eq(federationLinks.localTenantId, tenantId))
       .orderBy(desc(federationLinks.createdAt))
       .limit(100);
 
-    const enriched = await Promise.all(
-      links.map(async (link) => {
-        const peerId =
-          link.requesterTenantId === tenantId
-            ? link.targetTenantId
-            : link.requesterTenantId;
-        const peerRows = await db
-          .select({ slug: tenants.slug, name: tenants.name })
-          .from(tenants)
-          .where(eq(tenants.id, peerId))
-          .limit(1);
-        const peer = peerRows[0];
-        return {
-          id: link.id,
-          direction:
-            link.requesterTenantId === tenantId ? "outgoing" : "incoming",
-          peerTenantId: peerId,
-          peerSlug: peer?.slug ?? "unknown",
-          peerName: peer?.name ?? "Unknown",
-          status: link.status,
-          message: link.message,
-          requesterCidrs: link.requesterCidrs,
-          targetCidrs: link.targetCidrs,
-          createdAt: link.createdAt,
-          updatedAt: link.updatedAt,
-        };
-      }),
-    );
-
-    res.json({ links: enriched });
+    res.json({
+      links: links.map((link) => ({
+        id: link.id,
+        direction: link.direction,
+        peerDid: link.peerDid,
+        peerName: link.peerName ?? link.peerDid,
+        peerBrokerUrl: link.peerBrokerUrl,
+        status: link.status,
+        message: link.message,
+        localCidrs: link.localCidrs,
+        peerCidrs: link.peerCidrs,
+        createdAt: link.createdAt,
+        updatedAt: link.updatedAt,
+      })),
+    });
   },
 );
 
@@ -137,6 +106,11 @@ federationRouter.post(
       return;
     }
 
+    if (isLockedDown(result.tenant)) {
+      res.status(403).json({ error: "Tenant is in lockdown mode" });
+      return;
+    }
+
     const parsed = createFederationBody.safeParse(req.body);
     if (!parsed.success) {
       res
@@ -145,8 +119,14 @@ federationRouter.post(
       return;
     }
 
+    // Look up target tenant by slug (same-instance for now)
     const targetRows = await db
-      .select({ id: tenants.id })
+      .select({
+        id: tenants.id,
+        name: tenants.name,
+        federationPosture: tenants.federationPosture,
+        lockdownMode: tenants.lockdownMode,
+      })
       .from(tenants)
       .where(eq(tenants.slug, parsed.data.targetSlug))
       .limit(1);
@@ -156,27 +136,59 @@ federationRouter.post(
       return;
     }
 
-    const targetTenantId = targetRows[0].id;
-    if (targetTenantId === tenantId) {
+    const target = targetRows[0];
+    if (target.id === tenantId) {
       res.status(400).json({ error: "Cannot federate with yourself" });
       return;
     }
 
+    if (target.lockdownMode) {
+      res.status(403).json({ error: "Target collective is in lockdown mode" });
+      return;
+    }
+
+    if (target.federationPosture === "closed") {
+      res.status(403).json({ error: "Target collective does not accept federation requests" });
+      return;
+    }
+
+    const targetTenantId = target.id;
+    const targetTenantName = target.name;
+
+    // Look up the collective DIDs for both sides
+    const [requesterDidRows, targetDidRows] = await Promise.all([
+      db
+        .select({ did: collectiveDids.did })
+        .from(collectiveDids)
+        .where(eq(collectiveDids.tenantId, tenantId))
+        .limit(1),
+      db
+        .select({ did: collectiveDids.did })
+        .from(collectiveDids)
+        .where(eq(collectiveDids.tenantId, targetTenantId))
+        .limit(1),
+    ]);
+
+    if (requesterDidRows.length === 0) {
+      res.status(400).json({ error: "Requester collective has no DID configured" });
+      return;
+    }
+    if (targetDidRows.length === 0) {
+      res.status(400).json({ error: "Target collective has no DID configured" });
+      return;
+    }
+
+    const requesterDid = requesterDidRows[0].did;
+    const targetDid = targetDidRows[0].did;
+
+    // Check for existing active/pending link with this peer
     const existing = await db
       .select({ id: federationLinks.id })
       .from(federationLinks)
       .where(
         and(
-          or(
-            and(
-              eq(federationLinks.requesterTenantId, tenantId),
-              eq(federationLinks.targetTenantId, targetTenantId),
-            ),
-            and(
-              eq(federationLinks.requesterTenantId, targetTenantId),
-              eq(federationLinks.targetTenantId, tenantId),
-            ),
-          ),
+          eq(federationLinks.localTenantId, tenantId),
+          eq(federationLinks.peerDid, targetDid),
           or(
             eq(federationLinks.status, "pending"),
             eq(federationLinks.status, "active"),
@@ -192,15 +204,33 @@ federationRouter.post(
       return;
     }
 
+    const offeredCidrs = parsed.data.cidrs ?? [];
+
+    // Create the outgoing row for the requester
     const [link] = await db
       .insert(federationLinks)
       .values({
-        requesterTenantId: tenantId,
-        targetTenantId,
+        localTenantId: tenantId,
+        peerDid: targetDid,
+        peerBrokerUrl: config.publicUrl,
+        peerName: targetTenantName,
+        direction: "outgoing",
         message: parsed.data.message,
-        requesterCidrs: parsed.data.cidrs ?? [],
+        localCidrs: offeredCidrs,
       })
       .returning();
+
+    // Create the mirror incoming row for the target
+    await db.insert(federationLinks).values({
+      localTenantId: targetTenantId,
+      peerDid: requesterDid,
+      peerBrokerUrl: config.publicUrl,
+      peerName: result.tenant.name,
+      direction: "incoming",
+      message: parsed.data.message,
+      localCidrs: [],
+      peerCidrs: offeredCidrs,
+    });
 
     logAudit({
       tenantId,
@@ -246,13 +276,14 @@ federationRouter.post(
       return;
     }
 
+    // Find the local (incoming) link row for this tenant
     const linkRows = await db
       .select()
       .from(federationLinks)
       .where(
         and(
           eq(federationLinks.id, linkId),
-          eq(federationLinks.targetTenantId, tenantId),
+          eq(federationLinks.localTenantId, tenantId),
           eq(federationLinks.status, "pending"),
         ),
       )
@@ -263,15 +294,50 @@ federationRouter.post(
       return;
     }
 
+    const link = linkRows[0];
+    const acceptedCidrs = parsed.data.cidrs ?? [];
+
+    // Update local row: active + set what we share
     await db
       .update(federationLinks)
       .set({
         status: "active",
-        targetCidrs: parsed.data.cidrs ?? [],
+        localCidrs: acceptedCidrs,
         reviewedById: authUserId(req),
         updatedAt: new Date(),
       })
       .where(eq(federationLinks.id, linkId));
+
+    // Update the mirror row: look up our DID and the peer's tenant UUID
+    const [ourDidRows, peerDidRows] = await Promise.all([
+      db
+        .select({ did: collectiveDids.did })
+        .from(collectiveDids)
+        .where(eq(collectiveDids.tenantId, tenantId))
+        .limit(1),
+      db
+        .select({ tenantId: collectiveDids.tenantId })
+        .from(collectiveDids)
+        .where(eq(collectiveDids.did, link.peerDid))
+        .limit(1),
+    ]);
+
+    if (ourDidRows.length > 0 && peerDidRows.length > 0) {
+      await db
+        .update(federationLinks)
+        .set({
+          status: "active",
+          peerCidrs: acceptedCidrs,
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(federationLinks.localTenantId, peerDidRows[0].tenantId),
+            eq(federationLinks.peerDid, ourDidRows[0].did),
+            eq(federationLinks.status, "pending"),
+          ),
+        );
+    }
 
     logAudit({
       tenantId,
@@ -281,9 +347,8 @@ federationRouter.post(
       targetId: linkId,
     });
 
-    const link = linkRows[0];
     setImmediate(() => {
-      initiateOutboundHandshake(link.id, tenantId).catch((err) => {
+      initiateOutboundHandshake(link.id, link.localTenantId).catch((err) => {
         logger.warn({ linkId: link.id, err }, "failed to initiate outbound handshake");
       });
     });
@@ -317,7 +382,7 @@ federationRouter.post(
       .where(
         and(
           eq(federationLinks.id, linkId),
-          eq(federationLinks.targetTenantId, tenantId),
+          eq(federationLinks.localTenantId, tenantId),
           eq(federationLinks.status, "pending"),
         ),
       )
@@ -328,6 +393,8 @@ federationRouter.post(
       return;
     }
 
+    const link = linkRows[0];
+
     await db
       .update(federationLinks)
       .set({
@@ -336,6 +403,36 @@ federationRouter.post(
         updatedAt: new Date(),
       })
       .where(eq(federationLinks.id, linkId));
+
+    // Update the mirror row
+    const [ourDidRows, peerDidRows] = await Promise.all([
+      db
+        .select({ did: collectiveDids.did })
+        .from(collectiveDids)
+        .where(eq(collectiveDids.tenantId, tenantId))
+        .limit(1),
+      db
+        .select({ tenantId: collectiveDids.tenantId })
+        .from(collectiveDids)
+        .where(eq(collectiveDids.did, link.peerDid))
+        .limit(1),
+    ]);
+
+    if (ourDidRows.length > 0 && peerDidRows.length > 0) {
+      await db
+        .update(federationLinks)
+        .set({
+          status: "rejected",
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(federationLinks.localTenantId, peerDidRows[0].tenantId),
+            eq(federationLinks.peerDid, ourDidRows[0].did),
+            eq(federationLinks.status, "pending"),
+          ),
+        );
+    }
 
     logAudit({
       tenantId,
@@ -374,10 +471,7 @@ federationRouter.post(
       .where(
         and(
           eq(federationLinks.id, linkId),
-          or(
-            eq(federationLinks.requesterTenantId, tenantId),
-            eq(federationLinks.targetTenantId, tenantId),
-          ),
+          eq(federationLinks.localTenantId, tenantId),
           or(
             eq(federationLinks.status, "pending"),
             eq(federationLinks.status, "active"),
@@ -391,6 +485,8 @@ federationRouter.post(
       return;
     }
 
+    const link = linkRows[0];
+
     await db
       .update(federationLinks)
       .set({
@@ -399,6 +495,39 @@ federationRouter.post(
         updatedAt: new Date(),
       })
       .where(eq(federationLinks.id, linkId));
+
+    // Update the mirror row
+    const [ourDidRows, peerDidRows] = await Promise.all([
+      db
+        .select({ did: collectiveDids.did })
+        .from(collectiveDids)
+        .where(eq(collectiveDids.tenantId, tenantId))
+        .limit(1),
+      db
+        .select({ tenantId: collectiveDids.tenantId })
+        .from(collectiveDids)
+        .where(eq(collectiveDids.did, link.peerDid))
+        .limit(1),
+    ]);
+
+    if (ourDidRows.length > 0 && peerDidRows.length > 0) {
+      await db
+        .update(federationLinks)
+        .set({
+          status: "revoked",
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(federationLinks.localTenantId, peerDidRows[0].tenantId),
+            eq(federationLinks.peerDid, ourDidRows[0].did),
+            or(
+              eq(federationLinks.status, "pending"),
+              eq(federationLinks.status, "active"),
+            ),
+          ),
+        );
+    }
 
     logAudit({
       tenantId,
@@ -549,7 +678,14 @@ federationRouter.get(
     }
 
     const tenantRows = await db
-      .select({ id: tenants.id })
+      .select({
+        id: tenants.id,
+        federationPosture: tenants.federationPosture,
+        federationScopes: tenants.federationScopes,
+        federationRegion: tenants.federationRegion,
+        federationCoordinates: tenants.federationCoordinates,
+        federationScopePolicies: tenants.federationScopePolicies,
+      })
       .from(tenants)
       .where(eq(tenants.slug, tenantSlug))
       .limit(1);
@@ -559,13 +695,15 @@ federationRouter.get(
       return;
     }
 
+    const tenant = tenantRows[0];
+
     const didRows = await db
       .select({
         did: collectiveDids.did,
         brokerEndpoint: collectiveDids.brokerEndpoint,
       })
       .from(collectiveDids)
-      .where(eq(collectiveDids.tenantId, tenantRows[0].id))
+      .where(eq(collectiveDids.tenantId, tenant.id))
       .limit(1);
 
     if (didRows.length === 0) {
@@ -573,30 +711,17 @@ federationRouter.get(
       return;
     }
 
-    const scopeRows = await db
-      .select({
-        federationScopes: tenants.federationScopes,
-        federationRegion: tenants.federationRegion,
-        federationCoordinates: tenants.federationCoordinates,
-        federationScopePolicies: tenants.federationScopePolicies,
-      })
-      .from(tenants)
-      .where(eq(tenants.id, tenantRows[0].id))
-      .limit(1);
-
-    const scope = scopeRows[0];
-
     const discovery: Record<string, unknown> = {
       collectiveDid: didRows[0].did,
       cfpVersions: [CFP_VERSION],
-      federationPolicy: "selective",
+      federationPolicy: tenant.federationPosture,
       capabilities: ["route-exchange", "dns-forward"],
       derpEndpoints: [],
       brokerUrl: didRows[0].brokerEndpoint ?? config.publicUrl,
-      scopes: scope?.federationScopes ?? ["regional"],
-      region: scope?.federationRegion ?? null,
-      coordinates: scope?.federationCoordinates ?? null,
-      scopePolicies: scope?.federationScopePolicies ?? null,
+      scopes: tenant.federationScopes ?? ["regional"],
+      region: tenant.federationRegion ?? null,
+      coordinates: tenant.federationCoordinates ?? null,
+      scopePolicies: tenant.federationScopePolicies ?? null,
       signature: "",
     };
 
@@ -604,11 +729,11 @@ federationRouter.get(
     // here with `signature: ""`.
     try {
       discovery.signature = await signAsCollective(
-        tenantRows[0].id,
+        tenant.id,
         JSON.stringify(discovery),
       );
     } catch (err) {
-      logger.error({ tenantId: tenantRows[0].id, err }, "failed to sign discovery document");
+      logger.error({ tenantId: tenant.id, err }, "failed to sign discovery document");
       res.status(500).json({ error: "Failed to sign discovery document" });
       return;
     }
@@ -758,5 +883,74 @@ federationRouter.put(
     });
 
     res.json({ saved: true, ...parsed.data });
+  },
+);
+
+// ── Federation posture management ───────────────────────────────────────
+
+const postureBody = z.object({
+  posture: z.enum(["closed", "selective", "open"]),
+});
+
+federationRouter.get(
+  "/api/tenants/:tenantId/federation/posture",
+  requireAuth,
+  async (req, res) => {
+    const tenantId = param(req, "tenantId");
+    const result = await getTenantForUser(tenantId, authUserId(req));
+    if (!result) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+
+    if (!hasPermission(result.membership, result.role, "manage_settings", req)) {
+      res.status(403).json({ error: "Insufficient permissions" });
+      return;
+    }
+
+    res.json({ posture: result.tenant.federationPosture });
+  },
+);
+
+federationRouter.put(
+  "/api/tenants/:tenantId/federation/posture",
+  requireAuth,
+  async (req, res) => {
+    const tenantId = param(req, "tenantId");
+    const result = await getTenantForUser(tenantId, authUserId(req));
+    if (!result) {
+      res.status(404).json({ error: "Tenant not found" });
+      return;
+    }
+
+    if (!hasPermission(result.membership, result.role, "manage_settings", req)) {
+      res.status(403).json({ error: "Insufficient permissions" });
+      return;
+    }
+
+    const parsed = postureBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
+      return;
+    }
+
+    await db
+      .update(tenants)
+      .set({
+        federationPosture: parsed.data.posture,
+        updatedAt: new Date(),
+      })
+      .where(eq(tenants.id, tenantId));
+
+    logAudit({
+      tenantId,
+      actorUserId: authUserId(req),
+      action: "tenant_settings_updated",
+      targetType: "tenant",
+      targetId: tenantId,
+      metadata: { operation: "federation_posture_update", posture: parsed.data.posture },
+    });
+
+    res.json({ posture: parsed.data.posture });
   },
 );

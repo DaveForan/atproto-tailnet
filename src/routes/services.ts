@@ -18,7 +18,7 @@ import {
   services,
   boardPosts,
 } from "../db/schema.js";
-import { HeadscaleApiClient } from "../orchestrator/headscale-api.js";
+import { getControlClient } from "../orchestrator/control-client.js";
 import {
   requireAuth,
   param,
@@ -139,10 +139,7 @@ servicesRouter.post(
     }
 
     try {
-      const client = new HeadscaleApiClient(
-        result.tenant.port,
-        result.tenant.apiKey,
-      );
+      const client = getControlClient(result.tenant);
 
       try {
         await client.createUser(hsUsername);
@@ -231,10 +228,7 @@ servicesRouter.post(
     }
 
     try {
-      const client = new HeadscaleApiClient(
-        result.tenant.port,
-        result.tenant.apiKey,
-      );
+      const client = getControlClient(result.tenant);
 
       const hsUsername = device.hsUsername!;
       try {

@@ -19,7 +19,7 @@ import {
   services,
   boardPosts,
 } from "../db/schema.js";
-import { HeadscaleApiClient } from "../orchestrator/headscale-api.js";
+import { getControlClient, useCoordinator } from "../orchestrator/control-client.js";
 import {
   requireAuth,
   param,
@@ -52,10 +52,7 @@ devicesRouter.get(
       return;
     }
 
-    const client = new HeadscaleApiClient(
-      result.tenant.port,
-      result.tenant.apiKey,
-    );
+    const client = getControlClient(result.tenant);
 
     try {
       const nodes = await client.listNodes();
@@ -164,10 +161,7 @@ devicesRouter.post(
     }
 
     try {
-      const client = new HeadscaleApiClient(
-        result.tenant.port,
-        result.tenant.apiKey,
-      );
+      const client = getControlClient(result.tenant);
       const authKey = await client.createPreAuthKey(hsUsername);
       const loginServer = tenantLoginServer(result.tenant.slug);
 
@@ -203,28 +197,29 @@ devicesRouter.delete(
       return;
     }
 
-    const client = new HeadscaleApiClient(
-      result.tenant.port,
-      result.tenant.apiKey,
-    );
+    const client = getControlClient(result.tenant);
 
     if (!hasPermission(result.membership, result.role, "manage_devices", req)) {
-      try {
-        const node = await client.getNode(nodeId);
-        const [user] = await db
-          .select()
-          .from(users)
-          .where(eq(users.id, authUserId(req)));
-        const expectedHsUser = result.membership.isOriginator
-          ? "owner"
-          : toHsUsername(user.handle);
-        if (node.user?.name !== expectedHsUser) {
-          res.status(403).json({ error: "Can only remove your own devices" });
+      // In coordinator mode all nodes belong to the tenant generically
+      // (user.name is "coordinator"), so skip per-user ownership checks.
+      if (!useCoordinator) {
+        try {
+          const node = await client.getNode(nodeId);
+          const [user] = await db
+            .select()
+            .from(users)
+            .where(eq(users.id, authUserId(req)));
+          const expectedHsUser = result.membership.isOriginator
+            ? "owner"
+            : toHsUsername(user.handle);
+          if (node.user?.name !== expectedHsUser) {
+            res.status(403).json({ error: "Can only remove your own devices" });
+            return;
+          }
+        } catch {
+          res.status(502).json({ error: "Failed to verify device ownership" });
           return;
         }
-      } catch {
-        res.status(502).json({ error: "Failed to verify device ownership" });
-        return;
       }
     }
 
@@ -241,6 +236,10 @@ devicesRouter.delete(
 
       res.json({ status: "deleted" });
     } catch (err) {
+      if (err instanceof Error && err.message.includes("not yet supported")) {
+        res.status(501).json({ error: "Node deletion not available in coordinator mode" });
+        return;
+      }
       logger.error({ err }, "failed to delete device");
       res.status(502).json({ error: "Failed to delete device" });
     }
@@ -333,16 +332,21 @@ devicesRouter.delete(
     if (removedUser && result.tenant.apiKey) {
       const hsUsername = toHsUsername(removedUser.handle);
 
-      const client = new HeadscaleApiClient(
-        result.tenant.port,
-        result.tenant.apiKey,
-      );
+      const client = getControlClient(result.tenant);
 
       try {
         const nodes = await client.listNodes();
         const userNodes = nodes.filter((n) => n.user?.name === hsUsername);
         for (const node of userNodes) {
-          await client.deleteNode(node.id);
+          try {
+            await client.deleteNode(node.id);
+          } catch (deleteErr) {
+            if (deleteErr instanceof Error && deleteErr.message.includes("not yet supported")) {
+              logger.warn({ hsUsername, nodeId: node.id }, "node deletion not supported in coordinator mode, skipping");
+            } else {
+              throw deleteErr;
+            }
+          }
         }
         await client.deleteUser(hsUsername);
       } catch (err) {

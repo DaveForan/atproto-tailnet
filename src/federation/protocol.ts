@@ -115,6 +115,52 @@ export interface RevokeMessage {
   timestamp: string;
 }
 
+export interface LinkRequestMessage {
+  type: "LINK_REQUEST";
+  messageId: string;
+  collectiveDid: string;
+  brokerUrl: string;
+  collectiveName: string;
+  federationType: FederationType;
+  offeredCidrs: string[];
+  capabilities: Capability[];
+  message?: string;
+  signature: string;
+  timestamp: string;
+}
+
+export interface LinkAcceptMessage {
+  type: "LINK_ACCEPT";
+  messageId: string;
+  inResponseTo: string;
+  collectiveDid: string;
+  brokerUrl: string;
+  collectiveName: string;
+  acceptedCidrs: string[];
+  signature: string;
+  timestamp: string;
+}
+
+export interface LinkRejectMessage {
+  type: "LINK_REJECT";
+  messageId: string;
+  inResponseTo: string;
+  collectiveDid: string;
+  reason?: string;
+  signature: string;
+  timestamp: string;
+}
+
+export interface LinkRevokeMessage {
+  type: "LINK_REVOKE";
+  messageId: string;
+  collectiveDid: string;
+  reason?: string;
+  permanent: boolean;
+  signature: string;
+  timestamp: string;
+}
+
 export type CFPMessage =
   | HelloMessage
   | ChallengeMessage
@@ -122,4 +168,8 @@ export type CFPMessage =
   | EstablishedMessage
   | KeepaliveMessage
   | RouteUpdate
-  | RevokeMessage;
+  | RevokeMessage
+  | LinkRequestMessage
+  | LinkAcceptMessage
+  | LinkRejectMessage
+  | LinkRevokeMessage;

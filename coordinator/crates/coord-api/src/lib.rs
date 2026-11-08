@@ -6,17 +6,58 @@ mod admin;
 
 pub use state::CoordinatorState;
 
-use axum::{Router, routing::{get, post}};
+use axum::{
+    Router,
+    extract::State,
+    http::{Request, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+};
 use std::sync::Arc;
 
+async fn require_admin_auth(
+    State(state): State<Arc<CoordinatorState>>,
+    req: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    let expected = match &state.admin_api_key {
+        Some(key) => key,
+        None => return next.run(req).await, // dev mode: no key configured
+    };
+
+    let auth_header = req
+        .headers()
+        .get("authorization")
+        .and_then(|v| v.to_str().ok());
+
+    let token = auth_header.and_then(|h| h.strip_prefix("Bearer "));
+
+    match token {
+        Some(t) if t == expected => next.run(req).await,
+        _ => (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(serde_json::json!({"error": "unauthorized: invalid or missing admin API key"})),
+        ).into_response(),
+    }
+}
+
 pub fn router(state: Arc<CoordinatorState>) -> Router {
+    // Admin API routes that require auth
+    let admin_routes = Router::new()
+        .route("/tenants", post(admin::create_tenant).get(admin::list_tenants))
+        .route("/tenants/{id}", get(admin::get_tenant).delete(admin::delete_tenant))
+        .route("/tenants/{id}/routes", get(admin::get_tenant_routes))
+        .route("/preauth-keys", post(admin::create_preauth_key))
+        .route("/nodes", get(admin::list_nodes))
+        .route("/acl", post(admin::set_acl))
+        .layer(middleware::from_fn_with_state(state.clone(), require_admin_auth));
+
     Router::new()
         .route("/health", get(health))
         .route("/key", get(key_handler::key_handler))
         .route("/ts2021", post(noise_handler::ts2021_handler))
-        .route("/api/preauth-keys", post(admin::create_preauth_key))
-        .route("/api/nodes", get(admin::list_nodes))
-        .route("/api/acl", post(admin::set_acl))
+        .nest("/api", admin_routes)
         .with_state(state)
 }
 
@@ -30,7 +71,8 @@ pub async fn __test_handle_register(
     machine_key: &[u8; 32],
     body: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    control::handle_register(state, machine_key, body).await
+    let (json, _generation) = control::handle_register(state, machine_key, body).await?;
+    Ok(json)
 }
 
 #[doc(hidden)]
@@ -43,10 +85,10 @@ pub async fn __test_handle_map(
 }
 
 #[doc(hidden)]
-pub fn __test_build_delta(
+pub async fn __test_build_delta(
     state: &Arc<CoordinatorState>,
     machine_key: &[u8; 32],
     event: &coord_store::PeerEvent,
 ) -> Option<String> {
-    control::build_delta_response(state, machine_key, event)
+    control::build_delta_response(state, machine_key, event).await
 }

@@ -127,6 +127,34 @@
       "when": 1793847530126,
       "tag": "0017_cheerful_gideon",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1794028800000,
+      "tag": "0018_per_side_federation_links",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1794028801000,
+      "tag": "0019_relay_node_columns",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1794028802000,
+      "tag": "0020_service_auth_jti_cache",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1794028803000,
+      "tag": "0021_coordinator_tenant_id",
+      "breakpoints": true
     }
   ]
 }

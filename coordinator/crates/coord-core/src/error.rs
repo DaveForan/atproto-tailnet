@@ -16,6 +16,9 @@ pub enum CoordError {
     #[error("machine key already registered for tenant {0}")]
     DuplicateMachineKey(TenantId),
 
+    #[error("CGNAT address space exhausted (100.64.0.0/10)")]
+    AddressSpaceExhausted,
+
     #[error("noise handshake failed: {0}")]
     NoiseHandshake(String),
 
