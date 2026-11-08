@@ -215,13 +215,9 @@ async function provisionViaCoordinator(
       coordinatorTenantId: coordTenant.id,
     });
 
-    await client
-      .setPolicy({
-        acls: [{ action: "accept", src: ["*"], dst: ["*:*"] }],
-      })
-      .catch((err) =>
-        logger.error({ tenantSlug: slug, err }, "failed to set default policy"),
-      );
+    await client.setPolicy({
+      acls: [{ action: "accept", src: ["*"], dst: ["*:*"] }],
+    });
   } catch (err) {
     // Compensating delete — best effort
     try {
@@ -261,13 +257,9 @@ async function provisionViaHeadscale(
     apiKey: instance.apiKey,
   });
 
-  await client
-    .setPolicy({
-      acls: [{ action: "accept", src: ["*"], dst: ["*:*"] }],
-    })
-    .catch((err) =>
-      logger.error({ tenantSlug: slug, err }, "failed to set default policy"),
-    );
+  await client.setPolicy({
+    acls: [{ action: "accept", src: ["*"], dst: ["*:*"] }],
+  });
 }
 
 authRouter.get("/auth/login", async (req, res) => {

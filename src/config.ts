@@ -129,6 +129,12 @@ if (config.coordinatorUrl) {
       `COORDINATOR_URL points to a non-public address (${hostname}) — private, loopback, link-local, and metadata addresses are blocked`,
     );
   }
+
+  if (!config.coordinatorApiKey) {
+    throw new Error(
+      "COORDINATOR_API_KEY is required when COORDINATOR_URL is set",
+    );
+  }
 }
 
 /** True when the service is served from a loopback address, i.e. local development. */

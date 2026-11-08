@@ -936,6 +936,13 @@ federationRouter.put(
       return;
     }
 
+    if (useCoordinator) {
+      const client = getControlClient(result.tenant);
+      if (client instanceof CoordinatorApiClient) {
+        await client.setPosture(parsed.data.posture);
+      }
+    }
+
     await db
       .update(tenants)
       .set({
@@ -943,17 +950,6 @@ federationRouter.put(
         updatedAt: new Date(),
       })
       .where(eq(tenants.id, tenantId));
-
-    if (useCoordinator) {
-      try {
-        const client = getControlClient(result.tenant);
-        if (client instanceof CoordinatorApiClient) {
-          await client.setPosture(parsed.data.posture);
-        }
-      } catch (err) {
-        logger.warn({ err, tenantId }, "failed to sync posture to coordinator");
-      }
-    }
 
     logAudit({
       tenantId,

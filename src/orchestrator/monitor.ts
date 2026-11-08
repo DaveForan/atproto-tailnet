@@ -91,6 +91,14 @@ export async function checkAllTenants(): Promise<void> {
  * Only considers running tenants with hibernateAfterDays > 0.
  */
 export async function hibernateIdleTenants(): Promise<void> {
+  const filters = [
+    eq(tenants.status, "running"),
+    gt(tenants.hibernateAfterDays, 0),
+  ];
+  if (!useCoordinator) {
+    filters.push(isNotNull(tenants.containerId));
+  }
+
   const candidates = await db
     .select({
       id: tenants.id,
@@ -101,13 +109,7 @@ export async function hibernateIdleTenants(): Promise<void> {
       lastActivityAt: tenants.lastActivityAt,
     })
     .from(tenants)
-    .where(
-      and(
-        eq(tenants.status, "running"),
-        isNotNull(tenants.containerId),
-        gt(tenants.hibernateAfterDays, 0),
-      ),
-    );
+    .where(and(...filters));
 
   const now = Date.now();
 
@@ -123,7 +125,9 @@ export async function hibernateIdleTenants(): Promise<void> {
     );
 
     try {
-      await stopInstance(tenant.containerId!);
+      if (tenant.containerId) {
+        await stopInstance(tenant.containerId);
+      }
       await db
         .update(tenants)
         .set({ status: "stopped", updatedAt: new Date() })

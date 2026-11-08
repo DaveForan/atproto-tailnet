@@ -46,7 +46,7 @@ export class CoordinatorApiClient {
     if (!res.ok) {
       const text = await res.text();
       throw new Error(
-        `Coordinator API ${method} ${path} failed (${res.status}): ${text}`,
+        `Coordinator API ${method} ${path} failed (${res.status}): ${text.slice(0, 200)}`,
       );
     }
 

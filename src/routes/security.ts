@@ -20,7 +20,7 @@ import {
   deviceLocks,
   auditLogs,
 } from "../db/schema.js";
-import { getControlClient } from "../orchestrator/control-client.js";
+import { getControlClient, useCoordinator } from "../orchestrator/control-client.js";
 import {
   requireAuth,
   param,
@@ -1084,6 +1084,11 @@ securityRouter.post(
       return;
     }
 
+    if (useCoordinator) {
+      res.status(501).json({ error: "Device locks are not supported in coordinator mode — nodes are not user-scoped" });
+      return;
+    }
+
     const [targetMembership] = await db
       .select()
       .from(memberships)
@@ -1178,6 +1183,11 @@ securityRouter.delete(
     const isSelf = targetUserId === authUserId(req);
     if (!isSelf && !hasPermission(result.membership, result.role, "lock_devices", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
+      return;
+    }
+
+    if (useCoordinator) {
+      res.status(501).json({ error: "Device locks are not supported in coordinator mode — nodes are not user-scoped" });
       return;
     }
 

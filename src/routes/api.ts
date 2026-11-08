@@ -250,13 +250,9 @@ apiRouter.delete("/api/tenants/:id", requireAuth, async (req, res) => {
     }
 
     if (useCoordinator && result.tenant.coordinatorTenantId) {
-      try {
-        const client = getControlClient(result.tenant);
-        if (client instanceof CoordinatorApiClient) {
-          await client.deleteTenant();
-        }
-      } catch (err) {
-        logger.warn({ tenantId, err }, "failed to delete tenant from coordinator");
+      const client = getControlClient(result.tenant);
+      if (client instanceof CoordinatorApiClient) {
+        await client.deleteTenant();
       }
     }
 

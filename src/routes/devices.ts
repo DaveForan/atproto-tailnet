@@ -326,20 +326,26 @@ devicesRouter.delete(
       .from(users)
       .where(eq(users.id, removedUserId));
 
-    if (removedUser && result.tenant.apiKey) {
+    if (removedUser && (result.tenant.apiKey || useCoordinator)) {
       const hsUsername = toHsUsername(removedUser.handle);
-
       const client = getControlClient(result.tenant);
 
-      try {
-        const nodes = await client.listNodes();
-        const userNodes = nodes.filter((n) => n.user?.name === hsUsername);
-        for (const node of userNodes) {
-          await client.deleteNode(node.id);
+      if (useCoordinator) {
+        logger.info(
+          { tenantId, removedUserId, handle: removedUser.handle },
+          "coordinator mode: devices are not user-scoped — admin must remove nodes manually",
+        );
+      } else {
+        try {
+          const nodes = await client.listNodes();
+          const userNodes = nodes.filter((n) => n.user?.name === hsUsername);
+          for (const node of userNodes) {
+            await client.deleteNode(node.id);
+          }
+          await client.deleteUser(hsUsername);
+        } catch (err) {
+          logger.error({ err, hsUsername }, "failed to clean up Headscale for user");
         }
-        await client.deleteUser(hsUsername);
-      } catch (err) {
-        logger.error({ err, hsUsername }, "failed to clean up Headscale for user");
       }
     }
 
