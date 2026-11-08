@@ -235,6 +235,16 @@ impl Store {
             warn!(error = %e, "set_node_offline_if_current failed");
         }
     }
+
+    pub async fn get_tenant_route_snapshot(
+        &self,
+        tenant_id: TenantId,
+    ) -> Result<crate::memory::TenantRouteSnapshot, CoordError> {
+        match self {
+            Store::Memory(m) => m.get_tenant_route_snapshot(tenant_id),
+            Store::Pg(p) => p.get_tenant_route_snapshot(tenant_id).await,
+        }
+    }
 }
 
 impl std::fmt::Debug for Store {

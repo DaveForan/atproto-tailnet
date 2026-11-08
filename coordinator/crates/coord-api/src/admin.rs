@@ -45,6 +45,13 @@ pub async fn create_tenant(
     State(state): State<Arc<CoordinatorState>>,
     Json(body): Json<CreateTenantRequest>,
 ) -> impl IntoResponse {
+    if !is_valid_slug(&body.slug) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "invalid slug: must match ^[a-z0-9][a-z0-9-]{0,62}$"})),
+        ).into_response();
+    }
+
     let parent_id = match &body.parent_id {
         Some(id) => match id.parse::<uuid::Uuid>() {
             Ok(uuid) => Some(TenantId::new(uuid)),
@@ -126,10 +133,14 @@ pub async fn delete_tenant(
     };
 
     match state.store.delete_tenant(tenant_id).await {
-        Ok(()) => (
-            StatusCode::OK,
-            Json(serde_json::json!({"status": "deleted", "tenant_id": id})),
-        ).into_response(),
+        Ok(()) => {
+            // Clean up any ACL policy for the deleted tenant
+            state.acl.remove_policy(tenant_id);
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({"status": "deleted", "tenant_id": id})),
+            ).into_response()
+        }
         Err(e) => (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": e.to_string()})),
@@ -287,6 +298,15 @@ pub async fn set_acl(
         }
     };
 
+    // Verify tenant exists before storing a policy
+    if state.store.get_tenant(tenant_id).await.is_none() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "tenant not found"})),
+        )
+            .into_response();
+    }
+
     state.acl.set_policy(tenant_id, body.policy);
 
     (
@@ -350,15 +370,18 @@ pub async fn get_tenant_routes(
         }
     };
 
-    if state.store.get_tenant(tenant_id).await.is_none() {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "tenant not found"})),
-        ).into_response();
-    }
+    // Use atomic snapshot to prevent posture/nodes interleaving
+    let snapshot = match state.store.get_tenant_route_snapshot(tenant_id).await {
+        Ok(s) => s,
+        Err(_) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(serde_json::json!({"error": "tenant not found"})),
+            ).into_response();
+        }
+    };
 
-    let children = state.store.get_child_tenants(tenant_id).await;
-    let child_summaries: Vec<serde_json::Value> = children.iter().map(|c| {
+    let child_summaries: Vec<serde_json::Value> = snapshot.children.iter().map(|c| {
         let mut obj = serde_json::json!({
             "id": c.id.to_string(),
             "slug": &c.slug,
@@ -375,27 +398,23 @@ pub async fn get_tenant_routes(
         obj
     }).collect();
 
-    let own_nodes = state.store.list_tenant_nodes(tenant_id).await;
-    let own_routes: Vec<String> = own_nodes.iter()
+    let own_routes: Vec<String> = snapshot.own_nodes.iter()
         .flat_map(|p| p.allowed_ips.clone())
         .collect();
 
-    let mut aggregated_child_routes: Vec<serde_json::Value> = Vec::new();
-    for child in &children {
-        if child.federation_posture == coord_core::FederationPosture::Closed {
-            continue;
-        }
-        let nodes = state.store.list_tenant_nodes(child.id).await;
-        let routes: Vec<String> = nodes.iter()
-            .flat_map(|p| p.allowed_ips.clone())
-            .collect();
-        aggregated_child_routes.push(serde_json::json!({
-            "tenant_id": child.id.to_string(),
-            "slug": &child.slug,
-            "routes": routes,
-            "node_count": nodes.len(),
-        }));
-    }
+    let aggregated_child_routes: Vec<serde_json::Value> = snapshot.visible_child_nodes.iter()
+        .map(|(child_id, slug, nodes)| {
+            let routes: Vec<String> = nodes.iter()
+                .flat_map(|p| p.allowed_ips.clone())
+                .collect();
+            serde_json::json!({
+                "tenant_id": child_id.to_string(),
+                "slug": slug,
+                "routes": routes,
+                "node_count": nodes.len(),
+            })
+        })
+        .collect();
 
     Json(serde_json::json!({
         "tenant_id": id,
@@ -437,6 +456,10 @@ pub async fn set_acl_for_tenant(
         Ok(uuid) => TenantId::new(uuid),
         Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "invalid tenant_id"}))).into_response(),
     };
+    // Verify tenant exists before storing a policy
+    if state.store.get_tenant(tenant_id).await.is_none() {
+        return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "tenant not found"}))).into_response();
+    }
     state.acl.set_policy(tenant_id, body);
     (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response()
 }
@@ -540,6 +563,13 @@ pub async fn rename_node_handler(
         Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "invalid node_id"}))).into_response(),
     };
 
+    if !is_valid_hostname(&body.name) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "invalid hostname: must match ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,252}$"})),
+        ).into_response();
+    }
+
     // If caller specifies tenant_id, verify the node belongs to that tenant before renaming.
     if let Some(ref tid_str) = query.tenant_id {
         let expected_tenant = match tid_str.parse::<uuid::Uuid>() {
@@ -576,4 +606,32 @@ fn generate_random_slug() -> String {
     let mut buf = [0u8; 4];
     rand::rng().fill_bytes(&mut buf);
     hex::encode(buf)
+}
+
+/// Validate tenant slug: `^[a-z0-9][a-z0-9-]{0,62}$`
+fn is_valid_slug(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() || bytes.len() > 63 {
+        return false;
+    }
+    if !bytes[0].is_ascii_lowercase() && !bytes[0].is_ascii_digit() {
+        return false;
+    }
+    bytes[1..]
+        .iter()
+        .all(|&b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+/// Validate node hostname: `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,252}$`
+fn is_valid_hostname(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() || bytes.len() > 253 {
+        return false;
+    }
+    if !bytes[0].is_ascii_alphanumeric() {
+        return false;
+    }
+    bytes[1..]
+        .iter()
+        .all(|&b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
 }

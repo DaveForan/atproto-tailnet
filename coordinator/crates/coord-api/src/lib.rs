@@ -16,6 +16,18 @@ use axum::{
 };
 use std::sync::Arc;
 
+/// Constant-time byte comparison to prevent timing side-channels on API key checks.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 async fn require_admin_auth(
     State(state): State<Arc<CoordinatorState>>,
     req: Request<axum::body::Body>,
@@ -34,7 +46,7 @@ async fn require_admin_auth(
     let token = auth_header.and_then(|h| h.strip_prefix("Bearer "));
 
     match token {
-        Some(t) if t == expected => next.run(req).await,
+        Some(t) if constant_time_eq(t.as_bytes(), expected.as_bytes()) => next.run(req).await,
         _ => (
             StatusCode::UNAUTHORIZED,
             axum::Json(serde_json::json!({"error": "unauthorized: invalid or missing admin API key"})),

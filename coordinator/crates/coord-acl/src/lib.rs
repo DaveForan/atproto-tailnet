@@ -22,19 +22,24 @@ impl PolicyEngine {
     }
 
     pub fn set_policy(&self, tenant: TenantId, policy: AclPolicy) {
-        let mut policies = self.policies.write().unwrap();
+        let mut policies = self.policies.write().unwrap_or_else(|e| e.into_inner());
         policies.insert(tenant, policy);
     }
 
     pub fn get_policy(&self, tenant: TenantId) -> Option<AclPolicy> {
-        let policies = self.policies.read().unwrap();
+        let policies = self.policies.read().unwrap_or_else(|e| e.into_inner());
         policies.get(&tenant).cloned()
+    }
+
+    pub fn remove_policy(&self, tenant: TenantId) {
+        let mut policies = self.policies.write().unwrap_or_else(|e| e.into_inner());
+        policies.remove(&tenant);
     }
 }
 
 impl AclEngine for PolicyEngine {
     fn evaluate(&self, tenant: TenantId, _src: NodeId, _dst: NodeId, _port: u16) -> AclVerdict {
-        let policies = self.policies.read().unwrap();
+        let policies = self.policies.read().unwrap_or_else(|e| e.into_inner());
         match policies.get(&tenant) {
             Some(policy) if policy.default_deny => AclVerdict::Deny,
             _ => AclVerdict::Allow,
@@ -47,7 +52,7 @@ impl AclEngine for PolicyEngine {
         _node_id: NodeId,
         _node_ip: &str,
     ) -> Vec<coord_proto::map::FilterRule> {
-        let policies = self.policies.read().unwrap();
+        let policies = self.policies.read().unwrap_or_else(|e| e.into_inner());
         match policies.get(&tenant) {
             Some(policy) => policy.to_filter_rules(),
             None => policy::allow_all_filter(),

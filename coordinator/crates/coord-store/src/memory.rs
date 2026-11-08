@@ -107,6 +107,8 @@ impl MemoryStore {
     }
 
     pub fn delete_tenant(&self, tenant_id: TenantId) -> Result<(), CoordError> {
+        // Hold tenants lock through the entire operation to prevent TOCTOU orphan nodes.
+        // Lock ordering: tenants → machine_key_index → nodes → preauth_keys
         let mut tenants = self.tenants.lock().unwrap_or_else(|e| e.into_inner());
 
         // Check for children first
@@ -120,10 +122,8 @@ impl MemoryStore {
         if tenants.remove(&tenant_id).is_none() {
             return Err(CoordError::TenantNotFound(tenant_id));
         }
-        drop(tenants);
 
-        // Remove all nodes belonging to this tenant.
-        // Lock ordering: machine_key_index before nodes (matches register_node).
+        // Remove all nodes belonging to this tenant under the same lock scope.
         let mut machine_index = self.machine_key_index.lock().unwrap_or_else(|e| e.into_inner());
         let mut nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner());
 
@@ -152,9 +152,12 @@ impl MemoryStore {
         // Remove preauth keys for this tenant
         let mut keys = self.preauth_keys.lock().unwrap_or_else(|e| e.into_inner());
         keys.retain(|_, v| v.tenant_id != tenant_id);
+
+        // Drop all locks before broadcasting events
         drop(keys);
         drop(nodes);
         drop(machine_index);
+        drop(tenants);
 
         // Broadcast NodeOffline for each removed node
         for (nid, _) in removed_node_ids {
@@ -263,7 +266,9 @@ impl MemoryStore {
         let node_id = {
             let mut id = self.next_node_id.lock().unwrap_or_else(|e| e.into_inner());
             let current = *id;
-            *id += 1;
+            *id = current.checked_add(1).ok_or_else(|| {
+                CoordError::Protocol("node ID space exhausted".into())
+            })?;
             NodeId::new(current)
         };
 
@@ -544,9 +549,78 @@ impl MemoryStore {
         }
     }
 
+    /// Atomically snapshot a tenant's routes: own nodes + children + visible child
+    /// nodes, all under a single lock scope to prevent posture/nodes interleaving.
+    pub fn get_tenant_route_snapshot(
+        &self,
+        tenant_id: TenantId,
+    ) -> Result<TenantRouteSnapshot, CoordError> {
+        // Lock ordering: tenants before nodes (matches get_peers_with_children).
+        let tenants = self.tenants.lock().unwrap_or_else(|e| e.into_inner());
+        let nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner());
+
+        if !tenants.contains_key(&tenant_id) {
+            return Err(CoordError::TenantNotFound(tenant_id));
+        }
+
+        let children: Vec<Tenant> = tenants
+            .values()
+            .filter(|t| t.parent_id == Some(tenant_id))
+            .cloned()
+            .collect();
+
+        let own_nodes: Vec<PeerInfo> = nodes
+            .values()
+            .filter(|n| n.tenant_id == tenant_id)
+            .map(stored_node_to_peer_info)
+            .collect();
+
+        let visible_child_nodes: Vec<(TenantId, String, Vec<PeerInfo>)> = children
+            .iter()
+            .filter(|c| c.federation_posture != FederationPosture::Closed)
+            .map(|c| {
+                let child_nodes: Vec<PeerInfo> = nodes
+                    .values()
+                    .filter(|n| n.tenant_id == c.id)
+                    .map(stored_node_to_peer_info)
+                    .collect();
+                (c.id, c.slug.clone(), child_nodes)
+            })
+            .collect();
+
+        Ok(TenantRouteSnapshot {
+            children,
+            own_nodes,
+            visible_child_nodes,
+        })
+    }
+
     #[doc(hidden)]
     pub fn tenants_for_test(&self) -> &Mutex<HashMap<TenantId, Tenant>> {
         &self.tenants
+    }
+}
+
+/// Snapshot of a tenant's route data, gathered atomically.
+#[derive(Debug)]
+pub struct TenantRouteSnapshot {
+    pub children: Vec<Tenant>,
+    pub own_nodes: Vec<PeerInfo>,
+    /// (child_tenant_id, child_slug, child_nodes) for non-Closed children only.
+    pub visible_child_nodes: Vec<(TenantId, String, Vec<PeerInfo>)>,
+}
+
+fn stored_node_to_peer_info(n: &StoredNode) -> PeerInfo {
+    PeerInfo {
+        node_id: n.id,
+        node_key: n.info.node_key.clone(),
+        disco_key: n.info.disco_key.clone(),
+        endpoints: n.info.endpoints.clone(),
+        allowed_ips: vec![format!("{}/32", n.ipv4)],
+        hostname: n.info.hostname.clone(),
+        derp_region: Some(1),
+        online: n.online,
+        last_seen: Some(n.registered_at),
     }
 }
 

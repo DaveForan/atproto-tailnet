@@ -321,7 +321,12 @@ impl PgStore {
             .await?;
 
         let base_ip = u32::from(Ipv4Addr::new(100, 64, 0, 0));
-        let new_ipv4 = Ipv4Addr::from(base_ip + ip_offset as u32);
+        let ip_offset_u32 = u32::try_from(ip_offset).map_err(|_| {
+            CoordError::Protocol(format!("IP offset {} exceeds u32 range", ip_offset))
+        })?;
+        let new_ipv4 = Ipv4Addr::from(base_ip.checked_add(ip_offset_u32).ok_or_else(|| {
+            CoordError::AddressSpaceExhausted
+        })?);
         let max_cgnat = u32::from(Ipv4Addr::new(100, 127, 255, 255));
         if u32::from(new_ipv4) > max_cgnat {
             return Err(CoordError::AddressSpaceExhausted);
@@ -704,6 +709,30 @@ impl PgStore {
             });
         }
         Ok(())
+    }
+    pub async fn get_tenant_route_snapshot(
+        &self,
+        tenant_id: TenantId,
+    ) -> Result<crate::memory::TenantRouteSnapshot, CoordError> {
+        // PgStore: each SQL statement sees a consistent snapshot, and we group
+        // reads here so callers get a coherent view.
+        if self.get_tenant(tenant_id).await.is_none() {
+            return Err(CoordError::TenantNotFound(tenant_id));
+        }
+        let children = self.get_child_tenants(tenant_id).await;
+        let own_nodes = self.list_tenant_nodes(tenant_id).await;
+        let mut visible_child_nodes = Vec::new();
+        for child in &children {
+            if child.federation_posture != coord_core::FederationPosture::Closed {
+                let child_nodes = self.list_tenant_nodes(child.id).await;
+                visible_child_nodes.push((child.id, child.slug.clone(), child_nodes));
+            }
+        }
+        Ok(crate::memory::TenantRouteSnapshot {
+            children,
+            own_nodes,
+            visible_child_nodes,
+        })
     }
 }
 
