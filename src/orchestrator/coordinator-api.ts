@@ -163,13 +163,18 @@ export class CoordinatorApiClient {
   }
 
   async deleteNode(nodeId: string): Promise<void> {
-    await this.request("DELETE", `/api/nodes/${nodeId}`);
+    await this.request(
+      "DELETE",
+      `/api/nodes/${nodeId}?tenant_id=${this.tenantId}`,
+    );
   }
 
   async renameNode(nodeId: string, newName: string): Promise<HeadscaleNode> {
-    const data = (await this.request("POST", `/api/nodes/${nodeId}/name`, {
-      name: newName,
-    })) as {
+    const data = (await this.request(
+      "POST",
+      `/api/nodes/${nodeId}/name?tenant_id=${this.tenantId}`,
+      { name: newName },
+    )) as {
       id: number;
       tenant_id: string;
       ipv4: string;

@@ -1169,3 +1169,109 @@ async fn update_posture_via_api() {
     ).await.unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
+
+// ── Cross-tenant node operation guard tests ──
+
+#[tokio::test]
+async fn delete_node_with_wrong_tenant_returns_403() {
+    let (app, state) = setup();
+
+    // Create two tenants
+    let tenant_a = create_test_tenant(&state, "guard-tenant-a").await;
+    let tenant_b = create_test_tenant(&state, "guard-tenant-b").await;
+
+    // Register a node in tenant A
+    register_node_for(&state, tenant_a, [201u8; 32], 202, "tenant-a-node").await;
+    let node_a_id = state.store.get_node_by_machine_key(&[201u8; 32]).await.unwrap();
+
+    // Register a node in tenant B
+    register_node_for(&state, tenant_b, [203u8; 32], 204, "tenant-b-node").await;
+
+    // Try to delete tenant A's node with tenant_id=B -- should get 403
+    let resp = app.clone().oneshot(
+        Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/nodes/{}?tenant_id={}", node_a_id.as_i64(), tenant_b))
+            .body(Body::empty())
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    let body = json_body(resp).await;
+    assert!(body["error"].as_str().unwrap().contains("does not belong"));
+
+    // Verify the node still exists
+    let resp = app.clone().oneshot(
+        Request::builder()
+            .uri(format!("/api/nodes/{}", node_a_id.as_i64()))
+            .body(Body::empty())
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Delete tenant A's node with correct tenant_id=A -- should succeed
+    let resp = app.clone().oneshot(
+        Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/nodes/{}?tenant_id={}", node_a_id.as_i64(), tenant_a))
+            .body(Body::empty())
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert_eq!(body["status"], "deleted");
+
+    // Verify the node is gone
+    let resp = app.clone().oneshot(
+        Request::builder()
+            .uri(format!("/api/nodes/{}", node_a_id.as_i64()))
+            .body(Body::empty())
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn rename_node_with_wrong_tenant_returns_403() {
+    let (app, state) = setup();
+
+    let tenant_a = create_test_tenant(&state, "rename-guard-a").await;
+    let tenant_b = create_test_tenant(&state, "rename-guard-b").await;
+
+    register_node_for(&state, tenant_a, [205u8; 32], 206, "rename-guard-node").await;
+    let node_id = state.store.get_node_by_machine_key(&[205u8; 32]).await.unwrap();
+
+    // Try to rename with wrong tenant -- should get 403
+    let resp = app.clone().oneshot(
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/nodes/{}/name?tenant_id={}", node_id.as_i64(), tenant_b))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name":"hijacked"}"#))
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    // Verify name unchanged
+    let resp = app.clone().oneshot(
+        Request::builder()
+            .uri(format!("/api/nodes/{}", node_id.as_i64()))
+            .body(Body::empty())
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert_eq!(body["hostname"], "rename-guard-node");
+
+    // Rename with correct tenant -- should succeed
+    let resp = app.clone().oneshot(
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/nodes/{}/name?tenant_id={}", node_id.as_i64(), tenant_a))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name":"properly-renamed"}"#))
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert_eq!(body["hostname"], "properly-renamed");
+}

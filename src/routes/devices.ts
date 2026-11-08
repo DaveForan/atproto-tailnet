@@ -200,26 +200,27 @@ devicesRouter.delete(
     const client = getControlClient(result.tenant);
 
     if (!hasPermission(result.membership, result.role, "manage_devices", req)) {
-      // In coordinator mode all nodes belong to the tenant generically
-      // (user.name is "coordinator"), so skip per-user ownership checks.
-      if (!useCoordinator) {
-        try {
-          const node = await client.getNode(nodeId);
-          const [user] = await db
-            .select()
-            .from(users)
-            .where(eq(users.id, authUserId(req)));
-          const expectedHsUser = result.membership.isOriginator
-            ? "owner"
-            : toHsUsername(user.handle);
-          if (node.user?.name !== expectedHsUser) {
-            res.status(403).json({ error: "Can only remove your own devices" });
-            return;
-          }
-        } catch {
-          res.status(502).json({ error: "Failed to verify device ownership" });
+      if (useCoordinator) {
+        // Coordinator mode has no per-user node ownership — require manage_devices
+        res.status(403).json({ error: "You do not have permission to remove devices" });
+        return;
+      }
+      try {
+        const node = await client.getNode(nodeId);
+        const [user] = await db
+          .select()
+          .from(users)
+          .where(eq(users.id, authUserId(req)));
+        const expectedHsUser = result.membership.isOriginator
+          ? "owner"
+          : toHsUsername(user.handle);
+        if (node.user?.name !== expectedHsUser) {
+          res.status(403).json({ error: "Can only remove your own devices" });
           return;
         }
+      } catch {
+        res.status(502).json({ error: "Failed to verify device ownership" });
+        return;
       }
     }
 

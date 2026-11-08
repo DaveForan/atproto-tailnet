@@ -4,6 +4,7 @@
  * All env vars flow through here; nothing reads process.env directly elsewhere.
  * Throws at startup if production invariants are violated (e.g. weak session secret).
  */
+import { execFileSync } from "node:child_process";
 import * as net from "node:net";
 import { z } from "zod";
 
@@ -99,7 +100,31 @@ if (config.coordinatorUrl) {
   const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(hostname);
   const checkAddr = mapped ? mapped[1] : hostname;
   const family = net.isIP(checkAddr);
-  if (family !== 0 && _bl.check(checkAddr, family === 4 ? "ipv4" : "ipv6")) {
+  if (family === 0) {
+    // Hostname (not IP literal) — resolve synchronously to check all addresses
+    try {
+      const resolved = execFileSync(
+        process.execPath,
+        ["-e", "const dns=require('dns');dns.lookup(process.argv[1],{all:true},(e,a)=>console.log(JSON.stringify(a||[])))", checkAddr],
+        { timeout: 5000, encoding: "utf8" },
+      ).trim();
+      const addrs: Array<{ address: string; family: number }> =
+        JSON.parse(resolved || "[]");
+      for (const addr of addrs) {
+        const fam = addr.family === 4 ? "ipv4" : "ipv6";
+        if (_bl.check(addr.address, fam)) {
+          throw new Error(
+            `COORDINATOR_URL hostname "${checkAddr}" resolves to non-public address ${addr.address} — blocked`,
+          );
+        }
+      }
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("blocked")) throw err;
+      throw new Error(
+        `COORDINATOR_URL hostname "${checkAddr}" could not be resolved — use an IP literal or a resolvable hostname`,
+      );
+    }
+  } else if (_bl.check(checkAddr, family === 4 ? "ipv4" : "ipv6")) {
     throw new Error(
       `COORDINATOR_URL points to a non-public address (${hostname}) — private, loopback, link-local, and metadata addresses are blocked`,
     );

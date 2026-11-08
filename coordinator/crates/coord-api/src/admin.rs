@@ -471,6 +471,15 @@ pub struct RenameNodeRequest {
     pub name: String,
 }
 
+#[derive(Deserialize)]
+pub struct TenantGuardQuery {
+    pub tenant_id: Option<String>,
+}
+
+/// Returns node info including tenant_id.
+/// NOTE: This is an admin endpoint — it intentionally returns data across all
+/// tenants. Callers that need tenant-scoped access should use the tenant-scoped
+/// node listing endpoint instead.
 pub async fn get_node_handler(
     State(state): State<Arc<CoordinatorState>>,
     Path(id): Path<String>,
@@ -495,11 +504,25 @@ pub async fn get_node_handler(
 pub async fn delete_node_handler(
     State(state): State<Arc<CoordinatorState>>,
     Path(id): Path<String>,
+    Query(query): Query<TenantGuardQuery>,
 ) -> impl IntoResponse {
     let node_id = match id.parse::<i64>() {
         Ok(id) => NodeId::new(id),
         Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "invalid node_id"}))).into_response(),
     };
+
+    // If caller specifies tenant_id, verify the node belongs to that tenant before deleting.
+    if let Some(ref tid_str) = query.tenant_id {
+        let expected_tenant = match tid_str.parse::<uuid::Uuid>() {
+            Ok(uuid) => TenantId::new(uuid),
+            Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "invalid tenant_id"}))).into_response(),
+        };
+        let actual_tenant = state.store.get_node_tenant(node_id).await;
+        if actual_tenant != Some(expected_tenant) {
+            return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "node does not belong to specified tenant"}))).into_response();
+        }
+    }
+
     match state.store.delete_node(node_id).await {
         Ok(_) => (StatusCode::OK, Json(serde_json::json!({"status": "deleted"}))).into_response(),
         Err(e) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
@@ -509,12 +532,26 @@ pub async fn delete_node_handler(
 pub async fn rename_node_handler(
     State(state): State<Arc<CoordinatorState>>,
     Path(id): Path<String>,
+    Query(query): Query<TenantGuardQuery>,
     Json(body): Json<RenameNodeRequest>,
 ) -> impl IntoResponse {
     let node_id = match id.parse::<i64>() {
         Ok(id) => NodeId::new(id),
         Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "invalid node_id"}))).into_response(),
     };
+
+    // If caller specifies tenant_id, verify the node belongs to that tenant before renaming.
+    if let Some(ref tid_str) = query.tenant_id {
+        let expected_tenant = match tid_str.parse::<uuid::Uuid>() {
+            Ok(uuid) => TenantId::new(uuid),
+            Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "invalid tenant_id"}))).into_response(),
+        };
+        let actual_tenant = state.store.get_node_tenant(node_id).await;
+        if actual_tenant != Some(expected_tenant) {
+            return (StatusCode::FORBIDDEN, Json(serde_json::json!({"error": "node does not belong to specified tenant"}))).into_response();
+        }
+    }
+
     match state.store.rename_node(node_id, body.name).await {
         Ok(()) => {
             // Return updated node info
