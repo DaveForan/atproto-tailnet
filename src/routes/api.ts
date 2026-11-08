@@ -15,6 +15,8 @@ import {
   stopInstance,
 } from "../orchestrator/headscale.js";
 import { syncTenantRoutes } from "../orchestrator/caddy.js";
+import { getControlClient, useCoordinator } from "../orchestrator/control-client.js";
+import { CoordinatorApiClient } from "../orchestrator/coordinator-api.js";
 import { requireAuth, param, getTenantForUser, tenantLoginServer, authUserId } from "./helpers.js";
 import { logAudit } from "./audit.js";
 import { checkTenantHealth } from "../orchestrator/monitor.js";
@@ -247,12 +249,22 @@ apiRouter.delete("/api/tenants/:id", requireAuth, async (req, res) => {
       await destroyInstance(result.tenant.containerId);
     }
 
+    if (useCoordinator && result.tenant.coordinatorTenantId) {
+      try {
+        const client = getControlClient(result.tenant);
+        if (client instanceof CoordinatorApiClient) {
+          await client.deleteTenant();
+        }
+      } catch (err) {
+        logger.warn({ tenantId, err }, "failed to delete tenant from coordinator");
+      }
+    }
+
     await db
       .update(tenants)
       .set({ status: "deleted", containerId: null, updatedAt: new Date() })
       .where(eq(tenants.id, tenantId));
 
-    // Routes are derived from the database, so sync after the tenant is gone.
     await syncTenantRoutes().catch((err) =>
       logger.error({ tenantSlug: result.tenant.slug, err }, "failed to sync Caddy routes"),
     );
@@ -276,6 +288,10 @@ apiRouter.post("/api/tenants/:id/start", requireAuth, async (req, res) => {
   const result = await getTenantForUser(param(req, "id"), authUserId(req));
   if (!result || !result.membership.isOriginator) {
     res.status(403).json({ error: "Only the tenant originator can start" });
+    return;
+  }
+  if (useCoordinator) {
+    res.status(501).json({ error: "Tenant lifecycle is managed by the coordinator — start/stop is not applicable" });
     return;
   }
   if (!result.tenant.containerId) {
@@ -308,6 +324,10 @@ apiRouter.post("/api/tenants/:id/stop", requireAuth, async (req, res) => {
   const result = await getTenantForUser(param(req, "id"), authUserId(req));
   if (!result || !result.membership.isOriginator) {
     res.status(403).json({ error: "Only the tenant originator can stop" });
+    return;
+  }
+  if (useCoordinator) {
+    res.status(501).json({ error: "Tenant lifecycle is managed by the coordinator — start/stop is not applicable" });
     return;
   }
   if (!result.tenant.containerId) {

@@ -24,6 +24,7 @@ import {
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
 import { logger } from "../logger.js";
+import { useCoordinator } from "../orchestrator/control-client.js";
 
 export const derpRouter = Router();
 
@@ -84,6 +85,11 @@ derpRouter.put(
 
     if (!hasPermission(result.membership, result.role, "manage_acl", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
+      return;
+    }
+
+    if (useCoordinator) {
+      res.status(501).json({ error: "DERP configuration is managed by the coordinator's DERP map, not per-tenant Headscale config" });
       return;
     }
 

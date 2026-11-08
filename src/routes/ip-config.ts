@@ -26,6 +26,7 @@ import {
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
 import { logger } from "../logger.js";
+import { useCoordinator } from "../orchestrator/control-client.js";
 
 export const ipConfigRouter = Router();
 
@@ -85,6 +86,11 @@ ipConfigRouter.put(
       !hasPermission(result.membership, result.role, "manage_settings", req)
     ) {
       res.status(403).json({ error: "Insufficient permissions" });
+      return;
+    }
+
+    if (useCoordinator) {
+      res.status(501).json({ error: "IP ranges are managed by the coordinator's tenant CIDR prefixes, not per-tenant Headscale config" });
       return;
     }
 

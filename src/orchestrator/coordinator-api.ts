@@ -54,6 +54,12 @@ export class CoordinatorApiClient {
     return res.json();
   }
 
+  // ── Tenant lifecycle ──
+
+  async deleteTenant(): Promise<void> {
+    await this.request("DELETE", `/api/tenants/${this.tenantId}`);
+  }
+
   // ── User operations (no-op in coordinator — tenants replace users) ──
 
   async createUser(name: string): Promise<HeadscaleUser> {

@@ -9,7 +9,7 @@
 
 import { Router } from "express";
 import { parseRouteId } from "../orchestrator/headscale-api.js";
-import { getControlClient } from "../orchestrator/control-client.js";
+import { getControlClient, useCoordinator } from "../orchestrator/control-client.js";
 import {
   requireAuth,
   param,
@@ -79,6 +79,11 @@ routesRouter.post(
       return;
     }
 
+    if (useCoordinator) {
+      res.status(501).json({ error: "Per-route approval is not applicable in coordinator mode — routes are derived from tenant CIDR prefixes" });
+      return;
+    }
+
     if (!result.tenant.apiKey || !result.tenant.port) {
       res.status(503).json({ error: "Tenant instance not available" });
       return;
@@ -103,10 +108,6 @@ routesRouter.post(
 
       res.json({ status: "enabled" });
     } catch (err) {
-      if (err instanceof Error && err.message.includes("not yet supported")) {
-        res.status(501).json({ error: "Route management not available in coordinator mode" });
-        return;
-      }
       logger.error({ tenantId, routeId, err }, "failed to enable route");
       res.status(502).json({ error: "Failed to enable route" });
     }
@@ -127,6 +128,11 @@ routesRouter.post(
 
     if (!hasPermission(result.membership, result.role, "manage_devices", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
+      return;
+    }
+
+    if (useCoordinator) {
+      res.status(501).json({ error: "Per-route approval is not applicable in coordinator mode — routes are derived from tenant CIDR prefixes" });
       return;
     }
 
@@ -154,10 +160,6 @@ routesRouter.post(
 
       res.json({ status: "disabled" });
     } catch (err) {
-      if (err instanceof Error && err.message.includes("not yet supported")) {
-        res.status(501).json({ error: "Route management not available in coordinator mode" });
-        return;
-      }
       logger.error({ tenantId, routeId, err }, "failed to disable route");
       res.status(502).json({ error: "Failed to disable route" });
     }
@@ -178,6 +180,11 @@ routesRouter.delete(
 
     if (!hasPermission(result.membership, result.role, "manage_devices", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
+      return;
+    }
+
+    if (useCoordinator) {
+      res.status(501).json({ error: "Per-route approval is not applicable in coordinator mode — routes are derived from tenant CIDR prefixes" });
       return;
     }
 
@@ -205,10 +212,6 @@ routesRouter.delete(
 
       res.json({ status: "deleted" });
     } catch (err) {
-      if (err instanceof Error && err.message.includes("not yet supported")) {
-        res.status(501).json({ error: "Route management not available in coordinator mode" });
-        return;
-      }
       logger.error({ tenantId, routeId, err }, "failed to delete route");
       res.status(502).json({ error: "Failed to delete route" });
     }
