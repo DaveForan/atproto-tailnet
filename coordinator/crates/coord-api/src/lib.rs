@@ -12,7 +12,7 @@ use axum::{
     http::{Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use std::sync::Arc;
 
@@ -49,6 +49,7 @@ pub fn router(state: Arc<CoordinatorState>) -> Router {
         .route("/tenants/{id}", get(admin::get_tenant).delete(admin::delete_tenant))
         .route("/tenants/{id}/routes", get(admin::get_tenant_routes))
         .route("/tenants/{id}/acl", get(admin::get_acl).post(admin::set_acl_for_tenant))
+        .route("/tenants/{id}/posture", put(admin::update_tenant_posture))
         .route("/tenants/{id}/nodes", get(admin::list_tenant_nodes_handler))
         .route("/preauth-keys", post(admin::create_preauth_key))
         .route("/nodes", get(admin::list_nodes))

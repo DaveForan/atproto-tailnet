@@ -202,6 +202,39 @@ impl PgStore {
             .collect()
     }
 
+    pub async fn update_tenant_posture(
+        &self,
+        tenant_id: TenantId,
+        posture: FederationPosture,
+    ) -> Result<Tenant, CoordError> {
+        let posture_str = match posture {
+            FederationPosture::Open => "open",
+            FederationPosture::Selective => "selective",
+            FederationPosture::Closed => "closed",
+        };
+        let row = sqlx::query_as::<_, (uuid::Uuid, String, Option<uuid::Uuid>, String, String, String, chrono::DateTime<chrono::Utc>)>(
+            "UPDATE coord_tenants SET federation_posture = $1 WHERE id = $2 \
+             RETURNING id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix, created_at"
+        )
+            .bind(posture_str)
+            .bind(tenant_id.as_uuid())
+            .fetch_optional(&self.pool)
+            .await?;
+
+        match row {
+            Some((id, slug, parent_uuid, ps, ipv4_prefix, ipv6_prefix, created_at)) => Ok(Tenant {
+                id: TenantId::new(id),
+                slug,
+                parent_id: parent_uuid.map(TenantId::new),
+                federation_posture: parse_posture(&ps),
+                ipv4_prefix,
+                ipv6_prefix,
+                created_at,
+            }),
+            None => Err(CoordError::TenantNotFound(tenant_id)),
+        }
+    }
+
     pub async fn create_preauth_key(&self, tenant_id: TenantId, reusable: bool) -> Result<String, CoordError> {
         let key = format!("tskey-auth-{}", generate_random_id());
         sqlx::query(

@@ -1119,3 +1119,53 @@ async fn hierarchy_routes_endpoint() {
     assert_eq!(agg[0]["slug"], "route-child");
     assert!(agg[0]["node_count"].as_u64().unwrap() >= 1);
 }
+
+#[tokio::test]
+async fn update_posture_via_api() {
+    let (app, state) = setup();
+    let tenant = state.store.create_tenant("posture-test".into(), None).await.unwrap();
+
+    // Default posture should be Closed
+    assert_eq!(tenant.federation_posture, coord_core::FederationPosture::Closed);
+
+    // Update to Open via API
+    let resp = app.clone().oneshot(
+        Request::builder()
+            .method("PUT")
+            .uri(format!("/api/tenants/{}/posture", tenant.id))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"posture":"open"}"#))
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert_eq!(body["federation_posture"], "open");
+
+    // Verify in store
+    let updated = state.store.get_tenant(tenant.id).await.unwrap();
+    assert_eq!(updated.federation_posture, coord_core::FederationPosture::Open);
+
+    // Update to Selective
+    let resp = app.clone().oneshot(
+        Request::builder()
+            .method("PUT")
+            .uri(format!("/api/tenants/{}/posture", tenant.id))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"posture":"selective"}"#))
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert_eq!(body["federation_posture"], "selective");
+
+    // Invalid posture rejected
+    let resp = app.clone().oneshot(
+        Request::builder()
+            .method("PUT")
+            .uri(format!("/api/tenants/{}/posture", tenant.id))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"posture":"invalid"}"#))
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}

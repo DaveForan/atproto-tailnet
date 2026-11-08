@@ -1,7 +1,7 @@
 use std::net::Ipv4Addr;
 use tokio::sync::broadcast;
 
-use coord_core::{CoordError, NodeId, NodeInfo, PeerInfo, Tenant, TenantId};
+use coord_core::{CoordError, FederationPosture, NodeId, NodeInfo, PeerInfo, Tenant, TenantId};
 use tracing::warn;
 use crate::memory::{MemoryStore, PeerEvent};
 use crate::pg::PgStore;
@@ -55,6 +55,17 @@ impl Store {
         match self {
             Store::Memory(m) => m.get_child_tenants(parent_id),
             Store::Pg(p) => p.get_child_tenants(parent_id).await,
+        }
+    }
+
+    pub async fn update_tenant_posture(
+        &self,
+        tenant_id: TenantId,
+        posture: FederationPosture,
+    ) -> Result<Tenant, CoordError> {
+        match self {
+            Store::Memory(m) => m.update_tenant_posture(tenant_id, posture),
+            Store::Pg(p) => p.update_tenant_posture(tenant_id, posture).await,
         }
     }
 

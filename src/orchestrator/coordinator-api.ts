@@ -198,6 +198,14 @@ export class CoordinatorApiClient {
     await this.request("POST", `/api/tenants/${this.tenantId}/acl`, policy);
   }
 
+  // ── Posture ──
+
+  async setPosture(posture: string): Promise<void> {
+    await this.request("PUT", `/api/tenants/${this.tenantId}/posture`, {
+      posture,
+    });
+  }
+
   // ── Routes ──
 
   async listRoutes(): Promise<HeadscaleRoute[]> {

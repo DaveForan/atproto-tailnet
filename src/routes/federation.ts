@@ -34,6 +34,8 @@ import {
 } from "../orchestrator/federation-broker.js";
 import { collectiveDids } from "../db/schema.js";
 import { config } from "../config.js";
+import { getControlClient, useCoordinator } from "../orchestrator/control-client.js";
+import { CoordinatorApiClient } from "../orchestrator/coordinator-api.js";
 import { CFP_VERSION } from "../federation/protocol.js";
 import { scopeDeclarationSchema } from "../federation/scoping.js";
 
@@ -941,6 +943,17 @@ federationRouter.put(
         updatedAt: new Date(),
       })
       .where(eq(tenants.id, tenantId));
+
+    if (useCoordinator) {
+      try {
+        const client = getControlClient(result.tenant);
+        if (client instanceof CoordinatorApiClient) {
+          await client.setPosture(parsed.data.posture);
+        }
+      } catch (err) {
+        logger.warn({ err, tenantId }, "failed to sync posture to coordinator");
+      }
+    }
 
     logAudit({
       tenantId,

@@ -137,6 +137,49 @@ pub async fn delete_tenant(
     }
 }
 
+// ── Tenant posture management ──
+
+#[derive(Deserialize)]
+pub struct UpdatePostureRequest {
+    pub posture: String,
+}
+
+pub async fn update_tenant_posture(
+    State(state): State<Arc<CoordinatorState>>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdatePostureRequest>,
+) -> impl IntoResponse {
+    let tenant_id = match id.parse::<uuid::Uuid>() {
+        Ok(uuid) => TenantId::new(uuid),
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid tenant_id"})),
+            ).into_response();
+        }
+    };
+
+    let posture = match body.posture.as_str() {
+        "open" => coord_core::FederationPosture::Open,
+        "selective" => coord_core::FederationPosture::Selective,
+        "closed" => coord_core::FederationPosture::Closed,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid posture: must be open, selective, or closed"})),
+            ).into_response();
+        }
+    };
+
+    match state.store.update_tenant_posture(tenant_id, posture).await {
+        Ok(tenant) => Json(serde_json::json!(TenantResponse::from(tenant))).into_response(),
+        Err(e) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": e.to_string()})),
+        ).into_response(),
+    }
+}
+
 // ── Preauth key management ──
 
 #[derive(Deserialize)]

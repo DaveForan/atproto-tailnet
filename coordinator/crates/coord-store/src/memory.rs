@@ -3,7 +3,7 @@ use std::net::Ipv4Addr;
 use std::sync::Mutex;
 use tokio::sync::broadcast;
 
-use coord_core::{CoordError, NodeId, NodeInfo, PeerInfo, Tenant, FederationPosture, TenantId};
+use coord_core::{CoordError, FederationPosture, NodeId, NodeInfo, PeerInfo, Tenant, TenantId};
 
 #[derive(Debug, Clone)]
 pub enum PeerEvent {
@@ -173,6 +173,21 @@ impl MemoryStore {
             .filter(|t| t.parent_id == Some(parent_id))
             .cloned()
             .collect()
+    }
+
+    pub fn update_tenant_posture(
+        &self,
+        tenant_id: TenantId,
+        posture: FederationPosture,
+    ) -> Result<Tenant, CoordError> {
+        let mut tenants = self.tenants.lock().unwrap_or_else(|e| e.into_inner());
+        match tenants.get_mut(&tenant_id) {
+            Some(t) => {
+                t.federation_posture = posture;
+                Ok(t.clone())
+            }
+            None => Err(CoordError::TenantNotFound(tenant_id)),
+        }
     }
 
     pub fn create_preauth_key(&self, tenant_id: TenantId, reusable: bool) -> Result<String, CoordError> {
