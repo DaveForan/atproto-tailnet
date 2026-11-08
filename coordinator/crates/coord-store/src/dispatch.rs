@@ -191,6 +191,20 @@ impl Store {
         }
     }
 
+    pub async fn delete_node(&self, node_id: NodeId) -> Result<TenantId, CoordError> {
+        match self {
+            Store::Memory(m) => m.delete_node(node_id),
+            Store::Pg(p) => p.delete_node(node_id).await,
+        }
+    }
+
+    pub async fn rename_node(&self, node_id: NodeId, new_name: String) -> Result<(), CoordError> {
+        match self {
+            Store::Memory(m) => m.rename_node(node_id, new_name),
+            Store::Pg(p) => p.rename_node(node_id, new_name).await,
+        }
+    }
+
     pub async fn set_node_online(&self, node_id: NodeId, online: bool) {
         let result = match self {
             Store::Memory(m) => { m.set_node_online(node_id, online); Ok(()) },

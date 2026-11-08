@@ -591,6 +591,43 @@ impl PgStore {
             .collect()
     }
 
+    pub async fn delete_node(&self, node_id: NodeId) -> Result<TenantId, CoordError> {
+        let tenant_uuid: Option<uuid::Uuid> = sqlx::query_scalar(
+            "DELETE FROM coord_nodes WHERE id = $1 RETURNING tenant_id"
+        )
+            .bind(node_id.as_i64())
+            .fetch_optional(&self.pool)
+            .await?;
+
+        match tenant_uuid {
+            Some(uuid) => {
+                let tid = TenantId::new(uuid);
+                let _ = self.peer_tx.send(PeerEvent::NodeOffline { tenant_id: tid, node_id });
+                Ok(tid)
+            }
+            None => Err(CoordError::Protocol("node not found".into())),
+        }
+    }
+
+    pub async fn rename_node(&self, node_id: NodeId, new_name: String) -> Result<(), CoordError> {
+        let result = sqlx::query_as::<_, (uuid::Uuid,)>(
+            "UPDATE coord_nodes SET hostname = $1 WHERE id = $2 RETURNING tenant_id"
+        )
+            .bind(&new_name)
+            .bind(node_id.as_i64())
+            .fetch_optional(&self.pool)
+            .await?;
+        match result {
+            Some((uuid,)) => {
+                let _ = self.peer_tx.send(PeerEvent::NodeUpdated {
+                    tenant_id: TenantId::new(uuid), node_id,
+                });
+                Ok(())
+            }
+            None => Err(CoordError::Protocol("node not found".into())),
+        }
+    }
+
     pub async fn set_node_online(&self, node_id: NodeId, online: bool) -> Result<(), CoordError> {
         let result: Option<uuid::Uuid> = sqlx::query_scalar(
             "UPDATE coord_nodes SET online = $1, last_seen = NOW() WHERE id = $2 RETURNING tenant_id"

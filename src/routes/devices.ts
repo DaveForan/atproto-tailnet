@@ -236,10 +236,6 @@ devicesRouter.delete(
 
       res.json({ status: "deleted" });
     } catch (err) {
-      if (err instanceof Error && err.message.includes("not yet supported")) {
-        res.status(501).json({ error: "Node deletion not available in coordinator mode" });
-        return;
-      }
       logger.error({ err }, "failed to delete device");
       res.status(502).json({ error: "Failed to delete device" });
     }
@@ -338,15 +334,7 @@ devicesRouter.delete(
         const nodes = await client.listNodes();
         const userNodes = nodes.filter((n) => n.user?.name === hsUsername);
         for (const node of userNodes) {
-          try {
-            await client.deleteNode(node.id);
-          } catch (deleteErr) {
-            if (deleteErr instanceof Error && deleteErr.message.includes("not yet supported")) {
-              logger.warn({ hsUsername, nodeId: node.id }, "node deletion not supported in coordinator mode, skipping");
-            } else {
-              throw deleteErr;
-            }
-          }
+          await client.deleteNode(node.id);
         }
         await client.deleteUser(hsUsername);
       } catch (err) {

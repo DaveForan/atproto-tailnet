@@ -460,6 +460,39 @@ impl MemoryStore {
             .collect()
     }
 
+    pub fn delete_node(&self, node_id: NodeId) -> Result<TenantId, CoordError> {
+        // Lock ordering: machine_key_index before nodes (matches register_node).
+        let mut machine_index = self.machine_key_index.lock().unwrap_or_else(|e| e.into_inner());
+        let mut nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner());
+        let node = nodes.remove(&node_id)
+            .ok_or(CoordError::Protocol("node not found".into()))?;
+        let tid = node.tenant_id;
+
+        // Remove from machine key index
+        let mkey: Vec<u8> = node.info.machine_key.clone();
+        if mkey.len() == 32 {
+            let mut key = [0u8; 32];
+            key.copy_from_slice(&mkey);
+            machine_index.remove(&key);
+        }
+        drop(nodes);
+        drop(machine_index);
+
+        let _ = self.peer_tx.send(PeerEvent::NodeOffline { tenant_id: tid, node_id });
+        Ok(tid)
+    }
+
+    pub fn rename_node(&self, node_id: NodeId, new_name: String) -> Result<(), CoordError> {
+        let mut nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner());
+        let node = nodes.get_mut(&node_id)
+            .ok_or(CoordError::Protocol("node not found".into()))?;
+        node.info.hostname = new_name;
+        let tid = node.tenant_id;
+        drop(nodes);
+        let _ = self.peer_tx.send(PeerEvent::NodeUpdated { tenant_id: tid, node_id });
+        Ok(())
+    }
+
     pub fn set_node_online(&self, node_id: NodeId, online: bool) {
         let mut nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(node) = nodes.get_mut(&node_id) {

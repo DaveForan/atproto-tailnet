@@ -48,8 +48,12 @@ pub fn router(state: Arc<CoordinatorState>) -> Router {
         .route("/tenants", post(admin::create_tenant).get(admin::list_tenants))
         .route("/tenants/{id}", get(admin::get_tenant).delete(admin::delete_tenant))
         .route("/tenants/{id}/routes", get(admin::get_tenant_routes))
+        .route("/tenants/{id}/acl", get(admin::get_acl).post(admin::set_acl_for_tenant))
+        .route("/tenants/{id}/nodes", get(admin::list_tenant_nodes_handler))
         .route("/preauth-keys", post(admin::create_preauth_key))
         .route("/nodes", get(admin::list_nodes))
+        .route("/nodes/{id}", get(admin::get_node_handler).delete(admin::delete_node_handler))
+        .route("/nodes/{id}/name", post(admin::rename_node_handler))
         .route("/acl", post(admin::set_acl))
         .layer(middleware::from_fn_with_state(state.clone(), require_admin_auth));
 

@@ -345,15 +345,7 @@ async function teardownBrokerSession(stale: BrokerSession): Promise<void> {
           .limit(1);
         if (tenant?.port && tenant.status === "running") {
           const client = getControlClient(tenant);
-          try {
-            await client.deleteNode(relay.headscaleNodeId);
-          } catch (deleteErr) {
-            if (deleteErr instanceof Error && deleteErr.message.includes("not yet supported")) {
-              logger.warn({ relayId: relay.id }, "node deletion not supported in coordinator mode, skipping");
-            } else {
-              throw deleteErr;
-            }
-          }
+          await client.deleteNode(relay.headscaleNodeId);
         }
       }
     } catch (err) {

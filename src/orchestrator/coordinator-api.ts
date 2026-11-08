@@ -104,7 +104,10 @@ export class CoordinatorApiClient {
   // ── Node operations ──
 
   async listNodes(): Promise<HeadscaleNode[]> {
-    let data: {
+    const data = (await this.request(
+      "GET",
+      `/api/tenants/${this.tenantId}/nodes`,
+    )) as {
       nodes: Array<{
         id: number;
         tenant_id: string;
@@ -114,16 +117,6 @@ export class CoordinatorApiClient {
         online: boolean;
       }>;
     };
-    try {
-      data = (await this.request(
-        "GET",
-        `/api/tenants/${this.tenantId}/nodes`,
-      )) as typeof data;
-    } catch {
-      // Fallback to unscoped endpoint with client-side filter
-      data = (await this.request("GET", "/api/nodes")) as typeof data;
-      data.nodes = data.nodes.filter((n) => n.tenant_id === this.tenantId);
-    }
 
     return data.nodes.map((n) => ({
       id: String(n.id),
@@ -139,43 +132,56 @@ export class CoordinatorApiClient {
   }
 
   async getNode(nodeId: string): Promise<HeadscaleNode> {
-    try {
-      const data = (await this.request("GET", `/api/nodes/${nodeId}`)) as {
-        id: number;
-        tenant_id: string;
-        ipv4: string;
-        stable_id: string;
-        hostname: string;
-        online: boolean;
-      };
-      if (data.tenant_id !== this.tenantId)
-        throw new Error("Node belongs to different tenant");
-      return {
-        id: String(data.id),
-        name: data.hostname,
-        givenName: data.hostname,
-        ipAddresses: [data.ipv4],
-        online: data.online,
-        lastSeen: null,
-        expiry: null,
-        user: { id: "1", name: "coordinator" },
-        machineKey: data.stable_id ? `mkey:${data.stable_id}` : undefined,
-      };
-    } catch {
-      // Fallback to list scan
-      const nodes = await this.listNodes();
-      const node = nodes.find((n) => n.id === nodeId);
-      if (!node) throw new Error(`Node ${nodeId} not found`);
-      return node;
+    const data = (await this.request("GET", `/api/nodes/${nodeId}`)) as {
+      id: number;
+      tenant_id: string;
+      ipv4: string;
+      stable_id: string;
+      hostname: string;
+      online: boolean;
+    };
+    if (data.tenant_id !== this.tenantId) {
+      throw new Error("Node belongs to different tenant");
     }
+    return {
+      id: String(data.id),
+      name: data.hostname,
+      givenName: data.hostname,
+      ipAddresses: [data.ipv4],
+      online: data.online,
+      lastSeen: null,
+      expiry: null,
+      user: { id: "1", name: "coordinator" },
+      machineKey: data.stable_id ? `mkey:${data.stable_id}` : undefined,
+    };
   }
 
-  async deleteNode(_nodeId: string): Promise<void> {
-    throw new Error("Node deletion is not yet supported in coordinator mode");
+  async deleteNode(nodeId: string): Promise<void> {
+    await this.request("DELETE", `/api/nodes/${nodeId}`);
   }
 
-  async renameNode(_nodeId: string, _newName: string): Promise<HeadscaleNode> {
-    throw new Error("Node rename is not yet supported in coordinator mode");
+  async renameNode(nodeId: string, newName: string): Promise<HeadscaleNode> {
+    const data = (await this.request("POST", `/api/nodes/${nodeId}/name`, {
+      name: newName,
+    })) as {
+      id: number;
+      tenant_id: string;
+      ipv4: string;
+      stable_id: string;
+      hostname: string;
+      online: boolean;
+    };
+    return {
+      id: String(data.id),
+      name: data.hostname,
+      givenName: data.hostname,
+      ipAddresses: [data.ipv4],
+      online: data.online,
+      lastSeen: null,
+      expiry: null,
+      user: { id: "1", name: "coordinator" },
+      machineKey: data.stable_id ? `mkey:${data.stable_id}` : undefined,
+    };
   }
 
   // ── ACL policy ──
@@ -189,10 +195,7 @@ export class CoordinatorApiClient {
   }
 
   async setPolicy(policy: object): Promise<void> {
-    await this.request("POST", "/api/acl", {
-      tenant_id: this.tenantId,
-      policy,
-    });
+    await this.request("POST", `/api/tenants/${this.tenantId}/acl`, policy);
   }
 
   // ── Routes ──

@@ -5,7 +5,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
-use coord_core::TenantId;
+use coord_core::{NodeId, TenantId};
 use crate::state::CoordinatorState;
 
 // ── Tenant management ──
@@ -360,6 +360,135 @@ pub async fn get_tenant_routes(
         "children": child_summaries,
         "aggregated_child_routes": aggregated_child_routes,
     })).into_response()
+}
+
+// ── ACL read/write by tenant path ──
+
+pub async fn get_acl(
+    State(state): State<Arc<CoordinatorState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let tenant_id = match id.parse::<uuid::Uuid>() {
+        Ok(uuid) => TenantId::new(uuid),
+        Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "invalid tenant_id"}))).into_response(),
+    };
+
+    match state.acl.get_policy(tenant_id) {
+        Some(policy) => Json(serde_json::json!(policy)).into_response(),
+        None => {
+            // No policy set = allow-all default
+            Json(serde_json::json!({
+                "default_deny": false,
+                "rules": [{"src": "*", "dst": "*", "ports": [{"range": [0, 65535]}]}]
+            })).into_response()
+        }
+    }
+}
+
+pub async fn set_acl_for_tenant(
+    State(state): State<Arc<CoordinatorState>>,
+    Path(id): Path<String>,
+    Json(body): Json<coord_acl::AclPolicy>,
+) -> impl IntoResponse {
+    let tenant_id = match id.parse::<uuid::Uuid>() {
+        Ok(uuid) => TenantId::new(uuid),
+        Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "invalid tenant_id"}))).into_response(),
+    };
+    state.acl.set_policy(tenant_id, body);
+    (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response()
+}
+
+// ── Tenant-scoped node listing ──
+
+pub async fn list_tenant_nodes_handler(
+    State(state): State<Arc<CoordinatorState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let tenant_id = match id.parse::<uuid::Uuid>() {
+        Ok(uuid) => TenantId::new(uuid),
+        Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "invalid tenant_id"}))).into_response(),
+    };
+
+    let nodes = state.store.list_nodes_for_tenant(tenant_id).await;
+    let summaries: Vec<NodeSummary> = nodes.into_iter()
+        .map(|(id, tid, ipv4, stable_id, online, hostname)| NodeSummary {
+            id: id.as_i64(), tenant_id: tid.to_string(), ipv4: ipv4.to_string(),
+            stable_id, hostname, online,
+        })
+        .collect();
+    let count = summaries.len();
+
+    Json(serde_json::json!({"nodes": summaries, "count": count})).into_response()
+}
+
+// ── Node operations: get, delete, rename ──
+
+#[derive(Deserialize)]
+pub struct RenameNodeRequest {
+    pub name: String,
+}
+
+pub async fn get_node_handler(
+    State(state): State<Arc<CoordinatorState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let node_id = match id.parse::<i64>() {
+        Ok(id) => NodeId::new(id),
+        Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "invalid node_id"}))).into_response(),
+    };
+    match state.store.get_node_info(node_id).await {
+        Some((tid, ipv4, stable_id, info)) => Json(serde_json::json!({
+            "id": node_id.as_i64(),
+            "tenant_id": tid.to_string(),
+            "ipv4": ipv4.to_string(),
+            "stable_id": stable_id,
+            "hostname": info.hostname,
+            "online": true,
+        })).into_response(),
+        None => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "node not found"}))).into_response(),
+    }
+}
+
+pub async fn delete_node_handler(
+    State(state): State<Arc<CoordinatorState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let node_id = match id.parse::<i64>() {
+        Ok(id) => NodeId::new(id),
+        Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "invalid node_id"}))).into_response(),
+    };
+    match state.store.delete_node(node_id).await {
+        Ok(_) => (StatusCode::OK, Json(serde_json::json!({"status": "deleted"}))).into_response(),
+        Err(e) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
+}
+
+pub async fn rename_node_handler(
+    State(state): State<Arc<CoordinatorState>>,
+    Path(id): Path<String>,
+    Json(body): Json<RenameNodeRequest>,
+) -> impl IntoResponse {
+    let node_id = match id.parse::<i64>() {
+        Ok(id) => NodeId::new(id),
+        Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "invalid node_id"}))).into_response(),
+    };
+    match state.store.rename_node(node_id, body.name).await {
+        Ok(()) => {
+            // Return updated node info
+            match state.store.get_node_info(node_id).await {
+                Some((tid, ipv4, stable_id, info)) => Json(serde_json::json!({
+                    "id": node_id.as_i64(),
+                    "tenant_id": tid.to_string(),
+                    "ipv4": ipv4.to_string(),
+                    "stable_id": stable_id,
+                    "hostname": info.hostname,
+                    "online": true,
+                })).into_response(),
+                None => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "node not found"}))).into_response(),
+            }
+        }
+        Err(e) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+    }
 }
 
 fn generate_random_slug() -> String {

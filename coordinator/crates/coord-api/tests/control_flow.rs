@@ -789,6 +789,158 @@ async fn tenant_parent_child_creation() {
     assert_eq!(children[0]["slug"], "child-team");
 }
 
+// ── ACL, node delete, node rename tests ──
+
+#[tokio::test]
+async fn get_acl_returns_policy() {
+    let (app, state) = setup();
+    let tenant_id = create_test_tenant(&state, "acl-get-test").await;
+
+    // Set a policy via the existing POST /api/acl endpoint
+    let set_body = serde_json::json!({
+        "tenant_id": tenant_id.to_string(),
+        "policy": {
+            "default_deny": false,
+            "rules": [{
+                "src": "*",
+                "dst": "*",
+                "ports": [{"Single": 22}, {"Range": [80, 443]}]
+            }]
+        }
+    });
+    let resp = app.clone().oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/acl")
+            .header("content-type", "application/json")
+            .body(Body::from(set_body.to_string()))
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    // Read it back via GET /api/tenants/{id}/acl
+    let resp = app.clone().oneshot(
+        Request::builder()
+            .uri(format!("/api/tenants/{}/acl", tenant_id))
+            .body(Body::empty())
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert_eq!(body["default_deny"], false);
+    let rules = body["rules"].as_array().unwrap();
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0]["src"], "*");
+}
+
+#[tokio::test]
+async fn delete_node_removes_from_map() {
+    let (app, state) = setup();
+    let tenant_id = create_test_tenant(&state, "delete-node-test").await;
+    let auth_key = state.store.create_preauth_key(tenant_id, true).await.unwrap();
+
+    // Register two nodes
+    let mk1 = [191u8; 32];
+    let mk2 = [192u8; 32];
+    for (mkey, nkey_byte, hostname) in [
+        (mk1, 193u8, "del-node-a"),
+        (mk2, 194u8, "del-node-b"),
+    ] {
+        let body = serde_json::json!({
+            "Version": 2,
+            "NodeKey": format!("nodekey:{}", hex::encode([nkey_byte; 32])),
+            "Auth": { "AuthKey": &auth_key },
+            "Hostinfo": { "Hostname": hostname, "OS": "linux" }
+        });
+        coord_api::__test_handle_register(&state, &mkey, &body.to_string())
+            .await
+            .unwrap();
+    }
+
+    // Get node2 ID
+    let node2_id = state.store.get_node_by_machine_key(&mk2).await.unwrap();
+
+    // Verify both nodes appear in the peers list
+    let resp = app.clone().oneshot(
+        Request::builder()
+            .uri(format!("/api/tenants/{}/nodes", tenant_id))
+            .body(Body::empty())
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert_eq!(body["count"].as_u64().unwrap(), 2);
+
+    // Delete node2
+    let resp = app.clone().oneshot(
+        Request::builder()
+            .method("DELETE")
+            .uri(format!("/api/nodes/{}", node2_id.as_i64()))
+            .body(Body::empty())
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert_eq!(body["status"], "deleted");
+
+    // Verify only one node remains
+    let resp = app.clone().oneshot(
+        Request::builder()
+            .uri(format!("/api/tenants/{}/nodes", tenant_id))
+            .body(Body::empty())
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert_eq!(body["count"].as_u64().unwrap(), 1);
+    let nodes = body["nodes"].as_array().unwrap();
+    assert_eq!(nodes[0]["hostname"], "del-node-a");
+}
+
+#[tokio::test]
+async fn rename_node_updates_hostname() {
+    let (app, state) = setup();
+    let tenant_id = create_test_tenant(&state, "rename-node-test").await;
+    let auth_key = state.store.create_preauth_key(tenant_id, false).await.unwrap();
+
+    let mk = [195u8; 32];
+    let body = serde_json::json!({
+        "Version": 2,
+        "NodeKey": format!("nodekey:{}", hex::encode([196u8; 32])),
+        "Auth": { "AuthKey": &auth_key },
+        "Hostinfo": { "Hostname": "old-name", "OS": "linux" }
+    });
+    coord_api::__test_handle_register(&state, &mk, &body.to_string())
+        .await
+        .unwrap();
+
+    let node_id = state.store.get_node_by_machine_key(&mk).await.unwrap();
+
+    // Rename it
+    let resp = app.clone().oneshot(
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/nodes/{}/name", node_id.as_i64()))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name":"new-name"}"#))
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert_eq!(body["hostname"], "new-name");
+
+    // Verify via GET /api/nodes/{id}
+    let resp = app.clone().oneshot(
+        Request::builder()
+            .uri(format!("/api/nodes/{}", node_id.as_i64()))
+            .body(Body::empty())
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert_eq!(body["hostname"], "new-name");
+}
+
 // ── Hierarchy route aggregation tests ──
 
 async fn register_node_for(
