@@ -67,6 +67,20 @@ impl FederationStore for FederationMemoryStore {
         }).cloned())
     }
 
+    async fn find_pending_outgoing_link(
+        &self,
+        tenant_id: TenantId,
+        peer_did: &str,
+    ) -> Result<Option<FederationLink>, CoordError> {
+        let guard = self.links.read().unwrap();
+        Ok(guard.values().find(|l| {
+            l.local_tenant_id == tenant_id
+                && l.peer_did == peer_did
+                && l.status == LinkStatus::Pending
+                && l.direction == LinkDirection::Outgoing
+        }).cloned())
+    }
+
     async fn create_link(&self, link: FederationLink) -> Result<FederationLink, CoordError> {
         let mut guard = self.links.write().unwrap();
         guard.insert(link.id, link.clone());

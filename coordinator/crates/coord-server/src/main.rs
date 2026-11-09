@@ -87,6 +87,8 @@ async fn main() -> anyhow::Result<()> {
     let admin_key = std::env::var("COORD_ADMIN_KEY").ok();
     if admin_key.is_some() {
         tracing::info!("admin API key authentication enabled");
+    } else {
+        tracing::warn!("COORD_ADMIN_KEY not set — admin API is unauthenticated");
     }
     coordinator = coordinator.with_admin_api_key(admin_key);
 

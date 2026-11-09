@@ -227,6 +227,27 @@ impl FederationStore for PgFederationStore {
         Ok(row.map(link_from_row))
     }
 
+    async fn find_pending_outgoing_link(
+        &self,
+        tenant_id: TenantId,
+        peer_did: &str,
+    ) -> Result<Option<FederationLink>, CoordError> {
+        let row = sqlx::query_as::<_, LinkRow>(
+            "SELECT id, local_tenant_id, peer_did, peer_broker_url, peer_name, \
+                    direction, status, local_cidrs, peer_cidrs, protocol_version, \
+                    message, signed_request, created_at, updated_at \
+             FROM coord_federation_links \
+             WHERE local_tenant_id = $1 AND peer_did = $2 \
+                   AND status = 'pending' AND direction = 'outgoing'",
+        )
+        .bind(tenant_id.as_uuid())
+        .bind(peer_did)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(link_from_row))
+    }
+
     async fn create_link(&self, link: FederationLink) -> Result<FederationLink, CoordError> {
         let row = sqlx::query_as::<_, LinkRow>(
             "INSERT INTO coord_federation_links \

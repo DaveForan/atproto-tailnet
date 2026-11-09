@@ -6,7 +6,13 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use coord_core::{NodeId, TenantId};
+use tracing::error;
 use crate::state::CoordinatorState;
+
+fn internal_error(e: impl std::fmt::Display) -> impl IntoResponse {
+    error!(error = %e, "internal error");
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "internal error"})))
+}
 
 // ── Tenant management ──
 
@@ -70,10 +76,13 @@ pub async fn create_tenant(
             StatusCode::CREATED,
             Json(serde_json::json!(TenantResponse::from(tenant))),
         ).into_response(),
-        Err(e) => (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({"error": e.to_string()})),
-        ).into_response(),
+        Err(e) => {
+            error!(error = %e, "tenant creation failed");
+            (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({"error": "tenant creation failed (duplicate slug?)"})),
+            ).into_response()
+        }
     }
 }
 
@@ -141,10 +150,7 @@ pub async fn delete_tenant(
                 Json(serde_json::json!({"status": "deleted", "tenant_id": id})),
             ).into_response()
         }
-        Err(e) => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": e.to_string()})),
-        ).into_response(),
+        Err(e) => internal_error(e).into_response(),
     }
 }
 
@@ -184,10 +190,7 @@ pub async fn update_tenant_posture(
 
     match state.store.update_tenant_posture(tenant_id, posture).await {
         Ok(tenant) => Json(serde_json::json!(TenantResponse::from(tenant))).into_response(),
-        Err(e) => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": e.to_string()})),
-        ).into_response(),
+        Err(e) => internal_error(e).into_response(),
     }
 }
 
@@ -250,10 +253,7 @@ pub async fn create_preauth_key(
     let key = match state.store.create_preauth_key(tenant_id, reusable).await {
         Ok(k) => k,
         Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            ).into_response();
+            return internal_error(e).into_response();
         }
     };
 
@@ -548,7 +548,7 @@ pub async fn delete_node_handler(
 
     match state.store.delete_node(node_id).await {
         Ok(_) => (StatusCode::OK, Json(serde_json::json!({"status": "deleted"}))).into_response(),
-        Err(e) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        Err(e) => internal_error(e).into_response(),
     }
 }
 
@@ -597,7 +597,7 @@ pub async fn rename_node_handler(
                 None => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "node not found"}))).into_response(),
             }
         }
-        Err(e) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": e.to_string()}))).into_response(),
+        Err(e) => internal_error(e).into_response(),
     }
 }
 

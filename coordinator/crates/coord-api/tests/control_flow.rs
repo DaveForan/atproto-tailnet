@@ -17,6 +17,34 @@ fn setup() -> (axum::Router, Arc<CoordinatorState>) {
     (app, state)
 }
 
+struct TestCallbacks;
+
+#[async_trait::async_trait]
+impl coord_federation::HandshakeCallbacks for TestCallbacks {
+    async fn sign(&self, _payload: &str) -> Result<String, coord_core::CoordError> {
+        Ok("test-sig".to_string())
+    }
+    async fn verify_signature(&self, _did: &str, _payload: &str, _signature: &str) -> Result<bool, coord_core::CoordError> {
+        Ok(true)
+    }
+    async fn evaluate_policy(&self, _remote_did: &str, _federation_type: &coord_federation::protocol::FederationType) -> Result<bool, coord_core::CoordError> {
+        Ok(true)
+    }
+    fn get_local_routes(&self) -> Vec<coord_federation::protocol::RouteAnnouncement> {
+        vec![]
+    }
+}
+
+fn setup_with_callbacks() -> (axum::Router, Arc<CoordinatorState>) {
+    let key = ControlKey::generate();
+    let state = Arc::new(
+        CoordinatorState::new(key)
+            .with_federation_callbacks(Arc::new(TestCallbacks)),
+    );
+    let app = coord_api::router(state.clone());
+    (app, state)
+}
+
 /// Create a tenant in the store and return its ID (tests need real tenants since R6).
 async fn create_test_tenant(state: &Arc<CoordinatorState>, slug: &str) -> coord_core::TenantId {
     state.store.create_tenant(slug.into(), None).await.unwrap().id
@@ -1350,7 +1378,7 @@ async fn federation_hello_unknown_recipient() {
 
 #[tokio::test]
 async fn federation_hello_valid_returns_challenge() {
-    let (app, state) = setup();
+    let (app, state) = setup_with_callbacks();
     let local_did = "did:web:local.mesh:collective:alpha";
     let remote_did = "did:web:remote.mesh:collective:beta";
     let tenant_id = register_collective_did(&state, "fed-hello", local_did).await;

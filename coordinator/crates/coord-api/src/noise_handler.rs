@@ -177,11 +177,16 @@ async fn handle_control_request(
     req: Request<hyper::body::Incoming>,
 ) -> Result<Response<BoxBody>, std::io::Error> {
     let path = req.uri().path().to_string();
-    let body_bytes = match http_body_util::BodyExt::collect(req.into_body()).await {
+    const MAX_CONTROL_BODY: usize = 4 * 1024 * 1024; // 4 MiB
+    let body_bytes = match http_body_util::BodyExt::collect(
+        http_body_util::Limited::new(req.into_body(), MAX_CONTROL_BODY),
+    )
+    .await
+    {
         Ok(collected) => collected.to_bytes(),
         Err(e) => {
             warn!(error = %e, "failed to read request body");
-            return Ok(json_error(StatusCode::BAD_REQUEST, "failed to read body"));
+            return Ok(json_error(StatusCode::BAD_REQUEST, "request body too large or unreadable"));
         }
     };
 

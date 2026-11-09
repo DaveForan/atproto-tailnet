@@ -11,7 +11,7 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
-use tracing::{info, warn};
+use tracing::info;
 
 use coord_core::types::{
     BrokerSessionStatus, FederationLink, LinkDirection, LinkId, LinkStatus, TenantId,
@@ -94,6 +94,31 @@ struct PendingHandshake {
     expires_at: DateTime<Utc>,
 }
 
+const MAX_DID_LEN: usize = 512;
+const MAX_URL_LEN: usize = 2048;
+const MAX_CIDR_LEN: usize = 64;
+const MAX_CIDRS: usize = 64;
+const MAX_NAME_LEN: usize = 256;
+
+fn validate_did(did: &str) -> Result<(), InboundError> {
+    if did.len() > MAX_DID_LEN || !did.starts_with("did:") {
+        return Err(InboundError::BadRequest("Invalid DID".into()));
+    }
+    Ok(())
+}
+
+fn validate_cidrs(cidrs: &[String]) -> Result<(), InboundError> {
+    if cidrs.len() > MAX_CIDRS {
+        return Err(InboundError::BadRequest("Too many CIDRs".into()));
+    }
+    for cidr in cidrs {
+        if cidr.len() > MAX_CIDR_LEN {
+            return Err(InboundError::BadRequest("CIDR too long".into()));
+        }
+    }
+    Ok(())
+}
+
 // ── InboundHandler ────────────────────────────────────────────────────────────
 
 pub struct InboundHandler<S: FederationStore + ?Sized> {
@@ -127,7 +152,9 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
         hello: HelloMessage,
         callbacks: &dyn HandshakeCallbacks,
     ) -> Result<ChallengeMessage, InboundError> {
-        // Freshness check.
+        validate_did(&hello.collective_did)?;
+        validate_cidrs(&hello.offered_cidrs)?;
+
         if !is_fresh(&hello.timestamp) {
             return Err(InboundError::BadRequest("Message timestamp too old or too new".into()));
         }
@@ -360,6 +387,15 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
         recipient_tenant_id: TenantId,
         msg: LinkRequestMessage,
     ) -> Result<(), InboundError> {
+        validate_did(&msg.collective_did)?;
+        validate_cidrs(&msg.offered_cidrs)?;
+        if msg.broker_url.len() > MAX_URL_LEN {
+            return Err(InboundError::BadRequest("Broker URL too long".into()));
+        }
+        if msg.collective_name.len() > MAX_NAME_LEN {
+            return Err(InboundError::BadRequest("Collective name too long".into()));
+        }
+
         if !is_fresh(&msg.timestamp) {
             return Err(InboundError::BadRequest("Message timestamp too old or too new".into()));
         }
@@ -423,18 +459,43 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
         recipient_tenant_id: TenantId,
         msg: LinkAcceptMessage,
     ) -> Result<(), InboundError> {
+        validate_did(&msg.collective_did)?;
         if !is_fresh(&msg.timestamp) {
             return Err(InboundError::BadRequest("Message timestamp too old or too new".into()));
         }
 
-        // TODO: When the store gains a `find_pending_outgoing_link` method,
-        // use that here to locate the outgoing pending link by `in_response_to`
-        // message ID and activate it. For now, accept and log.
-        warn!(
+        let link = self
+            .store
+            .find_pending_outgoing_link(recipient_tenant_id, &msg.collective_did)
+            .await
+            .map_err(|e| InboundError::BadRequest(format!("Store error: {e}")))?
+            .ok_or_else(|| {
+                InboundError::NotFound(format!(
+                    "No pending outgoing link with {}",
+                    msg.collective_did
+                ))
+            })?;
+
+        self.store
+            .update_link_on_accept(
+                link.id,
+                msg.accepted_cidrs,
+                msg.broker_url,
+                msg.collective_name,
+            )
+            .await
+            .map_err(|e| InboundError::BadRequest(format!("Store error: {e}")))?;
+
+        self.store
+            .update_link_status(link.id, LinkStatus::Active)
+            .await
+            .map_err(|e| InboundError::BadRequest(format!("Store error: {e}")))?;
+
+        info!(
             recipient_tenant = %recipient_tenant_id,
             sender_did = %msg.collective_did,
-            in_response_to = %msg.in_response_to,
-            "link accept received (lookup not yet wired)"
+            link_id = %link.id,
+            "link accept processed, link now active"
         );
 
         Ok(())
@@ -448,15 +509,34 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
         recipient_tenant_id: TenantId,
         msg: LinkRejectMessage,
     ) -> Result<(), InboundError> {
+        validate_did(&msg.collective_did)?;
         if !is_fresh(&msg.timestamp) {
             return Err(InboundError::BadRequest("Message timestamp too old or too new".into()));
         }
 
-        warn!(
+        let link = self
+            .store
+            .find_pending_outgoing_link(recipient_tenant_id, &msg.collective_did)
+            .await
+            .map_err(|e| InboundError::BadRequest(format!("Store error: {e}")))?
+            .ok_or_else(|| {
+                InboundError::NotFound(format!(
+                    "No pending outgoing link with {}",
+                    msg.collective_did
+                ))
+            })?;
+
+        self.store
+            .update_link_status(link.id, LinkStatus::Rejected)
+            .await
+            .map_err(|e| InboundError::BadRequest(format!("Store error: {e}")))?;
+
+        info!(
             recipient_tenant = %recipient_tenant_id,
             sender_did = %msg.collective_did,
+            link_id = %link.id,
             reason = ?msg.reason,
-            "link reject received"
+            "link reject processed"
         );
 
         Ok(())

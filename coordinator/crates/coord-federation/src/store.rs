@@ -26,6 +26,13 @@ pub trait FederationStore: Send + Sync {
         peer_did: &str,
     ) -> Result<Option<FederationLink>, CoordError>;
 
+    /// Find a pending outgoing link between a tenant and a peer DID.
+    async fn find_pending_outgoing_link(
+        &self,
+        tenant_id: TenantId,
+        peer_did: &str,
+    ) -> Result<Option<FederationLink>, CoordError>;
+
     /// Persist a new link.
     async fn create_link(&self, link: FederationLink) -> Result<FederationLink, CoordError>;
 

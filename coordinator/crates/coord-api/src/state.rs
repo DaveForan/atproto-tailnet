@@ -2,7 +2,8 @@ use std::sync::Arc;
 use coord_core::ControlKey;
 use coord_acl::PolicyEngine;
 use coord_federation::{
-    BrokerConfig, BrokerService, FederationMemoryStore, FederationStore, InboundHandler,
+    BrokerConfig, BrokerService, FederationMemoryStore, FederationStore,
+    HandshakeCallbacks, InboundHandler,
 };
 use coord_proto::map::DerpMap;
 use coord_store::{MemoryStore, Store};
@@ -15,6 +16,7 @@ pub struct CoordinatorState {
     pub admin_api_key: Option<String>,
     pub federation_inbound: Arc<InboundHandler<dyn FederationStore>>,
     pub federation_broker: Arc<BrokerService<dyn FederationStore>>,
+    pub federation_callbacks: Option<Arc<dyn HandshakeCallbacks>>,
 }
 
 impl CoordinatorState {
@@ -32,6 +34,7 @@ impl CoordinatorState {
                 fed_config.clone(),
             )),
             federation_broker: Arc::new(BrokerService::new(fed_store, fed_config)),
+            federation_callbacks: None,
         }
     }
 
@@ -57,6 +60,11 @@ impl CoordinatorState {
 
     pub fn with_admin_api_key(mut self, key: Option<String>) -> Self {
         self.admin_api_key = key;
+        self
+    }
+
+    pub fn with_federation_callbacks(mut self, cb: Arc<dyn HandshakeCallbacks>) -> Self {
+        self.federation_callbacks = Some(cb);
         self
     }
 }

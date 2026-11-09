@@ -68,33 +68,15 @@ async fn resolve_recipient(
     }
 }
 
-struct MockCallbacks;
-
-#[async_trait::async_trait]
-impl coord_federation::HandshakeCallbacks for MockCallbacks {
-    async fn sign(&self, _payload: &str) -> Result<String, coord_core::CoordError> {
-        Ok("coordinator-sig".to_string())
-    }
-
-    async fn verify_signature(
-        &self,
-        _did: &str,
-        _payload: &str,
-        _signature: &str,
-    ) -> Result<bool, coord_core::CoordError> {
-        Ok(true)
-    }
-
-    async fn evaluate_policy(
-        &self,
-        _remote_did: &str,
-        _federation_type: &coord_federation::protocol::FederationType,
-    ) -> Result<bool, coord_core::CoordError> {
-        Ok(true)
-    }
-
-    fn get_local_routes(&self) -> Vec<coord_federation::protocol::RouteAnnouncement> {
-        vec![]
+fn require_callbacks(
+    state: &CoordinatorState,
+) -> Result<&dyn coord_federation::HandshakeCallbacks, impl IntoResponse> {
+    match &state.federation_callbacks {
+        Some(cb) => Ok(cb.as_ref()),
+        None => Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({ "error": "Federation handshake not configured" })),
+        )),
     }
 }
 
@@ -108,10 +90,13 @@ pub async fn handle_hello(
         Err(e) => return e.into_response(),
     };
 
-    let callbacks = MockCallbacks;
+    let callbacks = match require_callbacks(&state) {
+        Ok(cb) => cb,
+        Err(e) => return e.into_response(),
+    };
     match state
         .federation_inbound
-        .handle_hello(tenant_id, &recipient_did, hello, &callbacks)
+        .handle_hello(tenant_id, &recipient_did, hello, callbacks)
         .await
     {
         Ok(challenge) => (StatusCode::OK, Json(challenge)).into_response(),
@@ -129,10 +114,13 @@ pub async fn handle_commit(
         Err(e) => return e.into_response(),
     };
 
-    let callbacks = MockCallbacks;
+    let callbacks = match require_callbacks(&state) {
+        Ok(cb) => cb,
+        Err(e) => return e.into_response(),
+    };
     match state
         .federation_inbound
-        .handle_commit(tenant_id, commit, &callbacks)
+        .handle_commit(tenant_id, commit, callbacks)
         .await
     {
         Ok(established) => (StatusCode::OK, Json(established)).into_response(),
