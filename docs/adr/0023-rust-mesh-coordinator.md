@@ -237,6 +237,32 @@ coordinator/
   (`sccache`, cargo registry caching) is essential. Incremental builds
   during development are fast after the first compile.
 
+## Implementation progress
+
+**Phase 1: Minimal compatible coordinator** — Complete
+- 9 crates: coord-core, coord-noise, coord-proto, coord-netmap, coord-acl, coord-store, coord-api, coord-federation, coord-server
+- Noise IK transport, node registration, pre-auth keys, netmap generation
+- REST admin API (tenants, nodes, ACL, posture, preauth keys)
+- MemoryStore + PgStore with sqlx migrations
+- 36 Rust tests + Go interop verified
+
+**Phase 2: Multi-tenant and hierarchy** — Complete
+- TenantId-scoped stores with dispatch enum (Memory | Pg)
+- Sub-collective parent/child hierarchy with posture-gated visibility
+- Per-tenant ACL engine with FilterRule generation
+- CoordinatorApiClient in TypeScript for seamless delegation
+- Docker deployment stack (Dockerfile, compose, Caddyfiles)
+
+**Phase 3: Federation native** — Complete
+- coord-federation crate: 13 modules, 5,400+ lines, 83 tests
+- Tier 1 (pure logic): protocol types, session lifecycle, BGP-like route engine, abuse controls, geographic scoping
+- Tier 2 (I/O adapters): 4-phase CFP handshake state machine, message auth, HTTP transport, peer discovery with SSRF guard
+- Tier 3 (orchestration): FederationStore trait, in-memory + PgStore implementations, BrokerService reconciliation loop, InboundHandler for all 8 CFP message types
+- Axum federation message routes at `/api/federation/messages/{hello,commit,keepalive,revoke,link-request,link-accept,link-reject,link-revoke}`
+- Background broker tick loop (30s interval) for session reconciliation, keepalive, and health checks
+
+**Phase 4: Protocol divergence** — Not started
+
 ## Risks
 
 - **Tailscale protocol undocumented details.** The control protocol is not
