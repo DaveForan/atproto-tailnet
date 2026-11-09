@@ -24,6 +24,20 @@ npx drizzle-kit migrate          # Apply migrations
 npm run dev                      # http://127.0.0.1:3000 (loads .env via --env-file)
 ```
 
+### Coordinator mode (local dev)
+```sh
+# Runs Postgres + Rust coordinator + Caddy in Docker; TS service on host
+docker compose -f docker-compose.coordinator.dev.yml up -d
+# Add to .env: COORDINATOR_URL=http://localhost:9443  COORDINATOR_API_KEY=dev-coordinator-key
+npm run dev
+```
+
+### Full coordinator stack (Docker)
+```sh
+cp .env.coordinator.example .env   # Edit secrets
+docker compose -f docker-compose.coordinator.yml up -d
+```
+
 ## Key patterns
 
 - **Control client abstraction**: `getControlClient(tenant)` from `orchestrator/control-client.ts` — returns either `HeadscaleApiClient` or `CoordinatorApiClient` based on `COORDINATOR_URL` env var. All route handlers and orchestrator modules use this factory, never `new HeadscaleApiClient(...)` directly. The `ControlClient` interface matches the Headscale API surface; coordinator operations that aren't implemented yet are graceful no-ops
