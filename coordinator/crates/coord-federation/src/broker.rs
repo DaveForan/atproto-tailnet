@@ -69,6 +69,10 @@ impl<S: FederationStore> BrokerService<S> {
         }
     }
 
+    pub fn config(&self) -> &BrokerConfig {
+        &self.config
+    }
+
     /// Single tick of the reconciliation loop.
     ///
     /// Called every `tick_interval` by the runtime. Performs three jobs:

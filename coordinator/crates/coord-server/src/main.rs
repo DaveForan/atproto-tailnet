@@ -85,6 +85,22 @@ async fn main() -> anyhow::Result<()> {
     coordinator = coordinator.with_admin_api_key(admin_key);
 
     let state = Arc::new(coordinator);
+
+    // Spawn the federation broker background loop.
+    let broker = state.federation_broker.clone();
+    let tick_interval = broker.config().tick_interval;
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(tick_interval);
+        interval.tick().await; // first tick fires immediately
+        loop {
+            interval.tick().await;
+            if let Err(e) = broker.tick().await {
+                tracing::warn!(error = %e, "federation broker tick failed");
+            }
+        }
+    });
+    tracing::info!(interval_secs = tick_interval.as_secs(), "federation broker started");
+
     let app = coord_api::router(state);
 
     tracing::info!(%listen_addr, domain = %config.domain, "listening");
