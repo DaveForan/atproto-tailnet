@@ -83,6 +83,8 @@ impl std::fmt::Display for InboundError {
     }
 }
 
+impl std::error::Error for InboundError {}
+
 // ── Pending handshake state ───────────────────────────────────────────────────
 
 struct PendingHandshake {

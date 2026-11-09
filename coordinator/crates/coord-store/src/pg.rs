@@ -813,6 +813,10 @@ fn parse_posture(s: &str) -> FederationPosture {
     match s {
         "open" => FederationPosture::Open,
         "selective" => FederationPosture::Selective,
-        _ => FederationPosture::Closed,
+        "closed" => FederationPosture::Closed,
+        other => {
+            tracing::warn!(value = other, "unknown federation posture, defaulting to Closed");
+            FederationPosture::Closed
+        }
     }
 }

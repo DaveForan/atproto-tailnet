@@ -146,7 +146,9 @@ async fn run_noise_session(
     if sess_gen > 0 {
         if let Some(node_id) = state_for_disconnect.store.get_node_by_machine_key(&machine_key).await {
             info!(node = %node_id, generation = sess_gen, "noise session ended, marking node offline");
-            state_for_disconnect.store.set_node_offline_if_current(node_id, sess_gen).await;
+            if let Err(e) = state_for_disconnect.store.set_node_offline_if_current(node_id, sess_gen).await {
+                warn!(error = %e, node = %node_id, "set_node_offline_if_current failed");
+            }
         }
     }
 

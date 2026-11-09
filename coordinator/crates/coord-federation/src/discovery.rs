@@ -114,7 +114,7 @@ pub async fn discover_peer(
         broker_url: descriptor.broker_url,
         name: slug.to_string(),
         capabilities: descriptor.capabilities,
-        federation_policy: format!("{:?}", descriptor.federation_policy).to_lowercase(),
+        federation_policy: descriptor.federation_policy.as_str().to_string(),
     })
 }
 

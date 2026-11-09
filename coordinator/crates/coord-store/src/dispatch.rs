@@ -2,7 +2,6 @@ use std::net::Ipv4Addr;
 use tokio::sync::broadcast;
 
 use coord_core::{CoordError, FederationPosture, NodeId, NodeInfo, PeerInfo, Tenant, TenantId};
-use tracing::warn;
 use crate::memory::{MemoryStore, PeerEvent};
 use crate::pg::PgStore;
 
@@ -100,13 +99,10 @@ impl Store {
         machine_key: &[u8; 32],
         old_node_key: &[u8; 32],
         new_node_key: &[u8; 32],
-    ) {
-        let result = match self {
+    ) -> Result<(), CoordError> {
+        match self {
             Store::Memory(m) => { m.rotate_node_key(machine_key, old_node_key, new_node_key); Ok(()) },
             Store::Pg(p) => p.rotate_node_key(machine_key, old_node_key, new_node_key).await,
-        };
-        if let Err(e) = result {
-            warn!(error = %e, "rotate_node_key failed");
         }
     }
 
@@ -115,13 +111,10 @@ impl Store {
         node_id: NodeId,
         endpoints: Vec<String>,
         disco_key: Option<String>,
-    ) {
-        let result = match self {
+    ) -> Result<(), CoordError> {
+        match self {
             Store::Memory(m) => { m.update_endpoints(node_id, endpoints, disco_key); Ok(()) },
             Store::Pg(p) => p.update_endpoints(node_id, endpoints, disco_key).await,
-        };
-        if let Err(e) = result {
-            warn!(error = %e, "update_endpoints failed");
         }
     }
 
@@ -216,23 +209,17 @@ impl Store {
         }
     }
 
-    pub async fn set_node_online(&self, node_id: NodeId, online: bool) {
-        let result = match self {
+    pub async fn set_node_online(&self, node_id: NodeId, online: bool) -> Result<(), CoordError> {
+        match self {
             Store::Memory(m) => { m.set_node_online(node_id, online); Ok(()) },
             Store::Pg(p) => p.set_node_online(node_id, online).await,
-        };
-        if let Err(e) = result {
-            warn!(error = %e, "set_node_online failed");
         }
     }
 
-    pub async fn set_node_offline_if_current(&self, node_id: NodeId, generation: u64) {
-        let result = match self {
+    pub async fn set_node_offline_if_current(&self, node_id: NodeId, generation: u64) -> Result<(), CoordError> {
+        match self {
             Store::Memory(m) => { m.set_node_offline_if_current(node_id, generation); Ok(()) },
             Store::Pg(p) => p.set_node_offline_if_current(node_id, generation).await,
-        };
-        if let Err(e) = result {
-            warn!(error = %e, "set_node_offline_if_current failed");
         }
     }
 

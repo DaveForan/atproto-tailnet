@@ -39,7 +39,7 @@ impl From<coord_core::Tenant> for TenantResponse {
             id: t.id.to_string(),
             slug: t.slug,
             parent_id: t.parent_id.map(|p| p.to_string()),
-            federation_posture: format!("{:?}", t.federation_posture).to_lowercase(),
+            federation_posture: t.federation_posture.as_str().to_string(),
             ipv4_prefix: t.ipv4_prefix,
             ipv6_prefix: t.ipv6_prefix,
             created_at: t.created_at.to_rfc3339(),
@@ -385,7 +385,7 @@ pub async fn get_tenant_routes(
         let mut obj = serde_json::json!({
             "id": c.id.to_string(),
             "slug": &c.slug,
-            "federation_posture": format!("{:?}", c.federation_posture).to_lowercase(),
+            "federation_posture": c.federation_posture.as_str(),
             "visible": c.federation_posture != coord_core::FederationPosture::Closed,
         });
         // FIX R15: Document that Selective == Open for now

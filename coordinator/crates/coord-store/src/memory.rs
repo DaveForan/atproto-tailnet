@@ -7,7 +7,7 @@ use coord_core::{CoordError, FederationPosture, NodeId, NodeInfo, PeerInfo, Tena
 
 use crate::generate_random_id;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum PeerEvent {
     NodeJoined { tenant_id: TenantId, node_id: NodeId },
     NodeUpdated { tenant_id: TenantId, node_id: NodeId },
@@ -623,6 +623,12 @@ fn stored_node_to_peer_info(n: &StoredNode) -> PeerInfo {
         derp_region: Some(1),
         online: n.online,
         last_seen: Some(n.registered_at),
+    }
+}
+
+impl Default for MemoryStore {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

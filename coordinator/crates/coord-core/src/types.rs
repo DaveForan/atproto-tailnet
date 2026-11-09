@@ -51,10 +51,19 @@ pub struct MachineKey(pub [u8; 32]);
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NodeKey(pub [u8; 32]);
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ControlKey {
     pub public: [u8; 32],
     pub secret: [u8; 32],
+}
+
+impl std::fmt::Debug for ControlKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ControlKey")
+            .field("public", &hex::encode(self.public))
+            .field("secret", &"[REDACTED]")
+            .finish()
+    }
 }
 
 impl ControlKey {
@@ -120,6 +129,16 @@ pub enum FederationPosture {
 impl Default for FederationPosture {
     fn default() -> Self {
         Self::Closed
+    }
+}
+
+impl FederationPosture {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Closed => "closed",
+            Self::Selective => "selective",
+            Self::Open => "open",
+        }
     }
 }
 

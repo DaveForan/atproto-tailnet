@@ -9,7 +9,7 @@ pub use state::CoordinatorState;
 
 use axum::{
     Router,
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::{Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -87,6 +87,7 @@ pub fn router(state: Arc<CoordinatorState>) -> Router {
         .route("/ts2021", post(noise_handler::ts2021_handler))
         .nest("/api", admin_routes)
         .nest("/api/federation/messages", federation_routes)
+        .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
         .with_state(state)
 }
 

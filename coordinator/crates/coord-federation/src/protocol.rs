@@ -52,6 +52,16 @@ pub enum FederationPolicy {
     Closed,
 }
 
+impl FederationPolicy {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Selective => "selective",
+            Self::Closed => "closed",
+        }
+    }
+}
+
 // ── Descriptor ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

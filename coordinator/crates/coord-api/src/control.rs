@@ -57,7 +57,9 @@ pub async fn handle_register(
     if let Some(ref old_key_str) = req.old_node_key {
         if let Ok(old_key) = parse_key_from_request(old_key_str) {
             if old_key != [0u8; 32] {
-                state.store.rotate_node_key(machine_key, &old_key, &node_key_bytes).await;
+                if let Err(e) = state.store.rotate_node_key(machine_key, &old_key, &node_key_bytes).await {
+                    tracing::warn!(error = %e, "rotate_node_key failed");
+                }
                 info!(
                     old_key = hex::encode(&old_key[..8]),
                     new_key = hex::encode(&node_key_bytes[..8]),
@@ -132,11 +134,13 @@ pub async fn handle_map(
 
     if let Some(node_id) = state.store.get_node_by_machine_key(machine_key).await {
         if req.endpoints.is_some() || req.disco_key.is_some() {
-            state.store.update_endpoints(
+            if let Err(e) = state.store.update_endpoints(
                 node_id,
                 req.endpoints.clone().unwrap_or_default(),
                 req.disco_key.clone(),
-            ).await;
+            ).await {
+                tracing::warn!(error = %e, "update_endpoints failed");
+            }
         }
     }
 
