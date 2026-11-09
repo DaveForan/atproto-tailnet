@@ -94,19 +94,20 @@ pub fn is_fresh(timestamp: &str) -> bool {
     diff <= chrono::Duration::from_std(MAX_MESSAGE_SKEW).unwrap_or(chrono::Duration::seconds(300))
 }
 
-/// Filter route announcements: only accept prefixes that are in the agreed
-/// CIDRs set AND originated by the peer DID. A peer must not attract traffic
+/// Filter route announcements: only accept prefixes that fall within the agreed
+/// CIDRs AND are originated by the peer DID. A peer must not attract traffic
 /// it was not granted.
 pub fn filter_imported_prefixes(
     announcements: &[RouteAnnouncement],
     agreed_cidrs: &[String],
     peer_did: &str,
 ) -> Vec<String> {
-    let agreed: HashSet<&str> = agreed_cidrs.iter().map(|s| s.as_str()).collect();
     let mut accepted: HashSet<String> = HashSet::new();
 
     for a in announcements {
-        if a.origin_did == peer_did && agreed.contains(a.prefix.as_str()) {
+        if a.origin_did == peer_did
+            && crate::route_engine::prefix_within_scope(&a.prefix, agreed_cidrs)
+        {
             accepted.insert(a.prefix.clone());
         }
     }
@@ -222,6 +223,37 @@ mod tests {
         let accepted = filter_imported_prefixes(&announcements, &agreed, "did:web:peer");
         assert_eq!(accepted.len(), 1);
         assert!(accepted.contains(&"10.0.0.0/24".to_string()));
+    }
+
+    #[test]
+    fn filter_imported_prefixes_accepts_sub_prefix() {
+        let announcements = vec![RouteAnnouncement {
+            prefix: "10.0.1.0/24".into(),
+            origin_did: "did:web:peer".into(),
+            path_vector: vec!["did:web:peer".into()],
+            community_tags: vec![],
+            preference: 100,
+            origin_signature: "sig".into(),
+        }];
+        let agreed = vec!["10.0.0.0/16".into()];
+        let accepted = filter_imported_prefixes(&announcements, &agreed, "did:web:peer");
+        assert_eq!(accepted.len(), 1);
+        assert!(accepted.contains(&"10.0.1.0/24".to_string()));
+    }
+
+    #[test]
+    fn filter_imported_prefixes_rejects_supernet() {
+        let announcements = vec![RouteAnnouncement {
+            prefix: "10.0.0.0/8".into(),
+            origin_did: "did:web:peer".into(),
+            path_vector: vec!["did:web:peer".into()],
+            community_tags: vec![],
+            preference: 100,
+            origin_signature: "sig".into(),
+        }];
+        let agreed = vec!["10.0.0.0/16".into()];
+        let accepted = filter_imported_prefixes(&announcements, &agreed, "did:web:peer");
+        assert!(accepted.is_empty());
     }
 
     #[test]

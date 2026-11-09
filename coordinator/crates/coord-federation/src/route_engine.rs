@@ -160,7 +160,7 @@ impl Default for RouteTable {
 
 /// Checks whether a prefix falls within at least one of the allowed CIDRs.
 /// An empty list of allowed CIDRs means "allow all".
-fn prefix_within_scope(prefix: &str, allowed_cidrs: &[String]) -> bool {
+pub fn prefix_within_scope(prefix: &str, allowed_cidrs: &[String]) -> bool {
     if allowed_cidrs.is_empty() {
         return true;
     }
