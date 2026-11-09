@@ -343,7 +343,7 @@ impl PgStore {
             .bind(&machine_key[..])
             .bind(&info.node_key)
             .bind(&info.disco_key)
-            .bind(&generate_random_id())
+            .bind(generate_random_id())
             .bind(&new_ip_str)
             .bind(&info.hostname)
             .bind(&info.os)

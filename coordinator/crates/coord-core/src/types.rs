@@ -118,18 +118,13 @@ pub struct PeerInfo {
     pub last_seen: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FederationPosture {
+    #[default]
     Closed,
     Selective,
     Open,
-}
-
-impl Default for FederationPosture {
-    fn default() -> Self {
-        Self::Closed
-    }
 }
 
 impl FederationPosture {

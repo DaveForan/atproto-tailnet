@@ -14,11 +14,17 @@ pub struct PolicyEngine {
     policies: std::sync::RwLock<std::collections::HashMap<TenantId, AclPolicy>>,
 }
 
-impl PolicyEngine {
-    pub fn new() -> Self {
+impl Default for PolicyEngine {
+    fn default() -> Self {
         Self {
             policies: std::sync::RwLock::new(std::collections::HashMap::new()),
         }
+    }
+}
+
+impl PolicyEngine {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn set_policy(&self, tenant: TenantId, policy: AclPolicy) {

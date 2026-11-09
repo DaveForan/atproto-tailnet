@@ -6,7 +6,7 @@ use crate::memory::{MemoryStore, PeerEvent};
 use crate::pg::PgStore;
 
 pub enum Store {
-    Memory(MemoryStore),
+    Memory(Box<MemoryStore>),
     Pg(PgStore),
 }
 

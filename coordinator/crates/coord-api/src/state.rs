@@ -25,7 +25,7 @@ impl CoordinatorState {
         let fed_config = BrokerConfig::default();
         Self {
             control_key,
-            store: Arc::new(Store::Memory(MemoryStore::new())),
+            store: Arc::new(Store::Memory(Box::new(MemoryStore::new()))),
             acl: Arc::new(PolicyEngine::new()),
             derp_map: default_derp_map(),
             admin_api_key: None,

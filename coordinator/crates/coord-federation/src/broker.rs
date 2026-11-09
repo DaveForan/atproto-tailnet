@@ -348,11 +348,9 @@ pub fn add_federated_routes_to_policy(
         .or_insert_with(|| serde_json::json!({}));
     let routes = auto_approvers
         .as_object_mut()
-        .and_then(|aa| {
-            Some(
-                aa.entry("routes")
-                    .or_insert_with(|| serde_json::json!({})),
-            )
+        .map(|aa| {
+            aa.entry("routes")
+                .or_insert_with(|| serde_json::json!({}))
         });
 
     if let Some(routes_val) = routes {

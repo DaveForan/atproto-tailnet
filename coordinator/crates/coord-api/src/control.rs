@@ -189,7 +189,7 @@ pub async fn build_map_snapshot(
     };
     let peer_nodes: Vec<MapNode> = peers
         .iter()
-        .map(|p| peer_info_to_map_node(p))
+        .map(peer_info_to_map_node)
         .collect();
 
     let home_region = state.derp_map.regions.keys().min().copied().unwrap_or(1);
