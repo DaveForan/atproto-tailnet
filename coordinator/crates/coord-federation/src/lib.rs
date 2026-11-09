@@ -21,6 +21,7 @@ pub mod transport;
 pub mod broker;
 pub mod federation_store_memory;
 pub mod inbound;
+pub mod pg_store;
 pub mod store;
 
 // Re-export key types for convenience.
@@ -29,6 +30,7 @@ pub use auth::{PublicKeyResolver, SignFn};
 pub use broker::{BrokerConfig, BrokerService};
 pub use discovery::PeerInfo;
 pub use federation_store_memory::FederationMemoryStore;
+pub use pg_store::PgFederationStore;
 pub use handshake::{HandshakeCallbacks, HandshakeState};
 pub use inbound::{InboundError, InboundHandler};
 pub use protocol::{
