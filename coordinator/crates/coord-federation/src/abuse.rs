@@ -20,6 +20,7 @@ pub struct RateLimiter {
     window: Duration,
     max_hits: u32,
     hits: HashMap<String, VecDeque<Instant>>,
+    check_count: u64,
 }
 
 impl RateLimiter {
@@ -28,12 +29,18 @@ impl RateLimiter {
             window: Duration::from_millis(window_ms),
             max_hits,
             hits: HashMap::new(),
+            check_count: 0,
         }
     }
 
     /// Returns `true` if the request is allowed (under the rate limit).
     /// Returns `false` if the request should be rejected.
     pub fn check(&mut self, key: &str) -> bool {
+        self.check_count += 1;
+        if self.check_count % 128 == 0 {
+            self.sweep();
+        }
+
         let now = Instant::now();
         let cutoff = now.checked_sub(self.window).unwrap_or(now);
 

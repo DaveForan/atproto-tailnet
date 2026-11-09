@@ -227,7 +227,9 @@ async fn handle_register_request(
 
 fn frame_map_response(json_bytes: &[u8]) -> Result<Vec<u8>, std::io::Error> {
     let compressed = zstd::bulk::compress(json_bytes, 3)?;
-    let len = compressed.len() as u32;
+    let len: u32 = compressed.len().try_into().map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::InvalidData, "compressed frame exceeds u32::MAX")
+    })?;
     let mut out = Vec::with_capacity(4 + compressed.len());
     out.extend_from_slice(&len.to_le_bytes());
     out.extend_from_slice(&compressed);
