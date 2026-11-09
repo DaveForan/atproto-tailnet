@@ -7,6 +7,8 @@ use tower::ServiceExt;
 
 use coord_api::CoordinatorState;
 use coord_core::ControlKey;
+#[allow(unused_imports)]
+use coord_federation::FederationStore;
 
 fn setup() -> (axum::Router, Arc<CoordinatorState>) {
     let key = ControlKey::generate();
@@ -1274,4 +1276,265 @@ async fn rename_node_with_wrong_tenant_returns_403() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = json_body(resp).await;
     assert_eq!(body["hostname"], "properly-renamed");
+}
+
+// ── Federation message route tests ──
+
+async fn register_collective_did(state: &Arc<CoordinatorState>, slug: &str, did: &str) -> coord_core::TenantId {
+    let tenant = state.store.create_tenant(slug.into(), None).await.unwrap();
+    let cdid = coord_core::types::CollectiveDid {
+        tenant_id: tenant.id,
+        did: did.to_string(),
+        public_key_jwk: serde_json::json!({"kty": "OKP", "crv": "Ed25519"}),
+        encrypted_private_key: "encrypted-test-key".to_string(),
+        created_at: chrono::Utc::now(),
+    };
+    state.federation_inbound.store().create_collective_did(cdid).await.unwrap();
+    tenant.id
+}
+
+#[tokio::test]
+async fn federation_hello_missing_recipient_header() {
+    let (app, _) = setup();
+    let hello = serde_json::json!({
+        "collectiveDid": "did:web:example.com:collective:remote",
+        "federationType": "peer",
+        "offeredCidrs": ["100.64.1.0/24"],
+        "capabilities": [],
+        "protocolVersion": "1.0",
+        "signature": "sig",
+        "timestamp": chrono::Utc::now().to_rfc3339()
+    });
+
+    let resp = app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/federation/messages/hello")
+            .header("content-type", "application/json")
+            .body(Body::from(hello.to_string()))
+            .unwrap(),
+    ).await.unwrap();
+
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = json_body(resp).await;
+    assert!(body["error"].as_str().unwrap().contains("CFP-Recipient"));
+}
+
+#[tokio::test]
+async fn federation_hello_unknown_recipient() {
+    let (app, _) = setup();
+    let hello = serde_json::json!({
+        "collectiveDid": "did:web:example.com:collective:remote",
+        "federationType": "peer",
+        "offeredCidrs": ["100.64.1.0/24"],
+        "capabilities": [],
+        "protocolVersion": "1.0",
+        "signature": "sig",
+        "timestamp": chrono::Utc::now().to_rfc3339()
+    });
+
+    let resp = app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/federation/messages/hello")
+            .header("content-type", "application/json")
+            .header("CFP-Recipient", "did:web:nonexistent.com:collective:gone")
+            .body(Body::from(hello.to_string()))
+            .unwrap(),
+    ).await.unwrap();
+
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let body = json_body(resp).await;
+    assert!(body["error"].as_str().unwrap().contains("Unknown recipient"));
+}
+
+#[tokio::test]
+async fn federation_hello_valid_returns_challenge() {
+    let (app, state) = setup();
+    let local_did = "did:web:local.mesh:collective:alpha";
+    let remote_did = "did:web:remote.mesh:collective:beta";
+    let tenant_id = register_collective_did(&state, "fed-hello", local_did).await;
+
+    // Create an active link so the hello is accepted
+    use coord_core::types::{FederationLink, LinkId, LinkDirection, LinkStatus};
+    let link = FederationLink {
+        id: LinkId::generate(),
+        local_tenant_id: tenant_id,
+        peer_did: remote_did.to_string(),
+        peer_broker_url: Some("https://remote.mesh/broker".to_string()),
+        peer_name: Some("Remote Beta".to_string()),
+        direction: LinkDirection::Incoming,
+        status: LinkStatus::Active,
+        local_cidrs: vec!["100.64.0.0/24".to_string()],
+        peer_cidrs: vec!["100.64.1.0/24".to_string()],
+        protocol_version: Some("1.0".to_string()),
+        message: None,
+        signed_request: None,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
+    state.federation_inbound.store().create_link(link).await.unwrap();
+
+    let hello = serde_json::json!({
+        "collectiveDid": remote_did,
+        "federationType": "peer",
+        "offeredCidrs": ["100.64.1.0/24"],
+        "capabilities": [],
+        "protocolVersion": "1.0",
+        "signature": "sig",
+        "timestamp": chrono::Utc::now().to_rfc3339()
+    });
+
+    let resp = app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/federation/messages/hello")
+            .header("content-type", "application/json")
+            .header("CFP-Recipient", local_did)
+            .body(Body::from(hello.to_string()))
+            .unwrap(),
+    ).await.unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = json_body(resp).await;
+    assert_eq!(body["collectiveDid"], local_did);
+    assert!(body["nonce"].as_str().is_some());
+    assert!(body["signature"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn federation_link_request_creates_pending() {
+    let (app, state) = setup();
+    let local_did = "did:web:local.mesh:collective:link-test";
+    let remote_did = "did:web:remote.mesh:collective:link-src";
+    register_collective_did(&state, "fed-link-req", local_did).await;
+
+    let link_req = serde_json::json!({
+        "messageId": uuid::Uuid::new_v4().to_string(),
+        "collectiveDid": remote_did,
+        "brokerUrl": "https://remote.mesh/broker",
+        "collectiveName": "Remote Source",
+        "federationType": "peer",
+        "offeredCidrs": ["100.64.2.0/24"],
+        "capabilities": [],
+        "signature": "sig",
+        "timestamp": chrono::Utc::now().to_rfc3339()
+    });
+
+    let resp = app.clone().oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/federation/messages/link-request")
+            .header("content-type", "application/json")
+            .header("CFP-Recipient", local_did)
+            .body(Body::from(link_req.to_string()))
+            .unwrap(),
+    ).await.unwrap();
+
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body = json_body(resp).await;
+    assert_eq!(body["status"], "queued");
+}
+
+#[tokio::test]
+async fn federation_link_request_rejects_when_active_link_exists() {
+    let (app, state) = setup();
+    let local_did = "did:web:local.mesh:collective:dup-test";
+    let remote_did = "did:web:remote.mesh:collective:dup-src";
+    let tenant_id = register_collective_did(&state, "fed-link-dup", local_did).await;
+
+    // Pre-create an active link with the remote peer
+    use coord_core::types::{FederationLink, LinkId, LinkDirection, LinkStatus};
+    let link = FederationLink {
+        id: LinkId::generate(),
+        local_tenant_id: tenant_id,
+        peer_did: remote_did.to_string(),
+        peer_broker_url: Some("https://remote.mesh/broker".to_string()),
+        peer_name: Some("Remote Dup".to_string()),
+        direction: LinkDirection::Incoming,
+        status: LinkStatus::Active,
+        local_cidrs: vec!["100.64.3.0/24".to_string()],
+        peer_cidrs: vec!["100.64.3.0/24".to_string()],
+        protocol_version: Some("1.0".to_string()),
+        message: None,
+        signed_request: None,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+    };
+    state.federation_inbound.store().create_link(link).await.unwrap();
+
+    // New link request from same peer should be rejected (active link already exists)
+    let link_req = serde_json::json!({
+        "messageId": uuid::Uuid::new_v4().to_string(),
+        "collectiveDid": remote_did,
+        "brokerUrl": "https://remote.mesh/broker",
+        "collectiveName": "Remote Dup Again",
+        "federationType": "peer",
+        "offeredCidrs": ["100.64.3.0/24"],
+        "capabilities": [],
+        "signature": "sig",
+        "timestamp": chrono::Utc::now().to_rfc3339()
+    });
+
+    let resp = app.clone().oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/federation/messages/link-request")
+            .header("content-type", "application/json")
+            .header("CFP-Recipient", local_did)
+            .body(Body::from(link_req.to_string()))
+            .unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+}
+
+#[tokio::test]
+async fn federation_keepalive_missing_session_rejected() {
+    let (app, state) = setup();
+    let local_did = "did:web:local.mesh:collective:ka-test";
+    register_collective_did(&state, "fed-ka-test", local_did).await;
+
+    let keepalive = serde_json::json!({
+        "sessionId": uuid::Uuid::new_v4().to_string(),
+        "sequenceNumber": 1,
+        "timestamp": chrono::Utc::now().to_rfc3339()
+    });
+
+    let resp = app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/federation/messages/keepalive")
+            .header("content-type", "application/json")
+            .header("CFP-Recipient", local_did)
+            .body(Body::from(keepalive.to_string()))
+            .unwrap(),
+    ).await.unwrap();
+
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn federation_revoke_missing_session_rejected() {
+    let (app, state) = setup();
+    let local_did = "did:web:local.mesh:collective:rev-test";
+    register_collective_did(&state, "fed-rev-test", local_did).await;
+
+    let revoke = serde_json::json!({
+        "sessionId": uuid::Uuid::new_v4().to_string(),
+        "permanent": false,
+        "signature": "sig",
+        "timestamp": chrono::Utc::now().to_rfc3339()
+    });
+
+    let resp = app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/federation/messages/revoke")
+            .header("content-type", "application/json")
+            .header("CFP-Recipient", local_did)
+            .body(Body::from(revoke.to_string()))
+            .unwrap(),
+    ).await.unwrap();
+
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }

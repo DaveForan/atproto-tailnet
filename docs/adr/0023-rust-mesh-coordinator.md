@@ -260,6 +260,7 @@ coordinator/
 - Tier 3 (orchestration): FederationStore trait, in-memory + PgStore implementations, BrokerService reconciliation loop, InboundHandler for all 8 CFP message types
 - Axum federation message routes at `/api/federation/messages/{hello,commit,keepalive,revoke,link-request,link-accept,link-reject,link-revoke}`
 - Background broker tick loop (30s interval) for session reconciliation, keepalive, and health checks
+- Dynamic store dispatch: PgFederationStore used when DATABASE_URL set, FederationMemoryStore otherwise
 
 **Phase 4: Protocol divergence** — Not started
 
