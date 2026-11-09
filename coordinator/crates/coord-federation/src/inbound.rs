@@ -112,6 +112,10 @@ impl<S: FederationStore> InboundHandler<S> {
         }
     }
 
+    pub fn store(&self) -> &S {
+        &self.store
+    }
+
     /// Handle an inbound HELLO message.
     ///
     /// Validates the sender has an active link with the recipient, runs the

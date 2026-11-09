@@ -1,6 +1,9 @@
 use std::sync::Arc;
 use coord_core::ControlKey;
 use coord_acl::PolicyEngine;
+use coord_federation::{
+    BrokerConfig, BrokerService, FederationMemoryStore, InboundHandler,
+};
 use coord_proto::map::DerpMap;
 use coord_store::{MemoryStore, Store};
 
@@ -10,16 +13,25 @@ pub struct CoordinatorState {
     pub acl: Arc<PolicyEngine>,
     pub derp_map: DerpMap,
     pub admin_api_key: Option<String>,
+    pub federation_inbound: Arc<InboundHandler<FederationMemoryStore>>,
+    pub federation_broker: Arc<BrokerService<FederationMemoryStore>>,
 }
 
 impl CoordinatorState {
     pub fn new(control_key: ControlKey) -> Self {
+        let fed_store = Arc::new(FederationMemoryStore::new());
+        let fed_config = BrokerConfig::default();
         Self {
             control_key,
             store: Arc::new(Store::Memory(MemoryStore::new())),
             acl: Arc::new(PolicyEngine::new()),
             derp_map: default_derp_map(),
             admin_api_key: None,
+            federation_inbound: Arc::new(InboundHandler::new(
+                fed_store.clone(),
+                fed_config.clone(),
+            )),
+            federation_broker: Arc::new(BrokerService::new(fed_store, fed_config)),
         }
     }
 

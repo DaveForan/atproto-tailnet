@@ -337,11 +337,13 @@ dependencies = [
 name = "coord-api"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "bytes",
  "chrono",
  "coord-acl",
  "coord-core",
+ "coord-federation",
  "coord-noise",
  "coord-proto",
  "coord-store",

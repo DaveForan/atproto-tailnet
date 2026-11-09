@@ -12,6 +12,8 @@ coord-acl = { workspace = true }
 coord-noise = { workspace = true }
 coord-proto = { workspace = true }
 coord-store = { workspace = true }
+coord-federation = { workspace = true }
+async-trait = "0.1"
 axum = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }

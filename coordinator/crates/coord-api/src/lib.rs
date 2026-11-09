@@ -3,6 +3,7 @@ mod key_handler;
 mod noise_handler;
 mod control;
 mod admin;
+mod federation;
 
 pub use state::CoordinatorState;
 
@@ -70,11 +71,22 @@ pub fn router(state: Arc<CoordinatorState>) -> Router {
         .route("/acl", post(admin::set_acl))
         .layer(middleware::from_fn_with_state(state.clone(), require_admin_auth));
 
+    let federation_routes = Router::new()
+        .route("/hello", post(federation::handle_hello))
+        .route("/commit", post(federation::handle_commit))
+        .route("/keepalive", post(federation::handle_keepalive))
+        .route("/revoke", post(federation::handle_revoke))
+        .route("/link-request", post(federation::handle_link_request))
+        .route("/link-accept", post(federation::handle_link_accept))
+        .route("/link-reject", post(federation::handle_link_reject))
+        .route("/link-revoke", post(federation::handle_link_revoke));
+
     Router::new()
         .route("/health", get(health))
         .route("/key", get(key_handler::key_handler))
         .route("/ts2021", post(noise_handler::ts2021_handler))
         .nest("/api", admin_routes)
+        .nest("/api/federation/messages", federation_routes)
         .with_state(state)
 }
 
