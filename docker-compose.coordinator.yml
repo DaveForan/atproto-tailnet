@@ -1,0 +1,114 @@
+# docker-compose.coordinator.yml  --  coordinator-mode stack
+#
+# Replaces per-tenant Headscale containers with a single Rust coordinator.
+# No Docker socket mount required.
+#
+# Usage:
+#   cp .env.coordinator.example .env
+#   # Edit .env with real secrets
+#   docker compose -f docker-compose.coordinator.yml up -d
+#
+# Dev usage (local, no TLS):
+#   docker compose -f docker-compose.coordinator.yml up -d postgres coordinator caddy
+#   # Then run TS service on the host: npm run dev
+
+services:
+  # ---------- Rust mesh coordinator ---------------------------------------
+  coordinator:
+    build:
+      context: ./coordinator
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      COORD_LISTEN: "0.0.0.0:9443"
+      COORD_ADMIN_KEY: ${COORDINATOR_API_KEY}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-atproto_tailnet}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-atproto_tailnet}
+      RUST_LOG: "coordinator=info"
+    expose:
+      - "9443"
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9443/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  # ---------- TypeScript service ------------------------------------------
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      coordinator:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-atproto_tailnet}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-atproto_tailnet}
+      SESSION_SECRET: ${SESSION_SECRET}
+      PORT: "3000"
+      PUBLIC_URL: ${PUBLIC_URL:-http://127.0.0.1:3000}
+      BASE_DOMAIN: ${BASE_DOMAIN:-ts.localhost}
+      CADDY_ADMIN_URL: http://caddy:2019
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      ATPROTO_PRIVATE_KEY: ${ATPROTO_PRIVATE_KEY:-}
+      FEDERATION_KEY_ENCRYPTION_KEY: ${FEDERATION_KEY_ENCRYPTION_KEY:-}
+      TENANT_PUBLIC_PORT: ${TENANT_PUBLIC_PORT:-}
+      # Coordinator mode — no Docker socket, no Headscale containers
+      COORDINATOR_URL: http://coordinator:9443
+      COORDINATOR_API_KEY: ${COORDINATOR_API_KEY}
+    expose:
+      - "3000"
+    networks:
+      - internal
+
+  # ---------- PostgreSQL --------------------------------------------------
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-atproto_tailnet}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-atproto_tailnet}
+      POSTGRES_DB: ${POSTGRES_DB:-atproto_tailnet}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-atproto_tailnet}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ---------- Caddy reverse proxy ----------------------------------------
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "${CADDY_HTTP_PORT:-8180}:80"
+      - "${CADDY_HTTPS_PORT:-8445}:443"
+    expose:
+      - "2019"
+    volumes:
+      - ./Caddyfile.coordinator:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - internal
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:
+
+networks:
+  internal:
+    driver: bridge

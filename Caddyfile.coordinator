@@ -1,0 +1,16 @@
+{
+	admin 0.0.0.0:2019
+
+	# The TS service manages tenant routes via the admin API.
+	# In coordinator mode, all tenant subdomains proxy to the coordinator.
+	servers :80 {
+		name tailnet_proxy
+	}
+}
+
+# Default handler — dashboard, auth, API.
+# Tenant subdomain routes are injected dynamically by the TS service
+# (src/orchestrator/caddy.ts) and matched before this block.
+:80 {
+	reverse_proxy app:3000
+}

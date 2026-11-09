@@ -1,0 +1,68 @@
+# docker-compose.coordinator.dev.yml  --  local dev with coordinator
+#
+# Runs Postgres, coordinator, and Caddy in Docker. The TS service runs
+# on the host via `npm run dev`.
+#
+# Usage:
+#   docker compose -f docker-compose.coordinator.dev.yml up -d
+#   # Then, with .env pointing COORDINATOR_URL to localhost:9443:
+#   npm run dev
+
+services:
+  coordinator:
+    build:
+      context: ./coordinator
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      COORD_LISTEN: "0.0.0.0:9443"
+      COORD_ADMIN_KEY: dev-coordinator-key
+      DATABASE_URL: postgresql://atproto_tailnet:atproto_tailnet@postgres:5432/atproto_tailnet
+      RUST_LOG: "coordinator=debug"
+    ports:
+      - "127.0.0.1:9443:9443"
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9443/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: atproto_tailnet
+      POSTGRES_PASSWORD: atproto_tailnet
+      POSTGRES_DB: atproto_tailnet
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U atproto_tailnet"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "127.0.0.1:8180:80"
+      - "127.0.0.1:2019:2019"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - default
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

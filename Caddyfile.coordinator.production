@@ -1,0 +1,22 @@
+{
+	admin 0.0.0.0:2019
+
+	servers :443 {
+		name tailnet_proxy
+	}
+}
+
+# Main app — dashboard, auth, API
+tailnets.example.com {
+	reverse_proxy app:3000
+}
+
+# Wildcard for tenant subdomains — DNS-01 challenge via Cloudflare.
+# Per-tenant reverse proxies are managed dynamically by the TS service
+# via the Caddy admin API; in coordinator mode they all point to the
+# coordinator process.
+*.ts.example.com {
+	tls {
+		dns cloudflare {env.CF_API_TOKEN}
+	}
+}
