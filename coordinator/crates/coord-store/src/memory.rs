@@ -5,6 +5,8 @@ use tokio::sync::broadcast;
 
 use coord_core::{CoordError, FederationPosture, NodeId, NodeInfo, PeerInfo, Tenant, TenantId};
 
+use crate::generate_random_id;
+
 #[derive(Debug, Clone)]
 pub enum PeerEvent {
     NodeJoined { tenant_id: TenantId, node_id: NodeId },
@@ -46,7 +48,7 @@ pub struct MemoryStore {
 
 impl MemoryStore {
     pub fn new() -> Self {
-        let (peer_tx, _) = broadcast::channel(256);
+        let (peer_tx, _) = broadcast::channel(crate::PEER_EVENT_CHANNEL_CAPACITY);
         Self {
             tenants: Mutex::new(HashMap::new()),
             nodes: Mutex::new(HashMap::new()),
@@ -88,8 +90,8 @@ impl MemoryStore {
             slug,
             parent_id,
             federation_posture: FederationPosture::default(),
-            ipv4_prefix: "100.64.0.0/10".into(),
-            ipv6_prefix: "fd7a:115c:a1e0::/48".into(),
+            ipv4_prefix: coord_core::DEFAULT_IPV4_PREFIX.into(),
+            ipv6_prefix: coord_core::DEFAULT_IPV6_PREFIX.into(),
             created_at: chrono::Utc::now(),
         };
         tenants.insert(tenant.id, tenant.clone());
@@ -628,13 +630,6 @@ impl std::fmt::Debug for MemoryStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MemoryStore").finish()
     }
-}
-
-fn generate_random_id() -> String {
-    use rand::RngCore;
-    let mut buf = [0u8; 8];
-    rand::rng().fill_bytes(&mut buf);
-    hex::encode(buf)
 }
 
 #[cfg(test)]

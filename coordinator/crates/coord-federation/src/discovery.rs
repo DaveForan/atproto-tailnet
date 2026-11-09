@@ -20,7 +20,7 @@ pub const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 // ── Types ──────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
-pub struct PeerInfo {
+pub struct DiscoveredPeer {
     pub did: String,
     pub broker_url: String,
     pub name: String,
@@ -37,7 +37,7 @@ pub struct PeerInfo {
 pub async fn discover_peer(
     client: &reqwest::Client,
     peer_address: &str,
-) -> Result<PeerInfo, CoordError> {
+) -> Result<DiscoveredPeer, CoordError> {
     if peer_address.starts_with("did:") {
         return Err(CoordError::Protocol(
             "Direct DID lookup not yet supported; use slug@host format".to_string(),
@@ -109,7 +109,7 @@ pub async fn discover_peer(
         )));
     }
 
-    Ok(PeerInfo {
+    Ok(DiscoveredPeer {
         did: descriptor.collective_did,
         broker_url: descriptor.broker_url,
         name: slug.to_string(),

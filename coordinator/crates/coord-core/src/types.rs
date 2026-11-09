@@ -123,6 +123,9 @@ impl Default for FederationPosture {
     }
 }
 
+pub const DEFAULT_IPV4_PREFIX: &str = "100.64.0.0/10";
+pub const DEFAULT_IPV6_PREFIX: &str = "fd7a:115c:a1e0::/48";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Tenant {
     pub id: TenantId,

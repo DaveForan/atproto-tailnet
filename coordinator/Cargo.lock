@@ -400,17 +400,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "coord-netmap"
-version = "0.1.0"
-dependencies = [
- "coord-core",
- "coord-proto",
- "serde",
- "serde_json",
- "tracing",
-]
-
-[[package]]
 name = "coord-noise"
 version = "0.1.0"
 dependencies = [

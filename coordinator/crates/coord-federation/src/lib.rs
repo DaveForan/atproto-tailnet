@@ -24,21 +24,10 @@ pub mod inbound;
 pub mod pg_store;
 pub mod store;
 
-// Re-export key types for convenience.
-pub use abuse::{RateLimiter, ReplayGuard};
-pub use auth::{PublicKeyResolver, SignFn};
+// Re-export types used by coord-api and coord-server.
 pub use broker::{BrokerConfig, BrokerService};
-pub use discovery::PeerInfo;
 pub use federation_store_memory::FederationMemoryStore;
-pub use pg_store::PgFederationStore;
-pub use handshake::{HandshakeCallbacks, HandshakeState};
+pub use handshake::HandshakeCallbacks;
 pub use inbound::{InboundError, InboundHandler};
-pub use protocol::{
-    CfpMessage, Capability, FederationDescriptor, FederationType, HandshakePhase,
-    KeepaliveMessage, RevokeMessage, RouteAnnouncement, RouteUpdate,
-};
-pub use route_engine::{InstalledRoute, RouteTable};
-pub use scoping::{FederationScope, ScopedRoute};
-pub use session::{FederationSession, SessionStatus};
+pub use pg_store::PgFederationStore;
 pub use store::FederationStore;
-pub use transport::SendResult;

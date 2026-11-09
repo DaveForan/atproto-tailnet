@@ -72,7 +72,7 @@ async fn main() -> anyhow::Result<()> {
         .or(config.database_url);
 
     if let Some(url) = &database_url {
-        let pool = sqlx::PgPool::connect(url).await?;
+        let pool = coord_store::create_pool(url).await?;
         let pg_store = coord_store::PgStore::new(pool.clone()).await?;
         tracing::info!("PostgreSQL store initialized, migrations applied");
         coordinator = coordinator.with_store(coord_store::Store::Pg(pg_store));

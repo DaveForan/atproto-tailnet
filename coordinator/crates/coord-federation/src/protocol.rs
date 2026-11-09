@@ -6,7 +6,6 @@ use std::ops::RangeInclusive;
 // ── Constants ──────────────────────────────────────────────────────────────────
 
 pub const CFP_VERSION: &str = "1.0.0";
-pub const MAX_MESSAGE_BYTES: usize = 1_048_576; // 1 MiB
 pub const DEFAULT_KEEPALIVE_SECONDS: u32 = 60;
 pub const KEEPALIVE_RANGE: RangeInclusive<u32> = 10..=300;
 pub const HELLO_RATE_LIMIT_PER_DID: u32 = 10; // per minute

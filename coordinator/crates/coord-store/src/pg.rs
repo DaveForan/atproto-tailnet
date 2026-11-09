@@ -4,6 +4,7 @@ use tokio::sync::broadcast;
 
 use coord_core::{CoordError, FederationPosture, NodeId, NodeInfo, PeerInfo, Tenant, TenantId};
 use crate::memory::PeerEvent;
+use crate::generate_random_id;
 
 pub struct PgStore {
     pool: PgPool,
@@ -16,7 +17,7 @@ impl PgStore {
             .run(&pool)
             .await?;
 
-        let (peer_tx, _) = broadcast::channel(256);
+        let (peer_tx, _) = broadcast::channel(crate::PEER_EVENT_CHANNEL_CAPACITY);
         Ok(Self { pool, peer_tx })
     }
 
@@ -65,8 +66,8 @@ impl PgStore {
             slug,
             parent_id,
             federation_posture: FederationPosture::default(),
-            ipv4_prefix: "100.64.0.0/10".into(),
-            ipv6_prefix: "fd7a:115c:a1e0::/48".into(),
+            ipv4_prefix: coord_core::DEFAULT_IPV4_PREFIX.into(),
+            ipv6_prefix: coord_core::DEFAULT_IPV6_PREFIX.into(),
             created_at: chrono::Utc::now(),
         })
     }
@@ -806,13 +807,6 @@ impl std::fmt::Debug for PgStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PgStore").finish()
     }
-}
-
-fn generate_random_id() -> String {
-    use rand::RngCore;
-    let mut buf = [0u8; 8];
-    rand::rng().fill_bytes(&mut buf);
-    hex::encode(buf)
 }
 
 fn parse_posture(s: &str) -> FederationPosture {

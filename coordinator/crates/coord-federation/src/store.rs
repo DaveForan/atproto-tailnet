@@ -102,12 +102,6 @@ pub trait FederationStore: Send + Sync {
     /// Delete a session.
     async fn delete_session(&self, id: SessionId) -> Result<(), CoordError>;
 
-    /// Return all sessions in `Connecting` status whose link direction is
-    /// `Incoming`, paired with their link.
-    async fn get_connecting_sessions_for_incoming_links(
-        &self,
-    ) -> Result<Vec<(BrokerSession, FederationLink)>, CoordError>;
-
     // ── Collective DIDs ───────────────────────────────────────────────────
 
     /// Return the collective DID record for a tenant.

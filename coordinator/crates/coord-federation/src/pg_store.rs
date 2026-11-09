@@ -480,38 +480,6 @@ impl FederationStore for PgFederationStore {
         Ok(())
     }
 
-    async fn get_connecting_sessions_for_incoming_links(
-        &self,
-    ) -> Result<Vec<(BrokerSession, FederationLink)>, CoordError> {
-        // Join sessions with their links, filtering by session.status =
-        // 'connecting' AND link.direction = 'incoming' AND link.status = 'active'.
-        //
-        // We select all columns from both tables with aliases to disambiguate.
-        let rows = sqlx::query_as::<_, JoinedSessionLinkRow>(
-            "SELECT \
-                s.id AS s_id, s.federation_link_id AS s_federation_link_id, \
-                s.local_tenant_id AS s_local_tenant_id, s.peer_did AS s_peer_did, \
-                s.status AS s_status, s.cfp_session_id, s.remote_endpoint, \
-                s.protocol_version AS s_protocol_version, \
-                s.exported_routes, s.imported_routes, s.last_keepalive, \
-                s.created_at AS s_created_at, s.updated_at AS s_updated_at, \
-                l.id AS l_id, l.local_tenant_id AS l_local_tenant_id, \
-                l.peer_did AS l_peer_did, l.peer_broker_url, l.peer_name, \
-                l.direction, l.status AS l_status, l.local_cidrs, l.peer_cidrs, \
-                l.protocol_version AS l_protocol_version, l.message, l.signed_request, \
-                l.created_at AS l_created_at, l.updated_at AS l_updated_at \
-             FROM coord_broker_sessions s \
-             JOIN coord_federation_links l ON l.id = s.federation_link_id \
-             WHERE s.status = 'connecting' \
-               AND l.direction = 'incoming' \
-               AND l.status = 'active'",
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(rows.into_iter().map(joined_to_pair).collect())
-    }
-
     // ── Collective DIDs ──────────────────────────────────────────────────
 
     async fn get_collective_did(
@@ -613,77 +581,6 @@ impl FederationStore for PgFederationStore {
 
         Ok(result.rows_affected() as usize)
     }
-}
-
-// ── Joined row for the session+link query ────────────────────────────────────
-
-/// Combined row from the session+link join query.
-#[derive(sqlx::FromRow)]
-struct JoinedSessionLinkRow {
-    // session columns
-    s_id: Uuid,
-    s_federation_link_id: Uuid,
-    s_local_tenant_id: Uuid,
-    s_peer_did: String,
-    s_status: String,
-    cfp_session_id: Option<String>,
-    remote_endpoint: Option<String>,
-    s_protocol_version: Option<String>,
-    exported_routes: Vec<String>,
-    imported_routes: Vec<String>,
-    last_keepalive: Option<DateTime<Utc>>,
-    s_created_at: DateTime<Utc>,
-    s_updated_at: DateTime<Utc>,
-    // link columns
-    l_id: Uuid,
-    l_local_tenant_id: Uuid,
-    l_peer_did: String,
-    peer_broker_url: Option<String>,
-    peer_name: Option<String>,
-    direction: String,
-    l_status: String,
-    local_cidrs: Vec<String>,
-    peer_cidrs: Vec<String>,
-    l_protocol_version: Option<String>,
-    message: Option<String>,
-    signed_request: Option<String>,
-    l_created_at: DateTime<Utc>,
-    l_updated_at: DateTime<Utc>,
-}
-
-fn joined_to_pair(r: JoinedSessionLinkRow) -> (BrokerSession, FederationLink) {
-    let session = BrokerSession {
-        id: SessionId::new(r.s_id),
-        federation_link_id: LinkId::new(r.s_federation_link_id),
-        local_tenant_id: TenantId::new(r.s_local_tenant_id),
-        peer_did: r.s_peer_did,
-        status: parse_session_status(&r.s_status),
-        cfp_session_id: r.cfp_session_id,
-        remote_endpoint: r.remote_endpoint,
-        protocol_version: r.s_protocol_version,
-        exported_routes: r.exported_routes,
-        imported_routes: r.imported_routes,
-        last_keepalive: r.last_keepalive,
-        created_at: r.s_created_at,
-        updated_at: r.s_updated_at,
-    };
-    let link = FederationLink {
-        id: LinkId::new(r.l_id),
-        local_tenant_id: TenantId::new(r.l_local_tenant_id),
-        peer_did: r.l_peer_did,
-        peer_broker_url: r.peer_broker_url,
-        peer_name: r.peer_name,
-        direction: parse_direction(&r.direction),
-        status: parse_link_status(&r.l_status),
-        local_cidrs: r.local_cidrs,
-        peer_cidrs: r.peer_cidrs,
-        protocol_version: r.l_protocol_version,
-        message: r.message,
-        signed_request: r.signed_request,
-        created_at: r.l_created_at,
-        updated_at: r.l_updated_at,
-    };
-    (session, link)
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

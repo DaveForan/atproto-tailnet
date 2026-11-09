@@ -30,8 +30,7 @@ use crate::store::FederationStore;
 
 // ── Constants ──────────────────────────────────────────────────────────────────
 
-/// Maximum number of pending incoming link requests per tenant.
-const MAX_PENDING_INCOMING: usize = 50;
+use crate::abuse::MAX_PENDING_PER_COLLECTIVE;
 
 /// How long a pending handshake state remains valid.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(300);
@@ -452,7 +451,7 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
 
         // Rate limit: expire oldest pending if over limit.
         self.store
-            .expire_oldest_pending(recipient_tenant_id, MAX_PENDING_INCOMING)
+            .expire_oldest_pending(recipient_tenant_id, MAX_PENDING_PER_COLLECTIVE)
             .await
             .map_err(|e| InboundError::BadRequest(format!("Store error: {e}")))?;
 

@@ -218,24 +218,6 @@ impl FederationStore for FederationMemoryStore {
         Ok(())
     }
 
-    async fn get_connecting_sessions_for_incoming_links(
-        &self,
-    ) -> Result<Vec<(BrokerSession, FederationLink)>, CoordError> {
-        let sessions = self.sessions.read().unwrap_or_else(|e| e.into_inner());
-        let links = self.links.read().unwrap_or_else(|e| e.into_inner());
-        let mut result = Vec::new();
-        for session in sessions.values() {
-            if session.status == BrokerSessionStatus::Connecting {
-                if let Some(link) = links.get(&session.federation_link_id) {
-                    if link.direction == LinkDirection::Incoming {
-                        result.push((session.clone(), link.clone()));
-                    }
-                }
-            }
-        }
-        Ok(result)
-    }
-
     // ── Collective DIDs ───────────────────────────────────────────────────
 
     async fn get_collective_did(
