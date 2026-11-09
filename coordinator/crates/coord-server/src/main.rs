@@ -73,9 +73,15 @@ async fn main() -> anyhow::Result<()> {
 
     if let Some(url) = &database_url {
         let pool = sqlx::PgPool::connect(url).await?;
-        let pg_store = coord_store::PgStore::new(pool).await?;
+        let pg_store = coord_store::PgStore::new(pool.clone()).await?;
         tracing::info!("PostgreSQL store initialized, migrations applied");
         coordinator = coordinator.with_store(coord_store::Store::Pg(pg_store));
+
+        let fed_store = std::sync::Arc::new(
+            coord_federation::PgFederationStore::new(pool),
+        );
+        coordinator = coordinator.with_federation_store(fed_store);
+        tracing::info!("federation store: PostgreSQL");
     }
 
     let admin_key = std::env::var("COORD_ADMIN_KEY").ok();

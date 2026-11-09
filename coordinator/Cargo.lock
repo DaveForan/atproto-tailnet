@@ -444,6 +444,7 @@ dependencies = [
  "axum",
  "coord-api",
  "coord-core",
+ "coord-federation",
  "coord-noise",
  "coord-proto",
  "coord-store",

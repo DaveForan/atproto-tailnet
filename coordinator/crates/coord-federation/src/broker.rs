@@ -52,7 +52,7 @@ impl Default for BrokerConfig {
 
 // ── BrokerService ──────────────────────────────────────────────────────────────
 
-pub struct BrokerService<S: FederationStore> {
+pub struct BrokerService<S: FederationStore + ?Sized> {
     store: Arc<S>,
     config: BrokerConfig,
     /// Links currently being handshaked (prevents concurrent handshakes for
@@ -60,7 +60,7 @@ pub struct BrokerService<S: FederationStore> {
     handshakes_in_flight: Mutex<HashSet<LinkId>>,
 }
 
-impl<S: FederationStore> BrokerService<S> {
+impl<S: FederationStore + ?Sized> BrokerService<S> {
     pub fn new(store: Arc<S>, config: BrokerConfig) -> Self {
         Self {
             store,

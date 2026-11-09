@@ -2,7 +2,7 @@ use std::sync::Arc;
 use coord_core::ControlKey;
 use coord_acl::PolicyEngine;
 use coord_federation::{
-    BrokerConfig, BrokerService, FederationMemoryStore, InboundHandler,
+    BrokerConfig, BrokerService, FederationMemoryStore, FederationStore, InboundHandler,
 };
 use coord_proto::map::DerpMap;
 use coord_store::{MemoryStore, Store};
@@ -13,13 +13,13 @@ pub struct CoordinatorState {
     pub acl: Arc<PolicyEngine>,
     pub derp_map: DerpMap,
     pub admin_api_key: Option<String>,
-    pub federation_inbound: Arc<InboundHandler<FederationMemoryStore>>,
-    pub federation_broker: Arc<BrokerService<FederationMemoryStore>>,
+    pub federation_inbound: Arc<InboundHandler<dyn FederationStore>>,
+    pub federation_broker: Arc<BrokerService<dyn FederationStore>>,
 }
 
 impl CoordinatorState {
     pub fn new(control_key: ControlKey) -> Self {
-        let fed_store = Arc::new(FederationMemoryStore::new());
+        let fed_store: Arc<dyn FederationStore> = Arc::new(FederationMemoryStore::new());
         let fed_config = BrokerConfig::default();
         Self {
             control_key,
@@ -33,6 +33,16 @@ impl CoordinatorState {
             )),
             federation_broker: Arc::new(BrokerService::new(fed_store, fed_config)),
         }
+    }
+
+    pub fn with_federation_store(mut self, store: Arc<dyn FederationStore>) -> Self {
+        let fed_config = self.federation_broker.config().clone();
+        self.federation_inbound = Arc::new(InboundHandler::new(
+            store.clone(),
+            fed_config.clone(),
+        ));
+        self.federation_broker = Arc::new(BrokerService::new(store, fed_config));
+        self
     }
 
     pub fn with_store(mut self, store: Store) -> Self {

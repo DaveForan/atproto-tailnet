@@ -96,14 +96,14 @@ struct PendingHandshake {
 
 // ── InboundHandler ────────────────────────────────────────────────────────────
 
-pub struct InboundHandler<S: FederationStore> {
+pub struct InboundHandler<S: FederationStore + ?Sized> {
     store: Arc<S>,
     config: BrokerConfig,
     /// Pending handshakes keyed by the challenge nonce.
     pending_handshakes: Mutex<HashMap<String, PendingHandshake>>,
 }
 
-impl<S: FederationStore> InboundHandler<S> {
+impl<S: FederationStore + ?Sized> InboundHandler<S> {
     pub fn new(store: Arc<S>, config: BrokerConfig) -> Self {
         Self {
             store,

@@ -15,6 +15,7 @@ coord-core = { workspace = true }
 coord-noise = { workspace = true }
 coord-proto = { workspace = true }
 coord-api = { workspace = true }
+coord-federation = { workspace = true }
 coord-store = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true }

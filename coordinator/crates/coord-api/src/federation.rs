@@ -12,7 +12,7 @@ use coord_federation::{
         CommitMessage, HelloMessage, KeepaliveMessage, LinkAcceptMessage, LinkRejectMessage,
         LinkRequestMessage, LinkRevokeMessage, RevokeMessage,
     },
-    FederationStore, InboundError,
+    InboundError,
 };
 
 use crate::state::CoordinatorState;
