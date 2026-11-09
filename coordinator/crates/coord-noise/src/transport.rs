@@ -259,3 +259,106 @@ where
         frame_count += 1;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_test_transport() -> (NoiseTransport, NoiseTransport) {
+        let key_a = [1u8; 32];
+        let key_b = [2u8; 32];
+        let server = NoiseTransport::from_responder_keys(key_a, key_b);
+        let client = NoiseTransport {
+            tx_cipher: ChaCha20Poly1305::new(GenericArray::from_slice(&key_a)),
+            rx_cipher: ChaCha20Poly1305::new(GenericArray::from_slice(&key_b)),
+            tx_nonce: 0,
+            rx_nonce: 0,
+        };
+        (server, client)
+    }
+
+    #[test]
+    fn encrypt_decrypt_roundtrip() {
+        let (mut server, mut client) = make_test_transport();
+        let plaintext = b"hello from client";
+        let ct = client.encrypt(plaintext).unwrap();
+        assert_ne!(&ct, plaintext);
+        let pt = server.decrypt(&ct).unwrap();
+        assert_eq!(pt, plaintext);
+    }
+
+    #[test]
+    fn server_to_client_roundtrip() {
+        let (mut server, mut client) = make_test_transport();
+        let plaintext = b"hello from server";
+        let ct = server.encrypt(plaintext).unwrap();
+        let pt = client.decrypt(&ct).unwrap();
+        assert_eq!(pt, plaintext);
+    }
+
+    #[test]
+    fn nonce_increments_correctly() {
+        let (mut server, mut client) = make_test_transport();
+        for i in 0..5u8 {
+            let ct = client.encrypt(&[i]).unwrap();
+            let pt = server.decrypt(&ct).unwrap();
+            assert_eq!(pt, vec![i]);
+        }
+        assert_eq!(client.tx_nonce, 5);
+        assert_eq!(server.rx_nonce, 5);
+    }
+
+    #[test]
+    fn decrypt_wrong_nonce_fails() {
+        let (mut server, mut client) = make_test_transport();
+        let ct = client.encrypt(b"msg1").unwrap();
+        server.rx_nonce = 99;
+        assert!(server.decrypt(&ct).is_err());
+    }
+
+    #[test]
+    fn decrypt_wrong_key_fails() {
+        let (_, mut client) = make_test_transport();
+        let ct = client.encrypt(b"data").unwrap();
+        let wrong = NoiseTransport::from_responder_keys([3u8; 32], [4u8; 32]);
+        let mut wrong_rx = NoiseTransport {
+            tx_cipher: wrong.tx_cipher,
+            rx_cipher: wrong.rx_cipher,
+            tx_nonce: 0,
+            rx_nonce: 0,
+        };
+        assert!(wrong_rx.decrypt(&ct).is_err());
+    }
+
+    #[test]
+    fn plaintext_too_large_rejected() {
+        let (_, mut client) = make_test_transport();
+        let big = vec![0u8; MAX_PLAINTEXT_SIZE + 1];
+        assert!(client.encrypt(&big).is_err());
+    }
+
+    #[tokio::test]
+    async fn record_frame_roundtrip() {
+        let data = b"some ciphertext bytes";
+        let mut buf = Vec::new();
+        write_record_frame(&mut buf, data).await.unwrap();
+        let mut cursor = std::io::Cursor::new(buf);
+        let read_back = read_record_frame(&mut cursor).await.unwrap();
+        assert_eq!(read_back, data);
+    }
+
+    #[tokio::test]
+    async fn record_frame_wrong_type_rejected() {
+        let mut frame = vec![0xFF, 0x00, 0x03]; // wrong type byte
+        frame.extend_from_slice(b"abc");
+        let mut cursor = std::io::Cursor::new(frame);
+        assert!(read_record_frame(&mut cursor).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn write_record_frame_oversized_rejected() {
+        let oversized = vec![0u8; MAX_CIPHERTEXT_SIZE + 1];
+        let mut buf = Vec::new();
+        assert!(write_record_frame(&mut buf, &oversized).await.is_err());
+    }
+}

@@ -1566,3 +1566,92 @@ async fn federation_revoke_missing_session_rejected() {
 
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
+
+// ── Admin auth middleware tests ───────────────────────────────────────────────
+
+fn setup_with_admin_key() -> (axum::Router, Arc<CoordinatorState>) {
+    let key = ControlKey::generate();
+    let state = Arc::new(
+        CoordinatorState::new(key)
+            .with_admin_api_key(Some("test-admin-secret".to_string())),
+    );
+    let app = coord_api::router(state.clone());
+    (app, state)
+}
+
+#[tokio::test]
+async fn admin_api_rejects_missing_auth() {
+    let (app, _) = setup_with_admin_key();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/nodes")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn admin_api_rejects_wrong_key() {
+    let (app, _) = setup_with_admin_key();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/nodes")
+                .header("authorization", "Bearer wrong-key")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn admin_api_accepts_correct_key() {
+    let (app, _) = setup_with_admin_key();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/nodes")
+                .header("authorization", "Bearer test-admin-secret")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn admin_api_allows_unauthenticated_when_no_key_set() {
+    let (app, _) = setup();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/api/nodes")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn health_endpoint_bypasses_admin_auth() {
+    let (app, _) = setup_with_admin_key();
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+}
