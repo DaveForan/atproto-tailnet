@@ -17,11 +17,20 @@ pub mod discovery;
 pub mod handshake;
 pub mod transport;
 
+// Tier 3: broker orchestration, federation store, inbound handlers
+pub mod broker;
+pub mod federation_store_memory;
+pub mod inbound;
+pub mod store;
+
 // Re-export key types for convenience.
 pub use abuse::{RateLimiter, ReplayGuard};
 pub use auth::{PublicKeyResolver, SignFn};
+pub use broker::{BrokerConfig, BrokerService};
 pub use discovery::PeerInfo;
+pub use federation_store_memory::FederationMemoryStore;
 pub use handshake::{HandshakeCallbacks, HandshakeState};
+pub use inbound::{InboundError, InboundHandler};
 pub use protocol::{
     CfpMessage, Capability, FederationDescriptor, FederationType, HandshakePhase,
     KeepaliveMessage, RevokeMessage, RouteAnnouncement, RouteUpdate,
@@ -29,4 +38,5 @@ pub use protocol::{
 pub use route_engine::{InstalledRoute, RouteTable};
 pub use scoping::{FederationScope, ScopedRoute};
 pub use session::{FederationSession, SessionStatus};
+pub use store::FederationStore;
 pub use transport::SendResult;

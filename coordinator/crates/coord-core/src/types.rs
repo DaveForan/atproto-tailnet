@@ -140,3 +140,122 @@ pub enum AclVerdict {
     Allow,
     Deny,
 }
+
+// ── Federation types (Tier 3) ─────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct LinkId(Uuid);
+
+impl LinkId {
+    pub fn new(id: Uuid) -> Self {
+        Self(id)
+    }
+
+    pub fn generate() -> Self {
+        Self(Uuid::new_v4())
+    }
+
+    pub fn as_uuid(&self) -> &Uuid {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for LinkId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SessionId(Uuid);
+
+impl SessionId {
+    pub fn new(id: Uuid) -> Self {
+        Self(id)
+    }
+
+    pub fn generate() -> Self {
+        Self(Uuid::new_v4())
+    }
+
+    pub fn as_uuid(&self) -> &Uuid {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for SessionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkDirection {
+    Incoming,
+    Outgoing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkStatus {
+    Pending,
+    Active,
+    Rejected,
+    Revoked,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrokerSessionStatus {
+    Connecting,
+    Established,
+    Degraded,
+    Disconnected,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FederationLink {
+    pub id: LinkId,
+    pub local_tenant_id: TenantId,
+    pub peer_did: String,
+    pub peer_broker_url: Option<String>,
+    pub peer_name: Option<String>,
+    pub direction: LinkDirection,
+    pub status: LinkStatus,
+    pub local_cidrs: Vec<String>,
+    pub peer_cidrs: Vec<String>,
+    pub protocol_version: Option<String>,
+    pub message: Option<String>,
+    pub signed_request: Option<String>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrokerSession {
+    pub id: SessionId,
+    pub federation_link_id: LinkId,
+    pub local_tenant_id: TenantId,
+    pub peer_did: String,
+    pub status: BrokerSessionStatus,
+    pub cfp_session_id: Option<String>,
+    pub remote_endpoint: Option<String>,
+    pub protocol_version: Option<String>,
+    pub exported_routes: Vec<String>,
+    pub imported_routes: Vec<String>,
+    pub last_keepalive: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub updated_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CollectiveDid {
+    pub tenant_id: TenantId,
+    pub did: String,
+    pub public_key_jwk: serde_json::Value,
+    pub encrypted_private_key: String,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+}
