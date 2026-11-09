@@ -72,7 +72,7 @@ pub fn select_best_route(routes: &[ScopedRoute]) -> Option<&ScopedRoute> {
     }
 
     // Fall back to scope priority + preference.
-    routes.iter().max_by_key(|r| r.scope.priority() + r.preference)
+    routes.iter().max_by_key(|r| r.scope.priority().saturating_add(r.preference))
 }
 
 /// Haversine distance in kilometres between two (lat, lon) coordinate pairs.

@@ -223,13 +223,13 @@ async fn handle_register_request(
     }
 }
 
-fn frame_map_response(json_bytes: &[u8]) -> Vec<u8> {
-    let compressed = zstd::bulk::compress(json_bytes, 3).expect("zstd compress");
+fn frame_map_response(json_bytes: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+    let compressed = zstd::bulk::compress(json_bytes, 3)?;
     let len = compressed.len() as u32;
     let mut out = Vec::with_capacity(4 + compressed.len());
     out.extend_from_slice(&len.to_le_bytes());
     out.extend_from_slice(&compressed);
-    out
+    Ok(out)
 }
 
 async fn handle_map_request(
@@ -247,11 +247,16 @@ async fn handle_map_request(
     if !is_streaming {
         match control::handle_map(&state, &machine_key, body).await {
             Ok(response_json) => {
-                let framed = frame_map_response(response_json.as_bytes());
-                Response::builder()
-                    .status(StatusCode::OK)
-                    .body(full_body(Bytes::from(framed)))
-                    .unwrap()
+                match frame_map_response(response_json.as_bytes()) {
+                    Ok(framed) => Response::builder()
+                        .status(StatusCode::OK)
+                        .body(full_body(Bytes::from(framed)))
+                        .unwrap(),
+                    Err(e) => {
+                        warn!(error = %e, "zstd compression failed");
+                        json_error(StatusCode::INTERNAL_SERVER_ERROR, "compression error")
+                    }
+                }
             }
             Err(e) => {
                 warn!(error = %e, "map request failed");
@@ -293,8 +298,9 @@ async fn handle_streaming_map(
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<hyper::body::Frame<Bytes>, std::io::Error>>(32);
 
-    let initial_frame = frame_map_response(initial.as_bytes());
-    let _ = tx.send(Ok(hyper::body::Frame::data(Bytes::from(initial_frame)))).await;
+    if let Ok(initial_frame) = frame_map_response(initial.as_bytes()) {
+        let _ = tx.send(Ok(hyper::body::Frame::data(Bytes::from(initial_frame)))).await;
+    }
     let state_clone = state.clone();
 
     // Collect child tenant IDs for federation-aware streaming.
@@ -323,9 +329,10 @@ async fn handle_streaming_map(
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                             tracing::warn!(skipped = n, "map stream lagged, sending full update");
                             if let Ok(json) = control::build_map_snapshot(&state_clone, &machine_key).await {
-                                let framed = frame_map_response(json.as_bytes());
-                                if tx.send(Ok(hyper::body::Frame::data(Bytes::from(framed)))).await.is_err() {
-                                    break;
+                                if let Ok(framed) = frame_map_response(json.as_bytes()) {
+                                    if tx.send(Ok(hyper::body::Frame::data(Bytes::from(framed)))).await.is_err() {
+                                        break;
+                                    }
                                 }
                             }
                             // Refresh child tenant IDs after lag recovery
@@ -367,17 +374,19 @@ async fn handle_streaming_map(
                     ).await;
 
                     if let Some(json) = delta {
-                        let framed = frame_map_response(json.as_bytes());
-                        if tx.send(Ok(hyper::body::Frame::data(Bytes::from(framed)))).await.is_err() {
-                            break;
+                        if let Ok(framed) = frame_map_response(json.as_bytes()) {
+                            if tx.send(Ok(hyper::body::Frame::data(Bytes::from(framed)))).await.is_err() {
+                                break;
+                            }
                         }
                     }
                 }
                 _ = tokio::time::sleep(keepalive_interval) => {
                     let keepalive = serde_json::json!({"KeepAlive": true});
-                    let framed = frame_map_response(keepalive.to_string().as_bytes());
-                    if tx.send(Ok(hyper::body::Frame::data(Bytes::from(framed)))).await.is_err() {
-                        break;
+                    if let Ok(framed) = frame_map_response(keepalive.to_string().as_bytes()) {
+                        if tx.send(Ok(hyper::body::Frame::data(Bytes::from(framed)))).await.is_err() {
+                            break;
+                        }
                     }
                     // Refresh child tenant IDs alongside keepalive
                     child_tenant_ids = state_clone.store.get_child_tenants(tenant_id).await

@@ -199,7 +199,7 @@ where
         );
 
         let plaintext = {
-            let mut t = transport.lock().unwrap();
+            let mut t = transport.lock().unwrap_or_else(|e| e.into_inner());
             t.decrypt(&ciphertext)?
         };
 
@@ -245,7 +245,7 @@ where
         );
 
         let ciphertext = {
-            let mut t = transport.lock().unwrap();
+            let mut t = transport.lock().unwrap_or_else(|e| e.into_inner());
             t.encrypt(&buf[..n])?
         };
 

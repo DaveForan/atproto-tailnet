@@ -326,11 +326,12 @@ pub fn add_federated_routes_to_policy(
     policy: &serde_json::Value,
     cidrs: &[String],
 ) -> serde_json::Value {
-    let mut result = policy.clone();
-    let obj = result.as_object_mut().unwrap_or_else(|| {
-        // If not an object, replace with empty object.
-        panic!("policy must be a JSON object");
-    });
+    let mut result = if policy.is_object() {
+        policy.clone()
+    } else {
+        serde_json::json!({})
+    };
+    let obj = result.as_object_mut().expect("just verified this is an object");
 
     // Ensure tagOwners has the federation relay tag.
     let tag_owners = obj

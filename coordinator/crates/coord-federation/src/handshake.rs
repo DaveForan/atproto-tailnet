@@ -164,7 +164,10 @@ pub async fn handle_hello(
     callbacks: &dyn HandshakeCallbacks,
 ) -> Result<(HandshakeState, ChallengeMessage), (HandshakeState, String)> {
     // Build the payload that was signed (message minus signature).
-    let mut hello_json = serde_json::to_value(hello).unwrap_or_default();
+    let mut hello_json = serde_json::to_value(hello).map_err(|e| {
+        state.phase = HandshakePhase::Failed;
+        (state.clone(), format!("Failed to serialize HELLO for verification: {e}"))
+    })?;
     if let Some(obj) = hello_json.as_object_mut() {
         obj.remove("signature");
         // Remove meshId if null (match TS behavior of undefined).

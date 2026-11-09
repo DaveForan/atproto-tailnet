@@ -41,7 +41,7 @@ impl FederationStore for FederationMemoryStore {
     // ── Links ─────────────────────────────────────────────────────────────
 
     async fn list_active_links(&self) -> Result<Vec<FederationLink>, CoordError> {
-        let guard = self.links.read().unwrap();
+        let guard = self.links.read().unwrap_or_else(|e| e.into_inner());
         Ok(guard
             .values()
             .filter(|l| l.status == LinkStatus::Active)
@@ -50,7 +50,7 @@ impl FederationStore for FederationMemoryStore {
     }
 
     async fn get_link(&self, id: LinkId) -> Result<Option<FederationLink>, CoordError> {
-        let guard = self.links.read().unwrap();
+        let guard = self.links.read().unwrap_or_else(|e| e.into_inner());
         Ok(guard.get(&id).cloned())
     }
 
@@ -59,7 +59,7 @@ impl FederationStore for FederationMemoryStore {
         tenant_id: TenantId,
         peer_did: &str,
     ) -> Result<Option<FederationLink>, CoordError> {
-        let guard = self.links.read().unwrap();
+        let guard = self.links.read().unwrap_or_else(|e| e.into_inner());
         Ok(guard.values().find(|l| {
             l.local_tenant_id == tenant_id
                 && l.peer_did == peer_did
@@ -72,7 +72,7 @@ impl FederationStore for FederationMemoryStore {
         tenant_id: TenantId,
         peer_did: &str,
     ) -> Result<Option<FederationLink>, CoordError> {
-        let guard = self.links.read().unwrap();
+        let guard = self.links.read().unwrap_or_else(|e| e.into_inner());
         Ok(guard.values().find(|l| {
             l.local_tenant_id == tenant_id
                 && l.peer_did == peer_did
@@ -82,7 +82,7 @@ impl FederationStore for FederationMemoryStore {
     }
 
     async fn create_link(&self, link: FederationLink) -> Result<FederationLink, CoordError> {
-        let mut guard = self.links.write().unwrap();
+        let mut guard = self.links.write().unwrap_or_else(|e| e.into_inner());
         guard.insert(link.id, link.clone());
         Ok(link)
     }
@@ -92,7 +92,7 @@ impl FederationStore for FederationMemoryStore {
         id: LinkId,
         status: LinkStatus,
     ) -> Result<(), CoordError> {
-        let mut guard = self.links.write().unwrap();
+        let mut guard = self.links.write().unwrap_or_else(|e| e.into_inner());
         if let Some(link) = guard.get_mut(&id) {
             link.status = status;
             link.updated_at = Utc::now();
@@ -107,7 +107,7 @@ impl FederationStore for FederationMemoryStore {
         peer_broker_url: String,
         peer_name: String,
     ) -> Result<(), CoordError> {
-        let mut guard = self.links.write().unwrap();
+        let mut guard = self.links.write().unwrap_or_else(|e| e.into_inner());
         if let Some(link) = guard.get_mut(&id) {
             link.status = LinkStatus::Active;
             link.peer_cidrs = peer_cidrs;
@@ -121,7 +121,7 @@ impl FederationStore for FederationMemoryStore {
     // ── Sessions ──────────────────────────────────────────────────────────
 
     async fn list_sessions(&self) -> Result<Vec<BrokerSession>, CoordError> {
-        let guard = self.sessions.read().unwrap();
+        let guard = self.sessions.read().unwrap_or_else(|e| e.into_inner());
         Ok(guard.values().cloned().collect())
     }
 
@@ -129,7 +129,7 @@ impl FederationStore for FederationMemoryStore {
         &self,
         link_id: LinkId,
     ) -> Result<Vec<BrokerSession>, CoordError> {
-        let guard = self.sessions.read().unwrap();
+        let guard = self.sessions.read().unwrap_or_else(|e| e.into_inner());
         Ok(guard
             .values()
             .filter(|s| s.federation_link_id == link_id)
@@ -142,7 +142,7 @@ impl FederationStore for FederationMemoryStore {
         cfp_session_id: &str,
         tenant_id: TenantId,
     ) -> Result<Option<BrokerSession>, CoordError> {
-        let guard = self.sessions.read().unwrap();
+        let guard = self.sessions.read().unwrap_or_else(|e| e.into_inner());
         Ok(guard.values().find(|s| {
             s.local_tenant_id == tenant_id
                 && s.cfp_session_id.as_deref() == Some(cfp_session_id)
@@ -153,7 +153,7 @@ impl FederationStore for FederationMemoryStore {
         &self,
         session: BrokerSession,
     ) -> Result<Option<BrokerSession>, CoordError> {
-        let mut guard = self.sessions.write().unwrap();
+        let mut guard = self.sessions.write().unwrap_or_else(|e| e.into_inner());
         // Check if a session already exists for this link + tenant.
         let exists = guard.values().any(|s| {
             s.federation_link_id == session.federation_link_id
@@ -173,7 +173,7 @@ impl FederationStore for FederationMemoryStore {
         cfp_session_id: String,
         imported_routes: Vec<String>,
     ) -> Result<(), CoordError> {
-        let mut guard = self.sessions.write().unwrap();
+        let mut guard = self.sessions.write().unwrap_or_else(|e| e.into_inner());
         if let Some(session) = guard.values_mut().find(|s| {
             s.federation_link_id == link_id && s.local_tenant_id == tenant_id
         }) {
@@ -187,7 +187,7 @@ impl FederationStore for FederationMemoryStore {
     }
 
     async fn update_session_keepalive(&self, id: SessionId) -> Result<(), CoordError> {
-        let mut guard = self.sessions.write().unwrap();
+        let mut guard = self.sessions.write().unwrap_or_else(|e| e.into_inner());
         if let Some(session) = guard.get_mut(&id) {
             session.last_keepalive = Some(Utc::now());
             session.updated_at = Utc::now();
@@ -201,7 +201,7 @@ impl FederationStore for FederationMemoryStore {
         status: BrokerSessionStatus,
         imported_routes: Option<Vec<String>>,
     ) -> Result<(), CoordError> {
-        let mut guard = self.sessions.write().unwrap();
+        let mut guard = self.sessions.write().unwrap_or_else(|e| e.into_inner());
         if let Some(session) = guard.get_mut(&id) {
             session.status = status;
             if let Some(routes) = imported_routes {
@@ -213,7 +213,7 @@ impl FederationStore for FederationMemoryStore {
     }
 
     async fn delete_session(&self, id: SessionId) -> Result<(), CoordError> {
-        let mut guard = self.sessions.write().unwrap();
+        let mut guard = self.sessions.write().unwrap_or_else(|e| e.into_inner());
         guard.remove(&id);
         Ok(())
     }
@@ -221,8 +221,8 @@ impl FederationStore for FederationMemoryStore {
     async fn get_connecting_sessions_for_incoming_links(
         &self,
     ) -> Result<Vec<(BrokerSession, FederationLink)>, CoordError> {
-        let sessions = self.sessions.read().unwrap();
-        let links = self.links.read().unwrap();
+        let sessions = self.sessions.read().unwrap_or_else(|e| e.into_inner());
+        let links = self.links.read().unwrap_or_else(|e| e.into_inner());
         let mut result = Vec::new();
         for session in sessions.values() {
             if session.status == BrokerSessionStatus::Connecting {
@@ -242,12 +242,12 @@ impl FederationStore for FederationMemoryStore {
         &self,
         tenant_id: TenantId,
     ) -> Result<Option<CollectiveDid>, CoordError> {
-        let guard = self.collective_dids.read().unwrap();
+        let guard = self.collective_dids.read().unwrap_or_else(|e| e.into_inner());
         Ok(guard.get(&tenant_id).cloned())
     }
 
     async fn find_tenant_by_did(&self, did: &str) -> Result<Option<TenantId>, CoordError> {
-        let guard = self.collective_dids.read().unwrap();
+        let guard = self.collective_dids.read().unwrap_or_else(|e| e.into_inner());
         Ok(guard
             .values()
             .find(|c| c.did == did)
@@ -255,13 +255,13 @@ impl FederationStore for FederationMemoryStore {
     }
 
     async fn create_collective_did(&self, cdid: CollectiveDid) -> Result<(), CoordError> {
-        let mut guard = self.collective_dids.write().unwrap();
+        let mut guard = self.collective_dids.write().unwrap_or_else(|e| e.into_inner());
         guard.insert(cdid.tenant_id, cdid);
         Ok(())
     }
 
     async fn delete_collective_did(&self, tenant_id: TenantId) -> Result<(), CoordError> {
-        let mut guard = self.collective_dids.write().unwrap();
+        let mut guard = self.collective_dids.write().unwrap_or_else(|e| e.into_inner());
         guard.remove(&tenant_id);
         Ok(())
     }
@@ -269,7 +269,7 @@ impl FederationStore for FederationMemoryStore {
     // ── Federation link counts ────────────────────────────────────────────
 
     async fn count_pending_incoming(&self, tenant_id: TenantId) -> Result<usize, CoordError> {
-        let guard = self.links.read().unwrap();
+        let guard = self.links.read().unwrap_or_else(|e| e.into_inner());
         Ok(guard
             .values()
             .filter(|l| {
@@ -285,7 +285,7 @@ impl FederationStore for FederationMemoryStore {
         tenant_id: TenantId,
         max: usize,
     ) -> Result<usize, CoordError> {
-        let mut guard = self.links.write().unwrap();
+        let mut guard = self.links.write().unwrap_or_else(|e| e.into_inner());
         let mut pending: Vec<LinkId> = guard
             .values()
             .filter(|l| {
