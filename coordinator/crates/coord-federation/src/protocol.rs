@@ -35,7 +35,7 @@ pub enum Capability {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "kebab-case")]
 pub enum HandshakePhase {
     Idle,
     HelloSent,

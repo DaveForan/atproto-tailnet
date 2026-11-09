@@ -17,6 +17,7 @@ use coord_core::types::{
     BrokerSessionStatus, FederationLink, LinkDirection, LinkId, LinkStatus, TenantId,
 };
 
+use crate::abuse::{RateLimiter, ReplayGuard};
 use crate::auth::{filter_imported_prefixes, is_fresh};
 use crate::broker::BrokerConfig;
 use crate::handshake::{self, HandshakeCallbacks, HandshakeState};
@@ -126,7 +127,15 @@ pub struct InboundHandler<S: FederationStore + ?Sized> {
     config: BrokerConfig,
     /// Pending handshakes keyed by the challenge nonce.
     pending_handshakes: Mutex<HashMap<String, PendingHandshake>>,
+    /// Per-DID rate limiter for inbound federation messages.
+    rate_limiter: Mutex<RateLimiter>,
+    /// Replay guard keyed by message nonce/timestamp to prevent replays.
+    replay_guard: Mutex<ReplayGuard>,
 }
+
+const RATE_LIMIT_WINDOW_MS: u64 = 60_000;
+const RATE_LIMIT_MAX_HITS: u32 = 60;
+const REPLAY_WINDOW_SECS: u64 = 300;
 
 impl<S: FederationStore + ?Sized> InboundHandler<S> {
     pub fn new(store: Arc<S>, config: BrokerConfig) -> Self {
@@ -134,7 +143,25 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
             store,
             config,
             pending_handshakes: Mutex::new(HashMap::new()),
+            rate_limiter: Mutex::new(RateLimiter::new(RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX_HITS)),
+            replay_guard: Mutex::new(ReplayGuard::new(Duration::from_secs(REPLAY_WINDOW_SECS))),
         }
+    }
+
+    async fn check_rate_limit(&self, key: &str) -> Result<(), InboundError> {
+        let mut limiter = self.rate_limiter.lock().await;
+        if !limiter.check(key) {
+            return Err(InboundError::RateLimited);
+        }
+        Ok(())
+    }
+
+    async fn check_replay(&self, nonce: &str) -> Result<(), InboundError> {
+        let mut guard = self.replay_guard.lock().await;
+        if !guard.check(nonce) {
+            return Err(InboundError::BadRequest("Duplicate message (replay detected)".into()));
+        }
+        Ok(())
     }
 
     pub fn store(&self) -> &S {
@@ -154,6 +181,9 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
     ) -> Result<ChallengeMessage, InboundError> {
         validate_did(&hello.collective_did)?;
         validate_cidrs(&hello.offered_cidrs)?;
+
+        self.check_rate_limit(&hello.collective_did).await?;
+        self.check_replay(&hello.timestamp).await?;
 
         if !is_fresh(&hello.timestamp) {
             return Err(InboundError::BadRequest("Message timestamp too old or too new".into()));
@@ -222,6 +252,8 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
         commit: CommitMessage,
         callbacks: &dyn HandshakeCallbacks,
     ) -> Result<EstablishedMessage, InboundError> {
+        self.check_replay(&commit.timestamp).await?;
+
         if !is_fresh(&commit.timestamp) {
             return Err(InboundError::BadRequest("Message timestamp too old or too new".into()));
         }
@@ -300,6 +332,8 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
         recipient_tenant_id: TenantId,
         keepalive: KeepaliveMessage,
     ) -> Result<KeepaliveMessage, InboundError> {
+        self.check_replay(&keepalive.timestamp).await?;
+
         if !is_fresh(&keepalive.timestamp) {
             return Err(InboundError::BadRequest("Message timestamp too old or too new".into()));
         }
@@ -395,6 +429,9 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
         if msg.collective_name.len() > MAX_NAME_LEN {
             return Err(InboundError::BadRequest("Collective name too long".into()));
         }
+
+        self.check_rate_limit(&msg.collective_did).await?;
+        self.check_replay(&msg.timestamp).await?;
 
         if !is_fresh(&msg.timestamp) {
             return Err(InboundError::BadRequest("Message timestamp too old or too new".into()));

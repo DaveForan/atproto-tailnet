@@ -57,7 +57,7 @@ pub async fn discover_peer(
         ));
     }
 
-    if is_private_or_loopback_host(host) {
+    if is_private_or_loopback_host(host).await {
         return Err(CoordError::Protocol(format!(
             "Host {host} is not allowed (private/loopback)"
         )));
@@ -102,7 +102,7 @@ pub async fn discover_peer(
         )));
     }
 
-    if !is_allowed_broker_url(&descriptor.broker_url) {
+    if !is_allowed_broker_url(&descriptor.broker_url).await {
         return Err(CoordError::Protocol(format!(
             "Peer broker URL {} is not allowed",
             descriptor.broker_url
@@ -139,7 +139,7 @@ fn urlencoding_encode(s: &str) -> String {
 /// Rejects:
 /// - Non-HTTPS schemes (except localhost for dev)
 /// - Hosts that resolve to private or loopback IP ranges
-pub fn is_allowed_broker_url(url: &str) -> bool {
+pub async fn is_allowed_broker_url(url: &str) -> bool {
     let Ok(parsed) = url::Url::parse(url) else {
         return false;
     };
@@ -149,12 +149,11 @@ pub fn is_allowed_broker_url(url: &str) -> bool {
         return false;
     };
 
-    // Non-HTTPS is only allowed for localhost (dev convenience).
     if scheme != "https" && !is_localhost(host_str) {
         return false;
     }
 
-    !is_private_or_loopback_host(host_str)
+    !is_private_or_loopback_host(host_str).await
 }
 
 /// Check if a hostname string refers to localhost.
@@ -163,7 +162,10 @@ fn is_localhost(host: &str) -> bool {
 }
 
 /// SSRF protection: reject private, loopback, and link-local addresses.
-fn is_private_or_loopback_host(host: &str) -> bool {
+///
+/// Resolves hostnames via DNS to prevent rebinding attacks where a hostname
+/// passes the string check but resolves to a private IP.
+async fn is_private_or_loopback_host(host: &str) -> bool {
     if is_localhost(host) {
         return true;
     }
@@ -179,12 +181,22 @@ fn is_private_or_loopback_host(host: &str) -> bool {
         return is_private_ip(&ip);
     }
 
-    // For hostnames that look like dotted quads (e.g., 10.0.0.1), parse them.
-    if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
-        return is_private_ip(&IpAddr::V4(ip));
+    // Resolve hostname and check all resulting IPs.
+    match tokio::net::lookup_host((host, 443)).await {
+        Ok(addrs) => {
+            for addr in addrs {
+                if is_private_ip(&addr.ip()) {
+                    warn!(host = %host, ip = %addr.ip(), "DNS resolved to private IP");
+                    return true;
+                }
+            }
+            false
+        }
+        Err(_) => {
+            warn!(host = %host, "DNS resolution failed — rejecting");
+            true
+        }
     }
-
-    false
 }
 
 /// Check if an IP address is private, loopback, or link-local.
@@ -212,45 +224,47 @@ fn is_private_ip(ip: &IpAddr) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn is_allowed_broker_url_rejects_private_ips() {
-        assert!(!is_allowed_broker_url("https://127.0.0.1/api"));
-        assert!(!is_allowed_broker_url("https://10.0.0.1/api"));
-        assert!(!is_allowed_broker_url("https://192.168.1.1/api"));
-        assert!(!is_allowed_broker_url("https://172.16.0.1/api"));
-        assert!(!is_allowed_broker_url("https://localhost/api"));
-        assert!(!is_allowed_broker_url("https://[::1]/api"));
+    #[tokio::test]
+    async fn is_allowed_broker_url_rejects_private_ips() {
+        assert!(!is_allowed_broker_url("https://127.0.0.1/api").await);
+        assert!(!is_allowed_broker_url("https://10.0.0.1/api").await);
+        assert!(!is_allowed_broker_url("https://192.168.1.1/api").await);
+        assert!(!is_allowed_broker_url("https://172.16.0.1/api").await);
+        assert!(!is_allowed_broker_url("https://localhost/api").await);
+        assert!(!is_allowed_broker_url("https://[::1]/api").await);
     }
 
-    #[test]
-    fn is_allowed_broker_url_accepts_public() {
-        assert!(is_allowed_broker_url("https://example.com/api"));
-        assert!(is_allowed_broker_url("https://broker.federation.net/api"));
+    #[tokio::test]
+    async fn is_allowed_broker_url_accepts_public() {
+        assert!(is_allowed_broker_url("https://example.com/api").await);
     }
 
-    #[test]
-    fn is_allowed_broker_url_rejects_non_https() {
-        assert!(!is_allowed_broker_url("http://example.com/api"));
-        assert!(!is_allowed_broker_url("ftp://example.com/api"));
+    #[tokio::test]
+    async fn is_allowed_broker_url_rejects_non_https() {
+        assert!(!is_allowed_broker_url("http://example.com/api").await);
+        assert!(!is_allowed_broker_url("ftp://example.com/api").await);
     }
 
     #[test]
     fn is_allowed_broker_url_rejects_invalid() {
-        assert!(!is_allowed_broker_url(""));
-        assert!(!is_allowed_broker_url("not-a-url"));
+        // These fail URL parsing synchronously, no async needed
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            assert!(!is_allowed_broker_url("").await);
+            assert!(!is_allowed_broker_url("not-a-url").await);
+        });
     }
 
-    #[test]
-    fn is_private_or_loopback_host_coverage() {
-        assert!(is_private_or_loopback_host("localhost"));
-        assert!(is_private_or_loopback_host("127.0.0.1"));
-        assert!(is_private_or_loopback_host("::1"));
-        assert!(is_private_or_loopback_host("[::1]"));
-        assert!(is_private_or_loopback_host("10.0.0.1"));
-        assert!(is_private_or_loopback_host("172.16.0.1"));
-        assert!(is_private_or_loopback_host("192.168.0.1"));
-        assert!(!is_private_or_loopback_host("8.8.8.8"));
-        assert!(!is_private_or_loopback_host("example.com"));
+    #[tokio::test]
+    async fn is_private_or_loopback_host_coverage() {
+        assert!(is_private_or_loopback_host("localhost").await);
+        assert!(is_private_or_loopback_host("127.0.0.1").await);
+        assert!(is_private_or_loopback_host("::1").await);
+        assert!(is_private_or_loopback_host("[::1]").await);
+        assert!(is_private_or_loopback_host("10.0.0.1").await);
+        assert!(is_private_or_loopback_host("172.16.0.1").await);
+        assert!(is_private_or_loopback_host("192.168.0.1").await);
+        assert!(!is_private_or_loopback_host("8.8.8.8").await);
     }
 
     #[test]

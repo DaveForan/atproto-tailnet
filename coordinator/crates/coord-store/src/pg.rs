@@ -714,25 +714,91 @@ impl PgStore {
         &self,
         tenant_id: TenantId,
     ) -> Result<crate::memory::TenantRouteSnapshot, CoordError> {
-        // PgStore: each SQL statement sees a consistent snapshot, and we group
-        // reads here so callers get a coherent view.
-        if self.get_tenant(tenant_id).await.is_none() {
+        let mut tx = self.pool.begin().await?;
+
+        let tenant_exists = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS(SELECT 1 FROM coord_tenants WHERE id = $1)"
+        )
+            .bind(tenant_id.as_uuid())
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap_or(false);
+
+        if !tenant_exists {
             return Err(CoordError::TenantNotFound(tenant_id));
         }
-        let children = self.get_child_tenants(tenant_id).await;
-        let own_nodes = self.list_tenant_nodes(tenant_id).await;
+
+        let child_rows = sqlx::query_as::<_, (uuid::Uuid, String, Option<uuid::Uuid>, String, String, String, chrono::DateTime<chrono::Utc>)>(
+            "SELECT id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix, created_at \
+             FROM coord_tenants WHERE parent_id = $1 ORDER BY created_at"
+        )
+            .bind(tenant_id.as_uuid())
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap_or_default();
+
+        let children: Vec<Tenant> = child_rows.into_iter()
+            .map(|(id, slug, parent_uuid, posture_str, ipv4_prefix, ipv6_prefix, created_at)| {
+                Tenant {
+                    id: TenantId::new(id),
+                    slug,
+                    parent_id: parent_uuid.map(TenantId::new),
+                    federation_posture: parse_posture(&posture_str),
+                    ipv4_prefix,
+                    ipv6_prefix,
+                    created_at,
+                }
+            })
+            .collect();
+
+        let own_nodes = Self::list_nodes_in_tx(&mut tx, tenant_id).await;
+
         let mut visible_child_nodes = Vec::new();
         for child in &children {
             if child.federation_posture != coord_core::FederationPosture::Closed {
-                let child_nodes = self.list_tenant_nodes(child.id).await;
+                let child_nodes = Self::list_nodes_in_tx(&mut tx, child.id).await;
                 visible_child_nodes.push((child.id, child.slug.clone(), child_nodes));
             }
         }
+
+        tx.commit().await?;
+
         Ok(crate::memory::TenantRouteSnapshot {
             children,
             own_nodes,
             visible_child_nodes,
         })
+    }
+
+    async fn list_nodes_in_tx(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tenant_id: TenantId,
+    ) -> Vec<PeerInfo> {
+        let rows = sqlx::query_as::<_, (i64, Vec<u8>, Option<String>, serde_json::Value, String, String, bool, chrono::DateTime<chrono::Utc>)>(
+            "SELECT id, node_key, disco_key, endpoints, ipv4, hostname, online, last_seen \
+             FROM coord_nodes WHERE tenant_id = $1"
+        )
+            .bind(tenant_id.as_uuid())
+            .fetch_all(&mut **tx)
+            .await
+            .unwrap_or_default();
+
+        rows.into_iter()
+            .map(|(id, node_key, disco_key, endpoints_json, ip_str, hostname, online, last_seen)| {
+                let endpoints: Vec<String> = serde_json::from_value(endpoints_json).unwrap_or_default();
+                PeerInfo {
+                    node_id: NodeId::new(id),
+                    node_key,
+                    disco_key,
+                    endpoints,
+                    allowed_ips: vec![format!("{}/32", ip_str)],
+                    hostname,
+                    derp_region: Some(1),
+                    online,
+                    last_seen: Some(last_seen),
+                }
+            })
+            .collect()
     }
 }
 

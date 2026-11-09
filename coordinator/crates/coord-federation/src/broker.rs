@@ -145,19 +145,19 @@ impl<S: FederationStore + ?Sized> BrokerService<S> {
         Ok(())
     }
 
-    /// Send keepalives for established and degraded sessions.
+    /// Update keepalive timestamps for established and degraded sessions.
     ///
-    /// The actual sending is a no-op here; the method updates the store timestamp.
     /// Real HTTP sends are done by the caller's transport layer, which reads
-    /// sessions and calls `transport::send_keepalive`.
+    /// sessions and calls `transport::send_keepalive`. This method records
+    /// that a keepalive tick occurred so `check_session_health` can detect
+    /// sessions that stop receiving acknowledgments.
     async fn send_keepalives(&self) -> Result<(), CoordError> {
         let sessions = self.store.list_sessions().await?;
         for session in &sessions {
             match session.status {
                 BrokerSessionStatus::Established | BrokerSessionStatus::Degraded => {
-                    // Touch keepalive timestamp — the transport layer picks up
-                    // sessions that need keepalives separately.
                     debug!(session_id = %session.id, "keepalive due");
+                    self.store.update_session_keepalive(session.id).await?;
                 }
                 _ => {}
             }
