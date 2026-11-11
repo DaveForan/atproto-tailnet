@@ -13,7 +13,4 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 chrono = { workspace = true }
 rand = { workspace = true }
-curve25519-dalek = { workspace = true }
-sqlx = { workspace = true }
-anyhow = { workspace = true }
 hex = { workspace = true }

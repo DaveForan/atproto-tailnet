@@ -9,9 +9,13 @@ use coord_core::types::{
     BrokerSession, BrokerSessionStatus, CollectiveDid, FederationLink, LinkDirection, LinkId,
     LinkStatus, SessionId, TenantId,
 };
-use coord_core::CoordError;
+use coord_core::{CoordError, StorageError};
 
 use crate::store::FederationStore;
+
+fn db(e: sqlx::Error) -> StorageError {
+    StorageError::new(e)
+}
 
 // ── Public store struct ──────────────────────────────────────────────────────
 
@@ -188,7 +192,7 @@ impl FederationStore for PgFederationStore {
              FROM coord_federation_links WHERE status = 'active'",
         )
         .fetch_all(&self.pool)
-        .await?;
+        .await.map_err(db)?;
 
         Ok(rows.into_iter().map(link_from_row).collect())
     }
@@ -202,7 +206,7 @@ impl FederationStore for PgFederationStore {
         )
         .bind(id.as_uuid())
         .fetch_optional(&self.pool)
-        .await?;
+        .await.map_err(db)?;
 
         Ok(row.map(link_from_row))
     }
@@ -222,7 +226,7 @@ impl FederationStore for PgFederationStore {
         .bind(tenant_id.as_uuid())
         .bind(peer_did)
         .fetch_optional(&self.pool)
-        .await?;
+        .await.map_err(db)?;
 
         Ok(row.map(link_from_row))
     }
@@ -243,7 +247,7 @@ impl FederationStore for PgFederationStore {
         .bind(tenant_id.as_uuid())
         .bind(peer_did)
         .fetch_optional(&self.pool)
-        .await?;
+        .await.map_err(db)?;
 
         Ok(row.map(link_from_row))
     }
@@ -274,7 +278,7 @@ impl FederationStore for PgFederationStore {
         .bind(link.created_at)
         .bind(link.updated_at)
         .fetch_one(&self.pool)
-        .await?;
+        .await.map_err(db)?;
 
         Ok(link_from_row(row))
     }
@@ -292,7 +296,7 @@ impl FederationStore for PgFederationStore {
         .bind(id.as_uuid())
         .bind(link_status_str(status))
         .execute(&self.pool)
-        .await?;
+        .await.map_err(db)?;
 
         Ok(())
     }
@@ -315,7 +319,7 @@ impl FederationStore for PgFederationStore {
         .bind(&peer_broker_url)
         .bind(&peer_name)
         .execute(&self.pool)
-        .await?;
+        .await.map_err(db)?;
 
         Ok(())
     }
@@ -331,7 +335,7 @@ impl FederationStore for PgFederationStore {
              FROM coord_broker_sessions",
         )
         .fetch_all(&self.pool)
-        .await?;
+        .await.map_err(db)?;
 
         Ok(rows.into_iter().map(session_from_row).collect())
     }
@@ -349,7 +353,7 @@ impl FederationStore for PgFederationStore {
         )
         .bind(link_id.as_uuid())
         .fetch_all(&self.pool)
-        .await?;
+        .await.map_err(db)?;
 
         Ok(rows.into_iter().map(session_from_row).collect())
     }
@@ -370,7 +374,7 @@ impl FederationStore for PgFederationStore {
         .bind(cfp_session_id)
         .bind(tenant_id.as_uuid())
         .fetch_optional(&self.pool)
-        .await?;
+        .await.map_err(db)?;
 
         Ok(row.map(session_from_row))
     }
@@ -408,7 +412,7 @@ impl FederationStore for PgFederationStore {
         .bind(session.created_at)
         .bind(session.updated_at)
         .fetch_optional(&self.pool)
-        .await?;
+        .await.map_err(db)?;
 
         Ok(row.map(session_from_row))
     }
@@ -431,7 +435,7 @@ impl FederationStore for PgFederationStore {
         .bind(&cfp_session_id)
         .bind(&imported_routes)
         .execute(&self.pool)
-        .await?;
+        .await.map_err(db)?;
 
         Ok(())
     }
@@ -444,7 +448,7 @@ impl FederationStore for PgFederationStore {
         )
         .bind(id.as_uuid())
         .execute(&self.pool)
-        .await?;
+        .await.map_err(db)?;
 
         Ok(())
     }
@@ -466,7 +470,7 @@ impl FederationStore for PgFederationStore {
         .bind(session_status_str(status))
         .bind(imported_routes.as_deref())
         .execute(&self.pool)
-        .await?;
+        .await.map_err(db)?;
 
         Ok(())
     }
@@ -475,7 +479,7 @@ impl FederationStore for PgFederationStore {
         sqlx::query("DELETE FROM coord_broker_sessions WHERE id = $1")
             .bind(id.as_uuid())
             .execute(&self.pool)
-            .await?;
+            .await.map_err(db)?;
 
         Ok(())
     }
@@ -492,7 +496,7 @@ impl FederationStore for PgFederationStore {
         )
         .bind(tenant_id.as_uuid())
         .fetch_optional(&self.pool)
-        .await?;
+        .await.map_err(db)?;
 
         Ok(row.map(did_from_row))
     }
@@ -503,7 +507,7 @@ impl FederationStore for PgFederationStore {
         )
         .bind(did)
         .fetch_optional(&self.pool)
-        .await?;
+        .await.map_err(db)?;
 
         Ok(uuid.map(TenantId::new))
     }
@@ -520,7 +524,7 @@ impl FederationStore for PgFederationStore {
         .bind(&cdid.encrypted_private_key)
         .bind(cdid.created_at)
         .execute(&self.pool)
-        .await?;
+        .await.map_err(db)?;
 
         Ok(())
     }
@@ -529,7 +533,8 @@ impl FederationStore for PgFederationStore {
         sqlx::query("DELETE FROM coord_collective_dids WHERE tenant_id = $1")
             .bind(tenant_id.as_uuid())
             .execute(&self.pool)
-            .await?;
+            .await
+            .map_err(db)?;
 
         Ok(())
     }
@@ -543,7 +548,7 @@ impl FederationStore for PgFederationStore {
         )
         .bind(tenant_id.as_uuid())
         .fetch_one(&self.pool)
-        .await?;
+        .await.map_err(db)?;
 
         Ok(count as usize)
     }
@@ -577,7 +582,7 @@ impl FederationStore for PgFederationStore {
         .bind(tenant_id.as_uuid())
         .bind(max as i64)
         .execute(&self.pool)
-        .await?;
+        .await.map_err(db)?;
 
         Ok(result.rows_affected() as usize)
     }

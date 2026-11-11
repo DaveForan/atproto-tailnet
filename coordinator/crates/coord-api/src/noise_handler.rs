@@ -76,7 +76,7 @@ pub async fn ts2021_handler(
     };
 
     info!(
-        machine_key = hex::encode(machine_key),
+        machine_key_prefix = &hex::encode(machine_key)[..16],
         protocol_version = version,
         "noise handshake complete"
     );
@@ -192,7 +192,10 @@ async fn handle_control_request(
         }
     };
 
-    let body_str = String::from_utf8_lossy(&body_bytes);
+    let body_str = match String::from_utf8(body_bytes.to_vec()) {
+        Ok(s) => s,
+        Err(_) => return Ok(json_error(StatusCode::BAD_REQUEST, "invalid UTF-8 in request body")),
+    };
 
     match path.as_str() {
         "/machine/register" => Ok(handle_register_request(state, machine_key, session_gen, &body_str).await),
@@ -220,7 +223,7 @@ async fn handle_register_request(
         }
         Err(e) => {
             warn!(error = %e, "register request failed");
-            json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string())
+            json_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
         }
     }
 }
@@ -264,7 +267,7 @@ async fn handle_map_request(
             }
             Err(e) => {
                 warn!(error = %e, "map request failed");
-                json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string())
+                json_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
             }
         }
     } else {
@@ -286,7 +289,7 @@ async fn handle_streaming_map(
         Ok(json) => json,
         Err(e) => {
             warn!(error = %e, "streaming map initial response failed");
-            return json_error(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string());
+            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
         }
     };
 

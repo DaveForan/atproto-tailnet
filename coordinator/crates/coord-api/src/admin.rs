@@ -8,6 +8,7 @@ use std::sync::Arc;
 use coord_core::{NodeId, TenantId};
 use tracing::error;
 use crate::state::CoordinatorState;
+use coord_core::{is_valid_slug, is_valid_hostname, generate_random_slug};
 
 fn internal_error(e: impl std::fmt::Display) -> impl IntoResponse {
     error!(error = %e, "internal error");
@@ -176,11 +177,9 @@ pub async fn update_tenant_posture(
         }
     };
 
-    let posture = match body.posture.as_str() {
-        "open" => coord_core::FederationPosture::Open,
-        "selective" => coord_core::FederationPosture::Selective,
-        "closed" => coord_core::FederationPosture::Closed,
-        _ => {
+    let posture: coord_core::FederationPosture = match body.posture.parse() {
+        Ok(p) => p,
+        Err(_) => {
             return (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"error": "invalid posture: must be open, selective, or closed"})),
@@ -268,13 +267,26 @@ pub async fn create_preauth_key(
 }
 
 #[derive(Serialize)]
-pub struct NodeSummary {
+pub struct NodeSummaryResponse {
     pub id: i64,
     pub tenant_id: String,
     pub ipv4: String,
     pub stable_id: String,
     pub hostname: String,
     pub online: bool,
+}
+
+impl From<coord_core::NodeSummary> for NodeSummaryResponse {
+    fn from(n: coord_core::NodeSummary) -> Self {
+        Self {
+            id: n.id.as_i64(),
+            tenant_id: n.tenant_id.to_string(),
+            ipv4: n.ipv4.to_string(),
+            stable_id: n.stable_id,
+            hostname: n.hostname,
+            online: n.online,
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -338,16 +350,9 @@ pub async fn list_nodes(
         None => state.store.list_nodes().await,
     };
 
-    let summaries: Vec<NodeSummary> = nodes
+    let summaries: Vec<NodeSummaryResponse> = nodes
         .into_iter()
-        .map(|(id, tid, ipv4, stable_id, online, hostname)| NodeSummary {
-            id: id.as_i64(),
-            tenant_id: tid.to_string(),
-            ipv4: ipv4.to_string(),
-            stable_id,
-            hostname,
-            online,
-        })
+        .map(NodeSummaryResponse::from)
         .collect();
 
     Json(serde_json::json!({
@@ -476,15 +481,11 @@ pub async fn list_tenant_nodes_handler(
     };
 
     let nodes = state.store.list_nodes_for_tenant(tenant_id).await;
-    let summaries: Vec<NodeSummary> = nodes.into_iter()
-        .map(|(id, tid, ipv4, stable_id, online, hostname)| NodeSummary {
-            id: id.as_i64(), tenant_id: tid.to_string(), ipv4: ipv4.to_string(),
-            stable_id, hostname, online,
-        })
+    let summaries: Vec<NodeSummaryResponse> = nodes.into_iter()
+        .map(NodeSummaryResponse::from)
         .collect();
-    let count = summaries.len();
 
-    Json(serde_json::json!({"nodes": summaries, "count": count})).into_response()
+    Json(serde_json::json!({"nodes": summaries, "count": summaries.len()})).into_response()
 }
 
 // ── Node operations: get, delete, rename ──
@@ -512,12 +513,12 @@ pub async fn get_node_handler(
         Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "invalid node_id"}))).into_response(),
     };
     match state.store.get_node_info(node_id).await {
-        Some((tid, ipv4, stable_id, info)) => Json(serde_json::json!({
+        Some(detail) => Json(serde_json::json!({
             "id": node_id.as_i64(),
-            "tenant_id": tid.to_string(),
-            "ipv4": ipv4.to_string(),
-            "stable_id": stable_id,
-            "hostname": info.hostname,
+            "tenant_id": detail.tenant_id.to_string(),
+            "ipv4": detail.ipv4.to_string(),
+            "stable_id": detail.stable_id,
+            "hostname": detail.info.hostname,
             "online": true,
         })).into_response(),
         None => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "node not found"}))).into_response(),
@@ -586,12 +587,12 @@ pub async fn rename_node_handler(
         Ok(()) => {
             // Return updated node info
             match state.store.get_node_info(node_id).await {
-                Some((tid, ipv4, stable_id, info)) => Json(serde_json::json!({
+                Some(detail) => Json(serde_json::json!({
                     "id": node_id.as_i64(),
-                    "tenant_id": tid.to_string(),
-                    "ipv4": ipv4.to_string(),
-                    "stable_id": stable_id,
-                    "hostname": info.hostname,
+                    "tenant_id": detail.tenant_id.to_string(),
+                    "ipv4": detail.ipv4.to_string(),
+                    "stable_id": detail.stable_id,
+                    "hostname": detail.info.hostname,
                     "online": true,
                 })).into_response(),
                 None => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "node not found"}))).into_response(),
@@ -601,37 +602,3 @@ pub async fn rename_node_handler(
     }
 }
 
-fn generate_random_slug() -> String {
-    use rand::RngCore;
-    let mut buf = [0u8; 4];
-    rand::rng().fill_bytes(&mut buf);
-    hex::encode(buf)
-}
-
-/// Validate tenant slug: `^[a-z0-9][a-z0-9-]{0,62}$`
-fn is_valid_slug(s: &str) -> bool {
-    let bytes = s.as_bytes();
-    if bytes.is_empty() || bytes.len() > 63 {
-        return false;
-    }
-    if !bytes[0].is_ascii_lowercase() && !bytes[0].is_ascii_digit() {
-        return false;
-    }
-    bytes[1..]
-        .iter()
-        .all(|&b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-}
-
-/// Validate node hostname: `^[a-zA-Z0-9][a-zA-Z0-9._-]{0,252}$`
-fn is_valid_hostname(s: &str) -> bool {
-    let bytes = s.as_bytes();
-    if bytes.is_empty() || bytes.len() > 253 {
-        return false;
-    }
-    if !bytes[0].is_ascii_alphanumeric() {
-        return false;
-    }
-    bytes[1..]
-        .iter()
-        .all(|&b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
-}

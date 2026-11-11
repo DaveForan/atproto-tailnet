@@ -44,7 +44,7 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(config.listen)
         .parse()?;
 
-    let control_key = coord_core::ControlKey::generate();
+    let control_key = coord_noise::generate_control_key();
     tracing::info!(
         control_public_key = hex::encode(control_key.public),
         "coordinator starting"
@@ -95,7 +95,7 @@ async fn main() -> anyhow::Result<()> {
     let state = Arc::new(coordinator);
 
     // Spawn the federation broker background loop.
-    let broker = state.federation_broker.clone();
+    let broker = state.federation_broker().clone();
     let tick_interval = broker.config().tick_interval;
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(tick_interval);

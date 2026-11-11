@@ -3,7 +3,7 @@ use std::net::Ipv4Addr;
 use std::sync::Mutex;
 use tokio::sync::broadcast;
 
-use coord_core::{CoordError, FederationPosture, NodeId, NodeInfo, PeerInfo, Tenant, TenantId};
+use coord_core::{CoordError, FederationPosture, NodeDetail, NodeId, NodeInfo, NodeSummary, PeerInfo, Tenant, TenantId};
 
 use crate::generate_random_id;
 
@@ -317,7 +317,7 @@ impl MemoryStore {
         machine_key: &[u8; 32],
         _old_node_key: &[u8; 32],
         new_node_key: &[u8; 32],
-    ) {
+    ) -> Result<(), CoordError> {
         let machine_index = self.machine_key_index.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(&node_id) = machine_index.get(machine_key) {
             drop(machine_index);
@@ -332,6 +332,7 @@ impl MemoryStore {
                 });
             }
         }
+        Ok(())
     }
 
     pub fn update_endpoints(
@@ -339,7 +340,7 @@ impl MemoryStore {
         node_id: NodeId,
         endpoints: Vec<String>,
         disco_key: Option<String>,
-    ) {
+    ) -> Result<(), CoordError> {
         let mut nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(node) = nodes.get_mut(&node_id) {
             if !endpoints.is_empty() {
@@ -355,6 +356,7 @@ impl MemoryStore {
                 node_id,
             });
         }
+        Ok(())
     }
 
     pub fn get_node_by_machine_key(&self, machine_key: &[u8; 32]) -> Option<NodeId> {
@@ -443,19 +445,22 @@ impl MemoryStore {
             .collect()
     }
 
-    pub fn list_nodes_for_tenant(&self, tenant_id: TenantId) -> Vec<(NodeId, TenantId, Ipv4Addr, String, bool, String)> {
+    pub fn list_nodes_for_tenant(&self, tenant_id: TenantId) -> Vec<NodeSummary> {
         let nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner());
         nodes
             .values()
             .filter(|n| n.tenant_id == tenant_id)
-            .map(|n| (n.id, n.tenant_id, n.ipv4, n.stable_id.clone(), n.online, n.info.hostname.clone()))
+            .map(stored_node_to_summary)
             .collect()
     }
 
-    pub fn get_node_info(&self, node_id: NodeId) -> Option<(TenantId, Ipv4Addr, String, NodeInfo)> {
+    pub fn get_node_info(&self, node_id: NodeId) -> Option<NodeDetail> {
         let nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner());
-        nodes.get(&node_id).map(|n| {
-            (n.tenant_id, n.ipv4, n.stable_id.clone(), n.info.clone())
+        nodes.get(&node_id).map(|n| NodeDetail {
+            tenant_id: n.tenant_id,
+            ipv4: n.ipv4,
+            stable_id: n.stable_id.clone(),
+            info: n.info.clone(),
         })
     }
 
@@ -474,11 +479,11 @@ impl MemoryStore {
         nodes.get(&node_id).map(|n| n.tenant_id)
     }
 
-    pub fn list_nodes(&self) -> Vec<(NodeId, TenantId, Ipv4Addr, String, bool, String)> {
+    pub fn list_nodes(&self) -> Vec<NodeSummary> {
         let nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner());
         nodes
             .values()
-            .map(|n| (n.id, n.tenant_id, n.ipv4, n.stable_id.clone(), n.online, n.info.hostname.clone()))
+            .map(stored_node_to_summary)
             .collect()
     }
 
@@ -515,7 +520,7 @@ impl MemoryStore {
         Ok(())
     }
 
-    pub fn set_node_online(&self, node_id: NodeId, online: bool) {
+    pub fn set_node_online(&self, node_id: NodeId, online: bool) -> Result<(), CoordError> {
         let mut nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(node) = nodes.get_mut(&node_id) {
             node.online = online;
@@ -533,13 +538,14 @@ impl MemoryStore {
                 });
             }
         }
+        Ok(())
     }
 
-    pub fn set_node_offline_if_current(&self, node_id: NodeId, generation: u64) {
+    pub fn set_node_offline_if_current(&self, node_id: NodeId, generation: u64) -> Result<(), CoordError> {
         let mut nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(node) = nodes.get_mut(&node_id) {
             if node.session_generation != generation {
-                return;
+                return Ok(());
             }
             node.online = false;
             let tid = node.tenant_id;
@@ -549,6 +555,7 @@ impl MemoryStore {
                 node_id,
             });
         }
+        Ok(())
     }
 
     /// Atomically snapshot a tenant's routes: own nodes + children + visible child
@@ -610,6 +617,17 @@ pub struct TenantRouteSnapshot {
     pub own_nodes: Vec<PeerInfo>,
     /// (child_tenant_id, child_slug, child_nodes) for non-Closed children only.
     pub visible_child_nodes: Vec<(TenantId, String, Vec<PeerInfo>)>,
+}
+
+fn stored_node_to_summary(n: &StoredNode) -> NodeSummary {
+    NodeSummary {
+        id: n.id,
+        tenant_id: n.tenant_id,
+        ipv4: n.ipv4,
+        stable_id: n.stable_id.clone(),
+        online: n.online,
+        hostname: n.info.hostname.clone(),
+    }
 }
 
 fn stored_node_to_peer_info(n: &StoredNode) -> PeerInfo {
@@ -856,7 +874,7 @@ mod tests {
             _ => panic!("expected NodeJoined"),
         }
 
-        store.set_node_online(node_id, false);
+        store.set_node_online(node_id, false).unwrap();
         let event = rx.try_recv().unwrap();
         match event {
             PeerEvent::NodeOffline { node_id: nid, .. } => {

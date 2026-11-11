@@ -1,7 +1,7 @@
 use std::net::Ipv4Addr;
 use tokio::sync::broadcast;
 
-use coord_core::{CoordError, FederationPosture, NodeId, NodeInfo, PeerInfo, Tenant, TenantId};
+use coord_core::{CoordError, FederationPosture, NodeDetail, NodeId, NodeInfo, NodeSummary, PeerInfo, Tenant, TenantId};
 use crate::memory::{MemoryStore, PeerEvent};
 use crate::pg::PgStore;
 
@@ -101,7 +101,7 @@ impl Store {
         new_node_key: &[u8; 32],
     ) -> Result<(), CoordError> {
         match self {
-            Store::Memory(m) => { m.rotate_node_key(machine_key, old_node_key, new_node_key); Ok(()) },
+            Store::Memory(m) => m.rotate_node_key(machine_key, old_node_key, new_node_key),
             Store::Pg(p) => p.rotate_node_key(machine_key, old_node_key, new_node_key).await,
         }
     }
@@ -113,7 +113,7 @@ impl Store {
         disco_key: Option<String>,
     ) -> Result<(), CoordError> {
         match self {
-            Store::Memory(m) => { m.update_endpoints(node_id, endpoints, disco_key); Ok(()) },
+            Store::Memory(m) => m.update_endpoints(node_id, endpoints, disco_key),
             Store::Pg(p) => p.update_endpoints(node_id, endpoints, disco_key).await,
         }
     }
@@ -150,7 +150,7 @@ impl Store {
         }
     }
 
-    pub async fn list_nodes_for_tenant(&self, tenant_id: TenantId) -> Vec<(NodeId, TenantId, Ipv4Addr, String, bool, String)> {
+    pub async fn list_nodes_for_tenant(&self, tenant_id: TenantId) -> Vec<NodeSummary> {
         match self {
             Store::Memory(m) => m.list_nodes_for_tenant(tenant_id),
             Store::Pg(p) => p.list_nodes_for_tenant(tenant_id).await,
@@ -160,7 +160,7 @@ impl Store {
     pub async fn get_node_info(
         &self,
         node_id: NodeId,
-    ) -> Option<(TenantId, Ipv4Addr, String, NodeInfo)> {
+    ) -> Option<NodeDetail> {
         match self {
             Store::Memory(m) => m.get_node_info(node_id),
             Store::Pg(p) => p.get_node_info(node_id).await,
@@ -188,7 +188,7 @@ impl Store {
         }
     }
 
-    pub async fn list_nodes(&self) -> Vec<(NodeId, TenantId, Ipv4Addr, String, bool, String)> {
+    pub async fn list_nodes(&self) -> Vec<NodeSummary> {
         match self {
             Store::Memory(m) => m.list_nodes(),
             Store::Pg(p) => p.list_nodes().await,
@@ -211,14 +211,14 @@ impl Store {
 
     pub async fn set_node_online(&self, node_id: NodeId, online: bool) -> Result<(), CoordError> {
         match self {
-            Store::Memory(m) => { m.set_node_online(node_id, online); Ok(()) },
+            Store::Memory(m) => m.set_node_online(node_id, online),
             Store::Pg(p) => p.set_node_online(node_id, online).await,
         }
     }
 
     pub async fn set_node_offline_if_current(&self, node_id: NodeId, generation: u64) -> Result<(), CoordError> {
         match self {
-            Store::Memory(m) => { m.set_node_offline_if_current(node_id, generation); Ok(()) },
+            Store::Memory(m) => m.set_node_offline_if_current(node_id, generation),
             Store::Pg(p) => p.set_node_offline_if_current(node_id, generation).await,
         }
     }

@@ -18,12 +18,12 @@ use axum::{
 use std::sync::Arc;
 
 /// Constant-time byte comparison to prevent timing side-channels on API key checks.
+/// Compares all bytes of the shorter slice against the longer, preventing length leakage.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
+    let mut diff = (a.len() ^ b.len()) as u8;
+    for i in 0..a.len().max(b.len()) {
+        let x = if i < a.len() { a[i] } else { 0 };
+        let y = if i < b.len() { b[i] } else { 0 };
         diff |= x ^ y;
     }
     diff == 0
@@ -36,7 +36,12 @@ async fn require_admin_auth(
 ) -> Response {
     let expected = match &state.admin_api_key {
         Some(key) => key,
-        None => return next.run(req).await, // dev mode: no key configured
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                axum::Json(serde_json::json!({"error": "admin API key not configured"})),
+            ).into_response();
+        }
     };
 
     let auth_header = req

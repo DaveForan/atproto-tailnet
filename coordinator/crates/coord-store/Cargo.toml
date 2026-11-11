@@ -17,3 +17,9 @@ thiserror = { workspace = true }
 rand = { workspace = true }
 hex = { workspace = true }
 tokio = { workspace = true }
+
+[dev-dependencies]
+sqlx = { workspace = true }
+tokio = { workspace = true }
+rand = { workspace = true }
+hex = { workspace = true }

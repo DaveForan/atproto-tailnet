@@ -9,7 +9,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
-use async_trait::async_trait;
 use chrono::Utc;
 
 use coord_core::CoordError;
@@ -20,14 +19,6 @@ use crate::protocol::RouteAnnouncement;
 
 /// Reject signed messages whose timestamp is further than this from now.
 pub const MAX_MESSAGE_SKEW: Duration = Duration::from_secs(300); // 5 minutes
-
-// ── Public key resolver ────────────────────────────────────────────────────────
-
-#[async_trait]
-pub trait PublicKeyResolver: Send + Sync {
-    /// Resolve a DID to its raw public key bytes. Returns `None` if unresolvable.
-    async fn resolve(&self, did: &str) -> Option<Vec<u8>>;
-}
 
 // ── Sign function type ─────────────────────────────────────────────────────────
 

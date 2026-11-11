@@ -2,9 +2,13 @@ use std::net::Ipv4Addr;
 use sqlx::PgPool;
 use tokio::sync::broadcast;
 
-use coord_core::{CoordError, FederationPosture, NodeId, NodeInfo, PeerInfo, Tenant, TenantId};
+use coord_core::{CoordError, FederationPosture, NodeDetail, NodeId, NodeInfo, NodeSummary, PeerInfo, StorageError, Tenant, TenantId};
 use crate::memory::PeerEvent;
 use crate::generate_random_id;
+
+fn db(e: sqlx::Error) -> StorageError {
+    StorageError::new(e)
+}
 
 pub struct PgStore {
     pool: PgPool,
@@ -12,10 +16,11 @@ pub struct PgStore {
 }
 
 impl PgStore {
-    pub async fn new(pool: PgPool) -> Result<Self, sqlx::Error> {
+    pub async fn new(pool: PgPool) -> Result<Self, StorageError> {
         sqlx::migrate!("../../migrations")
             .run(&pool)
-            .await?;
+            .await
+            .map_err(StorageError::new)?;
 
         let (peer_tx, _) = broadcast::channel(crate::PEER_EVENT_CHANNEL_CAPACITY);
         Ok(Self { pool, peer_tx })
@@ -39,7 +44,8 @@ impl PgStore {
             )
                 .bind(pid)
                 .fetch_optional(&self.pool)
-                .await?;
+                .await
+                .map_err(db)?;
 
             match parent_row {
                 None => return Err(CoordError::TenantNotFound(parent_id.unwrap())),
@@ -59,7 +65,8 @@ impl PgStore {
             .bind(&slug)
             .bind(parent_uuid)
             .execute(&self.pool)
-            .await?;
+            .await
+            .map_err(db)?;
 
         Ok(Tenant {
             id,
@@ -119,15 +126,15 @@ impl PgStore {
     }
 
     pub async fn delete_tenant(&self, tenant_id: TenantId) -> Result<(), CoordError> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin().await.map_err(db)?;
 
-        // Check for children first
         let child_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM coord_tenants WHERE parent_id = $1"
         )
             .bind(tenant_id.as_uuid())
             .fetch_one(&mut *tx)
-            .await?;
+            .await
+            .map_err(db)?;
 
         if child_count > 0 {
             return Err(CoordError::Protocol(
@@ -135,39 +142,38 @@ impl PgStore {
             ));
         }
 
-        // Collect node IDs for offline events
         let node_ids: Vec<i64> = sqlx::query_scalar(
             "SELECT id FROM coord_nodes WHERE tenant_id = $1"
         )
             .bind(tenant_id.as_uuid())
             .fetch_all(&mut *tx)
-            .await?;
+            .await
+            .map_err(db)?;
 
-        // Delete nodes
         sqlx::query("DELETE FROM coord_nodes WHERE tenant_id = $1")
             .bind(tenant_id.as_uuid())
             .execute(&mut *tx)
-            .await?;
+            .await
+            .map_err(db)?;
 
-        // Delete preauth keys
         sqlx::query("DELETE FROM coord_preauth_keys WHERE tenant_id = $1")
             .bind(tenant_id.as_uuid())
             .execute(&mut *tx)
-            .await?;
+            .await
+            .map_err(db)?;
 
-        // Delete the tenant
         let result = sqlx::query("DELETE FROM coord_tenants WHERE id = $1")
             .bind(tenant_id.as_uuid())
             .execute(&mut *tx)
-            .await?;
+            .await
+            .map_err(db)?;
 
         if result.rows_affected() == 0 {
             return Err(CoordError::TenantNotFound(tenant_id));
         }
 
-        tx.commit().await?;
+        tx.commit().await.map_err(db)?;
 
-        // Broadcast NodeOffline for each removed node (after commit)
         for nid in node_ids {
             let _ = self.peer_tx.send(PeerEvent::NodeOffline {
                 tenant_id,
@@ -220,7 +226,8 @@ impl PgStore {
             .bind(posture_str)
             .bind(tenant_id.as_uuid())
             .fetch_optional(&self.pool)
-            .await?;
+            .await
+            .map_err(db)?;
 
         match row {
             Some((id, slug, parent_uuid, ps, ipv4_prefix, ipv6_prefix, created_at)) => Ok(Tenant {
@@ -245,14 +252,12 @@ impl PgStore {
             .bind(tenant_id.as_uuid())
             .bind(reusable)
             .execute(&self.pool)
-            .await?;
+            .await
+            .map_err(db)?;
         Ok(key)
     }
 
     pub async fn validate_preauth_key(&self, key: &str) -> Option<TenantId> {
-        // Atomic: UPDATE with all conditions in WHERE, RETURNING tenant_id.
-        // Only succeeds if the key exists, is not expired, and is either
-        // unused or reusable. Prevents double-use race on single-use keys.
         let tenant_uuid: Option<uuid::Uuid> = sqlx::query_scalar(
             "UPDATE coord_preauth_keys SET used = TRUE \
              WHERE key = $1 \
@@ -276,13 +281,13 @@ impl PgStore {
     ) -> Result<(NodeId, Ipv4Addr, u64), CoordError> {
         let endpoints_json = serde_json::to_value(&info.endpoints).unwrap();
 
-        // Check if a node with this machine_key already exists
         let existing = sqlx::query_as::<_, (i64, uuid::Uuid, String, i64)>(
             "SELECT id, tenant_id, ipv4, session_generation FROM coord_nodes WHERE machine_key = $1"
         )
             .bind(&machine_key[..])
             .fetch_optional(&self.pool)
-            .await?;
+            .await
+            .map_err(db)?;
 
         if let Some((id, existing_tenant_uuid, ip_str, old_generation)) = existing {
             let existing_tenant = TenantId::new(existing_tenant_uuid);
@@ -291,7 +296,6 @@ impl PgStore {
                     "machine key already registered to a different tenant".into(),
                 ));
             }
-            // Update existing node
             let new_gen = old_generation + 1;
             sqlx::query(
                 "UPDATE coord_nodes SET node_key = $1, disco_key = $2, hostname = $3, os = $4, \
@@ -305,7 +309,8 @@ impl PgStore {
                 .bind(new_gen)
                 .bind(id)
                 .execute(&self.pool)
-                .await?;
+                .await
+                .map_err(db)?;
 
             let ipv4: Ipv4Addr = ip_str.parse().map_err(|_| CoordError::Protocol("invalid stored IPv4".into()))?;
             let node_id = NodeId::new(id);
@@ -316,10 +321,10 @@ impl PgStore {
             return Ok((node_id, ipv4, new_gen as u64));
         }
 
-        // New node: allocate IP and insert
         let ip_offset: i64 = sqlx::query_scalar("SELECT nextval('coord_ipv4_seq')")
             .fetch_one(&self.pool)
-            .await?;
+            .await
+            .map_err(db)?;
 
         let base_ip = u32::from(Ipv4Addr::new(100, 64, 0, 0));
         let ip_offset_u32 = u32::try_from(ip_offset).map_err(|_| {
@@ -349,7 +354,8 @@ impl PgStore {
             .bind(&info.os)
             .bind(&endpoints_json)
             .fetch_one(&self.pool)
-            .await?;
+            .await
+            .map_err(db)?;
 
         let (id, generation) = row;
         let node_id = NodeId::new(id);
@@ -373,7 +379,8 @@ impl PgStore {
             .bind(&new_node_key[..])
             .bind(&machine_key[..])
             .fetch_optional(&self.pool)
-            .await?;
+            .await
+            .map_err(db)?;
 
         if let Some((id, tenant_uuid)) = result {
             let _ = self.peer_tx.send(PeerEvent::NodeUpdated {
@@ -397,7 +404,8 @@ impl PgStore {
                 .bind(serde_json::to_value(&endpoints).unwrap())
                 .bind(node_id.as_i64())
                 .execute(&self.pool)
-                .await?;
+                .await
+                .map_err(db)?;
             updated = true;
         }
 
@@ -406,7 +414,8 @@ impl PgStore {
                 .bind(&dk)
                 .bind(node_id.as_i64())
                 .execute(&self.pool)
-                .await?;
+                .await
+                .map_err(db)?;
             updated = true;
         }
 
@@ -416,7 +425,8 @@ impl PgStore {
             )
                 .bind(node_id.as_i64())
                 .fetch_optional(&self.pool)
-                .await?;
+                .await
+                .map_err(db)?;
 
             if let Some(tenant_uuid) = tenant_uuid {
                 let _ = self.peer_tx.send(PeerEvent::NodeUpdated {
@@ -536,7 +546,7 @@ impl PgStore {
             .collect()
     }
 
-    pub async fn list_nodes_for_tenant(&self, tenant_id: TenantId) -> Vec<(NodeId, TenantId, Ipv4Addr, String, bool, String)> {
+    pub async fn list_nodes_for_tenant(&self, tenant_id: TenantId) -> Vec<NodeSummary> {
         let rows = sqlx::query_as::<_, (i64, uuid::Uuid, String, String, bool, String)>(
             "SELECT id, tenant_id, ipv4, stable_id, online, hostname FROM coord_nodes WHERE tenant_id = $1 ORDER BY id"
         )
@@ -548,12 +558,19 @@ impl PgStore {
         rows.into_iter()
             .filter_map(|(id, tenant_uuid, ip_str, stable_id, online, hostname)| {
                 let ipv4: Ipv4Addr = ip_str.parse().ok()?;
-                Some((NodeId::new(id), TenantId::new(tenant_uuid), ipv4, stable_id, online, hostname))
+                Some(NodeSummary {
+                    id: NodeId::new(id),
+                    tenant_id: TenantId::new(tenant_uuid),
+                    ipv4,
+                    stable_id,
+                    online,
+                    hostname,
+                })
             })
             .collect()
     }
 
-    pub async fn get_node_info(&self, node_id: NodeId) -> Option<(TenantId, Ipv4Addr, String, NodeInfo)> {
+    pub async fn get_node_info(&self, node_id: NodeId) -> Option<NodeDetail> {
         let row = sqlx::query_as::<_, (uuid::Uuid, String, String, Vec<u8>, Vec<u8>, Option<String>, serde_json::Value, String, String)>(
             "SELECT tenant_id, ipv4, stable_id, node_key, machine_key, disco_key, endpoints, hostname, os \
              FROM coord_nodes WHERE id = $1"
@@ -567,11 +584,11 @@ impl PgStore {
         let ipv4: Ipv4Addr = ip_str.parse().ok()?;
         let endpoints: Vec<String> = serde_json::from_value(endpoints_json).unwrap_or_default();
 
-        Some((
-            TenantId::new(tenant_uuid),
+        Some(NodeDetail {
+            tenant_id: TenantId::new(tenant_uuid),
             ipv4,
             stable_id,
-            NodeInfo {
+            info: NodeInfo {
                 node_key,
                 machine_key,
                 disco_key,
@@ -581,7 +598,7 @@ impl PgStore {
                 ipv4: None,
                 ipv6: None,
             },
-        ))
+        })
     }
 
     pub async fn get_node_ipv4(&self, node_id: NodeId) -> Option<Ipv4Addr> {
@@ -614,7 +631,7 @@ impl PgStore {
         uuid.map(TenantId::new)
     }
 
-    pub async fn list_nodes(&self) -> Vec<(NodeId, TenantId, Ipv4Addr, String, bool, String)> {
+    pub async fn list_nodes(&self) -> Vec<NodeSummary> {
         let rows = sqlx::query_as::<_, (i64, uuid::Uuid, String, String, bool, String)>(
             "SELECT id, tenant_id, ipv4, stable_id, online, hostname FROM coord_nodes ORDER BY id"
         )
@@ -625,7 +642,14 @@ impl PgStore {
         rows.into_iter()
             .filter_map(|(id, tenant_uuid, ip_str, stable_id, online, hostname)| {
                 let ipv4: Ipv4Addr = ip_str.parse().ok()?;
-                Some((NodeId::new(id), TenantId::new(tenant_uuid), ipv4, stable_id, online, hostname))
+                Some(NodeSummary {
+                    id: NodeId::new(id),
+                    tenant_id: TenantId::new(tenant_uuid),
+                    ipv4,
+                    stable_id,
+                    online,
+                    hostname,
+                })
             })
             .collect()
     }
@@ -636,7 +660,8 @@ impl PgStore {
         )
             .bind(node_id.as_i64())
             .fetch_optional(&self.pool)
-            .await?;
+            .await
+            .map_err(db)?;
 
         match tenant_uuid {
             Some(uuid) => {
@@ -655,7 +680,8 @@ impl PgStore {
             .bind(&new_name)
             .bind(node_id.as_i64())
             .fetch_optional(&self.pool)
-            .await?;
+            .await
+            .map_err(db)?;
         match result {
             Some((uuid,)) => {
                 let _ = self.peer_tx.send(PeerEvent::NodeUpdated {
@@ -674,7 +700,8 @@ impl PgStore {
             .bind(online)
             .bind(node_id.as_i64())
             .fetch_optional(&self.pool)
-            .await?;
+            .await
+            .map_err(db)?;
 
         if let Some(tenant_uuid) = result {
             if online {
@@ -701,7 +728,8 @@ impl PgStore {
             .bind(node_id.as_i64())
             .bind(generation as i64)
             .fetch_optional(&self.pool)
-            .await?;
+            .await
+            .map_err(db)?;
 
         if let Some(tenant_uuid) = result {
             let _ = self.peer_tx.send(PeerEvent::NodeOffline {
@@ -711,11 +739,12 @@ impl PgStore {
         }
         Ok(())
     }
+
     pub async fn get_tenant_route_snapshot(
         &self,
         tenant_id: TenantId,
     ) -> Result<crate::memory::TenantRouteSnapshot, CoordError> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin().await.map_err(db)?;
 
         let tenant_exists = sqlx::query_scalar::<_, bool>(
             "SELECT EXISTS(SELECT 1 FROM coord_tenants WHERE id = $1)"
@@ -762,7 +791,7 @@ impl PgStore {
             }
         }
 
-        tx.commit().await?;
+        tx.commit().await.map_err(db)?;
 
         Ok(crate::memory::TenantRouteSnapshot {
             children,
@@ -810,13 +839,8 @@ impl std::fmt::Debug for PgStore {
 }
 
 fn parse_posture(s: &str) -> FederationPosture {
-    match s {
-        "open" => FederationPosture::Open,
-        "selective" => FederationPosture::Selective,
-        "closed" => FederationPosture::Closed,
-        other => {
-            tracing::warn!(value = other, "unknown federation posture, defaulting to Closed");
-            FederationPosture::Closed
-        }
-    }
+    s.parse().unwrap_or_else(|_| {
+        tracing::warn!(value = s, "unknown federation posture, defaulting to Closed");
+        FederationPosture::Closed
+    })
 }

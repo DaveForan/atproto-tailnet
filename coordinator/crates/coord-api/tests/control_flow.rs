@@ -6,13 +6,18 @@ use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 use coord_api::CoordinatorState;
-use coord_core::ControlKey;
 #[allow(unused_imports)]
 use coord_federation::FederationStore;
 
+const TEST_ADMIN_KEY: &str = "test-admin-key";
+
 fn setup() -> (axum::Router, Arc<CoordinatorState>) {
-    let key = ControlKey::generate();
-    let state = Arc::new(CoordinatorState::new(key));
+    let key = coord_noise::generate_control_key();
+    let state = Arc::new(
+        CoordinatorState::new(key)
+            .with_admin_api_key(Some(TEST_ADMIN_KEY.to_string()))
+            .with_federation_callbacks(Arc::new(TestCallbacks)),
+    );
     let app = coord_api::router(state.clone());
     (app, state)
 }
@@ -36,18 +41,23 @@ impl coord_federation::HandshakeCallbacks for TestCallbacks {
 }
 
 fn setup_with_callbacks() -> (axum::Router, Arc<CoordinatorState>) {
-    let key = ControlKey::generate();
+    let key = coord_noise::generate_control_key();
     let state = Arc::new(
         CoordinatorState::new(key)
+            .with_admin_api_key(Some(TEST_ADMIN_KEY.to_string()))
             .with_federation_callbacks(Arc::new(TestCallbacks)),
     );
     let app = coord_api::router(state.clone());
     (app, state)
 }
 
+fn admin_req() -> axum::http::request::Builder {
+    Request::builder().header("authorization", format!("Bearer {}", TEST_ADMIN_KEY))
+}
+
 /// Create a tenant in the store and return its ID (tests need real tenants since R6).
 async fn create_test_tenant(state: &Arc<CoordinatorState>, slug: &str) -> coord_core::TenantId {
-    state.store.create_tenant(slug.into(), None).await.unwrap().id
+    state.store().create_tenant(slug.into(), None).await.unwrap().id
 }
 
 #[tokio::test]
@@ -84,7 +94,7 @@ async fn key_endpoint_returns_json() {
         .await
         .unwrap();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    let expected_mkey = format!("mkey:{}", hex::encode(state.control_key.public));
+    let expected_mkey = format!("mkey:{}", hex::encode(state.control_key().public));
     assert_eq!(json["publicKey"], expected_mkey);
     assert_eq!(json["legacyPublicKey"], expected_mkey);
 }
@@ -94,7 +104,7 @@ async fn create_preauth_key_auto_tenant() {
     let (app, _) = setup();
     let resp = app
         .oneshot(
-            Request::builder()
+            admin_req()
                 .method("POST")
                 .uri("/api/preauth-keys")
                 .header("content-type", "application/json")
@@ -117,7 +127,7 @@ async fn create_preauth_key_auto_tenant() {
 async fn register_with_preauth_key() {
     let (_, state) = setup();
     let tenant_id = create_test_tenant(&state, "register-test").await;
-    let auth_key = state.store.create_preauth_key(tenant_id, false).await.unwrap();
+    let auth_key = state.store().create_preauth_key(tenant_id, false).await.unwrap();
 
     let machine_key = [42u8; 32];
     let node_key_hex = hex::encode([7u8; 32]);
@@ -172,7 +182,7 @@ async fn register_rejects_bad_key() {
 async fn map_returns_netmap() {
     let (_, state) = setup();
     let tenant_id = create_test_tenant(&state, "map-netmap").await;
-    let auth_key = state.store.create_preauth_key(tenant_id, true).await.unwrap();
+    let auth_key = state.store().create_preauth_key(tenant_id, true).await.unwrap();
 
     let machine_key_1 = [10u8; 32];
     let machine_key_2 = [20u8; 32];
@@ -218,7 +228,7 @@ async fn map_returns_netmap() {
 async fn map_keepalive() {
     let (_, state) = setup();
     let tenant_id = create_test_tenant(&state, "map-keepalive").await;
-    let auth_key = state.store.create_preauth_key(tenant_id, false).await.unwrap();
+    let auth_key = state.store().create_preauth_key(tenant_id, false).await.unwrap();
     let machine_key = [99u8; 32];
 
     let reg_body = serde_json::json!({
@@ -251,8 +261,8 @@ async fn tenant_isolation_in_map() {
 
     let t1 = create_test_tenant(&state, "iso-t1").await;
     let t2 = create_test_tenant(&state, "iso-t2").await;
-    let key1 = state.store.create_preauth_key(t1, false).await.unwrap();
-    let key2 = state.store.create_preauth_key(t2, false).await.unwrap();
+    let key1 = state.store().create_preauth_key(t1, false).await.unwrap();
+    let key2 = state.store().create_preauth_key(t2, false).await.unwrap();
 
     let mk1 = [50u8; 32];
     let mk2 = [60u8; 32];
@@ -296,7 +306,7 @@ async fn tenant_isolation_in_map() {
 async fn delta_response_on_peer_join() {
     let (_, state) = setup();
     let tenant_id = create_test_tenant(&state, "delta-join").await;
-    let auth_key = state.store.create_preauth_key(tenant_id, true).await.unwrap();
+    let auth_key = state.store().create_preauth_key(tenant_id, true).await.unwrap();
 
     let mk1 = [70u8; 32];
     let mk2 = [80u8; 32];
@@ -321,7 +331,7 @@ async fn delta_response_on_peer_join() {
         .await
         .unwrap();
 
-    let node2_id = state.store.get_node_by_machine_key(&mk2).await.unwrap();
+    let node2_id = state.store().get_node_by_machine_key(&mk2).await.unwrap();
     let event = coord_store::PeerEvent::NodeJoined {
         tenant_id,
         node_id: node2_id,
@@ -342,7 +352,7 @@ async fn delta_response_on_peer_join() {
 async fn delta_response_on_peer_offline() {
     let (_, state) = setup();
     let tenant_id = create_test_tenant(&state, "delta-offline").await;
-    let auth_key = state.store.create_preauth_key(tenant_id, true).await.unwrap();
+    let auth_key = state.store().create_preauth_key(tenant_id, true).await.unwrap();
 
     let mk1 = [90u8; 32];
     let reg1 = serde_json::json!({
@@ -355,7 +365,7 @@ async fn delta_response_on_peer_offline() {
         .await
         .unwrap();
 
-    let node_id = state.store.get_node_by_machine_key(&mk1).await.unwrap();
+    let node_id = state.store().get_node_by_machine_key(&mk1).await.unwrap();
     let event = coord_store::PeerEvent::NodeOffline {
         tenant_id,
         node_id,
@@ -373,7 +383,7 @@ async fn delta_response_on_peer_offline() {
 async fn map_with_endpoints() {
     let (_, state) = setup();
     let tenant_id = create_test_tenant(&state, "map-endpoints").await;
-    let auth_key = state.store.create_preauth_key(tenant_id, true).await.unwrap();
+    let auth_key = state.store().create_preauth_key(tenant_id, true).await.unwrap();
 
     let mk1 = [110u8; 32];
     let mk2 = [120u8; 32];
@@ -423,7 +433,7 @@ async fn map_with_endpoints() {
 async fn node_key_rotation() {
     let (_, state) = setup();
     let tenant_id = create_test_tenant(&state, "key-rotation").await;
-    let auth_key = state.store.create_preauth_key(tenant_id, true).await.unwrap();
+    let auth_key = state.store().create_preauth_key(tenant_id, true).await.unwrap();
 
     let machine_key = [130u8; 32];
     let old_node_key = [131u8; 32];
@@ -440,8 +450,8 @@ async fn node_key_rotation() {
         .await
         .unwrap();
 
-    let node_id = state.store.get_node_by_machine_key(&machine_key).await.unwrap();
-    let (_, _, _, info_before) = state.store.get_node_info(node_id).await.unwrap();
+    let node_id = state.store().get_node_by_machine_key(&machine_key).await.unwrap();
+    let info_before = state.store().get_node_info(node_id).await.unwrap().info;
     assert_eq!(info_before.node_key, old_node_key.to_vec());
 
     // Re-register with new node key, providing OldNodeKey
@@ -459,11 +469,11 @@ async fn node_key_rotation() {
     assert_eq!(resp["MachineAuthorized"], true);
 
     // Verify the node key was updated
-    let (_, _, _, info_after) = state.store.get_node_info(node_id).await.unwrap();
+    let info_after = state.store().get_node_info(node_id).await.unwrap().info;
     assert_eq!(info_after.node_key, new_node_key.to_vec());
 
     // Same node ID and IP should be preserved
-    let same_node_id = state.store.get_node_by_machine_key(&machine_key).await.unwrap();
+    let same_node_id = state.store().get_node_by_machine_key(&machine_key).await.unwrap();
     assert_eq!(node_id, same_node_id);
 }
 
@@ -471,7 +481,7 @@ async fn node_key_rotation() {
 async fn map_includes_home_derp() {
     let (_, state) = setup();
     let tenant_id = create_test_tenant(&state, "home-derp").await;
-    let auth_key = state.store.create_preauth_key(tenant_id, false).await.unwrap();
+    let auth_key = state.store().create_preauth_key(tenant_id, false).await.unwrap();
     let machine_key = [140u8; 32];
 
     let reg = serde_json::json!({
@@ -514,7 +524,7 @@ async fn map_includes_home_derp() {
 async fn disco_key_propagation() {
     let (_, state) = setup();
     let tenant_id = create_test_tenant(&state, "disco-key").await;
-    let auth_key = state.store.create_preauth_key(tenant_id, true).await.unwrap();
+    let auth_key = state.store().create_preauth_key(tenant_id, true).await.unwrap();
 
     let mk1 = [160u8; 32];
     let mk2 = [170u8; 32];
@@ -564,7 +574,7 @@ async fn disco_key_propagation() {
 async fn acl_policy_restricts_filter() {
     let (_, state) = setup();
     let tenant_id = create_test_tenant(&state, "acl-test").await;
-    let auth_key = state.store.create_preauth_key(tenant_id, false).await.unwrap();
+    let auth_key = state.store().create_preauth_key(tenant_id, false).await.unwrap();
     let machine_key = [180u8; 32];
 
     let reg = serde_json::json!({
@@ -604,7 +614,7 @@ async fn acl_policy_restricts_filter() {
             },
         ],
     };
-    state.acl.set_policy(tenant_id, policy);
+    state.acl().set_policy(tenant_id, policy);
 
     // Map again: should get the restricted filter
     let result2 = coord_api::__test_handle_map(&state, &machine_key, &map_body.to_string())
@@ -625,7 +635,7 @@ async fn acl_policy_restricts_filter() {
 async fn custom_derp_map() {
     use coord_proto::map::{DerpMap, DerpRegion, DerpNode};
 
-    let key = ControlKey::generate();
+    let key = coord_noise::generate_control_key();
     let mut custom_regions = std::collections::HashMap::new();
     custom_regions.insert(
         900,
@@ -654,7 +664,7 @@ async fn custom_derp_map() {
 
     let state = Arc::new(CoordinatorState::new(key).with_derp_map(custom_derp));
     let tenant_id = create_test_tenant(&state, "custom-derp").await;
-    let auth_key = state.store.create_preauth_key(tenant_id, false).await.unwrap();
+    let auth_key = state.store().create_preauth_key(tenant_id, false).await.unwrap();
     let machine_key = [150u8; 32];
 
     let reg = serde_json::json!({
@@ -700,7 +710,7 @@ async fn tenant_crud_lifecycle() {
 
     // Create a tenant
     let resp = app.clone().oneshot(
-        Request::builder()
+        admin_req()
             .method("POST")
             .uri("/api/tenants")
             .header("content-type", "application/json")
@@ -715,7 +725,7 @@ async fn tenant_crud_lifecycle() {
 
     // List tenants
     let resp = app.clone().oneshot(
-        Request::builder()
+        admin_req()
             .uri("/api/tenants")
             .body(Body::empty())
             .unwrap(),
@@ -726,7 +736,7 @@ async fn tenant_crud_lifecycle() {
 
     // Get single tenant
     let resp = app.clone().oneshot(
-        Request::builder()
+        admin_req()
             .uri(format!("/api/tenants/{}", tenant_id))
             .body(Body::empty())
             .unwrap(),
@@ -738,7 +748,7 @@ async fn tenant_crud_lifecycle() {
 
     // Delete
     let resp = app.clone().oneshot(
-        Request::builder()
+        admin_req()
             .method("DELETE")
             .uri(format!("/api/tenants/{}", tenant_id))
             .body(Body::empty())
@@ -748,7 +758,7 @@ async fn tenant_crud_lifecycle() {
 
     // Verify deleted
     let resp = app.clone().oneshot(
-        Request::builder()
+        admin_req()
             .uri(format!("/api/tenants/{}", tenant_id))
             .body(Body::empty())
             .unwrap(),
@@ -761,7 +771,7 @@ async fn tenant_duplicate_slug_rejected() {
     let (app, _) = setup();
 
     let create = |slug: &str| {
-        Request::builder()
+        admin_req()
             .method("POST")
             .uri("/api/tenants")
             .header("content-type", "application/json")
@@ -782,7 +792,7 @@ async fn tenant_parent_child_creation() {
 
     // Create parent
     let resp = app.clone().oneshot(
-        Request::builder()
+        admin_req()
             .method("POST")
             .uri("/api/tenants")
             .header("content-type", "application/json")
@@ -795,7 +805,7 @@ async fn tenant_parent_child_creation() {
 
     // Create child
     let resp = app.clone().oneshot(
-        Request::builder()
+        admin_req()
             .method("POST")
             .uri("/api/tenants")
             .header("content-type", "application/json")
@@ -808,7 +818,7 @@ async fn tenant_parent_child_creation() {
 
     // Get parent — should list the child
     let resp = app.clone().oneshot(
-        Request::builder()
+        admin_req()
             .uri(format!("/api/tenants/{}", parent_id))
             .body(Body::empty())
             .unwrap(),
@@ -839,7 +849,7 @@ async fn get_acl_returns_policy() {
         }
     });
     let resp = app.clone().oneshot(
-        Request::builder()
+        admin_req()
             .method("POST")
             .uri("/api/acl")
             .header("content-type", "application/json")
@@ -850,7 +860,7 @@ async fn get_acl_returns_policy() {
 
     // Read it back via GET /api/tenants/{id}/acl
     let resp = app.clone().oneshot(
-        Request::builder()
+        admin_req()
             .uri(format!("/api/tenants/{}/acl", tenant_id))
             .body(Body::empty())
             .unwrap(),
@@ -867,7 +877,7 @@ async fn get_acl_returns_policy() {
 async fn delete_node_removes_from_map() {
     let (app, state) = setup();
     let tenant_id = create_test_tenant(&state, "delete-node-test").await;
-    let auth_key = state.store.create_preauth_key(tenant_id, true).await.unwrap();
+    let auth_key = state.store().create_preauth_key(tenant_id, true).await.unwrap();
 
     // Register two nodes
     let mk1 = [191u8; 32];
@@ -888,11 +898,11 @@ async fn delete_node_removes_from_map() {
     }
 
     // Get node2 ID
-    let node2_id = state.store.get_node_by_machine_key(&mk2).await.unwrap();
+    let node2_id = state.store().get_node_by_machine_key(&mk2).await.unwrap();
 
     // Verify both nodes appear in the peers list
     let resp = app.clone().oneshot(
-        Request::builder()
+        admin_req()
             .uri(format!("/api/tenants/{}/nodes", tenant_id))
             .body(Body::empty())
             .unwrap(),
@@ -903,7 +913,7 @@ async fn delete_node_removes_from_map() {
 
     // Delete node2
     let resp = app.clone().oneshot(
-        Request::builder()
+        admin_req()
             .method("DELETE")
             .uri(format!("/api/nodes/{}", node2_id.as_i64()))
             .body(Body::empty())
@@ -915,7 +925,7 @@ async fn delete_node_removes_from_map() {
 
     // Verify only one node remains
     let resp = app.clone().oneshot(
-        Request::builder()
+        admin_req()
             .uri(format!("/api/tenants/{}/nodes", tenant_id))
             .body(Body::empty())
             .unwrap(),
@@ -931,7 +941,7 @@ async fn delete_node_removes_from_map() {
 async fn rename_node_updates_hostname() {
     let (app, state) = setup();
     let tenant_id = create_test_tenant(&state, "rename-node-test").await;
-    let auth_key = state.store.create_preauth_key(tenant_id, false).await.unwrap();
+    let auth_key = state.store().create_preauth_key(tenant_id, false).await.unwrap();
 
     let mk = [195u8; 32];
     let body = serde_json::json!({
@@ -944,11 +954,11 @@ async fn rename_node_updates_hostname() {
         .await
         .unwrap();
 
-    let node_id = state.store.get_node_by_machine_key(&mk).await.unwrap();
+    let node_id = state.store().get_node_by_machine_key(&mk).await.unwrap();
 
     // Rename it
     let resp = app.clone().oneshot(
-        Request::builder()
+        admin_req()
             .method("POST")
             .uri(format!("/api/nodes/{}/name", node_id.as_i64()))
             .header("content-type", "application/json")
@@ -961,7 +971,7 @@ async fn rename_node_updates_hostname() {
 
     // Verify via GET /api/nodes/{id}
     let resp = app.clone().oneshot(
-        Request::builder()
+        admin_req()
             .uri(format!("/api/nodes/{}", node_id.as_i64()))
             .body(Body::empty())
             .unwrap(),
@@ -980,7 +990,7 @@ async fn register_node_for(
     nkey_byte: u8,
     hostname: &str,
 ) {
-    let auth_key = state.store.create_preauth_key(tenant_id, true).await.unwrap();
+    let auth_key = state.store().create_preauth_key(tenant_id, true).await.unwrap();
     let body = serde_json::json!({
         "Version": 2,
         "NodeKey": format!("nodekey:{}", hex::encode([nkey_byte; 32])),
@@ -997,12 +1007,12 @@ async fn hierarchy_parent_sees_child_peers_when_open() {
     let (_, state) = setup();
 
     // Create parent tenant and child with Open posture
-    let parent = state.store.create_tenant("hier-parent".into(), None).await.unwrap();
-    let child = state.store.create_tenant("hier-child".into(), Some(parent.id)).await.unwrap();
+    let parent = state.store().create_tenant("hier-parent".into(), None).await.unwrap();
+    let child = state.store().create_tenant("hier-child".into(), Some(parent.id)).await.unwrap();
 
     // Set child posture to Open (MemoryStore: update in place)
     {
-        let store = &state.store;
+        let store = state.store();
         if let coord_store::Store::Memory(m) = store.as_ref() {
             let mut tenants = m.tenants_for_test().lock().unwrap();
             tenants.get_mut(&child.id).unwrap().federation_posture =
@@ -1032,8 +1042,8 @@ async fn hierarchy_parent_sees_child_peers_when_open() {
 async fn hierarchy_parent_blocked_when_child_closed() {
     let (_, state) = setup();
 
-    let parent = state.store.create_tenant("closed-parent".into(), None).await.unwrap();
-    let child = state.store.create_tenant("closed-child".into(), Some(parent.id)).await.unwrap();
+    let parent = state.store().create_tenant("closed-parent".into(), None).await.unwrap();
+    let child = state.store().create_tenant("closed-child".into(), Some(parent.id)).await.unwrap();
 
     // Child stays Closed (default)
     assert_eq!(child.federation_posture, coord_core::FederationPosture::Closed);
@@ -1060,11 +1070,11 @@ async fn hierarchy_parent_blocked_when_child_closed() {
 async fn hierarchy_child_does_not_see_parent_peers() {
     let (_, state) = setup();
 
-    let parent = state.store.create_tenant("uni-parent".into(), None).await.unwrap();
-    let child = state.store.create_tenant("uni-child".into(), Some(parent.id)).await.unwrap();
+    let parent = state.store().create_tenant("uni-parent".into(), None).await.unwrap();
+    let child = state.store().create_tenant("uni-child".into(), Some(parent.id)).await.unwrap();
 
     // Set child to Open
-    if let coord_store::Store::Memory(m) = state.store.as_ref() {
+    if let coord_store::Store::Memory(m) = state.store().as_ref() {
         let mut tenants = m.tenants_for_test().lock().unwrap();
         tenants.get_mut(&child.id).unwrap().federation_posture =
             coord_core::FederationPosture::Open;
@@ -1092,11 +1102,11 @@ async fn hierarchy_child_does_not_see_parent_peers() {
 async fn hierarchy_selective_posture_allows_visibility() {
     let (_, state) = setup();
 
-    let parent = state.store.create_tenant("sel-parent".into(), None).await.unwrap();
-    let child = state.store.create_tenant("sel-child".into(), Some(parent.id)).await.unwrap();
+    let parent = state.store().create_tenant("sel-parent".into(), None).await.unwrap();
+    let child = state.store().create_tenant("sel-child".into(), Some(parent.id)).await.unwrap();
 
     // Set child to Selective
-    if let coord_store::Store::Memory(m) = state.store.as_ref() {
+    if let coord_store::Store::Memory(m) = state.store().as_ref() {
         let mut tenants = m.tenants_for_test().lock().unwrap();
         tenants.get_mut(&child.id).unwrap().federation_posture =
             coord_core::FederationPosture::Selective;
@@ -1122,11 +1132,11 @@ async fn hierarchy_selective_posture_allows_visibility() {
 async fn hierarchy_routes_endpoint() {
     let (app, state) = setup();
 
-    let parent = state.store.create_tenant("route-parent".into(), None).await.unwrap();
-    let child = state.store.create_tenant("route-child".into(), Some(parent.id)).await.unwrap();
+    let parent = state.store().create_tenant("route-parent".into(), None).await.unwrap();
+    let child = state.store().create_tenant("route-child".into(), Some(parent.id)).await.unwrap();
 
     // Set child to Open
-    if let coord_store::Store::Memory(m) = state.store.as_ref() {
+    if let coord_store::Store::Memory(m) = state.store().as_ref() {
         let mut tenants = m.tenants_for_test().lock().unwrap();
         tenants.get_mut(&child.id).unwrap().federation_posture =
             coord_core::FederationPosture::Open;
@@ -1136,7 +1146,7 @@ async fn hierarchy_routes_endpoint() {
     register_node_for(&state, child.id, [33u8; 32], 34, "rc-node").await;
 
     let resp = app.clone().oneshot(
-        Request::builder()
+        admin_req()
             .uri(format!("/api/tenants/{}/routes", parent.id))
             .body(Body::empty())
             .unwrap(),
@@ -1153,14 +1163,14 @@ async fn hierarchy_routes_endpoint() {
 #[tokio::test]
 async fn update_posture_via_api() {
     let (app, state) = setup();
-    let tenant = state.store.create_tenant("posture-test".into(), None).await.unwrap();
+    let tenant = state.store().create_tenant("posture-test".into(), None).await.unwrap();
 
     // Default posture should be Closed
     assert_eq!(tenant.federation_posture, coord_core::FederationPosture::Closed);
 
     // Update to Open via API
     let resp = app.clone().oneshot(
-        Request::builder()
+        admin_req()
             .method("PUT")
             .uri(format!("/api/tenants/{}/posture", tenant.id))
             .header("content-type", "application/json")
@@ -1172,12 +1182,12 @@ async fn update_posture_via_api() {
     assert_eq!(body["federation_posture"], "open");
 
     // Verify in store
-    let updated = state.store.get_tenant(tenant.id).await.unwrap();
+    let updated = state.store().get_tenant(tenant.id).await.unwrap();
     assert_eq!(updated.federation_posture, coord_core::FederationPosture::Open);
 
     // Update to Selective
     let resp = app.clone().oneshot(
-        Request::builder()
+        admin_req()
             .method("PUT")
             .uri(format!("/api/tenants/{}/posture", tenant.id))
             .header("content-type", "application/json")
@@ -1190,7 +1200,7 @@ async fn update_posture_via_api() {
 
     // Invalid posture rejected
     let resp = app.clone().oneshot(
-        Request::builder()
+        admin_req()
             .method("PUT")
             .uri(format!("/api/tenants/{}/posture", tenant.id))
             .header("content-type", "application/json")
@@ -1212,14 +1222,14 @@ async fn delete_node_with_wrong_tenant_returns_403() {
 
     // Register a node in tenant A
     register_node_for(&state, tenant_a, [201u8; 32], 202, "tenant-a-node").await;
-    let node_a_id = state.store.get_node_by_machine_key(&[201u8; 32]).await.unwrap();
+    let node_a_id = state.store().get_node_by_machine_key(&[201u8; 32]).await.unwrap();
 
     // Register a node in tenant B
     register_node_for(&state, tenant_b, [203u8; 32], 204, "tenant-b-node").await;
 
     // Try to delete tenant A's node with tenant_id=B -- should get 403
     let resp = app.clone().oneshot(
-        Request::builder()
+        admin_req()
             .method("DELETE")
             .uri(format!("/api/nodes/{}?tenant_id={}", node_a_id.as_i64(), tenant_b))
             .body(Body::empty())
@@ -1231,7 +1241,7 @@ async fn delete_node_with_wrong_tenant_returns_403() {
 
     // Verify the node still exists
     let resp = app.clone().oneshot(
-        Request::builder()
+        admin_req()
             .uri(format!("/api/nodes/{}", node_a_id.as_i64()))
             .body(Body::empty())
             .unwrap(),
@@ -1240,7 +1250,7 @@ async fn delete_node_with_wrong_tenant_returns_403() {
 
     // Delete tenant A's node with correct tenant_id=A -- should succeed
     let resp = app.clone().oneshot(
-        Request::builder()
+        admin_req()
             .method("DELETE")
             .uri(format!("/api/nodes/{}?tenant_id={}", node_a_id.as_i64(), tenant_a))
             .body(Body::empty())
@@ -1252,7 +1262,7 @@ async fn delete_node_with_wrong_tenant_returns_403() {
 
     // Verify the node is gone
     let resp = app.clone().oneshot(
-        Request::builder()
+        admin_req()
             .uri(format!("/api/nodes/{}", node_a_id.as_i64()))
             .body(Body::empty())
             .unwrap(),
@@ -1268,11 +1278,11 @@ async fn rename_node_with_wrong_tenant_returns_403() {
     let tenant_b = create_test_tenant(&state, "rename-guard-b").await;
 
     register_node_for(&state, tenant_a, [205u8; 32], 206, "rename-guard-node").await;
-    let node_id = state.store.get_node_by_machine_key(&[205u8; 32]).await.unwrap();
+    let node_id = state.store().get_node_by_machine_key(&[205u8; 32]).await.unwrap();
 
     // Try to rename with wrong tenant -- should get 403
     let resp = app.clone().oneshot(
-        Request::builder()
+        admin_req()
             .method("POST")
             .uri(format!("/api/nodes/{}/name?tenant_id={}", node_id.as_i64(), tenant_b))
             .header("content-type", "application/json")
@@ -1283,7 +1293,7 @@ async fn rename_node_with_wrong_tenant_returns_403() {
 
     // Verify name unchanged
     let resp = app.clone().oneshot(
-        Request::builder()
+        admin_req()
             .uri(format!("/api/nodes/{}", node_id.as_i64()))
             .body(Body::empty())
             .unwrap(),
@@ -1294,7 +1304,7 @@ async fn rename_node_with_wrong_tenant_returns_403() {
 
     // Rename with correct tenant -- should succeed
     let resp = app.clone().oneshot(
-        Request::builder()
+        admin_req()
             .method("POST")
             .uri(format!("/api/nodes/{}/name?tenant_id={}", node_id.as_i64(), tenant_a))
             .header("content-type", "application/json")
@@ -1309,7 +1319,7 @@ async fn rename_node_with_wrong_tenant_returns_403() {
 // ── Federation message route tests ──
 
 async fn register_collective_did(state: &Arc<CoordinatorState>, slug: &str, did: &str) -> coord_core::TenantId {
-    let tenant = state.store.create_tenant(slug.into(), None).await.unwrap();
+    let tenant = state.store().create_tenant(slug.into(), None).await.unwrap();
     let cdid = coord_core::types::CollectiveDid {
         tenant_id: tenant.id,
         did: did.to_string(),
@@ -1317,7 +1327,7 @@ async fn register_collective_did(state: &Arc<CoordinatorState>, slug: &str, did:
         encrypted_private_key: "encrypted-test-key".to_string(),
         created_at: chrono::Utc::now(),
     };
-    state.federation_inbound.store().create_collective_did(cdid).await.unwrap();
+    state.federation_inbound().store().create_collective_did(cdid).await.unwrap();
     tenant.id
 }
 
@@ -1401,7 +1411,7 @@ async fn federation_hello_valid_returns_challenge() {
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };
-    state.federation_inbound.store().create_link(link).await.unwrap();
+    state.federation_inbound().store().create_link(link).await.unwrap();
 
     let hello = serde_json::json!({
         "collectiveDid": remote_did,
@@ -1489,7 +1499,7 @@ async fn federation_link_request_rejects_when_active_link_exists() {
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };
-    state.federation_inbound.store().create_link(link).await.unwrap();
+    state.federation_inbound().store().create_link(link).await.unwrap();
 
     // New link request from same peer should be rejected (active link already exists)
     let link_req = serde_json::json!({
@@ -1570,7 +1580,7 @@ async fn federation_revoke_missing_session_rejected() {
 // ── Admin auth middleware tests ───────────────────────────────────────────────
 
 fn setup_with_admin_key() -> (axum::Router, Arc<CoordinatorState>) {
-    let key = ControlKey::generate();
+    let key = coord_noise::generate_control_key();
     let state = Arc::new(
         CoordinatorState::new(key)
             .with_admin_api_key(Some("test-admin-secret".to_string())),
@@ -1627,8 +1637,10 @@ async fn admin_api_accepts_correct_key() {
 }
 
 #[tokio::test]
-async fn admin_api_allows_unauthenticated_when_no_key_set() {
-    let (app, _) = setup();
+async fn admin_api_rejects_when_no_key_configured() {
+    let key = coord_noise::generate_control_key();
+    let state = Arc::new(CoordinatorState::new(key));
+    let app = coord_api::router(state);
     let resp = app
         .oneshot(
             Request::builder()
@@ -1638,7 +1650,7 @@ async fn admin_api_allows_unauthenticated_when_no_key_set() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
 
 #[tokio::test]

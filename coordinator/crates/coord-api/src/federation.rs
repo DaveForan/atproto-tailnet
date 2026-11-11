@@ -138,9 +138,13 @@ pub async fn handle_keepalive(
         Err(e) => return e.into_response(),
     };
 
+    let callbacks = match require_callbacks(&state) {
+        Ok(cb) => cb,
+        Err(e) => return e.into_response(),
+    };
     match state
         .federation_inbound
-        .handle_keepalive(tenant_id, keepalive)
+        .handle_keepalive(tenant_id, keepalive, callbacks)
         .await
     {
         Ok(ack) => (StatusCode::OK, Json(ack)).into_response(),
@@ -158,9 +162,13 @@ pub async fn handle_revoke(
         Err(e) => return e.into_response(),
     };
 
+    let callbacks = match require_callbacks(&state) {
+        Ok(cb) => cb,
+        Err(e) => return e.into_response(),
+    };
     match state
         .federation_inbound
-        .handle_revoke(tenant_id, revoke)
+        .handle_revoke(tenant_id, revoke, callbacks)
         .await
     {
         Ok(()) => (
@@ -182,9 +190,13 @@ pub async fn handle_link_request(
         Err(e) => return e.into_response(),
     };
 
+    let callbacks = match require_callbacks(&state) {
+        Ok(cb) => cb,
+        Err(e) => return e.into_response(),
+    };
     match state
         .federation_inbound
-        .handle_link_request(tenant_id, msg)
+        .handle_link_request(tenant_id, msg, callbacks)
         .await
     {
         Ok(()) => (
@@ -206,9 +218,13 @@ pub async fn handle_link_accept(
         Err(e) => return e.into_response(),
     };
 
+    let callbacks = match require_callbacks(&state) {
+        Ok(cb) => cb,
+        Err(e) => return e.into_response(),
+    };
     match state
         .federation_inbound
-        .handle_link_accept(tenant_id, msg)
+        .handle_link_accept(tenant_id, msg, callbacks)
         .await
     {
         Ok(()) => (
@@ -230,9 +246,13 @@ pub async fn handle_link_reject(
         Err(e) => return e.into_response(),
     };
 
+    let callbacks = match require_callbacks(&state) {
+        Ok(cb) => cb,
+        Err(e) => return e.into_response(),
+    };
     match state
         .federation_inbound
-        .handle_link_reject(tenant_id, msg)
+        .handle_link_reject(tenant_id, msg, callbacks)
         .await
     {
         Ok(()) => (
@@ -254,9 +274,13 @@ pub async fn handle_link_revoke(
         Err(e) => return e.into_response(),
     };
 
+    let callbacks = match require_callbacks(&state) {
+        Ok(cb) => cb,
+        Err(e) => return e.into_response(),
+    };
     match state
         .federation_inbound
-        .handle_link_revoke(tenant_id, msg)
+        .handle_link_revoke(tenant_id, msg, callbacks)
         .await
     {
         Ok(()) => (

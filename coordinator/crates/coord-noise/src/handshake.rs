@@ -110,7 +110,7 @@ impl NoiseResponder {
                 .parse()
                 .map_err(|e| NoiseError::Pattern(format!("{e}")))?,
         )
-        .local_private_key(&self.control_key.secret)
+        .local_private_key(self.control_key.secret())
         .map_err(|e| NoiseError::Init(format!("{e}")))?
         .prologue(prologue)
         .map_err(|e| NoiseError::Init(format!("{e}")))?
@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn noise_ik_handshake_roundtrip() {
-        let control_key = ControlKey::generate();
+        let control_key = crate::generate_control_key();
         let responder = NoiseResponder::new(control_key.clone());
 
         let prologue = format!("{}2", PROLOGUE_PREFIX);
@@ -200,7 +200,7 @@ mod tests {
 
     #[test]
     fn accept_initiation_wire_format() {
-        let control_key = ControlKey::generate();
+        let control_key = crate::generate_control_key();
         let responder = NoiseResponder::new(control_key.clone());
 
         let prologue = format!("{}1", PROLOGUE_PREFIX);

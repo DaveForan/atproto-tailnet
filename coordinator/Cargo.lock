@@ -344,6 +344,7 @@ dependencies = [
  "coord-acl",
  "coord-core",
  "coord-federation",
+ "coord-netmap",
  "coord-noise",
  "coord-proto",
  "coord-store",
@@ -351,7 +352,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "rand 0.9.5",
+ "reqwest",
  "serde",
  "serde_json",
  "tokio",
@@ -367,14 +368,11 @@ dependencies = [
 name = "coord-core"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "chrono",
- "curve25519-dalek",
  "hex",
  "rand 0.9.5",
  "serde",
  "serde_json",
- "sqlx",
  "thiserror",
  "uuid",
 ]
@@ -400,14 +398,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "coord-netmap"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "coord-acl",
+ "coord-core",
+ "coord-proto",
+ "coord-store",
+ "hex",
+ "serde",
+ "serde_json",
+ "tracing",
+]
+
+[[package]]
 name = "coord-noise"
 version = "0.1.0"
 dependencies = [
  "bytes",
  "chacha20poly1305",
  "coord-core",
+ "curve25519-dalek",
  "http",
  "hyper",
+ "rand 0.9.5",
  "snow",
  "thiserror",
  "tokio",

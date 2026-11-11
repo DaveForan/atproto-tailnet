@@ -5,30 +5,37 @@ use coord_federation::{
     BrokerConfig, BrokerService, FederationMemoryStore, FederationStore,
     HandshakeCallbacks, InboundHandler,
 };
+use coord_netmap::NetmapService;
 use coord_proto::map::DerpMap;
 use coord_store::{MemoryStore, Store};
 
 pub struct CoordinatorState {
-    pub control_key: ControlKey,
-    pub store: Arc<Store>,
-    pub acl: Arc<PolicyEngine>,
-    pub derp_map: DerpMap,
-    pub admin_api_key: Option<String>,
-    pub federation_inbound: Arc<InboundHandler<dyn FederationStore>>,
-    pub federation_broker: Arc<BrokerService<dyn FederationStore>>,
-    pub federation_callbacks: Option<Arc<dyn HandshakeCallbacks>>,
+    pub(crate) control_key: ControlKey,
+    pub(crate) store: Arc<Store>,
+    pub(crate) acl: Arc<PolicyEngine>,
+    pub(crate) derp_map: DerpMap,
+    pub(crate) admin_api_key: Option<String>,
+    pub(crate) netmap: NetmapService,
+    pub(crate) federation_inbound: Arc<InboundHandler<dyn FederationStore>>,
+    pub(crate) federation_broker: Arc<BrokerService<dyn FederationStore>>,
+    pub(crate) federation_callbacks: Option<Arc<dyn HandshakeCallbacks>>,
 }
 
 impl CoordinatorState {
     pub fn new(control_key: ControlKey) -> Self {
         let fed_store: Arc<dyn FederationStore> = Arc::new(FederationMemoryStore::new());
         let fed_config = BrokerConfig::default();
+        let store = Arc::new(Store::Memory(Box::new(MemoryStore::new())));
+        let acl = Arc::new(PolicyEngine::new());
+        let derp_map = default_derp_map();
+        let netmap = NetmapService::new(store.clone(), acl.clone(), derp_map.clone());
         Self {
             control_key,
-            store: Arc::new(Store::Memory(Box::new(MemoryStore::new()))),
-            acl: Arc::new(PolicyEngine::new()),
-            derp_map: default_derp_map(),
+            store,
+            acl,
+            derp_map,
             admin_api_key: None,
+            netmap,
             federation_inbound: Arc::new(InboundHandler::new(
                 fed_store.clone(),
                 fed_config.clone(),
@@ -50,11 +57,13 @@ impl CoordinatorState {
 
     pub fn with_store(mut self, store: Store) -> Self {
         self.store = Arc::new(store);
+        self.netmap = NetmapService::new(self.store.clone(), self.acl.clone(), self.derp_map.clone());
         self
     }
 
     pub fn with_derp_map(mut self, derp_map: DerpMap) -> Self {
         self.derp_map = derp_map;
+        self.netmap = NetmapService::new(self.store.clone(), self.acl.clone(), self.derp_map.clone());
         self
     }
 
@@ -66,6 +75,30 @@ impl CoordinatorState {
     pub fn with_federation_callbacks(mut self, cb: Arc<dyn HandshakeCallbacks>) -> Self {
         self.federation_callbacks = Some(cb);
         self
+    }
+
+    pub fn control_key(&self) -> &ControlKey {
+        &self.control_key
+    }
+
+    pub fn store(&self) -> &Arc<Store> {
+        &self.store
+    }
+
+    pub fn acl(&self) -> &Arc<PolicyEngine> {
+        &self.acl
+    }
+
+    pub fn federation_inbound(&self) -> &Arc<InboundHandler<dyn FederationStore>> {
+        &self.federation_inbound
+    }
+
+    pub fn netmap(&self) -> &NetmapService {
+        &self.netmap
+    }
+
+    pub fn federation_broker(&self) -> &Arc<BrokerService<dyn FederationStore>> {
+        &self.federation_broker
     }
 }
 

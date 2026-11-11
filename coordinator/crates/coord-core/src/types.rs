@@ -1,3 +1,4 @@
+use std::net::Ipv4Addr;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -48,13 +49,10 @@ impl std::fmt::Display for NodeId {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MachineKey(pub [u8; 32]);
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct NodeKey(pub [u8; 32]);
-
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ControlKey {
     pub public: [u8; 32],
-    pub secret: [u8; 32],
+    secret: [u8; 32],
 }
 
 impl std::fmt::Debug for ControlKey {
@@ -67,30 +65,13 @@ impl std::fmt::Debug for ControlKey {
 }
 
 impl ControlKey {
-    pub fn generate() -> Self {
-        use rand::RngCore;
-        let mut secret = [0u8; 32];
-        rand::rng().fill_bytes(&mut secret);
-        let public = x25519_public_from_secret(&secret);
+    pub fn new(public: [u8; 32], secret: [u8; 32]) -> Self {
         Self { public, secret }
     }
-}
 
-fn x25519_public_from_secret(secret: &[u8; 32]) -> [u8; 32] {
-    use curve25519_dalek::montgomery::MontgomeryPoint;
-    use curve25519_dalek::scalar::Scalar;
-    let clamped = clamp_scalar(secret);
-    let scalar = Scalar::from_bytes_mod_order(clamped);
-    let point = MontgomeryPoint::mul_base(&scalar);
-    point.to_bytes()
-}
-
-fn clamp_scalar(secret: &[u8; 32]) -> [u8; 32] {
-    let mut clamped = *secret;
-    clamped[0] &= 248;
-    clamped[31] &= 127;
-    clamped[31] |= 64;
-    clamped
+    pub fn secret(&self) -> &[u8; 32] {
+        &self.secret
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -133,6 +114,19 @@ impl FederationPosture {
             Self::Closed => "closed",
             Self::Selective => "selective",
             Self::Open => "open",
+        }
+    }
+}
+
+impl std::str::FromStr for FederationPosture {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "open" => Ok(Self::Open),
+            "selective" => Ok(Self::Selective),
+            "closed" => Ok(Self::Closed),
+            other => Err(format!("unknown federation posture: {other}")),
         }
     }
 }
@@ -275,4 +269,55 @@ pub struct CollectiveDid {
     pub public_key_jwk: serde_json::Value,
     pub encrypted_private_key: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NodeSummary {
+    pub id: NodeId,
+    pub tenant_id: TenantId,
+    pub ipv4: Ipv4Addr,
+    pub stable_id: String,
+    pub online: bool,
+    pub hostname: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct NodeDetail {
+    pub tenant_id: TenantId,
+    pub ipv4: Ipv4Addr,
+    pub stable_id: String,
+    pub info: NodeInfo,
+}
+
+pub fn is_valid_slug(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() || bytes.len() > 63 {
+        return false;
+    }
+    if !bytes[0].is_ascii_lowercase() && !bytes[0].is_ascii_digit() {
+        return false;
+    }
+    bytes[1..]
+        .iter()
+        .all(|&b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+pub fn is_valid_hostname(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.is_empty() || bytes.len() > 253 {
+        return false;
+    }
+    if !bytes[0].is_ascii_alphanumeric() {
+        return false;
+    }
+    bytes[1..]
+        .iter()
+        .all(|&b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
+}
+
+pub fn generate_random_slug() -> String {
+    use rand::RngCore;
+    let mut buf = [0u8; 4];
+    rand::rng().fill_bytes(&mut buf);
+    hex::encode(buf)
 }
