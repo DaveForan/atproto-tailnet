@@ -2,7 +2,7 @@
 
 Create private mesh networks using your Bluesky identity. Sign in with your AT Protocol handle, get an isolated [Tailscale](https://tailscale.com)-compatible network, and invite others by their `@handle`.
 
-Built on [Headscale](https://github.com/juanfont/headscale) (open-source Tailscale control server) with one instance per tenant for full isolation.
+Built on a purpose-built Rust mesh coordinator (replacing [Headscale](https://github.com/juanfont/headscale)) with a TypeScript service layer for auth, orchestration, and the dashboard.
 
 ## How it works
 
@@ -28,7 +28,7 @@ Built on [Headscale](https://github.com/juanfont/headscale) (open-source Tailsca
 - **IP range configuration** — per-tenant IPv4/IPv6 CIDR prefixes and allocation strategy
 - **Exit nodes & subnet routers** — approve, enable, disable, and delete advertised routes
 - **Usage metering** — live device/member/route counts, plan limits, 7-day usage history snapshots
-- **Federation** — request, accept, reject, and revoke trust links between tailnets with CIDR sharing
+- **Federation** — request, accept, reject, and revoke trust links between collectives with signed handshakes, CIDR route exchange, replay protection, and rate limiting
 - **Agent API tokens** — scoped Bearer tokens for AI agents and automation
 - **Health monitoring** — background checks with auto-restart for failed instances
 - **Instance hibernation** — auto-stop idle tenants after configurable days of inactivity
@@ -40,15 +40,17 @@ Built on [Headscale](https://github.com/juanfont/headscale) (open-source Tailsca
 
 | Layer | Technology |
 |-------|-----------|
-| Language | TypeScript |
-| API | Express 5 |
-| Database | PostgreSQL |
-| ORM | Drizzle |
+| Coordinator | Rust (8-crate workspace: coord-core, coord-noise, coord-proto, coord-acl, coord-store, coord-netmap, coord-federation, coord-api) |
+| Service layer | TypeScript / Express 5 / Drizzle ORM |
+| Database | PostgreSQL (shared by coordinator and service) |
 | Auth | `@atproto/oauth-client-node` |
-| Control plane | Headscale (one Docker container per tenant) |
+| Control plane | Rust coordinator (Noise IK protocol, multi-tenant, federation) or Headscale (legacy, one Docker container per tenant) |
+| Federation | Collective Federation Protocol (CFP) — JSON over HTTP/2, DID-based identity, signed handshakes, CIDR route exchange |
 | Reverse proxy | Caddy (dynamic subdomains via admin API) |
 
-Each tenant gets a dedicated Headscale instance with its own subdomain (`<slug>.<base-domain>`), routed through Caddy. See `docs/adr/` for the reasoning behind each architectural choice.
+The coordinator speaks the Tailscale control protocol (Noise IK handshake, register/map over HTTP/2) and adds native multi-tenancy, federation between collectives, and sub-collective hierarchy. The TypeScript service handles AT Proto OAuth, the dashboard, and orchestration — it talks to the coordinator via its REST admin API.
+
+Each tenant gets its own subdomain (`<slug>.<base-domain>`), routed through Caddy. See `docs/adr/` for the reasoning behind each architectural choice (24 ADRs).
 
 ## Quick start
 
@@ -72,7 +74,20 @@ npm run dev                   # http://127.0.0.1:3000 (reads .env)
 
 Open `http://127.0.0.1:3000` and sign in with your Bluesky handle. Use the IP, not `localhost` — AT Proto OAuth redirects loopback clients to it.
 
-Each tailnet's Headscale is served through Caddy at `http://<slug>.ts.localhost:8180`; that is the login server the dashboard gives devices. Two things to know when connecting a device locally:
+### Coordinator mode (recommended)
+
+```sh
+# Rust coordinator + Postgres + Caddy in Docker; TS service on host
+docker compose -f docker-compose.coordinator.dev.yml up -d
+# Add to .env: COORDINATOR_URL=http://localhost:9443  COORDINATOR_API_KEY=dev-coordinator-key
+npm run dev
+```
+
+Devices connect via `tailscale up --login-server http://<slug>.ts.localhost:8180`.
+
+### Legacy Headscale mode
+
+Each tailnet's Headscale is served through Caddy at `http://<slug>.ts.localhost:8180`. Two things to know when connecting a device locally:
 
 - It only works from the same machine (`*.localhost` resolves to loopback).
 - The URL is plain HTTP. After a dropped connection the Tailscale client retries over HTTPS on port 443, which nothing local answers, so a device can stay offline after Caddy or the tailnet restarts. Restart `tailscaled` on the device, or run it with `TS_FORCE_NOISE_443=false`. This does not apply to an HTTPS deployment.
@@ -121,31 +136,34 @@ See `.env.example` for all options. The defaults work for local development. For
 ## Project structure
 
 ```
-src/
+coordinator/              — Rust mesh coordinator (ADR-0023)
+  crates/
+    coord-core/           — Shared types (TenantId, NodeId, etc.) and errors
+    coord-noise/          — Noise IK handshake + encrypted transport
+    coord-proto/          — Tailscale control protocol messages
+    coord-acl/            — ACL policy engine
+    coord-store/          — MemoryStore + PgStore (node/tenant CRUD)
+    coord-netmap/         — Network map snapshot + delta builder
+    coord-federation/     — Federation protocol, broker, inbound handlers (92 tests)
+    coord-api/            — axum REST API + admin auth (42 tests)
+    coord-server/         — Binary entrypoint
+
+src/                      — TypeScript service layer
   auth/atproto.ts         — AT Proto OAuth setup
   config.ts               — Zod-validated env config
   db/schema.ts            — Drizzle schema (15 tables)
   orchestrator/
     headscale.ts          — Docker lifecycle management
     headscale-api.ts      — Headscale REST client
+    control-client.ts     — ControlClient factory (coordinator or Headscale)
     caddy.ts              — Caddy admin API
-    ports.ts              — Port allocator
+    federation-broker.ts  — Federation broker loop + collective DID lifecycle
     monitor.ts            — Health check loop + auto-restart
-  routes/
-    auth.ts               — OAuth flow + .well-known endpoints
-    api.ts                — Tenant CRUD, health, join requests
-    invitations.ts        — Invite by handle, accept/decline
-    devices.ts            — Node management, auth keys, members
-    security.ts           — Settings, roles, approvals, locks, audit
-    services.ts           — Service devices + service registry
-    board.ts              — Public message board
-    agents.ts             — Agent API token CRUD
-    acl.ts                — ACL policy management
-    dashboard.ts          — Inline SPA dashboard
-    helpers.ts            — Shared middleware + auth helpers
-    permissions.ts        — Permission definitions
-    audit.ts              — Audit log writer
-docs/adr/                 — Architecture Decision Records
+  routes/                 — Express routes (auth, devices, federation, dashboard, etc.)
+  identity/               — Collective DID management + resolver
+  credentials/            — VC-JWT issuance/verification + AT Proto service-auth
+  federation/             — CFP message signing, transport, handshake types
+docs/adr/                 — Architecture Decision Records (0001–0024)
 ```
 
 ## Security model
@@ -160,7 +178,9 @@ See [ADR-0005](docs/adr/0005-security-management.md) for the full security desig
 
 ## Status
 
-Feature-complete. All build phases (auth, networking, invitations, security management, services/board/agents, ACL, health monitoring, structured logging, UI polish) and advanced features (custom DERP relays, per-tenant IP ranges, exit node/subnet router management, usage metering with plan limits, federation between tailnets) are implemented. The only remaining architectural item is the optional Headscale fork for single-process multi-tenancy (see ADR-0002).
+The TypeScript service layer is feature-complete (auth, networking, invitations, security management, services/board/agents, ACL, health monitoring, federation, usage metering, structured logging).
+
+The Rust coordinator (ADR-0023) is feature-complete: Noise IK protocol, multi-tenant store (Memory + PostgreSQL), admin REST API, federation broker with signed handshakes, CIDR route exchange, replay protection, rate limiting, sub-collective hierarchy, and coordinator mode integration with the TS service. 201 Rust tests across the workspace (clippy clean). Security-hardened: constant-time auth, SSRF defense, error masking, signature verification on all federation endpoints.
 
 See `BUILD_PLAN.md` for the full roadmap.
 
