@@ -23,6 +23,10 @@ Networks can optionally federate with each other through the Collective Federati
     <h3>Federation</h3>
     <p>Connect networks across instances with signed route exchange.</p>
   </a>
+  <a href="guides/deployment" class="card" style="text-decoration:none;color:inherit">
+    <h3>Deployment</h3>
+    <p>Deploy to Hetzner, Vultr, DigitalOcean, or AWS with automated orchestration.</p>
+  </a>
   <a href="guides/managing-your-network" class="card" style="text-decoration:none;color:inherit">
     <h3>Managing Your Network</h3>
     <p>Roles, devices, ACLs, security, and day-to-day operations.</p>

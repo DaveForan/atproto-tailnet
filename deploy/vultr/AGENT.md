@@ -121,29 +121,17 @@ ssh root@<ip> 'REPO_URL=https://github.com/your-org/atproto-tailnet.git BRANCH=m
 
 ### 5. Configure environment
 
-SSH into the instance and edit `.env`:
+The bootstrap script auto-generates secrets and sets `TLS_STRATEGY=vultr`. Set the remaining values via SSH:
 
 ```sh
-ssh root@<ip>
+ssh root@<ip> bash -c "
 cd /opt/atproto-tailnet
-nano .env
+sed -i 's|^PUBLIC_URL=.*|PUBLIC_URL=https://${APP_SUBDOMAIN}.${domain}|' .env
+sed -i 's|^BASE_DOMAIN=.*|BASE_DOMAIN=${TS_SUBDOMAIN}.${domain}|' .env
+sed -i 's|^# APP_DOMAIN=.*|APP_DOMAIN=${APP_SUBDOMAIN}.${domain}|' .env
+sed -i 's|^VULTR_API_KEY=.*|VULTR_API_KEY=${VULTR_API_KEY}|' .env
+"
 ```
-
-Set the following values:
-
-| Variable | Value |
-|---|---|
-| `SESSION_SECRET` | (generated above) |
-| `POSTGRES_PASSWORD` | (generated above) |
-| `DATABASE_URL` | `postgresql://atproto_tailnet:<POSTGRES_PASSWORD>@postgres:5432/atproto_tailnet` |
-| `PUBLIC_URL` | `https://tailnets.yourdomain.com` |
-| `BASE_DOMAIN` | `ts.yourdomain.com` |
-| `APP_DOMAIN` | `tailnets.yourdomain.com` |
-| `COORDINATOR_API_KEY` | (generated above) |
-| `FEDERATION_KEY_ENCRYPTION_KEY` | (generated above) |
-| `TLS_STRATEGY` | `vultr` |
-| `CADDY_DNS_PLUGINS` | `github.com/caddy-dns/vultr` |
-| `VULTR_API_KEY` | (your Vultr API key) |
 
 ### 6. Start the stack
 
@@ -152,32 +140,19 @@ cd /opt/atproto-tailnet
 docker compose -f docker-compose.coordinator.yml up -d
 ```
 
-### 7. Configure firewall
+### 7. Wait for HTTPS readiness
+
+DNS propagation and TLS certificate issuance take time. Poll until the service is reachable over HTTPS:
 
 ```sh
-ufw allow 22/tcp           # SSH
-ufw allow 80/tcp           # HTTP (Caddy redirect)
-ufw allow 443/tcp          # HTTPS
-ufw allow 443/udp          # HTTP/3 / QUIC
-ufw allow 10001:10100/tcp  # Headscale tenant ports
-ufw --force enable
-```
-
-Or use Vultr's firewall groups:
-
-```sh
-vultr-cli firewall group create --description atproto-tailnet
-# Note the FIREWALLGROUPID from output
-vultr-cli firewall rule create \
-  --id <firewall-group-id> --protocol tcp --subnet 0.0.0.0 --size 0 --port 22
-vultr-cli firewall rule create \
-  --id <firewall-group-id> --protocol tcp --subnet 0.0.0.0 --size 0 --port 80
-vultr-cli firewall rule create \
-  --id <firewall-group-id> --protocol tcp --subnet 0.0.0.0 --size 0 --port 443
-vultr-cli firewall rule create \
-  --id <firewall-group-id> --protocol udp --subnet 0.0.0.0 --size 0 --port 443
-vultr-cli firewall rule create \
-  --id <firewall-group-id> --protocol tcp --subnet 0.0.0.0 --size 0 --port "10001:10100"
+for i in $(seq 1 90); do
+  if curl -sf "https://${APP_SUBDOMAIN}.${domain}/health" > /dev/null 2>&1; then
+    echo "HTTPS verified"
+    break
+  fi
+  echo "Waiting for HTTPS... ($i/90)"
+  sleep 10
+done
 ```
 
 ## Verification

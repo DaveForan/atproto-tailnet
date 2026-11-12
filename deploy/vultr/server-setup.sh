@@ -69,6 +69,13 @@ if [ ! -f .env ]; then
   sed -i "s|^TLS_STRATEGY=.*|TLS_STRATEGY=vultr|" .env
   sed -i "s|^# CADDY_DNS_PLUGINS=.*|CADDY_DNS_PLUGINS=github.com/caddy-dns/vultr|" .env
 
+  # Ensure VULTR_API_KEY line exists (template may not include it)
+  if ! grep -q '^VULTR_API_KEY=' .env; then
+    echo "" >> .env
+    echo "# Vultr API key for DNS-01 TLS" >> .env
+    echo "VULTR_API_KEY=" >> .env
+  fi
+
   echo ""
   echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
   echo "  Secrets have been auto-generated in $APP_DIR/.env"
@@ -86,8 +93,7 @@ if [ ! -f .env ]; then
   exit 0
 fi
 
-echo "==> Creating data directories"
-mkdir -p data/headscale
+echo "==> Creating backup directory"
 mkdir -p /opt/backups
 
 echo "==> Adding swap (safety net for 2 GB instances)"
@@ -111,7 +117,7 @@ docker compose -f "$COMPOSE_FILE" up -d
 
 echo "==> Waiting for health check..."
 sleep 15
-if curl -sf http://localhost:3000/health > /dev/null; then
+if docker compose -f "$COMPOSE_FILE" exec -T app curl -sf http://localhost:3000/health > /dev/null 2>&1; then
   echo "==> atproto-tailnet is running!"
 else
   echo "==> App may still be starting. Check logs with:"
@@ -124,7 +130,6 @@ ufw allow 22/tcp           # SSH
 ufw allow 80/tcp           # HTTP (Caddy redirect)
 ufw allow 443/tcp          # HTTPS
 ufw allow 443/udp          # HTTP/3 / QUIC
-ufw allow 10001:10100/tcp  # Headscale tenant ports
 ufw --force enable
 
 echo ""

@@ -12,7 +12,9 @@
 #   DATABASE_URL, SESSION_SECRET, PUBLIC_URL, BASE_DOMAIN, AWS_REGION
 # ---------------------------------------------------------------------------
 set -euo pipefail
-exec > /var/log/atproto-tailnet-setup.log 2>&1
+if [ ! -t 0 ]; then
+  exec > /var/log/atproto-tailnet-setup.log 2>&1
+fi
 
 APP_DIR="/opt/atproto-tailnet"
 DATA_DIR="/data"
@@ -46,7 +48,6 @@ if [ -b /dev/xvdf ] && ! mountpoint -q "$DATA_DIR"; then
   grep -q '/dev/xvdf' /etc/fstab || \
     echo "/dev/xvdf $DATA_DIR ext4 defaults,nofail 0 2" >> /etc/fstab
 fi
-mkdir -p "$DATA_DIR/headscale"
 
 # ---------- Application ---------------------------------------------------
 echo "==> Cloning repository"
@@ -95,6 +96,9 @@ AWS_SECRET_ACCESS_KEY=
 # FEDERATION_KEY_ENCRYPTION_KEY=
 EOF
   echo "!!! .env created with placeholder values. Edit before starting. !!!"
+  echo "After editing .env, re-run this script or run:"
+  echo "  cd $APP_DIR && docker compose -f docker-compose.coordinator.yml up -d"
+  exit 0
 fi
 
 # ---------- Start stack ---------------------------------------------------
@@ -109,8 +113,6 @@ if command -v ufw &>/dev/null; then
   ufw allow 80/tcp
   ufw allow 443/tcp
   ufw allow 443/udp
-  ufw allow 9443/tcp
-  ufw allow 10001:10100/tcp
   ufw --force enable
 fi
 

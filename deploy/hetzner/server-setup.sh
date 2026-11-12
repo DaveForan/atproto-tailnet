@@ -47,8 +47,7 @@ else
   cd "$APP_DIR"
 fi
 
-echo "==> Creating data and backup directories"
-mkdir -p data/headscale
+echo "==> Creating backup directory"
 mkdir -p /opt/backups
 
 echo "==> Setting up environment"
@@ -104,7 +103,7 @@ echo "==> Waiting for services to start..."
 sleep 15
 
 # Check health
-if curl -sf http://localhost:3000/health > /dev/null 2>&1; then
+if docker compose -f "$COMPOSE_FILE" exec -T app curl -sf http://localhost:3000/health > /dev/null 2>&1; then
   echo "==> atproto-tailnet is running!"
 elif docker compose -f "$COMPOSE_FILE" ps | grep -q "running"; then
   echo "==> Containers are up. App may still be starting."
@@ -133,5 +132,4 @@ echo "    Status:   docker compose -f $COMPOSE_FILE ps"
 # ufw allow 80/tcp           # HTTP (Caddy redirect)
 # ufw allow 443/tcp          # HTTPS
 # ufw allow 443/udp          # HTTP/3 / QUIC
-# ufw allow 10001:10100/tcp  # Headscale tenant ports
 # ufw --force enable

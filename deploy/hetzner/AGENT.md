@@ -4,11 +4,11 @@ Machine-readable deployment guide for AI agents.
 
 ## Overview
 
-- Single Hetzner Cloud server (CX22 or CX32), coordinator mode
+- Single Hetzner Cloud server (cx22 or cx32), coordinator mode
 - TLS strategy: `hetzner` (DNS-01 wildcard via Hetzner DNS API)
 - Compose file: `docker-compose.coordinator.yml`
 - No Docker socket mount required (coordinator replaces per-tenant Headscale containers)
-- Cost: ~EUR 4-8/month (CX22 = EUR 3.98, CX32 = EUR 7.11)
+- Cost: ~EUR 4-8/month (cx22 = EUR 3.98, cx32 = EUR 7.11)
 
 ## Prerequisites
 
@@ -36,7 +36,7 @@ Both tokens are needed. The DNS API token is passed to Caddy as `HETZNER_API_TOK
 | `APP_SUBDOMAIN` | Subdomain for the app UI | `tailnets` (yields `tailnets.example.com`) |
 | `TS_SUBDOMAIN` | Subdomain for tenant tailnets | `ts` (yields `*.ts.example.com`) |
 | `SSH_KEY_NAME` | Name of SSH key in Hetzner Cloud | Output of `hcloud ssh-key list` |
-| `SERVER_TYPE` | Hetzner server type | `cx22` (2 vCPU, 4 GB) or `cx32` (4 vCPU, 8 GB) |
+| `SERVER_TYPE` | Hetzner server type (lowercase) | `cx22` (2 vCPU, 4 GB) or `cx32` (4 vCPU, 8 GB) |
 | `LOCATION` | Hetzner datacenter | `fsn1` (Falkenstein), `nbg1` (Nuremberg), `hel1` (Helsinki) |
 | `REPO_URL` | Git repository URL | `https://github.com/your-org/atproto-tailnet.git` |
 | `BRANCH` | Git branch to deploy | `main` |
@@ -60,7 +60,6 @@ hcloud firewall add-rule atproto-tailnet-fw --direction in --protocol tcp --port
 hcloud firewall add-rule atproto-tailnet-fw --direction in --protocol tcp --port 80 --source-ips 0.0.0.0/0 --source-ips ::/0 --description "HTTP"
 hcloud firewall add-rule atproto-tailnet-fw --direction in --protocol tcp --port 443 --source-ips 0.0.0.0/0 --source-ips ::/0 --description "HTTPS"
 hcloud firewall add-rule atproto-tailnet-fw --direction in --protocol udp --port 443 --source-ips 0.0.0.0/0 --source-ips ::/0 --description "HTTP3"
-hcloud firewall add-rule atproto-tailnet-fw --direction in --protocol tcp --port 10001-10100 --source-ips 0.0.0.0/0 --source-ips ::/0 --description "Headscale tenant ports"
 ```
 
 ### Step 2: Create Server
@@ -196,11 +195,9 @@ BASE_DOMAIN=ts.example.com
 APP_DOMAIN=tailnets.example.com
 LOG_LEVEL=info
 
-# Coordinator
+# Coordinator (COORD_LISTEN and COORD_ADMIN_KEY are set by docker-compose.coordinator.yml)
 COORDINATOR_URL=http://coordinator:9443
 COORDINATOR_API_KEY=<GENERATED>
-COORD_LISTEN=0.0.0.0:9443
-COORD_ADMIN_KEY=<SAME AS COORDINATOR_API_KEY>
 
 # Federation
 FEDERATION_KEY_ENCRYPTION_KEY=<GENERATED>

@@ -61,8 +61,6 @@ aws ec2 authorize-security-group-ingress --group-id "$SG_ID" --protocol tcp --po
 aws ec2 authorize-security-group-ingress --group-id "$SG_ID" --protocol tcp --port 80 --cidr 0.0.0.0/0
 aws ec2 authorize-security-group-ingress --group-id "$SG_ID" --protocol tcp --port 443 --cidr 0.0.0.0/0
 aws ec2 authorize-security-group-ingress --group-id "$SG_ID" --protocol udp --port 443 --cidr 0.0.0.0/0
-aws ec2 authorize-security-group-ingress --group-id "$SG_ID" --protocol tcp --port 9443 --cidr 0.0.0.0/0
-aws ec2 authorize-security-group-ingress --group-id "$SG_ID" --protocol tcp --port 10001-10100 --cidr 0.0.0.0/0
 ```
 
 #### 2. Launch EC2 Instance
@@ -135,54 +133,44 @@ aws route53 change-resource-record-sets \
 
 #### 5. SSH In and Run Bootstrap
 
-```sh
-ssh -i ~/.ssh/"$KEY_PAIR_NAME".pem ubuntu@"$EIP"
-```
-
-On the instance, run `user-data.sh` (or it runs automatically if passed as user-data):
+Pipe the bootstrap script over SSH (the repo isn't cloned yet, so the script must come from your local machine):
 
 ```sh
-sudo REPO_URL="$REPO_URL" BRANCH="${BRANCH:-main}" bash /opt/atproto-tailnet/deploy/aws/user-data.sh
+ssh -i ~/.ssh/"$KEY_PAIR_NAME".pem ubuntu@"$EIP" \
+  "sudo REPO_URL='$REPO_URL' BRANCH='${BRANCH:-main}' bash -s" \
+  < deploy/aws/user-data.sh
 ```
 
 #### 6. Configure .env
 
-The bootstrap creates a placeholder `.env`. Edit it with real values:
+The bootstrap creates a placeholder `.env` and exits. Write the real `.env` over SSH before starting services.
+
+Generate all secrets locally first (see [Required Inputs](#required-inputs)), then write the file:
 
 ```sh
-cd /opt/atproto-tailnet
-sudo tee .env > /dev/null <<EOF
-# Database (containerized Postgres via docker-compose.coordinator.yml)
+ssh -i ~/.ssh/"$KEY_PAIR_NAME".pem ubuntu@"$EIP" "sudo tee /opt/atproto-tailnet/.env > /dev/null" <<ENVEOF
 POSTGRES_USER=atproto_tailnet
-POSTGRES_PASSWORD=$POSTGRES_PASSWORD
+POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
 POSTGRES_DB=atproto_tailnet
 DATABASE_URL=postgresql://atproto_tailnet:${POSTGRES_PASSWORD}@postgres:5432/atproto_tailnet
-
-# App
-SESSION_SECRET=$SESSION_SECRET
+SESSION_SECRET=${SESSION_SECRET}
 PORT=3000
 PUBLIC_URL=https://${APP_DOMAIN}
-BASE_DOMAIN=$BASE_DOMAIN
-APP_DOMAIN=$APP_DOMAIN
+BASE_DOMAIN=${BASE_DOMAIN}
+APP_DOMAIN=${APP_DOMAIN}
 LOG_LEVEL=info
-
-# Coordinator
 COORDINATOR_URL=http://coordinator:9443
-COORDINATOR_API_KEY=$COORDINATOR_API_KEY
-
-# Federation (optional)
-FEDERATION_KEY_ENCRYPTION_KEY=$FEDERATION_KEY_ENCRYPTION_KEY
-
-# TLS — Route53 DNS-01
+COORDINATOR_API_KEY=${COORDINATOR_API_KEY}
+FEDERATION_KEY_ENCRYPTION_KEY=${FEDERATION_KEY_ENCRYPTION_KEY}
 TLS_STRATEGY=route53
 CADDY_DNS_PLUGINS=github.com/caddy-dns/route53
-AWS_REGION=$AWS_REGION
-AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
-AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
-EOF
+AWS_REGION=${AWS_REGION}
+AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+ENVEOF
 ```
 
-If using an EC2 instance role instead of access keys, omit `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
+If using an EC2 instance role instead of access keys, leave `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` empty.
 
 #### 7. Start Services
 
@@ -268,7 +256,8 @@ Minimal IAM policy:
     {
       "Effect": "Allow",
       "Action": [
-        "route53:ChangeResourceRecordSets"
+        "route53:ChangeResourceRecordSets",
+        "route53:ListResourceRecordSets"
       ],
       "Resource": "arn:aws:route53:::hostedzone/HOSTED_ZONE_ID"
     }

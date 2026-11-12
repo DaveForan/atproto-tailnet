@@ -47,7 +47,7 @@ fi
 
 echo "==> Setting up environment"
 if [ ! -f .env ]; then
-  cp .env.example .env
+  cp .env.coordinator.example .env
   echo ""
   echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
   echo "  IMPORTANT: Edit $APP_DIR/.env before continuing."
@@ -68,9 +68,6 @@ if [ ! -f .env ]; then
   exit 0
 fi
 
-echo "==> Creating data directories"
-mkdir -p data/headscale
-
 echo "==> Pulling images"
 docker compose -f "$COMPOSE_FILE" pull
 
@@ -82,7 +79,7 @@ docker compose -f "$COMPOSE_FILE" up -d
 
 echo "==> Waiting for health check..."
 sleep 10
-if curl -sf http://localhost:3000/health > /dev/null; then
+if docker compose -f "$COMPOSE_FILE" exec -T app curl -sf http://localhost:3000/health > /dev/null 2>&1; then
   echo "==> atproto-tailnet is running!"
 else
   echo "==> App may still be starting. Check logs with:"
@@ -102,5 +99,4 @@ echo "    Restart: docker compose -f $COMPOSE_FILE restart"
 # ufw allow 80/tcp    # HTTP (Caddy redirect)
 # ufw allow 443/tcp   # HTTPS
 # ufw allow 443/udp   # HTTP/3 / QUIC
-# ufw allow 10001:10100/tcp  # Headscale tenant ports
 # ufw --force enable
