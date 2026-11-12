@@ -450,8 +450,8 @@ impl PgStore {
     }
 
     pub async fn get_peers(&self, tenant_id: TenantId, exclude_node: NodeId) -> Vec<PeerInfo> {
-        let rows = sqlx::query_as::<_, (i64, Vec<u8>, Option<String>, serde_json::Value, String, String, bool, chrono::DateTime<chrono::Utc>)>(
-            "SELECT id, node_key, disco_key, endpoints, ipv4, hostname, online, last_seen \
+        let rows = sqlx::query_as::<_, (i64, Vec<u8>, Vec<u8>, Option<String>, serde_json::Value, String, String, bool, chrono::DateTime<chrono::Utc>)>(
+            "SELECT id, node_key, machine_key, disco_key, endpoints, ipv4, hostname, online, last_seen \
              FROM coord_nodes WHERE tenant_id = $1 AND id != $2"
         )
             .bind(tenant_id.as_uuid())
@@ -461,11 +461,12 @@ impl PgStore {
             .unwrap_or_default();
 
         rows.into_iter()
-            .map(|(id, node_key, disco_key, endpoints_json, ip_str, hostname, online, last_seen)| {
+            .map(|(id, node_key, machine_key, disco_key, endpoints_json, ip_str, hostname, online, last_seen)| {
                 let endpoints: Vec<String> = serde_json::from_value(endpoints_json).unwrap_or_default();
                 PeerInfo {
                     node_id: NodeId::new(id),
                     node_key,
+                    machine_key,
                     disco_key,
                     endpoints,
                     allowed_ips: vec![format!("{}/32", ip_str)],
@@ -483,8 +484,8 @@ impl PgStore {
         tenant_id: TenantId,
         exclude_node: NodeId,
     ) -> Vec<PeerInfo> {
-        let rows = sqlx::query_as::<_, (i64, Vec<u8>, Option<String>, serde_json::Value, String, String, bool, chrono::DateTime<chrono::Utc>)>(
-            "SELECT n.id, n.node_key, n.disco_key, n.endpoints, n.ipv4, n.hostname, n.online, n.last_seen \
+        let rows = sqlx::query_as::<_, (i64, Vec<u8>, Vec<u8>, Option<String>, serde_json::Value, String, String, bool, chrono::DateTime<chrono::Utc>)>(
+            "SELECT n.id, n.node_key, n.machine_key, n.disco_key, n.endpoints, n.ipv4, n.hostname, n.online, n.last_seen \
              FROM coord_nodes n \
              WHERE n.id != $2 AND ( \
                  n.tenant_id = $1 \
@@ -501,11 +502,12 @@ impl PgStore {
             .unwrap_or_default();
 
         rows.into_iter()
-            .map(|(id, node_key, disco_key, endpoints_json, ip_str, hostname, online, last_seen)| {
+            .map(|(id, node_key, machine_key, disco_key, endpoints_json, ip_str, hostname, online, last_seen)| {
                 let endpoints: Vec<String> = serde_json::from_value(endpoints_json).unwrap_or_default();
                 PeerInfo {
                     node_id: NodeId::new(id),
                     node_key,
+                    machine_key,
                     disco_key,
                     endpoints,
                     allowed_ips: vec![format!("{}/32", ip_str)],
@@ -519,8 +521,8 @@ impl PgStore {
     }
 
     pub async fn list_tenant_nodes(&self, tenant_id: TenantId) -> Vec<PeerInfo> {
-        let rows = sqlx::query_as::<_, (i64, Vec<u8>, Option<String>, serde_json::Value, String, String, bool, chrono::DateTime<chrono::Utc>)>(
-            "SELECT id, node_key, disco_key, endpoints, ipv4, hostname, online, last_seen \
+        let rows = sqlx::query_as::<_, (i64, Vec<u8>, Vec<u8>, Option<String>, serde_json::Value, String, String, bool, chrono::DateTime<chrono::Utc>)>(
+            "SELECT id, node_key, machine_key, disco_key, endpoints, ipv4, hostname, online, last_seen \
              FROM coord_nodes WHERE tenant_id = $1"
         )
             .bind(tenant_id.as_uuid())
@@ -529,11 +531,12 @@ impl PgStore {
             .unwrap_or_default();
 
         rows.into_iter()
-            .map(|(id, node_key, disco_key, endpoints_json, ip_str, hostname, online, last_seen)| {
+            .map(|(id, node_key, machine_key, disco_key, endpoints_json, ip_str, hostname, online, last_seen)| {
                 let endpoints: Vec<String> = serde_json::from_value(endpoints_json).unwrap_or_default();
                 PeerInfo {
                     node_id: NodeId::new(id),
                     node_key,
+                    machine_key,
                     disco_key,
                     endpoints,
                     allowed_ips: vec![format!("{}/32", ip_str)],
@@ -804,8 +807,8 @@ impl PgStore {
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         tenant_id: TenantId,
     ) -> Vec<PeerInfo> {
-        let rows = sqlx::query_as::<_, (i64, Vec<u8>, Option<String>, serde_json::Value, String, String, bool, chrono::DateTime<chrono::Utc>)>(
-            "SELECT id, node_key, disco_key, endpoints, ipv4, hostname, online, last_seen \
+        let rows = sqlx::query_as::<_, (i64, Vec<u8>, Vec<u8>, Option<String>, serde_json::Value, String, String, bool, chrono::DateTime<chrono::Utc>)>(
+            "SELECT id, node_key, machine_key, disco_key, endpoints, ipv4, hostname, online, last_seen \
              FROM coord_nodes WHERE tenant_id = $1"
         )
             .bind(tenant_id.as_uuid())
@@ -814,11 +817,12 @@ impl PgStore {
             .unwrap_or_default();
 
         rows.into_iter()
-            .map(|(id, node_key, disco_key, endpoints_json, ip_str, hostname, online, last_seen)| {
+            .map(|(id, node_key, machine_key, disco_key, endpoints_json, ip_str, hostname, online, last_seen)| {
                 let endpoints: Vec<String> = serde_json::from_value(endpoints_json).unwrap_or_default();
                 PeerInfo {
                     node_id: NodeId::new(id),
                     node_key,
+                    machine_key,
                     disco_key,
                     endpoints,
                     allowed_ips: vec![format!("{}/32", ip_str)],

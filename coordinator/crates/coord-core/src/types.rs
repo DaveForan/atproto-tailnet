@@ -90,6 +90,7 @@ pub struct NodeInfo {
 pub struct PeerInfo {
     pub node_id: NodeId,
     pub node_key: Vec<u8>,
+    pub machine_key: Vec<u8>,
     pub disco_key: Option<String>,
     pub endpoints: Vec<String>,
     pub allowed_ips: Vec<String>,

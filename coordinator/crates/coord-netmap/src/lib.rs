@@ -104,6 +104,13 @@ impl NetmapService {
             PeerEvent::NodeJoined { node_id, .. } | PeerEvent::NodeUpdated { node_id, .. } => {
                 let detail = self.store.get_node_info(*node_id).await?;
                 let node_key = format_key_bytes(&detail.info.node_key);
+                let machine_key_str = if detail.info.machine_key.len() == 32 {
+                    let mut mk = [0u8; 32];
+                    mk.copy_from_slice(&detail.info.machine_key);
+                    format_machine_key(&MachineKey(mk))
+                } else {
+                    String::new()
+                };
 
                 let home_region = self.derp_map.regions.keys().min().copied().unwrap_or(1);
                 let peer = MapNode {
@@ -112,7 +119,7 @@ impl NetmapService {
                     name: format!("{}.mesh.local.", detail.info.hostname),
                     user: 1,
                     key: node_key,
-                    machine: String::new(),
+                    machine: machine_key_str,
                     disco_key: detail.info.disco_key.clone(),
                     addresses: vec![format!("{}/32", detail.ipv4)],
                     allowed_ips: vec![format!("{}/32", detail.ipv4)],
@@ -153,6 +160,11 @@ fn format_key_bytes(key: &[u8]) -> String {
 
 fn peer_info_to_map_node(p: &coord_core::PeerInfo) -> MapNode {
     let peer_key = format_key_bytes(&p.node_key);
+    let machine_key_str = if p.machine_key.len() == 32 {
+        format_machine_key(&MachineKey(p.machine_key.clone().try_into().unwrap()))
+    } else {
+        String::new()
+    };
     let derp_region = p.derp_region.unwrap_or(1);
 
     MapNode {
@@ -161,7 +173,7 @@ fn peer_info_to_map_node(p: &coord_core::PeerInfo) -> MapNode {
         name: p.hostname.clone(),
         user: 1,
         key: peer_key,
-        machine: String::new(),
+        machine: machine_key_str,
         disco_key: p.disco_key.clone(),
         addresses: p.allowed_ips.clone(),
         allowed_ips: p.allowed_ips.clone(),

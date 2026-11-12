@@ -369,17 +369,7 @@ impl MemoryStore {
         nodes
             .values()
             .filter(|n| n.tenant_id == tenant_id && n.id != exclude_node)
-            .map(|n| PeerInfo {
-                node_id: n.id,
-                node_key: n.info.node_key.clone(),
-                disco_key: n.info.disco_key.clone(),
-                endpoints: n.info.endpoints.clone(),
-                allowed_ips: vec![format!("{}/32", n.ipv4)],
-                hostname: n.info.hostname.clone(),
-                derp_region: Some(1),
-                online: n.online,
-                last_seen: Some(n.registered_at),
-            })
+            .map(stored_node_to_peer_info)
             .collect()
     }
 
@@ -408,17 +398,7 @@ impl MemoryStore {
                 n.id != exclude_node
                     && (n.tenant_id == tenant_id || child_ids.contains(&n.tenant_id))
             })
-            .map(|n| PeerInfo {
-                node_id: n.id,
-                node_key: n.info.node_key.clone(),
-                disco_key: n.info.disco_key.clone(),
-                endpoints: n.info.endpoints.clone(),
-                allowed_ips: vec![format!("{}/32", n.ipv4)],
-                hostname: n.info.hostname.clone(),
-                derp_region: Some(1),
-                online: n.online,
-                last_seen: Some(n.registered_at),
-            })
+            .map(stored_node_to_peer_info)
             .collect();
 
         drop(nodes);
@@ -431,17 +411,7 @@ impl MemoryStore {
         nodes
             .values()
             .filter(|n| n.tenant_id == tenant_id)
-            .map(|n| PeerInfo {
-                node_id: n.id,
-                node_key: n.info.node_key.clone(),
-                disco_key: n.info.disco_key.clone(),
-                endpoints: n.info.endpoints.clone(),
-                allowed_ips: vec![format!("{}/32", n.ipv4)],
-                hostname: n.info.hostname.clone(),
-                derp_region: Some(1),
-                online: n.online,
-                last_seen: Some(n.registered_at),
-            })
+            .map(stored_node_to_peer_info)
             .collect()
     }
 
@@ -634,6 +604,7 @@ fn stored_node_to_peer_info(n: &StoredNode) -> PeerInfo {
     PeerInfo {
         node_id: n.id,
         node_key: n.info.node_key.clone(),
+        machine_key: n.info.machine_key.clone(),
         disco_key: n.info.disco_key.clone(),
         endpoints: n.info.endpoints.clone(),
         allowed_ips: vec![format!("{}/32", n.ipv4)],
