@@ -169,6 +169,10 @@ pub async fn delete_tenant(
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "tenant not found"})),
         ).into_response(),
+        Err(coord_core::CoordError::Protocol(ref msg)) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": msg.clone()})),
+        ).into_response(),
         Err(e) => internal_error(e).into_response(),
     }
 }
