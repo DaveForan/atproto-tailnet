@@ -74,6 +74,9 @@ async fn health_endpoint() {
         .unwrap();
 
     assert_eq!(resp.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["status"], "ok");
 }
 
 #[tokio::test]
@@ -100,9 +103,11 @@ async fn key_endpoint_returns_json() {
 }
 
 #[tokio::test]
-async fn create_preauth_key_auto_tenant() {
+async fn create_preauth_key_requires_tenant_id() {
     let (app, _) = setup();
-    let resp = app
+
+    // Missing tenant_id should fail (no longer auto-creates tenants)
+    let resp = app.clone()
         .oneshot(
             admin_req()
                 .method("POST")
@@ -113,14 +118,21 @@ async fn create_preauth_key_auto_tenant() {
         )
         .await
         .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let body = axum::body::to_bytes(resp.into_body(), 4096)
+    // Nonexistent tenant_id should return 404
+    let resp = app
+        .oneshot(
+            admin_req()
+                .method("POST")
+                .uri("/api/preauth-keys")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"tenant_id":"00000000-0000-0000-0000-000000000000"}"#))
+                .unwrap(),
+        )
         .await
         .unwrap();
-    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert!(json["key"].as_str().unwrap().starts_with("tskey-auth-"));
-    assert!(!json["tenant_id"].as_str().unwrap().is_empty());
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

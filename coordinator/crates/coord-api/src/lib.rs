@@ -96,8 +96,8 @@ pub fn router(state: Arc<CoordinatorState>) -> Router {
         .with_state(state)
 }
 
-async fn health() -> &'static str {
-    "ok"
+async fn health() -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({"status": "ok"}))
 }
 
 #[doc(hidden)]

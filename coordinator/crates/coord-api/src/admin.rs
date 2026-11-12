@@ -8,7 +8,7 @@ use std::sync::Arc;
 use coord_core::{NodeId, TenantId};
 use tracing::error;
 use crate::state::CoordinatorState;
-use coord_core::{is_valid_slug, is_valid_hostname, generate_random_slug};
+use coord_core::{is_valid_slug, is_valid_hostname};
 
 fn internal_error(e: impl std::fmt::Display) -> impl IntoResponse {
     error!(error = %e, "internal error");
@@ -219,7 +219,7 @@ pub async fn update_tenant_posture(
 
 #[derive(Deserialize)]
 pub struct CreateKeyRequest {
-    pub tenant_id: Option<String>,
+    pub tenant_id: String,
     pub reusable: Option<bool>,
 }
 
@@ -233,41 +233,22 @@ pub async fn create_preauth_key(
     State(state): State<Arc<CoordinatorState>>,
     Json(body): Json<CreateKeyRequest>,
 ) -> impl IntoResponse {
-    let tenant_id = match &body.tenant_id {
-        Some(id) => match id.parse::<uuid::Uuid>() {
-            Ok(uuid) => {
-                let tid = TenantId::new(uuid);
-                if state.store.get_tenant(tid).await.is_none() {
-                    return (
-                        StatusCode::NOT_FOUND,
-                        Json(serde_json::json!({"error": "tenant not found — create it first via POST /api/tenants"})),
-                    ).into_response();
-                }
-                tid
-            }
-            Err(_) => {
+    let tenant_id = match body.tenant_id.parse::<uuid::Uuid>() {
+        Ok(uuid) => {
+            let tid = TenantId::new(uuid);
+            if state.store.get_tenant(tid).await.is_none() {
                 return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({"error": "invalid tenant_id"})),
-                )
-                    .into_response();
+                    StatusCode::NOT_FOUND,
+                    Json(serde_json::json!({"error": "tenant not found — create it first via POST /api/tenants"})),
+                ).into_response();
             }
-        },
-        None => {
-            let tenant = match state.store.create_tenant(
-                format!("auto-{}", generate_random_slug()),
-                None,
-                None,
-            ).await {
-                Ok(t) => t,
-                Err(e) => {
-                    return (
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(serde_json::json!({"error": format!("failed to create auto tenant: {}", e)})),
-                    ).into_response();
-                }
-            };
-            tenant.id
+            tid
+        }
+        Err(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": "invalid tenant_id"})),
+            ).into_response();
         }
     };
 

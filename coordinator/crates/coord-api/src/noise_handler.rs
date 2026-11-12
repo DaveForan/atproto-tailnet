@@ -139,6 +139,8 @@ async fn run_noise_session(
     });
 
     let result = hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+        .keep_alive_interval(Some(std::time::Duration::from_secs(30)))
+        .keep_alive_timeout(std::time::Duration::from_secs(90))
         .serve_connection(h2_io, service)
         .await;
 
