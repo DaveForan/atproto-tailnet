@@ -22,10 +22,11 @@ impl Store {
         &self,
         slug: String,
         parent_id: Option<TenantId>,
+        posture: Option<FederationPosture>,
     ) -> Result<Tenant, CoordError> {
         match self {
-            Store::Memory(m) => m.create_tenant(slug, parent_id),
-            Store::Pg(p) => p.create_tenant(slug, parent_id).await,
+            Store::Memory(m) => m.create_tenant(slug, parent_id, posture),
+            Store::Pg(p) => p.create_tenant(slug, parent_id, posture).await,
         }
     }
 

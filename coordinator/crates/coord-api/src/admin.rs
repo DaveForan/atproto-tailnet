@@ -21,6 +21,7 @@ fn internal_error(e: impl std::fmt::Display) -> impl IntoResponse {
 pub struct CreateTenantRequest {
     pub slug: String,
     pub parent_id: Option<String>,
+    pub federation_posture: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -72,7 +73,20 @@ pub async fn create_tenant(
         None => None,
     };
 
-    match state.store.create_tenant(body.slug, parent_id).await {
+    let posture = match &body.federation_posture {
+        Some(p) => match p.parse::<coord_core::FederationPosture>() {
+            Ok(fp) => Some(fp),
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "invalid federation_posture: must be open, selective, or closed"})),
+                ).into_response();
+            }
+        },
+        None => None,
+    };
+
+    match state.store.create_tenant(body.slug, parent_id, posture).await {
         Ok(tenant) => (
             StatusCode::CREATED,
             Json(serde_json::json!(TenantResponse::from(tenant))),
@@ -151,6 +165,10 @@ pub async fn delete_tenant(
                 Json(serde_json::json!({"status": "deleted", "tenant_id": id})),
             ).into_response()
         }
+        Err(coord_core::CoordError::TenantNotFound(_)) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "tenant not found"})),
+        ).into_response(),
         Err(e) => internal_error(e).into_response(),
     }
 }
@@ -234,6 +252,7 @@ pub async fn create_preauth_key(
         None => {
             let tenant = match state.store.create_tenant(
                 format!("auto-{}", generate_random_slug()),
+                None,
                 None,
             ).await {
                 Ok(t) => t,

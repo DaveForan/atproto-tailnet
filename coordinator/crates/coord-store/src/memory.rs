@@ -68,6 +68,7 @@ impl MemoryStore {
         &self,
         slug: String,
         parent_id: Option<TenantId>,
+        posture: Option<FederationPosture>,
     ) -> Result<Tenant, CoordError> {
         let mut tenants = self.tenants.lock().unwrap_or_else(|e| e.into_inner());
         if tenants.values().any(|t| t.slug == slug) {
@@ -89,7 +90,7 @@ impl MemoryStore {
             id: TenantId::generate(),
             slug,
             parent_id,
-            federation_posture: FederationPosture::default(),
+            federation_posture: posture.unwrap_or_default(),
             ipv4_prefix: coord_core::DEFAULT_IPV4_PREFIX.into(),
             ipv6_prefix: coord_core::DEFAULT_IPV6_PREFIX.into(),
             created_at: chrono::Utc::now(),
@@ -634,7 +635,7 @@ mod tests {
     #[test]
     fn preauth_key_single_use() {
         let store = MemoryStore::new();
-        let t = store.create_tenant("single-use".into(), None).unwrap();
+        let t = store.create_tenant("single-use".into(), None, None).unwrap();
         let key = store.create_preauth_key(t.id, false).unwrap();
 
         assert_eq!(store.validate_preauth_key(&key), Some(t.id));
@@ -644,7 +645,7 @@ mod tests {
     #[test]
     fn preauth_key_reusable() {
         let store = MemoryStore::new();
-        let t = store.create_tenant("reusable".into(), None).unwrap();
+        let t = store.create_tenant("reusable".into(), None, None).unwrap();
         let key = store.create_preauth_key(t.id, true).unwrap();
 
         assert_eq!(store.validate_preauth_key(&key), Some(t.id));

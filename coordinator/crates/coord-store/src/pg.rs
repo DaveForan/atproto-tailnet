@@ -34,9 +34,11 @@ impl PgStore {
         &self,
         slug: String,
         parent_id: Option<TenantId>,
+        posture: Option<FederationPosture>,
     ) -> Result<Tenant, CoordError> {
         let id = TenantId::generate();
         let parent_uuid = parent_id.map(|p| *p.as_uuid());
+        let federation_posture = posture.unwrap_or_default();
 
         if let Some(pid) = parent_uuid {
             let parent_row: Option<(uuid::Uuid, Option<uuid::Uuid>)> = sqlx::query_as(
@@ -59,11 +61,12 @@ impl PgStore {
         }
 
         sqlx::query(
-            "INSERT INTO coord_tenants (id, slug, parent_id) VALUES ($1, $2, $3)"
+            "INSERT INTO coord_tenants (id, slug, parent_id, federation_posture) VALUES ($1, $2, $3, $4)"
         )
             .bind(id.as_uuid())
             .bind(&slug)
             .bind(parent_uuid)
+            .bind(federation_posture.as_str())
             .execute(&self.pool)
             .await
             .map_err(db)?;
@@ -72,7 +75,7 @@ impl PgStore {
             id,
             slug,
             parent_id,
-            federation_posture: FederationPosture::default(),
+            federation_posture,
             ipv4_prefix: coord_core::DEFAULT_IPV4_PREFIX.into(),
             ipv6_prefix: coord_core::DEFAULT_IPV6_PREFIX.into(),
             created_at: chrono::Utc::now(),

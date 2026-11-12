@@ -57,7 +57,7 @@ fn admin_req() -> axum::http::request::Builder {
 
 /// Create a tenant in the store and return its ID (tests need real tenants since R6).
 async fn create_test_tenant(state: &Arc<CoordinatorState>, slug: &str) -> coord_core::TenantId {
-    state.store().create_tenant(slug.into(), None).await.unwrap().id
+    state.store().create_tenant(slug.into(), None, None).await.unwrap().id
 }
 
 #[tokio::test]
@@ -1008,8 +1008,8 @@ async fn hierarchy_parent_sees_child_peers_when_open() {
     let (_, state) = setup();
 
     // Create parent tenant and child with Open posture
-    let parent = state.store().create_tenant("hier-parent".into(), None).await.unwrap();
-    let child = state.store().create_tenant("hier-child".into(), Some(parent.id)).await.unwrap();
+    let parent = state.store().create_tenant("hier-parent".into(), None, None).await.unwrap();
+    let child = state.store().create_tenant("hier-child".into(), Some(parent.id), None).await.unwrap();
 
     // Set child posture to Open (MemoryStore: update in place)
     {
@@ -1043,8 +1043,8 @@ async fn hierarchy_parent_sees_child_peers_when_open() {
 async fn hierarchy_parent_blocked_when_child_closed() {
     let (_, state) = setup();
 
-    let parent = state.store().create_tenant("closed-parent".into(), None).await.unwrap();
-    let child = state.store().create_tenant("closed-child".into(), Some(parent.id)).await.unwrap();
+    let parent = state.store().create_tenant("closed-parent".into(), None, None).await.unwrap();
+    let child = state.store().create_tenant("closed-child".into(), Some(parent.id), None).await.unwrap();
 
     // Child stays Closed (default)
     assert_eq!(child.federation_posture, coord_core::FederationPosture::Closed);
@@ -1071,8 +1071,8 @@ async fn hierarchy_parent_blocked_when_child_closed() {
 async fn hierarchy_child_does_not_see_parent_peers() {
     let (_, state) = setup();
 
-    let parent = state.store().create_tenant("uni-parent".into(), None).await.unwrap();
-    let child = state.store().create_tenant("uni-child".into(), Some(parent.id)).await.unwrap();
+    let parent = state.store().create_tenant("uni-parent".into(), None, None).await.unwrap();
+    let child = state.store().create_tenant("uni-child".into(), Some(parent.id), None).await.unwrap();
 
     // Set child to Open
     if let coord_store::Store::Memory(m) = state.store().as_ref() {
@@ -1103,8 +1103,8 @@ async fn hierarchy_child_does_not_see_parent_peers() {
 async fn hierarchy_selective_posture_allows_visibility() {
     let (_, state) = setup();
 
-    let parent = state.store().create_tenant("sel-parent".into(), None).await.unwrap();
-    let child = state.store().create_tenant("sel-child".into(), Some(parent.id)).await.unwrap();
+    let parent = state.store().create_tenant("sel-parent".into(), None, None).await.unwrap();
+    let child = state.store().create_tenant("sel-child".into(), Some(parent.id), None).await.unwrap();
 
     // Set child to Selective
     if let coord_store::Store::Memory(m) = state.store().as_ref() {
@@ -1133,8 +1133,8 @@ async fn hierarchy_selective_posture_allows_visibility() {
 async fn hierarchy_routes_endpoint() {
     let (app, state) = setup();
 
-    let parent = state.store().create_tenant("route-parent".into(), None).await.unwrap();
-    let child = state.store().create_tenant("route-child".into(), Some(parent.id)).await.unwrap();
+    let parent = state.store().create_tenant("route-parent".into(), None, None).await.unwrap();
+    let child = state.store().create_tenant("route-child".into(), Some(parent.id), None).await.unwrap();
 
     // Set child to Open
     if let coord_store::Store::Memory(m) = state.store().as_ref() {
@@ -1164,7 +1164,7 @@ async fn hierarchy_routes_endpoint() {
 #[tokio::test]
 async fn update_posture_via_api() {
     let (app, state) = setup();
-    let tenant = state.store().create_tenant("posture-test".into(), None).await.unwrap();
+    let tenant = state.store().create_tenant("posture-test".into(), None, None).await.unwrap();
 
     // Default posture should be Closed
     assert_eq!(tenant.federation_posture, coord_core::FederationPosture::Closed);
@@ -1320,7 +1320,7 @@ async fn rename_node_with_wrong_tenant_returns_403() {
 // ── Federation message route tests ──
 
 async fn register_collective_did(state: &Arc<CoordinatorState>, slug: &str, did: &str) -> coord_core::TenantId {
-    let tenant = state.store().create_tenant(slug.into(), None).await.unwrap();
+    let tenant = state.store().create_tenant(slug.into(), None, None).await.unwrap();
     let cdid = coord_core::types::CollectiveDid {
         tenant_id: tenant.id,
         did: did.to_string(),
@@ -1667,4 +1667,89 @@ async fn health_endpoint_bypasses_admin_auth() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn admin_create_tenant_with_federation_posture() {
+    let (app, _) = setup();
+
+    let resp = app.clone()
+        .oneshot(
+            admin_req()
+                .method("POST")
+                .uri("/api/tenants")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"slug":"fp-sel","federation_posture":"selective"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body: serde_json::Value = serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["federation_posture"], "selective");
+
+    let resp = app.clone()
+        .oneshot(
+            admin_req()
+                .method("POST")
+                .uri("/api/tenants")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"slug":"fp-open","federation_posture":"open"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body: serde_json::Value = serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["federation_posture"], "open");
+
+    let resp = app
+        .oneshot(
+            admin_req()
+                .method("POST")
+                .uri("/api/tenants")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"slug":"fp-default"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CREATED);
+    let body: serde_json::Value = serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["federation_posture"], "closed");
+}
+
+#[tokio::test]
+async fn admin_create_tenant_rejects_invalid_posture() {
+    let (app, _) = setup();
+
+    let resp = app
+        .oneshot(
+            admin_req()
+                .method("POST")
+                .uri("/api/tenants")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"slug":"fp-bad","federation_posture":"aggressive"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn admin_delete_nonexistent_tenant_returns_404() {
+    let (app, _) = setup();
+
+    let resp = app
+        .oneshot(
+            admin_req()
+                .method("DELETE")
+                .uri("/api/tenants/00000000-0000-0000-0000-000000000000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
