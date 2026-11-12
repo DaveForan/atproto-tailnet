@@ -577,8 +577,8 @@ impl PgStore {
     }
 
     pub async fn get_node_info(&self, node_id: NodeId) -> Option<NodeDetail> {
-        let row = sqlx::query_as::<_, (uuid::Uuid, String, String, Vec<u8>, Vec<u8>, Option<String>, serde_json::Value, String, String)>(
-            "SELECT tenant_id, ipv4, stable_id, node_key, machine_key, disco_key, endpoints, hostname, os \
+        let row = sqlx::query_as::<_, (uuid::Uuid, String, String, Vec<u8>, Vec<u8>, Option<String>, serde_json::Value, String, String, bool)>(
+            "SELECT tenant_id, ipv4, stable_id, node_key, machine_key, disco_key, endpoints, hostname, os, online \
              FROM coord_nodes WHERE id = $1"
         )
             .bind(node_id.as_i64())
@@ -586,7 +586,7 @@ impl PgStore {
             .await
             .ok()??;
 
-        let (tenant_uuid, ip_str, stable_id, node_key, machine_key, disco_key, endpoints_json, hostname, os) = row;
+        let (tenant_uuid, ip_str, stable_id, node_key, machine_key, disco_key, endpoints_json, hostname, os, online) = row;
         let ipv4: Ipv4Addr = ip_str.parse().ok()?;
         let endpoints: Vec<String> = serde_json::from_value(endpoints_json).unwrap_or_default();
 
@@ -604,6 +604,7 @@ impl PgStore {
                 ipv4: None,
                 ipv6: None,
             },
+            online,
         })
     }
 

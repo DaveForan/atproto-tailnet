@@ -1765,3 +1765,74 @@ async fn admin_delete_nonexistent_tenant_returns_404() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
+
+#[tokio::test]
+async fn admin_delete_nonexistent_node_returns_404() {
+    let (app, _) = setup();
+
+    let resp = app
+        .oneshot(
+            admin_req()
+                .method("DELETE")
+                .uri("/api/nodes/999999")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn admin_rename_nonexistent_node_returns_404() {
+    let (app, _) = setup();
+
+    let resp = app
+        .oneshot(
+            admin_req()
+                .method("POST")
+                .uri("/api/nodes/999999/name")
+                .header("Content-Type", "application/json")
+                .body(Body::from(r#"{"name":"new-host"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn federation_hello_missing_header_returns_400() {
+    let (app, _) = setup_with_callbacks();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/federation/messages/hello")
+                .header("Content-Type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn federation_commit_missing_header_returns_400() {
+    let (app, _) = setup_with_callbacks();
+
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/federation/messages/commit")
+                .header("Content-Type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}

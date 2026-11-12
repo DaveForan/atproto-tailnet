@@ -288,6 +288,7 @@ pub struct NodeDetail {
     pub ipv4: Ipv4Addr,
     pub stable_id: String,
     pub info: NodeInfo,
+    pub online: bool,
 }
 
 pub fn is_valid_slug(s: &str) -> bool {

@@ -523,7 +523,7 @@ pub async fn get_node_handler(
             "ipv4": detail.ipv4.to_string(),
             "stable_id": detail.stable_id,
             "hostname": detail.info.hostname,
-            "online": true,
+            "online": detail.online,
         })).into_response(),
         None => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "node not found"}))).into_response(),
     }
@@ -553,6 +553,9 @@ pub async fn delete_node_handler(
 
     match state.store.delete_node(node_id).await {
         Ok(_) => (StatusCode::OK, Json(serde_json::json!({"status": "deleted"}))).into_response(),
+        Err(coord_core::CoordError::Protocol(ref msg)) if msg.contains("not found") => {
+            (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "node not found"}))).into_response()
+        }
         Err(e) => internal_error(e).into_response(),
     }
 }
@@ -589,7 +592,6 @@ pub async fn rename_node_handler(
 
     match state.store.rename_node(node_id, body.name).await {
         Ok(()) => {
-            // Return updated node info
             match state.store.get_node_info(node_id).await {
                 Some(detail) => Json(serde_json::json!({
                     "id": node_id.as_i64(),
@@ -597,10 +599,13 @@ pub async fn rename_node_handler(
                     "ipv4": detail.ipv4.to_string(),
                     "stable_id": detail.stable_id,
                     "hostname": detail.info.hostname,
-                    "online": true,
+                    "online": detail.online,
                 })).into_response(),
                 None => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "node not found"}))).into_response(),
             }
+        }
+        Err(coord_core::CoordError::Protocol(ref msg)) if msg.contains("not found") => {
+            (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "node not found"}))).into_response()
         }
         Err(e) => internal_error(e).into_response(),
     }

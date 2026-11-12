@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use axum::{
+    body::Bytes,
     extract::State,
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
@@ -18,6 +19,15 @@ use coord_federation::{
 use crate::state::CoordinatorState;
 
 const CFP_RECIPIENT: &str = "CFP-Recipient";
+
+fn parse_body<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, impl IntoResponse> {
+    serde_json::from_slice(body).map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({ "error": format!("Invalid request body: {e}") })),
+        )
+    })
+}
 
 fn inbound_error_response(err: InboundError) -> impl IntoResponse {
     let status = match err.status_code() {
@@ -83,10 +93,15 @@ fn require_callbacks(
 pub async fn handle_hello(
     State(state): State<Arc<CoordinatorState>>,
     headers: HeaderMap,
-    Json(hello): Json<HelloMessage>,
+    body: Bytes,
 ) -> impl IntoResponse {
     let (tenant_id, recipient_did) = match resolve_recipient(&state, &headers).await {
         Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
+
+    let hello: HelloMessage = match parse_body(&body) {
+        Ok(m) => m,
         Err(e) => return e.into_response(),
     };
 
@@ -107,10 +122,15 @@ pub async fn handle_hello(
 pub async fn handle_commit(
     State(state): State<Arc<CoordinatorState>>,
     headers: HeaderMap,
-    Json(commit): Json<CommitMessage>,
+    body: Bytes,
 ) -> impl IntoResponse {
     let (tenant_id, _recipient_did) = match resolve_recipient(&state, &headers).await {
         Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
+
+    let commit: CommitMessage = match parse_body(&body) {
+        Ok(m) => m,
         Err(e) => return e.into_response(),
     };
 
@@ -131,10 +151,15 @@ pub async fn handle_commit(
 pub async fn handle_keepalive(
     State(state): State<Arc<CoordinatorState>>,
     headers: HeaderMap,
-    Json(keepalive): Json<KeepaliveMessage>,
+    body: Bytes,
 ) -> impl IntoResponse {
     let (tenant_id, _recipient_did) = match resolve_recipient(&state, &headers).await {
         Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
+
+    let keepalive: KeepaliveMessage = match parse_body(&body) {
+        Ok(m) => m,
         Err(e) => return e.into_response(),
     };
 
@@ -155,10 +180,15 @@ pub async fn handle_keepalive(
 pub async fn handle_revoke(
     State(state): State<Arc<CoordinatorState>>,
     headers: HeaderMap,
-    Json(revoke): Json<RevokeMessage>,
+    body: Bytes,
 ) -> impl IntoResponse {
     let (tenant_id, _recipient_did) = match resolve_recipient(&state, &headers).await {
         Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
+
+    let revoke: RevokeMessage = match parse_body(&body) {
+        Ok(m) => m,
         Err(e) => return e.into_response(),
     };
 
@@ -183,10 +213,15 @@ pub async fn handle_revoke(
 pub async fn handle_link_request(
     State(state): State<Arc<CoordinatorState>>,
     headers: HeaderMap,
-    Json(msg): Json<LinkRequestMessage>,
+    body: Bytes,
 ) -> impl IntoResponse {
     let (tenant_id, _recipient_did) = match resolve_recipient(&state, &headers).await {
         Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
+
+    let msg: LinkRequestMessage = match parse_body(&body) {
+        Ok(m) => m,
         Err(e) => return e.into_response(),
     };
 
@@ -211,10 +246,15 @@ pub async fn handle_link_request(
 pub async fn handle_link_accept(
     State(state): State<Arc<CoordinatorState>>,
     headers: HeaderMap,
-    Json(msg): Json<LinkAcceptMessage>,
+    body: Bytes,
 ) -> impl IntoResponse {
     let (tenant_id, _recipient_did) = match resolve_recipient(&state, &headers).await {
         Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
+
+    let msg: LinkAcceptMessage = match parse_body(&body) {
+        Ok(m) => m,
         Err(e) => return e.into_response(),
     };
 
@@ -239,10 +279,15 @@ pub async fn handle_link_accept(
 pub async fn handle_link_reject(
     State(state): State<Arc<CoordinatorState>>,
     headers: HeaderMap,
-    Json(msg): Json<LinkRejectMessage>,
+    body: Bytes,
 ) -> impl IntoResponse {
     let (tenant_id, _recipient_did) = match resolve_recipient(&state, &headers).await {
         Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
+
+    let msg: LinkRejectMessage = match parse_body(&body) {
+        Ok(m) => m,
         Err(e) => return e.into_response(),
     };
 
@@ -267,10 +312,15 @@ pub async fn handle_link_reject(
 pub async fn handle_link_revoke(
     State(state): State<Arc<CoordinatorState>>,
     headers: HeaderMap,
-    Json(msg): Json<LinkRevokeMessage>,
+    body: Bytes,
 ) -> impl IntoResponse {
     let (tenant_id, _recipient_did) = match resolve_recipient(&state, &headers).await {
         Ok(r) => r,
+        Err(e) => return e.into_response(),
+    };
+
+    let msg: LinkRevokeMessage = match parse_body(&body) {
+        Ok(m) => m,
         Err(e) => return e.into_response(),
     };
 

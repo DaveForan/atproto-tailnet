@@ -432,6 +432,7 @@ impl MemoryStore {
             ipv4: n.ipv4,
             stable_id: n.stable_id.clone(),
             info: n.info.clone(),
+            online: n.online,
         })
     }
 
