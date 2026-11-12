@@ -106,9 +106,8 @@ npm run start                 # runs dist/index.js
 For a real domain with wildcard TLS:
 
 1. Point your domain's DNS to the server (A record for `tailnets.example.com`, wildcard `*.ts.example.com`)
-2. Edit the two domain names in `Caddyfile.production` (used by `docker-compose.production.yml`)
-3. Set `PUBLIC_URL`, `BASE_DOMAIN`, and `SESSION_SECRET` in `.env`; leave `TENANT_PUBLIC_PORT` unset
-4. Caddy auto-provisions TLS via Let's Encrypt. The wildcard certificate needs a DNS challenge; `Caddyfile.production` does it through Cloudflare (`CF_API_TOKEN`), using the Caddy build in `Dockerfile.caddy`. For another DNS provider, swap the module in both files.
+2. Set `PUBLIC_URL`, `BASE_DOMAIN`, `APP_DOMAIN`, and `SESSION_SECRET` in `.env`; leave `TENANT_PUBLIC_PORT` unset
+3. Choose a TLS strategy by setting `TLS_STRATEGY` in `.env` (default: `on-demand`). Each strategy is a directory in `caddy/tls-strategies/` with its required env vars documented in the files. DNS-01 strategies also need `CADDY_DNS_PLUGINS` set so the Caddy image builds with the provider module.
 
 Tenant routes are not written in the Caddyfile: the service keeps one managed route in Caddy (through its admin API) in sync with the database, and re-adds it if Caddy restarts.
 

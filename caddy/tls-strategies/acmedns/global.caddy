@@ -1,0 +1,4 @@
+# acme-dns challenge delegation: wildcard cert with a single CNAME.
+# One-time setup: CNAME _acme-challenge.<base-domain> -> <subdomain>.<acme-dns-zone>
+# Env: ACMEDNS_SERVER_URL, ACMEDNS_USERNAME, ACMEDNS_PASSWORD, ACMEDNS_SUBDOMAIN
+# Caddy image: must include github.com/caddy-dns/acmedns

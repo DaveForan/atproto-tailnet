@@ -1,0 +1,5 @@
+# On-demand TLS: per-tenant certs at first connection; no DNS credentials.
+# The TS service must answer 2xx for real tenant hostnames at this URL.
+on_demand_tls {
+	ask http://app:3000/internal/tls-check
+}

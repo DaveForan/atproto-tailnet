@@ -1,0 +1,5 @@
+tls {
+	dns route53 {
+		region {env.AWS_REGION}
+	}
+}

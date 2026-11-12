@@ -1,7 +1,22 @@
-# Caddy with the Cloudflare DNS module, needed for the wildcard certificate in
-# Caddyfile.production (DNS-01 challenge). The stock image does not include it.
+# Caddy with optional DNS provider modules for wildcard TLS.
+#
+# For on-demand or manual strategies, no plugins are needed — use the stock
+# caddy:2-alpine image directly (skip this Dockerfile).
+#
+# For DNS-01 strategies, set CADDY_DNS_PLUGINS to the module(s) you need:
+#   docker build --build-arg CADDY_DNS_PLUGINS="github.com/caddy-dns/route53" ...
+#
+# Multiple plugins can be space-separated:
+#   CADDY_DNS_PLUGINS="github.com/caddy-dns/cloudflare github.com/caddy-dns/route53"
 FROM caddy:2-builder AS builder
-RUN xcaddy build --with github.com/caddy-dns/cloudflare
+ARG CADDY_DNS_PLUGINS=""
+RUN set -eu; \
+    if [ -z "$CADDY_DNS_PLUGINS" ]; then \
+      xcaddy build; \
+    else \
+      args=""; for p in $CADDY_DNS_PLUGINS; do args="$args --with $p"; done; \
+      xcaddy build $args; \
+    fi
 
 FROM caddy:2-alpine
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy

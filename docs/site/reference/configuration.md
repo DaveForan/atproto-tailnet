@@ -49,12 +49,30 @@ These are only used when `COORDINATOR_URL` is **not** set:
 |----------|----------|---------|-------------|
 | `FEDERATION_KEY_ENCRYPTION_KEY` | For federation | --- | 64 hex characters (32 bytes). AES-256-GCM key for encrypting collective signing keys at rest |
 
-## Caddy
+## Caddy and TLS
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `CADDY_ADMIN_URL` | No | `http://localhost:2019` | Caddy admin API URL for dynamic route management |
-| `CF_API_TOKEN` | Production | --- | Cloudflare API token for wildcard TLS via DNS-01 challenge |
+| `TLS_STRATEGY` | No | `on-demand` | TLS certificate strategy. See [TLS strategies](#tls-strategies) below |
+| `APP_DOMAIN` | No | `tailnets.example.com` | Domain for the main app (dashboard, auth, API) |
+| `CADDY_DNS_PLUGINS` | When DNS-01 | --- | Space-separated Go module paths for Caddy DNS modules (e.g., `github.com/caddy-dns/route53`) |
+
+### TLS strategies
+
+The `TLS_STRATEGY` variable selects how Caddy obtains certificates for tenant subdomains. Each strategy is a directory in `caddy/tls-strategies/` containing `global.caddy` and `site.caddy` snippets that the production Caddyfile imports.
+
+| Strategy | Type | DNS credentials | Caddy module needed | Notes |
+|----------|------|-----------------|---------------------|-------|
+| `on-demand` | Per-tenant certs | None | None | Default. Caddy issues individual certs on first connection. Requires `/internal/tls-check` endpoint (built-in) |
+| `cloudflare` | Wildcard | `CF_API_TOKEN` | `caddy-dns/cloudflare` | |
+| `route53` | Wildcard | `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | `caddy-dns/route53` | Instance roles also work (no key env vars) |
+| `digitalocean` | Wildcard | `DO_AUTH_TOKEN` | `caddy-dns/digitalocean` | |
+| `rfc2136` | Wildcard | `RFC2136_SERVER`, `RFC2136_KEY_NAME`, `RFC2136_KEY` | `caddy-dns/rfc2136` | BIND, Knot DNS, PowerDNS |
+| `acmedns` | Wildcard | `ACMEDNS_SERVER_URL`, `ACMEDNS_USERNAME`, `ACMEDNS_PASSWORD`, `ACMEDNS_SUBDOMAIN` | `caddy-dns/acmedns` | One-time CNAME setup |
+| `manual` | Wildcard | None | None | Bring your own cert. Mount at `/etc/caddy/certs/` |
+
+**Choosing a strategy:** `on-demand` is the simplest — no DNS provider API access required, no extra Caddy modules. DNS-01 strategies issue a single wildcard certificate which is faster for many tenants. `rfc2136` and `acmedns` work with self-hosted DNS and avoid all cloud provider dependencies. `manual` is for environments with existing certificate management.
 
 ## Coordinator binary configuration
 
@@ -98,8 +116,8 @@ store_backend = "sqlite"      # "sqlite", "postgres", or "memory"
 |------|------|-------------|
 | `Caddyfile` | Legacy dev | HTTP on `:80`, proxies to `host.docker.internal:3000` |
 | `Caddyfile.coordinator` | Coordinator dev | HTTP on `:80`, proxies to `app:3000` |
-| `Caddyfile.production` | Legacy prod | HTTPS with Cloudflare DNS-01 wildcard TLS |
-| `Caddyfile.coordinator.production` | Coordinator prod | HTTPS with Cloudflare DNS-01 wildcard TLS |
+| `Caddyfile.production` | Legacy prod | HTTPS with pluggable TLS strategy (imports from mounted `tls-strategy/`) |
+| `Caddyfile.coordinator.production` | Coordinator prod | HTTPS with pluggable TLS strategy (imports from mounted `tls-strategy/`) |
 
 All Caddyfiles name the server `tailnet_proxy`. The TypeScript service dynamically manages one route (`@id: tailnet_tenants`) via the Caddy admin API to route tenant subdomains to the correct backend.
 
@@ -122,7 +140,7 @@ All Caddyfiles name the server `tailnet_proxy`. The TypeScript service dynamical
 - [ ] `COORDINATOR_API_KEY` / `COORD_ADMIN_KEY` are strong random values (matching)
 - [ ] `FEDERATION_KEY_ENCRYPTION_KEY` is 64 random hex characters (if using federation)
 - [ ] `ATPROTO_PRIVATE_KEY` is set (generate with AT Proto tooling)
-- [ ] `CF_API_TOKEN` is set for Cloudflare wildcard TLS (or adjust Caddyfile for your DNS provider)
+- [ ] `TLS_STRATEGY` is set and the required env vars for that strategy are provided (see [TLS strategies](#tls-strategies))
 - [ ] PostgreSQL has a strong password and is not exposed to the internet
 - [ ] Caddy is the only service bound to ports 80/443
 - [ ] `COORD_ADMIN_KEY` is set on the coordinator (otherwise admin API is unauthenticated)

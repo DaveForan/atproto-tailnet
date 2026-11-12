@@ -1,0 +1,4 @@
+# Manual wildcard certificate: bring your own cert + key.
+# Renewal is the operator's responsibility. No DNS modules needed.
+# Caddy image: stock caddy:2-alpine
+# Volumes: mount cert + key at /etc/caddy/certs/

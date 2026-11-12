@@ -1,0 +1,10 @@
+# Stand-ins for the service: an "ask" endpoint that knows one tenant, and a tenant upstream.
+http://:9999 {
+	@known query domain=acme.ts.example.test
+	respond @known "ok" 200
+	respond "unknown tenant" 403
+}
+
+http://:9998 {
+	respond "tenant upstream"
+}

@@ -1,0 +1,4 @@
+# RFC 2136 dynamic DNS update: wildcard cert via TSIG-signed updates.
+# Works with BIND, Knot DNS, PowerDNS, etc. No cloud provider dependency.
+# Env: RFC2136_SERVER (ip:port), RFC2136_KEY_NAME, RFC2136_KEY (base64)
+# Caddy image: must include github.com/caddy-dns/rfc2136

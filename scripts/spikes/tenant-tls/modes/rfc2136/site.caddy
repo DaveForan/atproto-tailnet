@@ -1,0 +1,9 @@
+# Any authoritative server that accepts TSIG-signed dynamic updates (BIND, Knot, PowerDNS).
+tls {
+	dns rfc2136 {
+		key_name {env.RFC2136_KEY_NAME}
+		key_alg hmac-sha256
+		key {env.RFC2136_KEY}
+		server {env.RFC2136_SERVER}
+	}
+}

@@ -23,7 +23,7 @@ you control (a VPS, Droplet, or EC2 instance).
 | Ports | 80, 443 (Caddy), 3000 (app), 10001-10100 (Headscale tenants) |
 | Persistent storage | `./data/headscale/` -- tenant configs and SQLite DBs |
 | DNS | Wildcard record `*.ts.yourdomain.com` pointing to the host |
-| TLS | Caddy auto-provisions via Let's Encrypt DNS-01 (Cloudflare) |
+| TLS | Caddy auto-provisions via pluggable strategy (on-demand, DNS-01 wildcard, or manual) |
 
 ### Platform comparison
 
@@ -55,7 +55,7 @@ to start in production if `SESSION_SECRET` is weak.
 | `CADDY_ADMIN_URL` | No | `http://localhost:2019` | Caddy admin API endpoint |
 | `LOG_LEVEL` | No | `info` | Pino log level (`debug`, `info`, `warn`, `error`) |
 | `ATPROTO_PRIVATE_KEY` | Prod | -- | ES256 JWK for AT Proto OAuth (required for production) |
-| `CF_API_TOKEN` | Prod | -- | Cloudflare API token for DNS-01 TLS challenge |
+| `TLS_STRATEGY` | No | `on-demand` | TLS certificate strategy (see `caddy/tls-strategies/`) |
 
 ### Production `.env` example
 
@@ -71,7 +71,7 @@ HEADSCALE_PORT_RANGE_END=10100
 HEADSCALE_DATA_DIR=/data/headscale
 CADDY_ADMIN_URL=http://caddy:2019
 LOG_LEVEL=info
-CF_API_TOKEN=your-cloudflare-api-token
+TLS_STRATEGY=on-demand
 ATPROTO_PRIVATE_KEY={"kty":"EC","crv":"P-256",...}
 ```
 
@@ -79,9 +79,10 @@ ATPROTO_PRIVATE_KEY={"kty":"EC","crv":"P-256",...}
 
 ## TLS and wildcard DNS with Caddy
 
-Caddy handles TLS termination using Let's Encrypt certificates. For wildcard
-subdomains (`*.ts.yourdomain.com`), it uses the DNS-01 challenge via
-Cloudflare's API.
+Caddy handles TLS termination using Let's Encrypt certificates. The TLS
+strategy is pluggable — set `TLS_STRATEGY` in `.env` to choose how certificates
+are obtained. Each strategy is a directory in `caddy/tls-strategies/` with its
+requirements documented in the files.
 
 ### DNS records
 
@@ -90,20 +91,29 @@ Cloudflare's API.
 | A | `tailnets.yourdomain.com` | `<server IP>` |
 | A | `*.ts.yourdomain.com` | `<server IP>` |
 
-### Cloudflare API token
+### TLS strategies
 
-Create a token at https://dash.cloudflare.com/profile/api-tokens with the
-**Zone:DNS:Edit** permission for your domain. Set it as `CF_API_TOKEN`.
+| Strategy | How it works | DNS credentials needed |
+|----------|-------------|----------------------|
+| `on-demand` (default) | Per-tenant cert on first connection | None |
+| `cloudflare` | DNS-01 wildcard | `CF_API_TOKEN` |
+| `route53` | DNS-01 wildcard | AWS credentials |
+| `digitalocean` | DNS-01 wildcard | `DO_AUTH_TOKEN` |
+| `rfc2136` | DNS-01 wildcard | TSIG keys (BIND/Knot/PowerDNS) |
+| `acmedns` | DNS-01 wildcard via delegation | acme-dns credentials + one CNAME |
+| `manual` | Bring your own wildcard cert | None |
+
+DNS-01 strategies need the Caddy image built with the DNS module. Set
+`CADDY_DNS_PLUGINS` in `.env` to the Go module path (e.g.,
+`github.com/caddy-dns/route53`). The `on-demand` and `manual` strategies
+use stock Caddy with no build step.
 
 ### Caddyfile
 
-The production Caddyfile (`Caddyfile.production`) configures:
-1. The main app domain reverse-proxying to `localhost:3000`
-2. A wildcard block for tenant subdomains with DNS-01 TLS
-3. The admin API on port 2019 (used by the app to add/remove tenant routes
-   dynamically)
-
-Update `Caddyfile.production` with your actual domain before deploying.
+The production Caddyfile (`Caddyfile.production`) imports the TLS strategy from
+a mounted directory (`/etc/caddy/tls-strategy/`). The compose files
+automatically mount the correct strategy based on `TLS_STRATEGY`. Set
+`APP_DOMAIN` and `BASE_DOMAIN` in `.env` — no Caddyfile editing needed.
 
 ---
 

@@ -1,0 +1,3 @@
+tls {
+	dns digitalocean {env.DO_AUTH_TOKEN}
+}

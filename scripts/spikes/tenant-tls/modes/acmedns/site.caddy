@@ -1,0 +1,9 @@
+# Needs one CNAME at any DNS host: _acme-challenge.<base domain> -> <subdomain>.<acme-dns zone>
+tls {
+	dns acmedns {
+		username {env.ACMEDNS_USERNAME}
+		password {env.ACMEDNS_PASSWORD}
+		subdomain {env.ACMEDNS_SUBDOMAIN}
+		server_url {env.ACMEDNS_SERVER_URL}
+	}
+}

@@ -1,0 +1,2 @@
+# A wildcard certificate obtained elsewhere; renewal is the operator's job.
+tls /etc/caddy/certs/wildcard.pem /etc/caddy/certs/wildcard.key

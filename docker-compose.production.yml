@@ -7,7 +7,7 @@
 # Prerequisites:
 #   - Docker Engine with Compose v2
 #   - Wildcard DNS pointing *.ts.yourdomain.com to this host
-#   - Cloudflare API token for DNS-01 TLS challenge (set CF_API_TOKEN in .env)
+#   - A TLS strategy selected in .env (see caddy/tls-strategies/)
 
 services:
   # ---------- Application -------------------------------------------------
@@ -63,10 +63,20 @@ services:
 
   # ---------- Caddy reverse proxy ----------------------------------------
   caddy:
-    # Stock Caddy plus the Cloudflare DNS module (wildcard cert via DNS-01)
+    # For on-demand or manual TLS: use stock image (no DNS plugins needed)
+    #   image: caddy:2-alpine
+    # For DNS-01 strategies: build with the provider module
+    #   build:
+    #     context: .
+    #     dockerfile: Dockerfile.caddy
+    #     args:
+    #       CADDY_DNS_PLUGINS: "github.com/caddy-dns/route53"
+    image: ${CADDY_IMAGE:-caddy:2-alpine}
     build:
       context: .
       dockerfile: Dockerfile.caddy
+      args:
+        CADDY_DNS_PLUGINS: ${CADDY_DNS_PLUGINS:-}
     restart: unless-stopped
     ports:
       - "80:80"
@@ -75,9 +85,24 @@ services:
     expose:
       - "2019"           # Admin API (internal only)
     environment:
+      APP_DOMAIN: ${APP_DOMAIN:-tailnets.example.com}
+      BASE_DOMAIN: ${BASE_DOMAIN}
+      # DNS-01 provider credentials (set whichever your strategy needs)
       CF_API_TOKEN: ${CF_API_TOKEN:-}
+      DO_AUTH_TOKEN: ${DO_AUTH_TOKEN:-}
+      AWS_REGION: ${AWS_REGION:-}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      RFC2136_SERVER: ${RFC2136_SERVER:-}
+      RFC2136_KEY_NAME: ${RFC2136_KEY_NAME:-}
+      RFC2136_KEY: ${RFC2136_KEY:-}
+      ACMEDNS_SERVER_URL: ${ACMEDNS_SERVER_URL:-}
+      ACMEDNS_USERNAME: ${ACMEDNS_USERNAME:-}
+      ACMEDNS_PASSWORD: ${ACMEDNS_PASSWORD:-}
+      ACMEDNS_SUBDOMAIN: ${ACMEDNS_SUBDOMAIN:-}
     volumes:
       - ./Caddyfile.production:/etc/caddy/Caddyfile
+      - ./caddy/tls-strategies/${TLS_STRATEGY:-on-demand}:/etc/caddy/tls-strategy:ro
       - caddy_data:/data
       - caddy_config:/config
     networks:

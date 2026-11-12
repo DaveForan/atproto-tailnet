@@ -23,7 +23,9 @@ import connectPgSimple from "connect-pg-simple";
 import rateLimit from "express-rate-limit";
 import { randomBytes } from "node:crypto";
 import { config } from "./config.js";
-import { pool } from "./db/index.js";
+import { db, pool } from "./db/index.js";
+import { tenants } from "./db/schema.js";
+import { eq } from "drizzle-orm";
 import { authRouter } from "./routes/auth.js";
 import { apiRouter } from "./routes/api.js";
 import { invitationsRouter } from "./routes/invitations.js";
@@ -51,6 +53,38 @@ import { reconcileTenantRouting } from "./orchestrator/caddy.js";
 import { logger } from "./logger.js";
 
 const app = express();
+
+// ── Internal endpoint for Caddy on-demand TLS ───────────────────────
+// Caddy calls this before issuing a certificate for a hostname.
+// Returns 200 if the hostname belongs to a real tenant, 403 otherwise.
+// Must be before all middleware (no session, no CSRF, no rate limiting).
+app.get("/internal/tls-check", async (req: Request, res: Response) => {
+  const domain = (req.query.domain as string) || "";
+  const suffix = `.${config.baseDomain}`;
+  if (!domain.endsWith(suffix)) {
+    res.status(403).end();
+    return;
+  }
+  const slug = domain.slice(0, -suffix.length);
+  if (!slug || slug.includes(".")) {
+    res.status(403).end();
+    return;
+  }
+  try {
+    const [tenant] = await db
+      .select({ slug: tenants.slug })
+      .from(tenants)
+      .where(eq(tenants.slug, slug))
+      .limit(1);
+    if (tenant) {
+      res.status(200).end();
+    } else {
+      res.status(403).end();
+    }
+  } catch {
+    res.status(403).end();
+  }
+});
 
 // ── Security headers ──────────────────────────────────────────────────
 app.use((_req: Request, res: Response, next: NextFunction) => {

@@ -1,0 +1,3 @@
+# DigitalOcean DNS-01: wildcard cert via DO API.
+# Env: DO_AUTH_TOKEN (domain read/write scope)
+# Caddy image: must include github.com/caddy-dns/digitalocean

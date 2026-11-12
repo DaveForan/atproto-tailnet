@@ -1,0 +1,2 @@
+# Local stand-in for every wildcard mode: same shape, Caddy's own CA instead of ACME.
+tls internal

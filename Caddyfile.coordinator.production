@@ -1,22 +1,20 @@
+# Coordinator-mode production Caddyfile — same TLS strategy mechanism as
+# Caddyfile.production. Mount a strategy directory at /etc/caddy/tls-strategy/.
+# See caddy/tls-strategies/ for available strategies.
 {
 	admin 0.0.0.0:2019
 
 	servers :443 {
 		name tailnet_proxy
 	}
+
+	import /etc/caddy/tls-strategy/global.caddy
 }
 
-# Main app — dashboard, auth, API
-tailnets.example.com {
+{$APP_DOMAIN:tailnets.example.com} {
 	reverse_proxy app:3000
 }
 
-# Wildcard for tenant subdomains — DNS-01 challenge via Cloudflare.
-# Per-tenant reverse proxies are managed dynamically by the TS service
-# via the Caddy admin API; in coordinator mode they all point to the
-# coordinator process.
-*.ts.example.com {
-	tls {
-		dns cloudflare {env.CF_API_TOKEN}
-	}
+*.{$BASE_DOMAIN:ts.example.com} {
+	import /etc/caddy/tls-strategy/site.caddy
 }

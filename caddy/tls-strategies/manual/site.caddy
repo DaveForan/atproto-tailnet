@@ -1,0 +1,1 @@
+tls /etc/caddy/certs/wildcard.pem /etc/caddy/certs/wildcard.key

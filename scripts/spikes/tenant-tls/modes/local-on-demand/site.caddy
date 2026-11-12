@@ -1,0 +1,5 @@
+# Local stand-in for on-demand: same shape, Caddy's own CA instead of ACME.
+tls {
+	on_demand
+	issuer internal
+}

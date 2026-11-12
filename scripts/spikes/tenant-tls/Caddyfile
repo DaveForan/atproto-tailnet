@@ -1,0 +1,23 @@
+# Production-shaped Caddyfile whose tenant TLS strategy is chosen by mounting
+# one directory from modes/ at /etc/caddy/mode:
+#   global.caddy — lines for the global options block (may be empty)
+#   site.caddy   — the body of the tenant wildcard site
+#   extra*.caddy — optional extra sites (only the local test modes use this)
+{
+	admin 0.0.0.0:2019
+	servers :443 {
+		name tailnet_proxy
+	}
+	import /etc/caddy/mode/global.caddy
+}
+
+tailnets.example.test {
+	tls internal
+	respond "main app"
+}
+
+*.ts.example.test {
+	import /etc/caddy/mode/site.caddy
+}
+
+import /etc/caddy/mode/extra*.caddy

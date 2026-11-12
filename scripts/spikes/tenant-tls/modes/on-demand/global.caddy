@@ -1,0 +1,5 @@
+# Per-tenant certificates at first connection; no DNS credentials at all.
+# The service must answer 2xx only for hostnames of real tenants.
+on_demand_tls {
+	ask http://app:3000/internal/tls-check
+}

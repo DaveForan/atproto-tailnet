@@ -1,27 +1,33 @@
-# Used by docker-compose.production.yml. Replace the two example domains with
-# your own; BASE_DOMAIN in .env must match the wildcard (without the "*.").
+# Unified production Caddyfile — TLS strategy is chosen at deploy time by
+# mounting a strategy directory at /etc/caddy/tls-strategy/.
+#
+# Each strategy directory contains:
+#   global.caddy — lines for the global options block (may be empty/comments-only)
+#   site.caddy   — the tls block for the wildcard site
+#
+# Available strategies are in caddy/tls-strategies/. To select one, mount it:
+#   volumes:
+#     - ./caddy/tls-strategies/on-demand:/etc/caddy/tls-strategy:ro
+#
+# See caddy/tls-strategies/ for the full list and per-strategy documentation.
 {
 	admin 0.0.0.0:2019
 
-	# The service adds tenant routes to this server through the admin API
-	# (src/orchestrator/caddy.ts), so it needs a fixed name.
 	servers :443 {
 		name tailnet_proxy
 	}
+
+	import /etc/caddy/tls-strategy/global.caddy
 }
 
-# Main app — handles dashboard, auth, API
-tailnets.example.com {
+# Main app — dashboard, auth, API
+{$APP_DOMAIN:tailnets.example.com} {
 	reverse_proxy app:3000
 }
 
-# Wildcard for tenant subdomains. This block only obtains the wildcard
-# certificate (DNS-01 via Cloudflare — needs the Caddy build in
-# Dockerfile.caddy and CF_API_TOKEN). The per-tenant reverse proxies are
-# managed by the service and matched before this block; a name with no tenant
-# gets a 404 from there.
-*.ts.example.com {
-	tls {
-		dns cloudflare {env.CF_API_TOKEN}
-	}
+# Wildcard for tenant subdomains. Per-tenant reverse proxies are managed
+# dynamically by the TS service via the Caddy admin API; unmatched names
+# fall through to a 404.
+*.{$BASE_DOMAIN:ts.example.com} {
+	import /etc/caddy/tls-strategy/site.caddy
 }

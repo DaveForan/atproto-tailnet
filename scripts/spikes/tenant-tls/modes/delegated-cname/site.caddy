@@ -1,0 +1,7 @@
+# The base domain stays at a DNS host with no module. One CNAME there,
+#   _acme-challenge.ts.example.test -> _acme-challenge.ts.acme-zone.example.net
+# hands the challenge to a zone at a provider that has one (Cloudflare here).
+tls {
+	dns cloudflare {env.CF_API_TOKEN}
+	dns_challenge_override_domain _acme-challenge.ts.acme-zone.example.net
+}

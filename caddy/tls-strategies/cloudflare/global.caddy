@@ -1,0 +1,3 @@
+# Cloudflare DNS-01: wildcard cert via Cloudflare API.
+# Env: CF_API_TOKEN (Zone:DNS:Edit permission)
+# Caddy image: must include github.com/caddy-dns/cloudflare

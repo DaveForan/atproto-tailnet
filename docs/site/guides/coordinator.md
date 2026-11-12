@@ -74,7 +74,7 @@ npm run dev
 
 - A server with Docker and Docker Compose
 - A domain with wildcard DNS (e.g., `*.ts.yourdomain.com`)
-- A Cloudflare API token for DNS-01 TLS challenges (or another ACME DNS provider)
+- A TLS strategy for wildcard certificates (see [TLS strategies](../reference/configuration.md#tls-strategies))
 
 ### Steps
 
@@ -98,7 +98,8 @@ COORDINATOR_URL=http://coordinator:9443
 COORDINATOR_API_KEY=<generate-a-strong-key>
 COORD_ADMIN_KEY=<same-key-as-above>
 FEDERATION_KEY_ENCRYPTION_KEY=<64-hex-chars>
-CF_API_TOKEN=<cloudflare-api-token>
+APP_DOMAIN=yourdomain.com
+TLS_STRATEGY=on-demand
 ```
 
 Generate keys:
@@ -114,21 +115,14 @@ openssl rand -hex 32
 </li>
 <li>
 
-**Configure Caddy**
+**Choose TLS strategy**
 
-Edit `Caddyfile.coordinator.production` to replace the example domain:
+The `TLS_STRATEGY` env var selects how Caddy obtains certificates. The default `on-demand` needs no DNS credentials — Caddy issues per-tenant certs automatically. For DNS-01 wildcard strategies, set the strategy name and its required env vars (see `caddy/tls-strategies/` for per-strategy docs), plus build Caddy with the DNS module:
 
-```
-yourdomain.com {
-    reverse_proxy app:3000
-}
-
-*.ts.yourdomain.com {
-    tls {
-        dns cloudflare {env.CF_API_TOKEN}
-    }
-    # Dynamic tenant routing managed by the service
-}
+```ini
+TLS_STRATEGY=route53
+CADDY_DNS_PLUGINS=github.com/caddy-dns/route53
+AWS_REGION=us-east-1
 ```
 
 </li>

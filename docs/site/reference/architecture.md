@@ -100,7 +100,7 @@ Both PostgreSQL and SQLite backends run their own migrations at startup.
 
 Reverse proxy with dynamic subdomain routing. The TypeScript service manages one Caddy route (`@id: tailnet_tenants`) via the admin API, rewriting it whenever tenants are added or removed. Caddy handles:
 
-- TLS termination (Let's Encrypt or Cloudflare DNS-01)
+- TLS termination via a pluggable strategy (on-demand per-tenant certs, DNS-01 wildcard, or bring-your-own). See `caddy/tls-strategies/` and the [configuration reference](../reference/configuration.md#tls-strategies)
 - Wildcard subdomain routing (`*.ts.yourdomain.com`)
 - HTTP/2 and HTTP/3 (QUIC)
 
