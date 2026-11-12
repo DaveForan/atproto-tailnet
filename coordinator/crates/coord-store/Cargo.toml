@@ -1,6 +1,6 @@
 [package]
 name = "coord-store"
-description = "PostgreSQL storage layer"
+description = "Storage backends (SQLite, PostgreSQL, in-memory)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

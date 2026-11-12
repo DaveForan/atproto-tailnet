@@ -42,15 +42,15 @@ Built on a purpose-built Rust mesh coordinator (replacing [Headscale](https://gi
 |-------|-----------|
 | Coordinator | Rust (8-crate workspace: coord-core, coord-noise, coord-proto, coord-acl, coord-store, coord-netmap, coord-federation, coord-api) |
 | Service layer | TypeScript / Express 5 / Drizzle ORM |
-| Database | PostgreSQL (shared by coordinator and service) |
+| Database | PostgreSQL (service layer) or SQLite (coordinator standalone) |
 | Auth | `@atproto/oauth-client-node` |
 | Control plane | Rust coordinator (Noise IK protocol, multi-tenant, federation) or Headscale (legacy, one Docker container per tenant) |
 | Federation | Collective Federation Protocol (CFP) — JSON over HTTP/2, DID-based identity, signed handshakes, CIDR route exchange |
 | Reverse proxy | Caddy (dynamic subdomains via admin API) |
 
-The coordinator speaks the Tailscale control protocol (Noise IK handshake, register/map over HTTP/2) and adds native multi-tenancy, federation between collectives, and sub-collective hierarchy. The TypeScript service handles AT Proto OAuth, the dashboard, and orchestration — it talks to the coordinator via its REST admin API.
+The coordinator speaks the Tailscale control protocol (Noise IK handshake, register/map over HTTP/2) and adds native multi-tenancy, federation between collectives, and sub-collective hierarchy. It can run standalone with SQLite (zero external dependencies) or share PostgreSQL with the TypeScript service. The TypeScript service handles AT Proto OAuth, the dashboard, and orchestration — it talks to the coordinator via its REST admin API.
 
-Each tenant gets its own subdomain (`<slug>.<base-domain>`), routed through Caddy. See `docs/adr/` for the reasoning behind each architectural choice (24 ADRs).
+Each tenant gets its own subdomain (`<slug>.<base-domain>`), routed through Caddy.
 
 ## Quick start
 
@@ -136,15 +136,15 @@ See `.env.example` for all options. The defaults work for local development. For
 ## Project structure
 
 ```
-coordinator/              — Rust mesh coordinator (ADR-0023)
+coordinator/              — Rust mesh coordinator
   crates/
     coord-core/           — Shared types (TenantId, NodeId, etc.) and errors
     coord-noise/          — Noise IK handshake + encrypted transport
     coord-proto/          — Tailscale control protocol messages
     coord-acl/            — ACL policy engine
-    coord-store/          — MemoryStore + PgStore (node/tenant CRUD)
+    coord-store/          — MemoryStore + PgStore + SqliteStore (node/tenant CRUD)
     coord-netmap/         — Network map snapshot + delta builder
-    coord-federation/     — Federation protocol, broker, inbound handlers (92 tests)
+    coord-federation/     — Federation protocol, broker, inbound handlers, PgStore + SqliteStore (94 tests)
     coord-api/            — axum REST API + admin auth (42 tests)
     coord-server/         — Binary entrypoint
 
@@ -163,7 +163,7 @@ src/                      — TypeScript service layer
   identity/               — Collective DID management + resolver
   credentials/            — VC-JWT issuance/verification + AT Proto service-auth
   federation/             — CFP message signing, transport, handshake types
-docs/adr/                 — Architecture Decision Records (0001–0024)
+docs/adr/                 — Architecture Decision Records
 ```
 
 ## Security model
@@ -174,15 +174,11 @@ The permission system has 16 discrete permissions assigned via custom roles:
 
 The tenant originator has all permissions implicitly and cannot be kicked or demoted. Lockdown mode freezes all external access. Agent tokens are scoped to a single tenant with a permission subset and mandatory expiry.
 
-See [ADR-0005](docs/adr/0005-security-management.md) for the full security design.
-
 ## Status
 
 The TypeScript service layer is feature-complete (auth, networking, invitations, security management, services/board/agents, ACL, health monitoring, federation, usage metering, structured logging).
 
-The Rust coordinator (ADR-0023) is feature-complete: Noise IK protocol, multi-tenant store (Memory + PostgreSQL), admin REST API, federation broker with signed handshakes, CIDR route exchange, replay protection, rate limiting, sub-collective hierarchy, and coordinator mode integration with the TS service. 201 Rust tests across the workspace (clippy clean). Security-hardened: constant-time auth, SSRF defense, error masking, signature verification on all federation endpoints.
-
-See `BUILD_PLAN.md` for the full roadmap.
+The Rust coordinator is feature-complete: Noise IK protocol, multi-tenant store (Memory, PostgreSQL, or SQLite), admin REST API, federation broker with signed handshakes, CIDR route exchange, replay protection, rate limiting, sub-collective hierarchy, and coordinator mode integration with the TS service. All three storage backends (including federation persistence) are fully implemented. 210 tests across the workspace. Security-hardened: constant-time auth, SSRF defense, error masking, signature verification on all federation endpoints.
 
 ## License
 

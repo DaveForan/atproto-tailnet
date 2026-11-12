@@ -30,8 +30,8 @@ title: Architecture
           └──────────┬────────────────┘
                      ▼
               ┌──────────────┐
-              │  PostgreSQL  │
-              │  (port 5432) │
+              │  PostgreSQL  │  (service layer + coordinator)
+              │  (port 5432) │  or SQLite (coordinator standalone)
               └──────────────┘
 ```
 
@@ -59,9 +59,9 @@ A purpose-built, multi-tenant WireGuard control plane. The workspace has 8 crate
 | `coord-noise` | Noise IK handshake (`snow` library) + encrypted transport with Tailscale-compatible big-endian nonces |
 | `coord-proto` | Tailscale control protocol messages: `RegisterRequest`/`Response`, `MapRequest`/`Response` |
 | `coord-acl` | ACL policy engine: per-tenant rules compiled to Tailscale `FilterRule` format |
-| `coord-store` | Storage backends: `MemoryStore` (development) + `PgStore` (production) with `broadcast::Sender<PeerEvent>` |
+| `coord-store` | Storage backends: `MemoryStore` (dev), `PgStore` (PostgreSQL), `SqliteStore` (SQLite) with `broadcast::Sender<PeerEvent>` |
 | `coord-netmap` | Network map computation from store state |
-| `coord-federation` | Federation protocol: session lifecycle, route engine, abuse controls, scoping, handshake state machine, auth, transport, discovery, inbound handlers |
+| `coord-federation` | Federation protocol: session lifecycle, route engine, abuse controls, scoping, handshake state machine, auth, transport, discovery, inbound handlers. Storage: `PgFederationStore`, `SqliteFederationStore`, `FederationMemoryStore` |
 | `coord-api` | axum HTTP server: admin REST API, Noise handshake endpoint, health, federation message endpoints |
 
 #### Protocol flow
@@ -86,9 +86,15 @@ Tailscale client                    Coordinator
 
 The streaming map connection uses HTTP/2 with PING-based keepalive (30s interval, 90s timeout) for disconnect detection.
 
-### PostgreSQL
+### Database
 
-Shared database for both the TypeScript service and the coordinator. The service uses Drizzle ORM with 22 tables. The coordinator uses sqlx with its own `coord_*` prefixed tables. Both run their own migrations at startup.
+The TypeScript service requires PostgreSQL (Drizzle ORM, 22 tables). The coordinator supports three storage backends, selected explicitly via `store_backend` in the TOML config or `COORD_STORE_BACKEND` env var:
+
+- **PostgreSQL** (`postgres`): Shares the same database as the TS service. Both coord-store and federation store use sqlx with `coord_*` prefixed tables.
+- **SQLite** (`sqlite`): Zero-dependency single-file database. Both coord-store and federation store persist to the same `.db` file (WAL mode). Ideal for standalone coordinator deployments without the TS service.
+- **Memory** (`memory`): All state in-process, lost on restart. For development and testing only.
+
+Both PostgreSQL and SQLite backends run their own migrations at startup.
 
 ### Caddy
 
@@ -153,37 +159,6 @@ Organization (parent)
 - Session data in PostgreSQL (not client-side)
 - All user-controlled data HTML-escaped in the dashboard
 
-## Architecture Decision Records
-
-The project's design decisions are documented in 24 ADRs under `docs/adr/`:
-
-| ADR | Title | Status |
-|-----|-------|--------|
-| 0001 | Use Headscale as the Tailscale control plane | Implemented |
-| 0002 | Multi-tenancy via orchestrated Headscale instances | Implemented |
-| 0003 | AT Protocol OAuth for user authentication | Implemented |
-| 0004 | Service architecture and technology choices | Implemented |
-| 0005 | Tenant security management | Implemented |
-| 0006 | Custom DERP relay and IP range configuration | Implemented |
-| 0007 | Usage metering, plan limits, and federation | Implemented |
-| 0008 | Exit node and subnet router management | Implemented |
-| 0009 | Hierarchical tenancy model | Implemented |
-| 0010 | Federation control plane | Implemented |
-| 0011 | Traversal policy engine | Implemented |
-| 0012 | AT Proto identity as network passport | Implemented |
-| 0013 | Multi-tenant Headscale fork | Superseded by 0023 |
-| 0014 | Federation protocol specification (CFP) | Implemented |
-| 0015 | Global / regional / local federation scoping | Implemented |
-| 0016 | Federation transport and broker integration | Implemented |
-| 0017 | DID resolution and identity verification | Implemented |
-| 0018 | Dashboard completeness and correctness | Implemented |
-| 0019 | Cross-instance federation links | Implemented |
-| 0020 | Federation relay data plane | Implemented |
-| 0021 | Holder binding for AT Proto accounts | Implemented |
-| 0022 | Tenant TLS for any DNS provider | Proposed |
-| 0023 | Rust mesh coordinator | In progress |
-| 0024 | Purpose-built mesh client | Proposed |
-
 ## Database schema
 
 ### TypeScript service tables (22)
@@ -192,6 +167,6 @@ The project's design decisions are documented in 24 ADRs under `docs/adr/`:
 
 ### Coordinator tables
 
-`coord_tenants`, `coord_nodes`, `coord_preauth_keys`, `coord_acl_policies`, `coord_federation_sessions`, `coord_federation_links`
+`coord_tenants`, `coord_nodes`, `coord_preauth_keys`, `coord_ipv4_counter` (SQLite only), `coord_federation_links`, `coord_broker_sessions`, `coord_collective_dids`
 
-Both schemas coexist in the same PostgreSQL database and are prefixed to avoid collisions.
+When using PostgreSQL, both the TS service and coordinator schemas coexist in the same database, prefixed to avoid collisions. When using SQLite, the coordinator manages its own `.db` file independently.

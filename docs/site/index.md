@@ -59,7 +59,7 @@ The platform supports two control plane backends:
 | **Protocol** | Noise IK + HTTP/2 | Headscale gRPC-gateway |
 | **Multi-tenant** | Native, in-process | Container isolation |
 | **Federation** | Built-in CFP broker | Application-layer broker |
-| **Dependencies** | PostgreSQL, Caddy | PostgreSQL, Caddy, Docker socket |
+| **Dependencies** | PostgreSQL or SQLite, Caddy | PostgreSQL, Caddy, Docker socket |
 | **Resource usage** | ~16 MB per instance | ~50 MB per tenant container |
 
 New deployments should use coordinator mode. The legacy Headscale mode is maintained for existing installations.

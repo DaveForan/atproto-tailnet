@@ -22,6 +22,7 @@ pub mod broker;
 pub mod federation_store_memory;
 pub mod inbound;
 pub mod pg_store;
+pub mod sqlite_store;
 pub mod store;
 
 // Re-export types used by coord-api and coord-server.
@@ -30,4 +31,5 @@ pub use federation_store_memory::FederationMemoryStore;
 pub use handshake::HandshakeCallbacks;
 pub use inbound::{InboundError, InboundHandler};
 pub use pg_store::PgFederationStore;
+pub use sqlite_store::SqliteFederationStore;
 pub use store::FederationStore;

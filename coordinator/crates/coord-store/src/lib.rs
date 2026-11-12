@@ -1,11 +1,13 @@
 pub mod pool;
 pub mod memory;
 pub mod pg;
+pub mod sqlite;
 mod dispatch;
 
-pub use pool::create_pool;
+pub use pool::{create_pool, create_sqlite_pool};
 pub use memory::{MemoryStore, PeerEvent, TenantRouteSnapshot};
 pub use pg::PgStore;
+pub use sqlite::SqliteStore;
 pub use dispatch::Store;
 
 const PEER_EVENT_CHANNEL_CAPACITY: usize = 256;

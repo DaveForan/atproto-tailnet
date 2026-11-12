@@ -4,10 +4,12 @@ use tokio::sync::broadcast;
 use coord_core::{CoordError, FederationPosture, NodeDetail, NodeId, NodeInfo, NodeSummary, PeerInfo, Tenant, TenantId};
 use crate::memory::{MemoryStore, PeerEvent};
 use crate::pg::PgStore;
+use crate::sqlite::SqliteStore;
 
 pub enum Store {
     Memory(Box<MemoryStore>),
     Pg(PgStore),
+    Sqlite(SqliteStore),
 }
 
 impl Store {
@@ -15,6 +17,7 @@ impl Store {
         match self {
             Store::Memory(m) => m.subscribe(),
             Store::Pg(p) => p.subscribe(),
+            Store::Sqlite(s) => s.subscribe(),
         }
     }
 
@@ -27,6 +30,7 @@ impl Store {
         match self {
             Store::Memory(m) => m.create_tenant(slug, parent_id, posture),
             Store::Pg(p) => p.create_tenant(slug, parent_id, posture).await,
+            Store::Sqlite(s) => s.create_tenant(slug, parent_id, posture).await,
         }
     }
 
@@ -34,6 +38,7 @@ impl Store {
         match self {
             Store::Memory(m) => m.get_tenant(tenant_id),
             Store::Pg(p) => p.get_tenant(tenant_id).await,
+            Store::Sqlite(s) => s.get_tenant(tenant_id).await,
         }
     }
 
@@ -41,6 +46,7 @@ impl Store {
         match self {
             Store::Memory(m) => m.list_tenants(),
             Store::Pg(p) => p.list_tenants().await,
+            Store::Sqlite(s) => s.list_tenants().await,
         }
     }
 
@@ -48,6 +54,7 @@ impl Store {
         match self {
             Store::Memory(m) => m.delete_tenant(tenant_id),
             Store::Pg(p) => p.delete_tenant(tenant_id).await,
+            Store::Sqlite(s) => s.delete_tenant(tenant_id).await,
         }
     }
 
@@ -55,6 +62,7 @@ impl Store {
         match self {
             Store::Memory(m) => m.get_child_tenants(parent_id),
             Store::Pg(p) => p.get_child_tenants(parent_id).await,
+            Store::Sqlite(s) => s.get_child_tenants(parent_id).await,
         }
     }
 
@@ -66,6 +74,7 @@ impl Store {
         match self {
             Store::Memory(m) => m.update_tenant_posture(tenant_id, posture),
             Store::Pg(p) => p.update_tenant_posture(tenant_id, posture).await,
+            Store::Sqlite(s) => s.update_tenant_posture(tenant_id, posture).await,
         }
     }
 
@@ -73,6 +82,7 @@ impl Store {
         match self {
             Store::Memory(m) => m.create_preauth_key(tenant_id, reusable),
             Store::Pg(p) => p.create_preauth_key(tenant_id, reusable).await,
+            Store::Sqlite(s) => s.create_preauth_key(tenant_id, reusable).await,
         }
     }
 
@@ -80,6 +90,7 @@ impl Store {
         match self {
             Store::Memory(m) => m.validate_preauth_key(key),
             Store::Pg(p) => p.validate_preauth_key(key).await,
+            Store::Sqlite(s) => s.validate_preauth_key(key).await,
         }
     }
 
@@ -92,6 +103,7 @@ impl Store {
         match self {
             Store::Memory(m) => m.register_node(tenant_id, machine_key, info),
             Store::Pg(p) => p.register_node(tenant_id, machine_key, info).await,
+            Store::Sqlite(s) => s.register_node(tenant_id, machine_key, info).await,
         }
     }
 
@@ -104,6 +116,7 @@ impl Store {
         match self {
             Store::Memory(m) => m.rotate_node_key(machine_key, old_node_key, new_node_key),
             Store::Pg(p) => p.rotate_node_key(machine_key, old_node_key, new_node_key).await,
+            Store::Sqlite(s) => s.rotate_node_key(machine_key, old_node_key, new_node_key).await,
         }
     }
 
@@ -116,6 +129,7 @@ impl Store {
         match self {
             Store::Memory(m) => m.update_endpoints(node_id, endpoints, disco_key),
             Store::Pg(p) => p.update_endpoints(node_id, endpoints, disco_key).await,
+            Store::Sqlite(s) => s.update_endpoints(node_id, endpoints, disco_key).await,
         }
     }
 
@@ -123,6 +137,7 @@ impl Store {
         match self {
             Store::Memory(m) => m.get_node_by_machine_key(machine_key),
             Store::Pg(p) => p.get_node_by_machine_key(machine_key).await,
+            Store::Sqlite(s) => s.get_node_by_machine_key(machine_key).await,
         }
     }
 
@@ -130,6 +145,7 @@ impl Store {
         match self {
             Store::Memory(m) => m.get_peers(tenant_id, exclude_node),
             Store::Pg(p) => p.get_peers(tenant_id, exclude_node).await,
+            Store::Sqlite(s) => s.get_peers(tenant_id, exclude_node).await,
         }
     }
 
@@ -141,6 +157,7 @@ impl Store {
         match self {
             Store::Memory(m) => m.get_peers_with_children(tenant_id, exclude_node),
             Store::Pg(p) => p.get_peers_with_children(tenant_id, exclude_node).await,
+            Store::Sqlite(s) => s.get_peers_with_children(tenant_id, exclude_node).await,
         }
     }
 
@@ -148,6 +165,7 @@ impl Store {
         match self {
             Store::Memory(m) => m.list_tenant_nodes(tenant_id),
             Store::Pg(p) => p.list_tenant_nodes(tenant_id).await,
+            Store::Sqlite(s) => s.list_tenant_nodes(tenant_id).await,
         }
     }
 
@@ -155,6 +173,7 @@ impl Store {
         match self {
             Store::Memory(m) => m.list_nodes_for_tenant(tenant_id),
             Store::Pg(p) => p.list_nodes_for_tenant(tenant_id).await,
+            Store::Sqlite(s) => s.list_nodes_for_tenant(tenant_id).await,
         }
     }
 
@@ -165,6 +184,7 @@ impl Store {
         match self {
             Store::Memory(m) => m.get_node_info(node_id),
             Store::Pg(p) => p.get_node_info(node_id).await,
+            Store::Sqlite(s) => s.get_node_info(node_id).await,
         }
     }
 
@@ -172,6 +192,7 @@ impl Store {
         match self {
             Store::Memory(m) => m.get_node_ipv4(node_id),
             Store::Pg(p) => p.get_node_ipv4(node_id).await,
+            Store::Sqlite(s) => s.get_node_ipv4(node_id).await,
         }
     }
 
@@ -179,6 +200,7 @@ impl Store {
         match self {
             Store::Memory(m) => m.get_node_stable_id(node_id),
             Store::Pg(p) => p.get_node_stable_id(node_id).await,
+            Store::Sqlite(s) => s.get_node_stable_id(node_id).await,
         }
     }
 
@@ -186,6 +208,7 @@ impl Store {
         match self {
             Store::Memory(m) => m.get_node_tenant(node_id),
             Store::Pg(p) => p.get_node_tenant(node_id).await,
+            Store::Sqlite(s) => s.get_node_tenant(node_id).await,
         }
     }
 
@@ -193,6 +216,7 @@ impl Store {
         match self {
             Store::Memory(m) => m.list_nodes(),
             Store::Pg(p) => p.list_nodes().await,
+            Store::Sqlite(s) => s.list_nodes().await,
         }
     }
 
@@ -200,6 +224,7 @@ impl Store {
         match self {
             Store::Memory(m) => m.delete_node(node_id),
             Store::Pg(p) => p.delete_node(node_id).await,
+            Store::Sqlite(s) => s.delete_node(node_id).await,
         }
     }
 
@@ -207,6 +232,7 @@ impl Store {
         match self {
             Store::Memory(m) => m.rename_node(node_id, new_name),
             Store::Pg(p) => p.rename_node(node_id, new_name).await,
+            Store::Sqlite(s) => s.rename_node(node_id, new_name).await,
         }
     }
 
@@ -214,6 +240,7 @@ impl Store {
         match self {
             Store::Memory(m) => m.set_node_online(node_id, online),
             Store::Pg(p) => p.set_node_online(node_id, online).await,
+            Store::Sqlite(s) => s.set_node_online(node_id, online).await,
         }
     }
 
@@ -221,6 +248,7 @@ impl Store {
         match self {
             Store::Memory(m) => m.set_node_offline_if_current(node_id, generation),
             Store::Pg(p) => p.set_node_offline_if_current(node_id, generation).await,
+            Store::Sqlite(s) => s.set_node_offline_if_current(node_id, generation).await,
         }
     }
 
@@ -231,6 +259,7 @@ impl Store {
         match self {
             Store::Memory(m) => m.get_tenant_route_snapshot(tenant_id),
             Store::Pg(p) => p.get_tenant_route_snapshot(tenant_id).await,
+            Store::Sqlite(s) => s.get_tenant_route_snapshot(tenant_id).await,
         }
     }
 }
@@ -240,6 +269,7 @@ impl std::fmt::Debug for Store {
         match self {
             Store::Memory(m) => m.fmt(f),
             Store::Pg(p) => p.fmt(f),
+            Store::Sqlite(s) => s.fmt(f),
         }
     }
 }

@@ -65,18 +65,22 @@ The Rust coordinator has its own configuration, separate from the TypeScript ser
 ```toml
 listen = "127.0.0.1:9443"
 domain = "mesh.local"
-# derp_map_file = "/etc/coordinator/derp-map.json"
+store_backend = "sqlite"      # "sqlite", "postgres", or "memory"
+# sqlite_path = "./coordinator.db"
 # database_url = "postgres://coord:coord@localhost/coordinator"
+# derp_map_file = "/etc/coordinator/derp-map.json"
 ```
 
 ### Environment variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `COORD_STORE_BACKEND` | *(required)* | Storage backend: `sqlite`, `postgres`, or `memory` (overrides TOML `store_backend`) |
 | `COORD_LISTEN` | `127.0.0.1:9443` | Listen address (overrides TOML `listen`) |
 | `COORD_ADMIN_KEY` | *(none)* | Admin API bearer token. When unset, admin endpoints have no authentication |
+| `COORD_SQLITE_PATH` | `coordinator.db` | SQLite database file path (used when backend = `sqlite`) |
 | `COORD_DERP_MAP` | *(none)* | Path to JSON DERP map file (overrides TOML `derp_map_file`) |
-| `DATABASE_URL` | *(none)* | PostgreSQL URL. When set, uses PgStore and runs migrations at startup. When unset, uses in-memory store |
+| `DATABASE_URL` | *(none)* | PostgreSQL URL (required when backend = `postgres`) |
 | `RUST_LOG` | `info` | Rust logging filter (e.g., `coordinator=debug,coord_api=trace`) |
 
 ## Docker Compose files

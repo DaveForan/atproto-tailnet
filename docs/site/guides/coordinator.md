@@ -172,14 +172,21 @@ The coordinator reads configuration from a TOML file (passed as the first CLI ar
 |---------|----------|---------|---------|
 | Listen address | `listen` | `COORD_LISTEN` | `127.0.0.1:9443` |
 | Mesh domain | `domain` | --- | `mesh.local` |
+| Storage backend | `store_backend` | `COORD_STORE_BACKEND` | *(required)* |
 | Admin API key | --- | `COORD_ADMIN_KEY` | *(none --- auth disabled)* |
-| PostgreSQL URL | `database_url` | `DATABASE_URL` | *(none --- uses in-memory store)* |
+| SQLite path | `sqlite_path` | `COORD_SQLITE_PATH` | `coordinator.db` |
+| PostgreSQL URL | `database_url` | `DATABASE_URL` | *(required when backend = postgres)* |
 | DERP map file | `derp_map_file` | `COORD_DERP_MAP` | *(built-in Tailscale DERP)* |
 
 ### Storage backends
 
-- **Memory store** (default): All state held in-process. Fast, zero dependencies, but state is lost on restart. Good for development and testing.
-- **PostgreSQL store**: Persistent state. Enabled automatically when `DATABASE_URL` is set. Runs migrations on startup.
+The coordinator requires an explicit `store_backend` setting (TOML key or `COORD_STORE_BACKEND` env var):
+
+- **SQLite** (`sqlite`): Zero-dependency, single-file database. Recommended for standalone deployments and self-hosting. Configurable path via `sqlite_path` or `COORD_SQLITE_PATH` (default: `coordinator.db`). Uses WAL mode for concurrent reads.
+- **PostgreSQL** (`postgres`): Full PostgreSQL via `database_url` or `DATABASE_URL`. Required when running alongside the TypeScript service (shared database). Runs migrations on startup.
+- **Memory** (`memory`): All state in-process, lost on restart. For development and testing only.
+
+All three backends support both the core node/tenant store and the federation store (links, broker sessions, collective DIDs).
 
 ### DERP map
 

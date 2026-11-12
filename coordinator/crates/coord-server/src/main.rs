@@ -9,6 +9,11 @@ struct Config {
     listen: String,
     domain: String,
     derp_map_file: Option<String>,
+    /// Required — one of: "sqlite", "postgres", "memory"
+    store_backend: Option<String>,
+    /// Path to SQLite database file (required when store_backend = "sqlite")
+    sqlite_path: Option<String>,
+    /// PostgreSQL connection URL (required when store_backend = "postgres")
     database_url: Option<String>,
 }
 
@@ -18,6 +23,8 @@ impl Default for Config {
             listen: "127.0.0.1:9443".into(),
             domain: "mesh.local".into(),
             derp_map_file: None,
+            store_backend: None,
+            sqlite_path: None,
             database_url: None,
         }
     }
@@ -67,21 +74,62 @@ async fn main() -> anyhow::Result<()> {
         coordinator = coordinator.with_derp_map(derp_map);
     }
 
-    let database_url = std::env::var("DATABASE_URL")
+    // Store backend selection — must be explicit
+    let store_backend = std::env::var("COORD_STORE_BACKEND")
         .ok()
-        .or(config.database_url);
+        .or(config.store_backend)
+        .ok_or_else(|| anyhow::anyhow!(
+            "store_backend is required in config file or COORD_STORE_BACKEND env var\n  \
+             valid values: \"sqlite\", \"postgres\", \"memory\""
+        ))?;
 
-    if let Some(url) = &database_url {
-        let pool = coord_store::create_pool(url).await?;
-        let pg_store = coord_store::PgStore::new(pool.clone()).await?;
-        tracing::info!("PostgreSQL store initialized, migrations applied");
-        coordinator = coordinator.with_store(coord_store::Store::Pg(pg_store));
+    match store_backend.as_str() {
+        "postgres" => {
+            let database_url = std::env::var("DATABASE_URL")
+                .ok()
+                .or(config.database_url)
+                .ok_or_else(|| anyhow::anyhow!(
+                    "database_url is required when store_backend = \"postgres\"\n  \
+                     set it in config file or DATABASE_URL env var"
+                ))?;
 
-        let fed_store = std::sync::Arc::new(
-            coord_federation::PgFederationStore::new(pool),
-        );
-        coordinator = coordinator.with_federation_store(fed_store);
-        tracing::info!("federation store: PostgreSQL");
+            let pool = coord_store::create_pool(&database_url).await?;
+            let pg_store = coord_store::PgStore::new(pool.clone()).await?;
+            tracing::info!("store: PostgreSQL (migrations applied)");
+            coordinator = coordinator.with_store(coord_store::Store::Pg(pg_store));
+
+            let fed_store = std::sync::Arc::new(
+                coord_federation::PgFederationStore::new(pool),
+            );
+            coordinator = coordinator.with_federation_store(fed_store);
+            tracing::info!("federation store: PostgreSQL");
+        }
+        "sqlite" => {
+            let sqlite_path = std::env::var("COORD_SQLITE_PATH")
+                .ok()
+                .or(config.sqlite_path)
+                .unwrap_or_else(|| "coordinator.db".into());
+
+            let pool = coord_store::create_sqlite_pool(&sqlite_path).await?;
+            let sqlite_store = coord_store::SqliteStore::new(pool.clone()).await?;
+            tracing::info!(path = %sqlite_path, "store: SQLite (WAL mode, migrations applied)");
+            coordinator = coordinator.with_store(coord_store::Store::Sqlite(sqlite_store));
+
+            let fed_store = std::sync::Arc::new(
+                coord_federation::SqliteFederationStore::new(pool)
+            );
+            coordinator = coordinator.with_federation_store(fed_store);
+            tracing::info!("federation store: SQLite");
+        }
+        "memory" => {
+            tracing::warn!("store: in-memory — all data will be lost on restart");
+        }
+        other => {
+            anyhow::bail!(
+                "unknown store_backend: \"{}\"\n  valid values: \"sqlite\", \"postgres\", \"memory\"",
+                other
+            );
+        }
     }
 
     let admin_key = std::env::var("COORD_ADMIN_KEY").ok();

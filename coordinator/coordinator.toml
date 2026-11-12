@@ -1,0 +1,28 @@
+# Coordinator configuration
+# Copy to coordinator.toml and customize
+
+# Listen address (also overridable via COORD_LISTEN env var)
+listen = "127.0.0.1:9443"
+
+# Mesh domain suffix
+domain = "mesh.local"
+
+# Path to a JSON DERP map file (also overridable via COORD_DERP_MAP env var)
+# If unset, uses the default Tailscale DERP region 1 (derp1.tailscale.com)
+# For self-hosted DERP, use region IDs 900-999.
+# derp_map_file = "/etc/coordinator/derp-map.json"
+
+# REQUIRED — Storage backend (also overridable via COORD_STORE_BACKEND env var)
+#   "sqlite"   — Zero-dependency, single-file database (recommended for self-hosting)
+#   "postgres"  — Full PostgreSQL
+#   "memory"    — In-memory only, data lost on restart (dev/testing only)
+store_backend = "sqlite"
+
+# SQLite database file path (used when store_backend = "sqlite")
+# Also overridable via COORD_SQLITE_PATH env var.
+# Defaults to "coordinator.db" in the working directory.
+# sqlite_path = "./coordinator.db"
+
+# PostgreSQL connection URL (used when store_backend = "postgres")
+# Also overridable via DATABASE_URL env var.
+# database_url = "postgres://coord:coord@localhost/coordinator"
