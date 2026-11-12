@@ -1,0 +1,18 @@
+title: atproto-tailnet
+description: Private mesh networks with AT Protocol identity and cross-network federation
+baseurl: /atproto-tailnet
+url: https://daveforan.github.io
+remote_theme: pages-themes/minimal@v0.2.0
+
+plugins:
+  - jekyll-remote-theme
+
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
+
+exclude:
+  - Gemfile
+  - Gemfile.lock
