@@ -3,7 +3,7 @@ use tracing::{info, warn};
 
 use coord_core::NodeInfo;
 use coord_proto::register::{RegisterRequest, RegisterResponse, User, Login};
-use coord_proto::map::{MapRequest, MapResponse};
+use coord_proto::map::MapRequest;
 use coord_store::PeerEvent;
 
 use crate::state::CoordinatorState;
@@ -120,14 +120,6 @@ pub async fn handle_map(
     body: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
     let req: MapRequest = serde_json::from_str(body)?;
-
-    if req.keep_alive == Some(true) {
-        let resp = MapResponse {
-            keep_alive: Some(true),
-            ..Default::default()
-        };
-        return Ok(serde_json::to_string(&resp)?);
-    }
 
     if let Some(node_id) = state.store.get_node_by_machine_key(machine_key).await {
         if req.endpoints.is_some() || req.disco_key.is_some() {

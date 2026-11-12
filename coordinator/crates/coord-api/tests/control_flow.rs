@@ -251,8 +251,9 @@ async fn map_keepalive() {
         .await
         .unwrap();
     let resp: serde_json::Value = serde_json::from_str(&result).unwrap();
-    assert_eq!(resp["KeepAlive"], true);
-    assert!(resp["Node"].is_null());
+    // KeepAlive in the request is a preference flag, not a request type —
+    // server returns the full map snapshot regardless
+    assert!(resp["Node"].is_object(), "KeepAlive:true should still return full map");
 }
 
 #[tokio::test]
