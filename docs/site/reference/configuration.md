@@ -70,6 +70,8 @@ The `TLS_STRATEGY` variable selects how Caddy obtains certificates for tenant su
 | `digitalocean` | Wildcard | `DO_AUTH_TOKEN` | `caddy-dns/digitalocean` | |
 | `rfc2136` | Wildcard | `RFC2136_SERVER`, `RFC2136_KEY_NAME`, `RFC2136_KEY` | `caddy-dns/rfc2136` | BIND, Knot DNS, PowerDNS |
 | `acmedns` | Wildcard | `ACMEDNS_SERVER_URL`, `ACMEDNS_USERNAME`, `ACMEDNS_PASSWORD`, `ACMEDNS_SUBDOMAIN` | `caddy-dns/acmedns` | One-time CNAME setup |
+| `hetzner` | Wildcard | `HETZNER_API_TOKEN` | `caddy-dns/hetzner` | |
+| `vultr` | Wildcard | `VULTR_API_KEY` | `caddy-dns/vultr` | |
 | `manual` | Wildcard | None | None | Bring your own cert. Mount at `/etc/caddy/certs/` |
 
 **Choosing a strategy:** `on-demand` is the simplest — no DNS provider API access required, no extra Caddy modules. DNS-01 strategies issue a single wildcard certificate which is faster for many tenants. `rfc2136` and `acmedns` work with self-hosted DNS and avoid all cloud provider dependencies. `manual` is for environments with existing certificate management.

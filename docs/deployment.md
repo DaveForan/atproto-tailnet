@@ -101,6 +101,8 @@ requirements documented in the files.
 | `digitalocean` | DNS-01 wildcard | `DO_AUTH_TOKEN` |
 | `rfc2136` | DNS-01 wildcard | TSIG keys (BIND/Knot/PowerDNS) |
 | `acmedns` | DNS-01 wildcard via delegation | acme-dns credentials + one CNAME |
+| `hetzner` | DNS-01 wildcard | `HETZNER_API_TOKEN` |
+| `vultr` | DNS-01 wildcard | `VULTR_API_KEY` |
 | `manual` | Bring your own wildcard cert | None |
 
 DNS-01 strategies need the Caddy image built with the DNS module. Set

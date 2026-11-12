@@ -15,6 +15,7 @@ set -euo pipefail
 APP_DIR="/opt/atproto-tailnet"
 REPO_URL="${REPO_URL:-https://github.com/your-org/atproto-tailnet.git}"
 BRANCH="${BRANCH:-main}"
+COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.coordinator.yml}"
 
 echo "==> Updating system packages"
 apt-get update -y
@@ -51,15 +52,19 @@ if [ ! -f .env ]; then
   echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
   echo "  IMPORTANT: Edit $APP_DIR/.env before continuing."
   echo "  At minimum, set:"
+  echo "    - TLS_STRATEGY=digitalocean"
+  echo "    - DO_AUTH_TOKEN (DigitalOcean API token, read+write scope)"
+  echo "    - CADDY_DNS_PLUGINS=github.com/caddy-dns/digitalocean"
   echo "    - SESSION_SECRET (>= 32 chars)"
   echo "    - POSTGRES_PASSWORD"
+  echo "    - COORDINATOR_API_KEY"
   echo "    - PUBLIC_URL"
   echo "    - BASE_DOMAIN"
-  echo "    - CF_API_TOKEN (for wildcard TLS)"
+  echo "    - APP_DOMAIN"
   echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
   echo ""
   echo "After editing .env, run:"
-  echo "  cd $APP_DIR && docker compose -f docker-compose.production.yml up -d"
+  echo "  cd $APP_DIR && docker compose -f $COMPOSE_FILE up -d"
   exit 0
 fi
 
@@ -67,13 +72,13 @@ echo "==> Creating data directories"
 mkdir -p data/headscale
 
 echo "==> Pulling images"
-docker compose -f docker-compose.production.yml pull
+docker compose -f "$COMPOSE_FILE" pull
 
 echo "==> Building app image"
-docker compose -f docker-compose.production.yml build
+docker compose -f "$COMPOSE_FILE" build
 
 echo "==> Starting services"
-docker compose -f docker-compose.production.yml up -d
+docker compose -f "$COMPOSE_FILE" up -d
 
 echo "==> Waiting for health check..."
 sleep 10
@@ -81,14 +86,14 @@ if curl -sf http://localhost:3000/health > /dev/null; then
   echo "==> atproto-tailnet is running!"
 else
   echo "==> App may still be starting. Check logs with:"
-  echo "    docker compose -f docker-compose.production.yml logs -f app"
+  echo "    docker compose -f $COMPOSE_FILE logs -f app"
 fi
 
 echo ""
 echo "==> Setup complete."
-echo "    Logs:    docker compose -f docker-compose.production.yml logs -f"
-echo "    Stop:    docker compose -f docker-compose.production.yml down"
-echo "    Restart: docker compose -f docker-compose.production.yml restart"
+echo "    Logs:    docker compose -f $COMPOSE_FILE logs -f"
+echo "    Stop:    docker compose -f $COMPOSE_FILE down"
+echo "    Restart: docker compose -f $COMPOSE_FILE restart"
 
 # ---------------------------------------------------------------------------
 # Firewall (optional -- uncomment if using ufw)

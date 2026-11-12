@@ -1,0 +1,3 @@
+# Vultr DNS-01: wildcard cert via Vultr API.
+# Env: VULTR_API_KEY
+# Caddy image: must include github.com/caddy-dns/vultr

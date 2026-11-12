@@ -100,6 +100,8 @@ services:
       ACMEDNS_USERNAME: ${ACMEDNS_USERNAME:-}
       ACMEDNS_PASSWORD: ${ACMEDNS_PASSWORD:-}
       ACMEDNS_SUBDOMAIN: ${ACMEDNS_SUBDOMAIN:-}
+      HETZNER_API_TOKEN: ${HETZNER_API_TOKEN:-}
+      VULTR_API_KEY: ${VULTR_API_KEY:-}
     volumes:
       - ./Caddyfile.production:/etc/caddy/Caddyfile
       - ./caddy/tls-strategies/${TLS_STRATEGY:-on-demand}:/etc/caddy/tls-strategy:ro

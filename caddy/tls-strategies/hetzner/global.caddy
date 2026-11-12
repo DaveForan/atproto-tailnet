@@ -1,0 +1,3 @@
+# Hetzner DNS-01: wildcard cert via Hetzner DNS API.
+# Env: HETZNER_API_TOKEN
+# Caddy image: must include github.com/caddy-dns/hetzner
