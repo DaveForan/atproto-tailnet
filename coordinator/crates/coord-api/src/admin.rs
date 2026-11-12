@@ -91,12 +91,21 @@ pub async fn create_tenant(
             StatusCode::CREATED,
             Json(serde_json::json!(TenantResponse::from(tenant))),
         ).into_response(),
+        Err(coord_core::CoordError::TenantNotFound(_)) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "parent tenant not found"})),
+        ).into_response(),
+        Err(coord_core::CoordError::Protocol(ref msg)) if msg.contains("already exists") => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": msg.clone()})),
+        ).into_response(),
+        Err(coord_core::CoordError::Protocol(ref msg)) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": msg.clone()})),
+        ).into_response(),
         Err(e) => {
             error!(error = %e, "tenant creation failed");
-            (
-                StatusCode::CONFLICT,
-                Json(serde_json::json!({"error": "tenant creation failed (duplicate slug?)"})),
-            ).into_response()
+            internal_error(e).into_response()
         }
     }
 }

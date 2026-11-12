@@ -1820,6 +1820,50 @@ async fn federation_hello_missing_header_returns_400() {
 }
 
 #[tokio::test]
+async fn create_tenant_with_nonexistent_parent_returns_404() {
+    let (app, _) = setup();
+
+    let resp = app
+        .oneshot(
+            admin_req()
+                .method("POST")
+                .uri("/api/tenants")
+                .header("Content-Type", "application/json")
+                .body(Body::from(
+                    r#"{"slug":"orphan","parent_id":"00000000-0000-0000-0000-000000000000"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn create_tenant_multi_level_hierarchy_rejected() {
+    let (app, state) = setup();
+
+    let parent = state.store().create_tenant("parent".into(), None, None).await.unwrap();
+    let child = state.store().create_tenant("child".into(), Some(parent.id), None).await.unwrap();
+
+    let resp = app
+        .oneshot(
+            admin_req()
+                .method("POST")
+                .uri("/api/tenants")
+                .header("Content-Type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"slug":"grandchild","parent_id":"{}"}}"#,
+                    child.id
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn federation_commit_missing_header_returns_400() {
     let (app, _) = setup_with_callbacks();
 
