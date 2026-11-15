@@ -34,7 +34,7 @@ Built on a purpose-built Rust mesh coordinator (replacing [Headscale](https://gi
 - **Instance hibernation** — auto-stop idle tenants after configurable days of inactivity
 - **Structured logging** — Pino-based JSON logs with configurable level
 - **Full audit log** — every security-relevant action recorded with metadata
-- **Inline dashboard** — single-page app served from the backend, no separate frontend build
+- **React 19 dashboard** — lazy-loaded SPA with typed service layer, built with esbuild
 
 ## Architecture
 
@@ -42,6 +42,7 @@ Built on a purpose-built Rust mesh coordinator (replacing [Headscale](https://gi
 |-------|-----------|
 | Coordinator | Rust (8-crate workspace: coord-core, coord-noise, coord-proto, coord-acl, coord-store, coord-netmap, coord-federation, coord-api) |
 | Service layer | TypeScript / Express 5 / Drizzle ORM |
+| Dashboard | React 19 / esbuild / lazy-loaded tabs / typed service layer |
 | Database | PostgreSQL (service layer) or SQLite (coordinator standalone) |
 | Auth | `@atproto/oauth-client-node` |
 | Control plane | Rust coordinator (Noise IK protocol, multi-tenant, federation) or Headscale (legacy, one Docker container per tenant) |
@@ -68,6 +69,7 @@ cd atproto-tailnet
 cp .env.example .env          # defaults work for local dev
 docker compose up -d          # PostgreSQL + Caddy
 npm install                   # install dependencies
+npm run build:client          # build the React dashboard
 npm run db:migrate            # apply database migrations
 npm run dev                   # http://127.0.0.1:3000 (reads .env)
 ```
@@ -97,7 +99,8 @@ Each tailnet's Headscale is served through Caddy at `http://<slug>.ts.localhost:
 ### Production build
 
 ```sh
-npm run build                 # compiles to dist/
+npm run build:client          # builds dashboard JS/CSS to public/
+npm run build                 # compiles server to dist/
 npm run start                 # runs dist/index.js
 ```
 
@@ -128,6 +131,8 @@ See `.env.example` for all options. The defaults work for local development. For
 | `npm run dev` | Start dev server with hot reload (tsx) |
 | `npm run build` | Compile TypeScript to `dist/` |
 | `npm run start` | Run compiled production server |
+| `npm run build:client` | Build React dashboard to `public/js/` |
+| `npm run dev:client` | Watch-mode dashboard rebuild |
 | `npm run db:generate` | Generate new migration from schema changes |
 | `npm run db:migrate` | Apply pending migrations |
 | `npm run db:studio` | Open Drizzle Studio (DB browser) |
@@ -148,6 +153,15 @@ coordinator/              — Rust mesh coordinator
     coord-server/         — Binary entrypoint
 
 src/                      — TypeScript service layer
+  client/                 — React 19 dashboard SPA (esbuild)
+    main.tsx              — Dashboard entry point
+    join.tsx              — Join page entry point
+    App.tsx               — Root component, lazy-loaded tab routing
+    components/           — Shared UI (Badge, Card, EmptyState, Layout, Toast, Toggle)
+    hooks/                — useAppState (global context), useTenantData, useMutation
+    services/             — 16 typed API modules (one per domain)
+    tabs/                 — 20 lazy-loaded tab components
+    lib/                  — Types, constants, utilities
   auth/atproto.ts         — AT Proto OAuth setup
   config.ts               — Zod-validated env config
   db/schema.ts            — Drizzle schema (15 tables)
@@ -158,10 +172,12 @@ src/                      — TypeScript service layer
     caddy.ts              — Caddy admin API
     federation-broker.ts  — Federation broker loop + collective DID lifecycle
     monitor.ts            — Health check loop + auto-restart
-  routes/                 — Express routes (auth, devices, federation, dashboard, etc.)
+  routes/                 — Express routes (auth, API, dashboard HTML shell, etc.)
   identity/               — Collective DID management + resolver
   credentials/            — VC-JWT issuance/verification + AT Proto service-auth
   federation/             — CFP message signing, transport, handshake types
+esbuild.config.ts         — Client build config (two entry points: dashboard + join)
+public/                   — Built client assets (JS bundles, CSS)
 docs/adr/                 — Architecture Decision Records
 ```
 
@@ -175,7 +191,7 @@ The tenant originator has all permissions implicitly and cannot be kicked or dem
 
 ## Status
 
-The TypeScript service layer is feature-complete (auth, networking, invitations, security management, services/board/agents, ACL, health monitoring, federation, usage metering, structured logging).
+The TypeScript service layer is feature-complete (auth, networking, invitations, security management, services/board/agents, ACL, health monitoring, federation, usage metering, structured logging). The dashboard is a React 19 SPA with 20 lazy-loaded tabs, a typed service layer (16 domain modules), and shared hooks for data loading and mutations.
 
 The Rust coordinator is feature-complete: Noise IK protocol, multi-tenant store (Memory, PostgreSQL, or SQLite), admin REST API, federation broker with signed handshakes, CIDR route exchange, replay protection, rate limiting, sub-collective hierarchy, and coordinator mode integration with the TS service. All three storage backends (including federation persistence) are fully implemented. 210 tests across the workspace. Security-hardened: constant-time auth, SSRF defense, error masking, signature verification on all federation endpoints.
 

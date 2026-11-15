@@ -41,7 +41,7 @@ title: Architecture
 
 The application server, built on Express 5 with Drizzle ORM. Handles:
 
-- **Web UI**: Single-page dashboard served inline (no separate frontend build)
+- **Web UI**: React 19 SPA with 20 lazy-loaded tabs, built with esbuild. Served as external JS bundles from `public/js/`
 - **Authentication**: AT Protocol OAuth via `@atproto/oauth-client-node`
 - **API**: REST endpoints for all management operations
 - **Orchestration**: Tenant lifecycle, health monitoring, Caddy route management

@@ -62,6 +62,7 @@ curl http://127.0.0.1:9443/health
 
 ```bash
 npm install --include=dev
+npm run build:client
 npx drizzle-kit generate
 npx drizzle-kit migrate
 ```
@@ -115,7 +116,7 @@ After these steps you have:
 
 | Component | Address | Purpose |
 |-----------|---------|---------|
-| TypeScript service | `127.0.0.1:3000` | Web UI, API, OAuth, orchestration |
+| TypeScript service | `127.0.0.1:3000` | React dashboard, API, OAuth, orchestration |
 | Rust coordinator | `127.0.0.1:9443` | Mesh control plane (Noise IK, multi-tenant) |
 | PostgreSQL | `127.0.0.1:5432` | Persistent storage |
 | Caddy | `127.0.0.1:8180` | Reverse proxy, subdomain routing |

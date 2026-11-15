@@ -5,6 +5,7 @@ Tailscale-as-a-service where users authenticate with their AT Protocol (Bluesky)
 ## Architecture
 
 - **Service API**: TypeScript / Express 5 / Drizzle ORM / PostgreSQL
+- **Dashboard**: React 19 / esbuild / lazy-loaded tabs / typed service layer (16 domain modules)
 - **Control plane**: Rust coordinator (default) or one Headscale Docker container per tenant (legacy)
 - **Coordinator**: Rust workspace at `coordinator/` — purpose-built mesh coordinator replacing Headscale. 8 crates: coord-core (types/traits including federation Link/Session/DID types, DEFAULT_IPV4/IPV6_PREFIX constants), coord-noise (Noise IK handshake via `snow`, transport via direct `chacha20poly1305` with Tailscale-compatible BE nonces, poison-recovering Mutex), coord-proto (Tailscale control protocol messages), coord-acl (PolicyEngine with per-tenant rules → Tailscale FilterRule), coord-store (MemoryStore with broadcast events + PgStore with sqlx + SqliteStore with sqlx-sqlite, shared generate_random_id + PEER_EVENT_CHANNEL_CAPACITY), coord-api (axum + hyper H2, admin auth middleware + federation message routes), coord-federation (14 modules: protocol, session, route_engine, abuse, scoping, handshake, auth, transport, discovery, store, broker, inbound, federation_store_memory, pg_store, sqlite_store — 5,800+ lines, 94 unit tests), coord-server (binary with broker tick loop, TOML config + env vars, uses create_pool). Protocol: JSON over HTTP/2 over Noise IK (`Noise_IK_25519_ChaChaPoly_BLAKE2s`). Key endpoints: `GET /key` (JSON mkey format), `POST /ts2021` (upgrade → Noise → H2), `POST /machine/register` (pre-auth key, node key rotation via OldNodeKey), `POST /machine/map` (streaming long-poll with zstd framing, delta PeersChanged/PeersRemoved, 60s keepalives, disco key propagation, HomeDERP field). Admin: `POST /api/preauth-keys`, `GET /api/nodes`, `POST /api/acl`, `POST/GET /api/tenants`, `GET/DELETE /api/tenants/{id}`, `GET /api/tenants/{id}/routes` — constant-time Bearer token auth when COORD_ADMIN_KEY set. Federation: `POST /api/federation/messages/{hello,commit,keepalive,revoke,link-request,link-accept,link-reject,link-revoke}` — CFP-Recipient header for collective DID routing, InboundHandler with RateLimiter (60 req/min per DID) + ReplayGuard (5 min window) dispatches to dyn FederationStore (PgFederationStore for postgres, SqliteFederationStore for sqlite, FederationMemoryStore for memory backend). Security: SSRF DNS rebinding defense (async hostname resolution rejects private IPs), poison-recovering locks, saturating arithmetic on priority scores, zstd panic elimination, signature verification never bypassed on serialization failure, 2 MiB DefaultBodyLimit on all axum routes, ControlKey Debug redaction. Multi-tenant with sub-collective hierarchy: parent tenants see aggregated routes from child tenants gated by child's `federation_posture` (Closed blocks, Selective/Open allow). Store enum dispatch (MemoryStore for dev, PgStore for postgres, SqliteStore for sqlite — backend selected via `store_backend` config key or `COORD_STORE_BACKEND` env var, required/explicit). SQLite uses WAL mode, counter table for IP allocation (replaces PG sequence), migrations in `migrations_sqlite/` (shared by coord-store and coord-federation). Federation store follows the same backend selection: SQLite gets SqliteFederationStore (persistent), postgres gets PgFederationStore, memory gets FederationMemoryStore. Session generation counter prevents reconnect races. Configurable DERP map (JSON file or env `COORD_DERP_MAP`), listen addr (`COORD_LISTEN`), sqlite path (`COORD_SQLITE_PATH`, default `coordinator.db`), TOML config file as CLI arg. 210 Rust tests across workspace (94 federation unit, 42 API control_flow, 5 API smoke (real TCP), 21 PgStore integration, 18 PgFederationStore integration, 9 store unit, 3 ACL, 11 noise). Port 8443 is used by tailscale on this machine — do NOT use it
 - **Auth**: AT Protocol OAuth via `@atproto/oauth-client-node`
@@ -40,6 +41,9 @@ docker compose -f docker-compose.coordinator.yml up -d
 
 ## Key patterns
 
+- **Dashboard client**: React 19 SPA built by esbuild (`esbuild.config.ts`). Two entry points: `src/client/main.tsx` → `public/js/dashboard.js`, `src/client/join.tsx` → `public/js/join.js`. CSP: `script-src 'self'; style-src 'self'`
+- **Tab architecture**: 20 lazy-loaded tabs via `React.lazy` + `Suspense`. Tab registry in `components/registry.ts` gates visibility by permission. `useAppState` context provides global state; `useTenantData` hook handles load-on-mount; `useTenantMutation` handles mutations with toast + busy state
+- **Service layer (client)**: 16 typed modules in `services/`, one per API domain. All tabs and hooks use these instead of raw `fetch()`. `api.ts` is the low-level wrapper; domain modules re-export typed functions
 - **Control client abstraction**: `getControlClient(tenant)` from `orchestrator/control-client.ts` — returns either `HeadscaleApiClient` or `CoordinatorApiClient` based on `COORDINATOR_URL` env var. All route handlers and orchestrator modules use this factory, never `new HeadscaleApiClient(...)` directly. The `ControlClient` interface matches the Headscale API surface; coordinator operations that aren't implemented yet are graceful no-ops
 - **Coordinator mode** (`COORDINATOR_URL`): when set, tenant provisioning creates tenants via the coordinator REST API (`POST /api/tenants`), stores the coordinator-side UUID in `tenants.coordinatorTenantId`, and skips Docker container lifecycle. Caddy routes all tenant subdomains to the single coordinator. Health monitor skips Docker restarts
 - `req.params` values are `string | string[]` in Express 5 — use `param(req, "name")` from `routes/helpers.ts`
@@ -113,6 +117,33 @@ docker compose -f docker-compose.coordinator.yml up -d
 
 ```
 src/
+  client/                  — React 19 dashboard SPA
+    main.tsx               — Dashboard entry point (StrictMode → AppProvider → ToastProvider → App)
+    join.tsx               — Join page entry point (standalone state machine)
+    App.tsx                — Root: 20 lazy-loaded tabs, PendingInvitations, SetupWizard
+    components/
+      Layout.tsx           — Header, Sidebar (SidebarProvider), LockdownBanner, LoginPage, StatsSummary
+      Badge.tsx            — Status/role badge variants
+      Card.tsx, EmptyState.tsx, Toast.tsx, Toggle.tsx — Shared UI primitives
+      registry.ts          — Tab registry with permission gates
+    hooks/
+      useAppState.tsx      — Global context (user, tenant, settings, roles, stats, tab routing)
+      useTenantData.ts     — Generic load-on-mount hook with reload
+      useMutation.ts       — Mutation wrapper with toast + busy state
+    services/              — 16 typed API modules (one per domain)
+      api.ts               — Low-level fetch wrapper with CSRF
+      acl.ts, agents.ts, audit.ts, collectives.ts, credentials.ts, devices.ts
+      federation.ts, invitations.ts, network.ts, roles.ts, routes.ts
+      security.ts, services.ts, usage.ts
+    tabs/                  — 20 lazy-loaded tab components
+      StatusTab, DevicesTab, MembersTab, ConnectTab, InviteTab, RoutesTab
+      IpConfigTab, DerpTab, ServicesTab, BoardTab, FederationTab, CollectivesTab
+      TraversalTab, RolesTab, AgentsTab, AclTab, CredentialsTab, UsageTab
+      SecurityTab, AuditTab
+    lib/
+      types.ts             — All shared TypeScript types
+      constants.ts         — Shared constants (PLANS, etc.)
+      utils.ts             — Utility functions (formatDate, safeUrl, etc.)
   types/express.d.ts       — Augments Express Request with agentToken context
   types/express-session.d.ts — Session data types (userId, did, postLoginRedirect)
   auth/atproto.ts          — AT Proto OAuth client setup + DB-backed stores
@@ -158,7 +189,7 @@ src/
     federation.ts          — Federation link CRUD (request/accept/reject/revoke between tailnets), collective DID + discovery documents
     federation-messages.ts — Inbound CFP endpoints (hello/commit/keepalive/revoke), DID-signature authenticated
     credentials.ts         — VC-JWT issuance, public verify, holder-binding challenges, revocation, service-auth presentation + BFF token minting
-    dashboard.ts           — Inline SPA (tabbed: Status, DERP, IP Ranges, Routes, Devices, Members, Invite, Services, Board, Federation, Agents, ACL, Roles, Usage, Security, Audit) + /join/:slug
+    dashboard.ts           — HTML shell serving React SPA bundles (dashboard + join page)
     helpers.ts             — Shared middleware, param(), permission checks, agent token resolution, hs username/URL helpers
     audit.ts               — Fire-and-forget audit log writer
 docs/adr/                  — Architecture Decision Records (0001-0024)

@@ -133,6 +133,8 @@ All Caddyfiles name the server `tailnet_proxy`. The TypeScript service dynamical
 | `npx drizzle-kit generate` | --- | Generate database migration from schema changes |
 | `npx drizzle-kit migrate` | --- | Apply pending migrations |
 | `npx drizzle-kit studio` | --- | Open Drizzle Studio (database browser) |
+| `npm run build:client` | `tsx esbuild.config.ts` | Build React dashboard to `public/js/` |
+| `npm run dev:client` | `tsx esbuild.config.ts --watch` | Watch-mode dashboard rebuild |
 
 ## Production checklist
 

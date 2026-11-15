@@ -8,13 +8,15 @@ Once your tailnet is provisioned, the dashboard provides tools for managing devi
 
 ## Dashboard overview
 
-The dashboard is a single-page application served at your instance's root URL. It has tabbed navigation across all management functions:
+The dashboard is a React 19 single-page application served at your instance's root URL. It features 20 lazy-loaded tabs with permission-based visibility:
 
 **Status** -- Network health, node count, member count, provisioning status
 
 **Devices** -- Connected nodes, online status, auth key generation
 
 **Members** -- Current members and their roles
+
+**Connect** -- Generate auth keys and connect new devices
 
 **Invite** -- Send invitations by AT Protocol handle
 
@@ -34,7 +36,13 @@ The dashboard is a single-page application served at your instance's root URL. I
 
 **Federation** -- Federation links and posture management
 
+**Collectives** -- Sub-collective hierarchy management
+
+**Traversal** -- Cross-network traversal policy editor
+
 **Agents** -- API token management for automation
+
+**Credentials** -- Verifiable credential issuance and verification
 
 **Usage** -- Metering, plan limits, snapshot history
 

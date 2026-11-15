@@ -61,6 +61,7 @@ When `COORDINATOR_URL` is set, the service uses the `CoordinatorApiClient` inste
 
 ```bash
 npm install --include=dev
+npm run build:client
 npx drizzle-kit migrate
 npm run dev
 ```
