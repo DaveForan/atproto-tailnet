@@ -98,7 +98,7 @@ app.use((_req: Request, res: Response, next: NextFunction) => {
   );
   res.setHeader(
     "Content-Security-Policy",
-    "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' https: data:; connect-src 'self'; frame-ancestors 'none'",
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; connect-src 'self'; frame-ancestors 'none'",
   );
   next();
 });
@@ -191,6 +191,8 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
+import path from "node:path";
+app.use(express.static(path.join(import.meta.dirname, "..", "public")));
 app.use(dashboardRouter);
 app.use("/auth", authLimiter);
 app.use("/.well-known", authLimiter);
