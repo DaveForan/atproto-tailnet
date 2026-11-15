@@ -11,10 +11,11 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 
-# Copy source and compile TypeScript
-COPY tsconfig.json ./
+# Copy source and build
+COPY tsconfig.json tsconfig.client.json esbuild.config.ts ./
 COPY src/ src/
-RUN npm run build
+COPY public/css/ public/css/
+RUN npm run build:client && npm run build
 
 # ---- runtime stage -------------------------------------------------------
 FROM node:22-alpine
@@ -27,8 +28,9 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 
-# Compiled application
+# Compiled application + client assets
 COPY --from=build /app/dist/ dist/
+COPY --from=build /app/public/ public/
 
 # Drizzle migrations + config (needed at runtime for drizzle-kit migrate)
 COPY drizzle/ drizzle/
