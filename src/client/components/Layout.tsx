@@ -75,7 +75,7 @@ export function Sidebar() {
     closeSidebar();
   };
 
-  const groups = buildVisibleGroups(hasPerm, settings);
+  const groups = buildVisibleGroups(hasPerm, settings, currentTenant);
   const roleBadge = t.isOriginator ? (
     <Badge variant="originator">originator</Badge>
   ) : (
@@ -127,12 +127,13 @@ interface VisibleGroup {
 function buildVisibleGroups(
   hasPerm: (p: string) => boolean,
   settings: import("../lib/types").Settings | null,
+  tenant: import("../lib/types").Tenant | null,
 ): VisibleGroup[] {
   const result: VisibleGroup[] = [];
   const groupMap = new Map<string, TabGroup>();
 
   for (const entry of tabRegistry) {
-    if (!entry.gate(hasPerm, settings)) continue;
+    if (!entry.gate(hasPerm, settings, tenant)) continue;
     if (!groupMap.has(entry.group)) {
       groupMap.set(entry.group, { label: entry.group, tabs: [] });
     }
