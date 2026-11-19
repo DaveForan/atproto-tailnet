@@ -1,23 +1,23 @@
 /**
  * @module routes/usage
- * Usage metering and plan management. Provides current usage stats,
- * historical usage snapshots, and plan limit configuration.
- * Usage viewing requires membership; plan changes require manage_settings.
+ * Usage metering and admin-set caps. Provides current usage, the tenant's
+ * maxDevices/maxMembers caps (0 = unlimited) and historical snapshots.
+ * Usage viewing requires membership; caps are set by the originator only.
  */
 
 import { Router } from "express";
 import { z } from "zod";
-import { eq, desc, sql, and } from "drizzle-orm";
+import { eq, desc } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { tenants, memberships, usageSnapshots } from "../db/schema.js";
-import { getControlClient } from "../orchestrator/control-client.js";
+import { tenants, usageSnapshots } from "../db/schema.js";
+import { getControlClient, useCoordinator } from "../orchestrator/control-client.js";
 import {
   requireAuth,
   param,
   getTenantForUser,
-  hasPermission,
   authUserId,
 } from "./helpers.js";
+import { MAX_LIMIT, checkChildLimit, countMembers, isOverLimit } from "./limits.js";
 import { logAudit } from "./audit.js";
 import { logger } from "../logger.js";
 
@@ -40,7 +40,7 @@ usageRouter.get(
     let onlineDevices = 0;
     let routeCount = 0;
 
-    if (tenant.apiKey && tenant.port && tenant.status === "running") {
+    if ((tenant.apiKey || useCoordinator) && tenant.status === "running") {
       try {
         const client = getControlClient(tenant);
         const [nodes, routes] = await Promise.all([
@@ -55,11 +55,7 @@ usageRouter.get(
       }
     }
 
-    const memberRows = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(memberships)
-      .where(eq(memberships.tenantId, tenantId));
-    const memberCount = memberRows[0]?.count ?? 0;
+    const memberCount = await countMembers(tenantId);
 
     const history = await db
       .select()
@@ -70,35 +66,34 @@ usageRouter.get(
 
     res.json({
       current: {
-        deviceCount,
+        devices: deviceCount,
         onlineDevices,
-        memberCount,
-        routeCount,
+        members: memberCount,
+        routes: routeCount,
       },
-      plan: {
-        name: tenant.planName,
+      limits: {
         maxDevices: tenant.maxDevices,
         maxMembers: tenant.maxMembers,
       },
-      limits: {
-        devicesExceeded:
-          tenant.maxDevices > 0 && deviceCount > tenant.maxDevices,
-        membersExceeded:
-          tenant.maxMembers > 0 && memberCount > tenant.maxMembers,
+      overLimit: {
+        devices: isOverLimit(deviceCount, tenant.maxDevices),
+        members: isOverLimit(memberCount, tenant.maxMembers),
       },
       history: history.reverse(),
     });
   },
 );
 
-const planBody = z.object({
-  planName: z.enum(["free", "starter", "pro", "enterprise"]).optional(),
-  maxDevices: z.number().int().min(0).max(10000).optional(),
-  maxMembers: z.number().int().min(0).max(10000).optional(),
-});
+const limitsBody = z
+  .object({
+    maxDevices: z.number().int().min(0).max(MAX_LIMIT).optional(),
+    maxMembers: z.number().int().min(0).max(MAX_LIMIT).optional(),
+  })
+  .strict();
 
+/** Set the tenant's caps. Originator only, interactive session only (never agent tokens). */
 usageRouter.put(
-  "/api/tenants/:tenantId/plan",
+  "/api/tenants/:tenantId/limits",
   requireAuth,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
@@ -108,14 +103,16 @@ usageRouter.put(
       return;
     }
 
-    if (
-      !hasPermission(result.membership, result.role, "manage_settings", req)
-    ) {
-      res.status(403).json({ error: "Insufficient permissions" });
+    if (!result.membership.isOriginator) {
+      res.status(403).json({ error: "Only the originator can change limits" });
+      return;
+    }
+    if (req.agentToken) {
+      res.status(403).json({ error: "Agent tokens cannot change limits" });
       return;
     }
 
-    const parsed = planBody.safeParse(req.body);
+    const parsed = limitsBody.safeParse(req.body);
     if (!parsed.success) {
       res
         .status(400)
@@ -123,33 +120,46 @@ usageRouter.put(
       return;
     }
 
-    const updates: Record<string, unknown> = { updatedAt: new Date() };
-    if (parsed.data.planName !== undefined)
-      updates.planName = parsed.data.planName;
-    if (parsed.data.maxDevices !== undefined)
-      updates.maxDevices = parsed.data.maxDevices;
-    if (parsed.data.maxMembers !== undefined)
-      updates.maxMembers = parsed.data.maxMembers;
+    const { maxDevices, maxMembers } = parsed.data;
+
+    if (result.tenant.parentId) {
+      const [parent] = await db
+        .select({ maxDevices: tenants.maxDevices, maxMembers: tenants.maxMembers })
+        .from(tenants)
+        .where(eq(tenants.id, result.tenant.parentId));
+      const err =
+        (maxDevices !== undefined && checkChildLimit("device", maxDevices, parent?.maxDevices)) ||
+        (maxMembers !== undefined && checkChildLimit("member", maxMembers, parent?.maxMembers));
+      if (err) {
+        res.status(400).json({ error: err });
+        return;
+      }
+    }
+
+    const updates: Partial<typeof tenants.$inferInsert> = { updatedAt: new Date() };
+    if (maxDevices !== undefined) updates.maxDevices = maxDevices;
+    if (maxMembers !== undefined) updates.maxMembers = maxMembers;
 
     try {
-      await db
+      const [updated] = await db
         .update(tenants)
         .set(updates)
-        .where(eq(tenants.id, tenantId));
+        .where(eq(tenants.id, tenantId))
+        .returning({ maxDevices: tenants.maxDevices, maxMembers: tenants.maxMembers });
 
       logAudit({
         tenantId,
         actorUserId: authUserId(req),
-        action: "plan_updated",
+        action: "limits_updated",
         targetType: "tenant",
         targetId: tenantId,
         metadata: parsed.data,
       });
 
-      res.json({ status: "updated", ...parsed.data });
+      res.json({ status: "updated", limits: updated });
     } catch (err) {
-      logger.error({ tenantId, err }, "failed to update plan");
-      res.status(500).json({ error: "Failed to update plan" });
+      logger.error({ tenantId, err }, "failed to update limits");
+      res.status(500).json({ error: "Failed to update limits" });
     }
   },
 );

@@ -18,7 +18,11 @@ vi.mock("node:dns/promises", () => ({
   }),
 }));
 
+import * as crypto from "node:crypto";
 import { discoverPeer, isAllowedBrokerUrl } from "../federation/discovery.js";
+import { signedPayload } from "../federation/auth.js";
+import { signDetached } from "../identity/keys.js";
+import type { PublicKeyResolver } from "../credentials/verifier.js";
 
 describe("discoverPeer", () => {
   afterEach(() => {
@@ -46,29 +50,46 @@ describe("discoverPeer", () => {
   });
 
   it("fetches discovery document and extracts peer info", async () => {
+    const did = "did:web:remote.example.com:collective:test";
+    const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
+    const unsigned = {
+      collectiveDid: did,
+      brokerUrl: "https://remote.example.com",
+      cfpVersions: ["1.0.0"],
+      federationPolicy: "selective",
+      capabilities: ["route-exchange"],
+      derpEndpoints: [],
+    };
+    const descriptor = { ...unsigned, signature: signDetached(privateKey, signedPayload(unsigned)) };
+    const resolver: PublicKeyResolver = { resolve: async (d) => (d === did ? publicKey : null) };
     vi.stubGlobal(
       "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          collectiveDid: "did:web:remote.example.com:collective:test",
-          brokerUrl: "https://remote.example.com",
-          cfpVersions: ["1.0.0"],
-          federationPolicy: "selective",
-          capabilities: ["route-exchange"],
-          derpEndpoints: [],
-          signature: "",
-        }),
-      }),
+      vi.fn().mockResolvedValue({ ok: true, json: async () => descriptor }),
     );
 
-    const result = await discoverPeer("test@remote.example.com");
+    const result = await discoverPeer("test@remote.example.com", resolver);
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.peer.did).toBe("did:web:remote.example.com:collective:test");
+      expect(result.peer.did).toBe(did);
       expect(result.peer.brokerUrl).toBe("https://remote.example.com");
       expect(result.peer.name).toBe("test");
     }
+
+    // A descriptor whose broker URL was swapped after signing is refused,
+    // as is an unsigned one.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ...descriptor, brokerUrl: "https://evil.example.com" }) }),
+    );
+    const tampered = await discoverPeer("test@remote.example.com", resolver);
+    expect(tampered.ok).toBe(false);
+    if (!tampered.ok) expect(tampered.error).toContain("signature");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({ ok: true, json: async () => ({ ...descriptor, signature: "" }) }),
+    );
+    expect((await discoverPeer("test@remote.example.com", resolver)).ok).toBe(false);
   });
 
   it("rejects peer with closed federation policy", async () => {

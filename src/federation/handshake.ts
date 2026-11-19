@@ -20,6 +20,8 @@ import {
   KEEPALIVE_RANGE,
   CHALLENGE_EXPIRY_DEFAULT_SECONDS,
 } from "./protocol.js";
+import { canonicalize } from "./jcs.js";
+import { signedPayload } from "./auth.js";
 
 function negotiateVersion(remote: string, local: string): string {
   const rParts = remote.split(".").map(Number);
@@ -79,12 +81,28 @@ export function challengeResponsePayload(
   signerDid: string,
   audienceDid: string,
 ): string {
-  return JSON.stringify({
+  return canonicalize({
     type: CHALLENGE_RESPONSE_TYPE,
     iss: signerDid,
     aud: audienceDid,
     nonce,
   });
+}
+
+/** Verify `message.signature` by `did` over {@link signedPayload}; false on any failure. */
+async function verifySigned(
+  callbacks: HandshakeCallbacks,
+  did: string,
+  message: { signature?: unknown },
+): Promise<boolean> {
+  if (typeof message.signature !== "string" || !message.signature) return false;
+  let payload: string;
+  try {
+    payload = signedPayload(message);
+  } catch {
+    return false;
+  }
+  return callbacks.verifySignature(did, payload, message.signature);
 }
 
 export function createHandshake(localDid: string): HandshakeState {
@@ -104,29 +122,16 @@ export async function initiateHello(
   capabilities: Capability[],
   callbacks: HandshakeCallbacks,
 ): Promise<{ state: HandshakeState; message: HelloMessage }> {
-  const timestamp = new Date().toISOString();
-  const payload = JSON.stringify({
+  const unsigned: Omit<HelloMessage, "signature"> = {
     type: "HELLO",
     collectiveDid: state.localDid,
     federationType: type,
     offeredCidrs: cidrs,
     capabilities,
     protocolVersion: CFP_VERSION,
-    timestamp,
-  });
-
-  const signature = await callbacks.sign(payload);
-
-  const message: HelloMessage = {
-    type: "HELLO",
-    collectiveDid: state.localDid,
-    federationType: type,
-    offeredCidrs: cidrs,
-    capabilities,
-    protocolVersion: CFP_VERSION,
-    signature,
-    timestamp,
+    timestamp: new Date().toISOString(),
   };
+  const message: HelloMessage = { ...unsigned, signature: await callbacks.sign(signedPayload(unsigned)) };
 
   return {
     state: {
@@ -150,11 +155,8 @@ export async function handleHello(
   | { ok: true; state: HandshakeState; message: ChallengeMessage }
   | { ok: false; state: HandshakeState; error: string }
 > {
-  const valid = await callbacks.verifySignature(
-    hello.collectiveDid,
-    JSON.stringify({ ...hello, signature: undefined }),
-    hello.signature,
-  );
+  // Over the message as received: JCS of every member but `signature`.
+  const valid = await verifySigned(callbacks, hello.collectiveDid, hello);
 
   if (!valid) {
     return {
@@ -183,8 +185,7 @@ export async function handleHello(
   const expiresAt = new Date(Date.now() + CHALLENGE_EXPIRY_DEFAULT_SECONDS * 1000);
   const keepalive = Math.max(KEEPALIVE_RANGE.min, Math.min(KEEPALIVE_RANGE.max, DEFAULT_KEEPALIVE_SECONDS));
 
-  const timestamp = new Date().toISOString();
-  const payload = JSON.stringify({
+  const unsigned: Omit<ChallengeMessage, "signature"> = {
     type: "CHALLENGE",
     collectiveDid: state.localDid,
     nonce,
@@ -194,24 +195,9 @@ export async function handleHello(
     acceptedCapabilities,
     negotiatedVersion,
     negotiatedKeepaliveSeconds: keepalive,
-    timestamp,
-  });
-
-  const signature = await callbacks.sign(payload);
-
-  const message: ChallengeMessage = {
-    type: "CHALLENGE",
-    collectiveDid: state.localDid,
-    nonce,
-    expiresAt: expiresAt.toISOString(),
-    acceptedType: hello.federationType,
-    acceptedCidrs,
-    acceptedCapabilities,
-    negotiatedVersion,
-    negotiatedKeepaliveSeconds: keepalive,
-    signature,
-    timestamp,
+    timestamp: new Date().toISOString(),
   };
+  const message: ChallengeMessage = { ...unsigned, signature: await callbacks.sign(signedPayload(unsigned)) };
 
   return {
     ok: true,
@@ -277,22 +263,17 @@ export async function handleChallenge(
   );
   const routes = callbacks.getLocalRoutes();
 
-  const timestamp = new Date().toISOString();
-  // Signed over every transmitted field except `signature`, in transmitted
-  // order — the same bytes the receiver rebuilds from the wire message.
-  const unsigned = {
-    type: "COMMIT" as const,
+  // Signed over JCS of every transmitted member except `signature` — the
+  // same bytes the receiver rebuilds from the wire message.
+  const unsigned: Omit<CommitMessage, "signature"> = {
+    type: "COMMIT",
     collectiveDid: state.localDid,
     challengeNonce: challenge.nonce,
     challengeSignature,
     initialRoutes: routes,
-    signature: undefined,
-    timestamp,
+    timestamp: new Date().toISOString(),
   };
-
-  const signature = await callbacks.sign(JSON.stringify(unsigned));
-
-  const message: CommitMessage = { ...unsigned, signature };
+  const message: CommitMessage = { ...unsigned, signature: await callbacks.sign(signedPayload(unsigned)) };
 
   return {
     ok: true,
@@ -351,12 +332,8 @@ export async function handleCommit(
   }
 
   // The COMMIT itself (its routes, timestamp) must be signed by the peer,
-  // over the message as transmitted.
-  const commitValid = await callbacks.verifySignature(
-    commit.collectiveDid,
-    JSON.stringify({ ...commit, signature: undefined }),
-    commit.signature,
-  );
+  // over the message as received.
+  const commitValid = await verifySigned(callbacks, commit.collectiveDid, commit);
   if (!commitValid) {
     return {
       ok: false,
@@ -382,27 +359,15 @@ export async function handleCommit(
   const sessionId = randomBytes(16).toString("hex");
   const routes = callbacks.getLocalRoutes();
 
-  const timestamp = new Date().toISOString();
-  const payload = JSON.stringify({
+  const unsigned: Omit<EstablishedMessage, "signature"> = {
     type: "ESTABLISHED",
     sessionId,
     collectiveDid: state.localDid,
     initialRoutes: routes,
     keepaliveIntervalSeconds: state.keepaliveSeconds ?? DEFAULT_KEEPALIVE_SECONDS,
-    timestamp,
-  });
-
-  const signature = await callbacks.sign(payload);
-
-  const message: EstablishedMessage = {
-    type: "ESTABLISHED",
-    sessionId,
-    collectiveDid: state.localDid,
-    initialRoutes: routes,
-    keepaliveIntervalSeconds: state.keepaliveSeconds ?? DEFAULT_KEEPALIVE_SECONDS,
-    signature,
-    timestamp,
+    timestamp: new Date().toISOString(),
   };
+  const message: EstablishedMessage = { ...unsigned, signature: await callbacks.sign(signedPayload(unsigned)) };
 
   return {
     ok: true,

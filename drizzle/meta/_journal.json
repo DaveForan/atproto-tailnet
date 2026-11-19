@@ -169,6 +169,20 @@
       "when": 1794028804001,
       "tag": "0023_coordinator_acl_policy",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1794028805001,
+      "tag": "0024_auth_keys_notifications_limits",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1794028806001,
+      "tag": "0025_federation_link_outbox",
+      "breakpoints": true
     }
   ]
 }

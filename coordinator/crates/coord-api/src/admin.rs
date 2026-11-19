@@ -170,6 +170,7 @@ pub async fn delete_tenant(
             // Clean up any ACL policy for the deleted tenant
             state.acl.remove_policy(tenant_id);
             state.derp.remove_tenant(tenant_id);
+            state.auto_approvers.remove_tenant(tenant_id);
             (
                 StatusCode::OK,
                 Json(serde_json::json!({"status": "deleted", "tenant_id": id})),
@@ -232,16 +233,45 @@ pub async fn update_tenant_posture(
 
 // ── Preauth key management ──
 
+/// Upper bound for `expiration_seconds` (one year).
+const MAX_KEY_EXPIRATION_SECS: u64 = 31_536_000;
+
 #[derive(Deserialize)]
 pub struct CreateKeyRequest {
     pub tenant_id: String,
     pub reusable: Option<bool>,
+    pub ephemeral: Option<bool>,
+    pub expiration_seconds: Option<u64>,
+    pub owner: Option<String>,
+    pub tags: Option<Vec<String>>,
 }
 
 #[derive(Serialize)]
 pub struct CreateKeyResponse {
     pub key: String,
+    pub id: String,
     pub tenant_id: String,
+    pub expires_at: Option<String>,
+}
+
+fn validate_owner(owner: &str) -> Result<(), String> {
+    if owner.is_empty() || owner.chars().count() > coord_core::routes::MAX_OWNER_LEN {
+        return Err(format!("owner must be 1-{} characters", coord_core::routes::MAX_OWNER_LEN));
+    }
+    Ok(())
+}
+
+fn validate_tags(tags: Vec<String>) -> Result<Vec<String>, String> {
+    if tags.len() > coord_core::routes::MAX_TAGS {
+        return Err(format!("at most {} tags allowed", coord_core::routes::MAX_TAGS));
+    }
+    if let Some(bad) = tags.iter().find(|t| !coord_core::routes::is_valid_tag(t)) {
+        return Err(format!("invalid tag {bad:?}: must match ^tag:[a-z0-9-]{{1,63}}$"));
+    }
+    let mut tags = tags;
+    tags.sort();
+    tags.dedup();
+    Ok(tags)
 }
 
 pub async fn create_preauth_key(
@@ -267,8 +297,35 @@ pub async fn create_preauth_key(
         }
     };
 
-    let reusable = body.reusable.unwrap_or(false);
-    let key = match state.store.create_preauth_key(tenant_id, reusable).await {
+    let expires_at = match body.expiration_seconds {
+        None => None,
+        Some(secs) if (1..=MAX_KEY_EXPIRATION_SECS).contains(&secs) => {
+            // Whole seconds so every backend compares expiry identically.
+            let at = chrono::Utc::now().timestamp() + secs as i64;
+            chrono::DateTime::from_timestamp(at, 0)
+        }
+        Some(_) => {
+            return bad_request(format!("expiration_seconds must be 1..={MAX_KEY_EXPIRATION_SECS}"));
+        }
+    };
+    if let Some(owner) = &body.owner {
+        if let Err(e) = validate_owner(owner) {
+            return bad_request(e);
+        }
+    }
+    let tags = match validate_tags(body.tags.unwrap_or_default()) {
+        Ok(t) => t,
+        Err(e) => return bad_request(e),
+    };
+
+    let opts = coord_core::PreAuthKeyOptions {
+        reusable: body.reusable.unwrap_or(false),
+        ephemeral: body.ephemeral.unwrap_or(false),
+        expires_at,
+        owner: body.owner,
+        tags,
+    };
+    let created = match state.store.create_preauth_key_with(tenant_id, opts).await {
         Ok(k) => k,
         Err(e) => {
             return internal_error(e).into_response();
@@ -278,11 +335,252 @@ pub async fn create_preauth_key(
     (
         StatusCode::CREATED,
         Json(CreateKeyResponse {
-            key,
+            key: created.key,
+            id: created.id.to_string(),
             tenant_id: tenant_id.to_string(),
+            expires_at: created.expires_at.map(|t| t.to_rfc3339()),
         }),
     )
         .into_response()
+}
+
+#[derive(Deserialize)]
+pub struct OwnerQuery {
+    pub owner: Option<String>,
+}
+
+async fn existing_tenant(state: &CoordinatorState, id: &str) -> Result<TenantId, axum::response::Response> {
+    let Some(tenant_id) = parse_tenant_id(id) else {
+        return Err(bad_request("invalid tenant_id"));
+    };
+    if state.store.get_tenant(tenant_id).await.is_none() {
+        return Err(not_found("tenant not found"));
+    }
+    Ok(tenant_id)
+}
+
+fn not_found(msg: &str) -> axum::response::Response {
+    (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": msg}))).into_response()
+}
+
+fn required_owner(query: OwnerQuery) -> Result<String, axum::response::Response> {
+    let Some(owner) = query.owner else {
+        return Err(bad_request("owner query parameter is required"));
+    };
+    validate_owner(&owner).map_err(bad_request)?;
+    Ok(owner)
+}
+
+/// GET /api/tenants/{id}/preauth-keys — never exposes the full key.
+pub async fn list_preauth_keys(
+    State(state): State<Arc<CoordinatorState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let tenant_id = match existing_tenant(&state, &id).await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let keys: Vec<serde_json::Value> = state
+        .store
+        .list_preauth_keys(tenant_id)
+        .await
+        .into_iter()
+        .map(|k| {
+            serde_json::json!({
+                "id": k.id.to_string(),
+                "prefix": k.prefix,
+                "owner": k.owner,
+                "tags": k.tags,
+                "reusable": k.reusable,
+                "ephemeral": k.ephemeral,
+                "used": k.used,
+                "expires_at": k.expires_at.map(|t| t.to_rfc3339()),
+                "created_at": k.created_at.to_rfc3339(),
+                "revoked": k.revoked,
+            })
+        })
+        .collect();
+    Json(serde_json::json!({"keys": keys})).into_response()
+}
+
+/// DELETE /api/tenants/{id}/preauth-keys/{key_id}
+pub async fn revoke_preauth_key(
+    State(state): State<Arc<CoordinatorState>>,
+    Path((id, key_id)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let tenant_id = match existing_tenant(&state, &id).await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let Ok(key_id) = key_id.parse::<uuid::Uuid>() else {
+        return not_found("key not found");
+    };
+    match state.store.revoke_preauth_key(tenant_id, key_id).await {
+        Ok(true) => Json(serde_json::json!({"status": "revoked"})).into_response(),
+        Ok(false) => not_found("key not found"),
+        Err(e) => internal_error(e).into_response(),
+    }
+}
+
+/// DELETE /api/tenants/{id}/preauth-keys?owner=X
+pub async fn revoke_preauth_keys_by_owner(
+    State(state): State<Arc<CoordinatorState>>,
+    Path(id): Path<String>,
+    Query(query): Query<OwnerQuery>,
+) -> impl IntoResponse {
+    let tenant_id = match existing_tenant(&state, &id).await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let owner = match required_owner(query) {
+        Ok(o) => o,
+        Err(r) => return r,
+    };
+    match state.store.revoke_preauth_keys_by_owner(tenant_id, &owner).await {
+        Ok(n) => Json(serde_json::json!({"revoked": n})).into_response(),
+        Err(e) => internal_error(e).into_response(),
+    }
+}
+
+/// DELETE /api/tenants/{id}/nodes?owner=X — deleting a node ends its map stream.
+pub async fn delete_tenant_nodes_by_owner(
+    State(state): State<Arc<CoordinatorState>>,
+    Path(id): Path<String>,
+    Query(query): Query<OwnerQuery>,
+) -> impl IntoResponse {
+    let tenant_id = match existing_tenant(&state, &id).await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let owner = match required_owner(query) {
+        Ok(o) => o,
+        Err(r) => return r,
+    };
+    match state.store.delete_nodes_by_owner(tenant_id, &owner).await {
+        Ok(ids) => {
+            tracing::info!(tenant = %tenant_id, deleted = ids.len(), "deleted nodes by owner");
+            Json(serde_json::json!({"deleted": ids.len()})).into_response()
+        }
+        Err(e) => internal_error(e).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct ApproveRoutesRequest {
+    pub approved: Vec<String>,
+}
+
+/// POST /api/tenants/{id}/nodes/{node_id}/routes — the only manual approval path.
+pub async fn approve_node_routes(
+    State(state): State<Arc<CoordinatorState>>,
+    Path((id, node_id)): Path<(String, String)>,
+    Json(body): Json<ApproveRoutesRequest>,
+) -> impl IntoResponse {
+    let tenant_id = match existing_tenant(&state, &id).await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let Ok(node_id) = node_id.parse::<i64>().map(NodeId::new) else {
+        return bad_request("invalid node_id");
+    };
+    let approved = match coord_core::routes::normalize_routes_strict(&body.approved) {
+        Ok(r) => r,
+        Err(bad) => return bad_request(format!("invalid CIDR: {bad}")),
+    };
+    let Some(detail) = state.store.get_node_info(node_id).await.filter(|d| d.tenant_id == tenant_id) else {
+        return not_found("node not found");
+    };
+    if let Some(bad) = approved.iter().find(|r| !detail.attrs.advertised_routes.contains(r)) {
+        return bad_request(format!("route {bad} is not advertised by this node"));
+    }
+    match state.store.set_approved_routes(node_id, approved).await {
+        Ok(changed) => {
+            if changed {
+                state.notify_tenant_changed(tenant_id);
+            }
+        }
+        Err(coord_core::CoordError::Protocol(ref msg)) if msg.contains("not found") => {
+            return not_found("node not found");
+        }
+        Err(e) => return internal_error(e).into_response(),
+    }
+    match state.store.get_node_info(node_id).await {
+        Some(detail) => Json(node_detail_json(node_id, detail)).into_response(),
+        None => not_found("node not found"),
+    }
+}
+
+const MAX_AUTO_APPROVER_ROUTES: usize = 256;
+
+/// GET /api/tenants/{id}/auto-approvers
+pub async fn get_auto_approvers(
+    State(state): State<Arc<CoordinatorState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let tenant_id = match existing_tenant(&state, &id).await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    Json(state.auto_approvers.get_tenant(tenant_id)).into_response()
+}
+
+/// PUT /api/tenants/{id}/auto-approvers — replaces the tenant's policy and
+/// applies it to already-registered nodes.
+pub async fn set_auto_approvers(
+    State(state): State<Arc<CoordinatorState>>,
+    Path(id): Path<String>,
+    Json(body): Json<coord_netmap::AutoApprovers>,
+) -> impl IntoResponse {
+    let tenant_id = match existing_tenant(&state, &id).await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    if body.routes.len() > MAX_AUTO_APPROVER_ROUTES {
+        return bad_request(format!("at most {MAX_AUTO_APPROVER_ROUTES} auto-approver routes allowed"));
+    }
+    let mut routes = std::collections::BTreeMap::new();
+    for (cidr, tags) in body.routes {
+        let Some(norm) = coord_core::routes::normalize_cidr(&cidr) else {
+            return bad_request(format!("invalid CIDR: {cidr}"));
+        };
+        let tags = match validate_auto_approver_tags(tags) {
+            Ok(t) => t,
+            Err(e) => return bad_request(e),
+        };
+        routes.entry(norm).or_insert_with(Vec::new).extend(tags);
+    }
+    for tags in routes.values_mut() {
+        tags.sort();
+        tags.dedup();
+    }
+    let exit_node = match validate_auto_approver_tags(body.exit_node) {
+        Ok(t) => t,
+        Err(e) => return bad_request(e),
+    };
+    let policy = coord_netmap::AutoApprovers { routes, exit_node };
+    state.auto_approvers.set_tenant(tenant_id, policy.clone());
+
+    let mut changed = false;
+    for node in state.store.list_nodes_for_tenant(tenant_id).await {
+        changed |= crate::control::apply_auto_approvers(&state, node.id).await;
+    }
+    if changed {
+        state.notify_tenant_changed(tenant_id);
+    }
+    Json(policy).into_response()
+}
+
+fn validate_auto_approver_tags(tags: Vec<String>) -> Result<Vec<String>, String> {
+    if tags.len() > 64 {
+        return Err("at most 64 tags per auto-approver entry".into());
+    }
+    if let Some(bad) = tags.iter().find(|t| !coord_core::routes::is_valid_tag(t)) {
+        return Err(format!("invalid tag {bad:?}: must match ^tag:[a-z0-9-]{{1,63}}$"));
+    }
+    let mut tags = tags;
+    tags.sort();
+    tags.dedup();
+    Ok(tags)
 }
 
 #[derive(Serialize)]
@@ -293,6 +591,11 @@ pub struct NodeSummaryResponse {
     pub stable_id: String,
     pub hostname: String,
     pub online: bool,
+    pub owner: Option<String>,
+    pub tags: Vec<String>,
+    pub ephemeral: bool,
+    pub advertised_routes: Vec<String>,
+    pub approved_routes: Vec<String>,
 }
 
 impl From<coord_core::NodeSummary> for NodeSummaryResponse {
@@ -304,8 +607,25 @@ impl From<coord_core::NodeSummary> for NodeSummaryResponse {
             stable_id: n.stable_id,
             hostname: n.hostname,
             online: n.online,
+            owner: n.attrs.owner,
+            tags: n.attrs.tags,
+            ephemeral: n.attrs.ephemeral,
+            advertised_routes: n.attrs.advertised_routes,
+            approved_routes: n.attrs.approved_routes,
         }
     }
+}
+
+fn node_detail_json(node_id: NodeId, detail: coord_core::NodeDetail) -> NodeSummaryResponse {
+    NodeSummaryResponse::from(coord_core::NodeSummary {
+        id: node_id,
+        tenant_id: detail.tenant_id,
+        ipv4: detail.ipv4,
+        stable_id: detail.stable_id,
+        online: detail.online,
+        hostname: detail.info.hostname,
+        attrs: detail.attrs,
+    })
 }
 
 #[derive(Deserialize)]
@@ -424,13 +744,13 @@ pub async fn get_tenant_routes(
     }).collect();
 
     let own_routes: Vec<String> = snapshot.own_nodes.iter()
-        .flat_map(|p| p.allowed_ips.clone())
+        .flat_map(|p| p.addresses.clone())
         .collect();
 
     let aggregated_child_routes: Vec<serde_json::Value> = snapshot.visible_child_nodes.iter()
         .map(|(child_id, slug, nodes)| {
             let routes: Vec<String> = nodes.iter()
-                .flat_map(|p| p.allowed_ips.clone())
+                .flat_map(|p| p.addresses.clone())
                 .collect();
             serde_json::json!({
                 "tenant_id": child_id.to_string(),
@@ -534,14 +854,7 @@ pub async fn get_node_handler(
         Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "invalid node_id"}))).into_response(),
     };
     match state.store.get_node_info(node_id).await {
-        Some(detail) => Json(serde_json::json!({
-            "id": node_id.as_i64(),
-            "tenant_id": detail.tenant_id.to_string(),
-            "ipv4": detail.ipv4.to_string(),
-            "stable_id": detail.stable_id,
-            "hostname": detail.info.hostname,
-            "online": detail.online,
-        })).into_response(),
+        Some(detail) => Json(node_detail_json(node_id, detail)).into_response(),
         None => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "node not found"}))).into_response(),
     }
 }
@@ -697,14 +1010,7 @@ pub async fn rename_node_handler(
     match state.store.rename_node(node_id, body.name).await {
         Ok(()) => {
             match state.store.get_node_info(node_id).await {
-                Some(detail) => Json(serde_json::json!({
-                    "id": node_id.as_i64(),
-                    "tenant_id": detail.tenant_id.to_string(),
-                    "ipv4": detail.ipv4.to_string(),
-                    "stable_id": detail.stable_id,
-                    "hostname": detail.info.hostname,
-                    "online": detail.online,
-                })).into_response(),
+                Some(detail) => Json(node_detail_json(node_id, detail)).into_response(),
                 None => (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "node not found"}))).into_response(),
             }
         }

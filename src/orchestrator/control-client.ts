@@ -15,23 +15,38 @@ import type {
   HeadscaleUser,
   HeadscalePreAuthKey,
   HeadscaleRoute,
+  PreAuthKeyOptions,
+  ControlPreAuthKeyInfo,
+  AutoApproversConfig,
 } from "./headscale-api.js";
 
-export type { HeadscaleNode, HeadscaleUser, HeadscalePreAuthKey, HeadscaleRoute };
+export type {
+  HeadscaleNode,
+  HeadscaleUser,
+  HeadscalePreAuthKey,
+  HeadscaleRoute,
+  PreAuthKeyOptions,
+  ControlPreAuthKeyInfo,
+  AutoApproversConfig,
+};
 
 export interface ControlClient {
   createUser(name: string): Promise<HeadscaleUser>;
   listUsers(): Promise<HeadscaleUser[]>;
   getUserByName(name: string): Promise<HeadscaleUser | null>;
   deleteUser(name: string): Promise<void>;
+  /** `owner` is recorded by the coordinator (node ownership); Headscale ignores it. */
   createPreAuthKey(
     userName: string,
-    opts?: { reusable?: boolean; ephemeral?: boolean; expirationSeconds?: number },
+    opts?: PreAuthKeyOptions,
   ): Promise<HeadscalePreAuthKey>;
   createTaggedPreAuthKey(
     aclTags: string[],
-    opts?: { expirationSeconds?: number },
+    opts?: { expirationSeconds?: number; ephemeral?: boolean },
   ): Promise<HeadscalePreAuthKey>;
+  listPreAuthKeys(): Promise<ControlPreAuthKeyInfo[]>;
+  getAutoApprovers(): Promise<AutoApproversConfig>;
+  setAutoApprovers(aa: AutoApproversConfig): Promise<void>;
   listNodes(): Promise<HeadscaleNode[]>;
   getNode(nodeId: string): Promise<HeadscaleNode>;
   deleteNode(nodeId: string): Promise<void>;

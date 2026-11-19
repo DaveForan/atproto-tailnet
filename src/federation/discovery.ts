@@ -7,6 +7,8 @@
 import { logger } from "../logger.js";
 import { getResolver, resolvesToPublicAddresses } from "../identity/resolver.js";
 import type { FederationDescriptor } from "./protocol.js";
+import type { PublicKeyResolver } from "../credentials/verifier.js";
+import { verifyMessage } from "./auth.js";
 import { config } from "../config.js";
 
 const DISCOVERY_TIMEOUT_MS = 10_000;
@@ -19,8 +21,14 @@ export interface PeerInfo {
   federationPolicy: string;
 }
 
+/**
+ * Fetch `slug@host`'s federation descriptor and check it: signed by the DID it
+ * names (detached JWS over the JCS form without `signature`), not closed, and
+ * pointing at an allowed broker URL.
+ */
 export async function discoverPeer(
   peerAddress: string,
+  resolver: PublicKeyResolver = getResolver(),
 ): Promise<{ ok: true; peer: PeerInfo } | { ok: false; error: string }> {
   let host: string;
   let slug: string;
@@ -80,15 +88,15 @@ export async function discoverPeer(
     return { ok: false, error: `Collective ${slug}@${host} has a closed federation policy` };
   }
 
-  if (descriptor.signature) {
-    const resolver = getResolver();
-    const key = await resolver.resolve(descriptor.collectiveDid);
-    if (!key) {
-      return {
-        ok: false,
-        error: `Cannot verify descriptor signature: unable to resolve ${descriptor.collectiveDid}`,
-      };
-    }
+  // The DID is the identity; the descriptor is only trusted because its key signed it.
+  if (typeof descriptor.collectiveDid !== "string" || !descriptor.collectiveDid.startsWith("did:")) {
+    return { ok: false, error: "Discovery document names no valid collective DID" };
+  }
+  if (!(await verifyMessage(resolver, descriptor.collectiveDid, descriptor))) {
+    return {
+      ok: false,
+      error: `Descriptor signature does not verify against ${descriptor.collectiveDid}`,
+    };
   }
 
   if (!(await isAllowedBrokerUrl(descriptor.brokerUrl))) {

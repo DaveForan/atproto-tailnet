@@ -13,6 +13,7 @@ use chrono::Utc;
 
 use coord_core::CoordError;
 
+use crate::canonical::canonicalize;
 use crate::protocol::RouteAnnouncement;
 
 // ── Constants ──────────────────────────────────────────────────────────────────
@@ -28,14 +29,17 @@ pub type SignFn =
 
 // ── Functions ──────────────────────────────────────────────────────────────────
 
-/// Canonical signing payload: the message with its `signature` field removed.
-/// Matches what `federation/handshake.ts` signs for HELLO / CHALLENGE / ESTABLISHED.
-pub fn signed_payload(message: &serde_json::Value) -> String {
+/// Canonical signing payload of a CFP message given as raw JSON: RFC 8785
+/// (JCS) canonical form of the message with its `signature` member removed.
+/// Byte-identical to the TypeScript service's `signedPayload`; pinned by
+/// `tests/fixtures/cfp_vectors.json`. Prefer verifying over the received
+/// JSON value — it covers members this crate does not model.
+pub fn signed_payload(message: &serde_json::Value) -> Result<String, CoordError> {
     let mut clone = message.clone();
     if let Some(obj) = clone.as_object_mut() {
         obj.remove("signature");
     }
-    clone.to_string()
+    canonicalize(&clone).map_err(|e| CoordError::Protocol(e.to_string()))
 }
 
 /// Sign a message that has no `signature` yet and return it with one appended.
@@ -43,7 +47,7 @@ pub async fn sign_message(
     message: &serde_json::Value,
     sign_fn: &SignFn,
 ) -> Result<serde_json::Value, CoordError> {
-    let payload = message.to_string();
+    let payload = signed_payload(message)?;
     let signature = sign_fn(&payload).await?;
     let mut result = message.clone();
     if let Some(obj) = result.as_object_mut() {
@@ -70,7 +74,9 @@ where
         Some(s) if !s.is_empty() => s,
         _ => return Ok(false),
     };
-    let payload = signed_payload(message);
+    let Ok(payload) = signed_payload(message) else {
+        return Ok(false);
+    };
     verify_fn(did, &payload, signature).await
 }
 
@@ -78,10 +84,12 @@ where
 /// object, its `signature` field removed and its wire `type` tag inserted.
 /// Signers and verifiers MUST both use this function — rebuilding the payload
 /// by hand (e.g. a `json!` literal on one side, the struct on the other) is how
-/// HELLO ended up unverifiable. Keys are emitted in serde_json's map order
-/// (sorted unless `preserve_order` is enabled), the same on both sides of one
-/// build. NOTE: this is not byte-compatible with the TypeScript service, which
-/// signs `JSON.stringify` output in field insertion order.
+/// HELLO ended up unverifiable. The object is canonicalized with RFC 8785 (JCS),
+/// so the bytes equal what the TypeScript service signs/verifies for the same
+/// message (see `tests/cfp_vectors.rs`). Caveat for verification: a struct
+/// round-trip drops members this crate does not model (and empty optional
+/// arrays it skips), so a peer message carrying such members only verifies via
+/// [`signed_payload`] over the received JSON value.
 pub fn message_signing_payload<T: crate::protocol::CfpSigned>(
     message: &T,
 ) -> Result<String, CoordError> {
@@ -95,7 +103,7 @@ pub fn message_signing_payload<T: crate::protocol::CfpSigned>(
         "type".to_string(),
         serde_json::Value::String(T::MESSAGE_TYPE.to_string()),
     );
-    Ok(value.to_string())
+    canonicalize(&value).map_err(|e| CoordError::Protocol(e.to_string()))
 }
 
 /// Type tag of the challenge-response signing payload. Never a CFP message
@@ -106,13 +114,27 @@ pub const CHALLENGE_RESPONSE_TYPE: &str = "CFP_CHALLENGE_RESPONSE";
 /// nonce to signer and audience — never the peer-chosen nonce verbatim, which
 /// would turn us into a signing oracle for arbitrary payloads.
 pub fn challenge_response_payload(nonce: &str, signer_did: &str, audience_did: &str) -> String {
-    serde_json::json!({
-        "type": CHALLENGE_RESPONSE_TYPE,
-        "iss": signer_did,
-        "aud": audience_did,
-        "nonce": nonce,
-    })
-    .to_string()
+    jcs_of_strings(&[
+        ("type", CHALLENGE_RESPONSE_TYPE),
+        ("iss", signer_did),
+        ("aud", audience_did),
+        ("nonce", nonce),
+    ])
+}
+
+/// Signing payload of a route announcement's `originSignature`: JCS of
+/// `{prefix, originDid}` (same bytes as the TypeScript `routeOriginPayload`).
+pub fn route_origin_payload(prefix: &str, origin_did: &str) -> String {
+    jcs_of_strings(&[("prefix", prefix), ("originDid", origin_did)])
+}
+
+/// JCS of a flat object of string members (cannot fail: strings only).
+fn jcs_of_strings(members: &[(&str, &str)]) -> String {
+    let obj: serde_json::Map<String, serde_json::Value> = members
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), serde_json::Value::String((*v).to_string())))
+        .collect();
+    canonicalize(&serde_json::Value::Object(obj)).unwrap_or_default()
 }
 
 /// Challenge nonces are fixed-length random tokens: 32 bytes as 64 lowercase
@@ -167,11 +189,7 @@ pub async fn build_announcements(
 ) -> Result<Vec<RouteAnnouncement>, CoordError> {
     let mut result = Vec::with_capacity(cidrs.len());
     for prefix in cidrs {
-        let signing_payload = serde_json::json!({
-            "prefix": prefix,
-            "originDid": local_did,
-        });
-        let origin_signature = sign_fn(&signing_payload.to_string()).await?;
+        let origin_signature = sign_fn(&route_origin_payload(prefix, local_did)).await?;
         result.push(RouteAnnouncement {
             prefix: prefix.clone(),
             origin_did: local_did.to_string(),
@@ -223,7 +241,7 @@ mod tests {
             "signature": "should-be-removed",
             "timestamp": "2026-01-01T00:00:00Z",
         });
-        let payload = signed_payload(&msg);
+        let payload = signed_payload(&msg).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&payload).unwrap();
         assert!(parsed.get("signature").is_none());
         assert_eq!(parsed.get("type").unwrap(), "HELLO");

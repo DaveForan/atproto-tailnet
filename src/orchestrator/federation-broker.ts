@@ -17,7 +17,7 @@
 
 import * as crypto from "node:crypto";
 import * as jose from "jose";
-import { eq, and, ne, inArray } from "drizzle-orm";
+import { eq, and, ne, inArray, isNotNull, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import {
   federationLinks,
@@ -29,6 +29,18 @@ import {
 import { config } from "../config.js";
 import { logger } from "../logger.js";
 import { sendMessage, sendKeepalive, sendRevoke } from "../federation/transport.js";
+import { isAllowedBrokerUrl } from "../federation/discovery.js";
+import {
+  afterAttempt,
+  classifyDelivery,
+  isDue,
+  newOutboxEntry,
+  parseOutboxEntry,
+  type DeliveryOutcome,
+  type OutboxEntry,
+  type UnsignedLinkMessage,
+} from "../federation/outbox.js";
+import { logAudit } from "../routes/audit.js";
 import {
   createHandshake,
   initiateHello,
@@ -97,10 +109,12 @@ async function brokerTick(): Promise<void> {
   if (tickRunning) return;
   tickRunning = true;
   try {
+    await deliverPendingLinkMessages();
     await reconcileActiveSessions();
     await sendKeepalives();
     await checkSessionHealth();
     await checkRelayHealth();
+    await reconcileCoordinatorAutoApprovers();
   } catch (err) {
     logger.error({ err }, "federation broker tick failed");
   } finally {
@@ -182,6 +196,9 @@ async function reconcileActiveSessions(): Promise<void> {
   const now = Date.now();
   for (const link of activeLinks) {
     if (link.direction !== "incoming") continue;
+    // A permanently revoked link is never re-established (ADR-0014 §6); its
+    // status normally leaves "active" too, this guards any stale row.
+    if (link.revokedPermanently) continue;
 
     const [session] = await db
       .select({ id: brokerSessions.id, status: brokerSessions.status })
@@ -359,12 +376,14 @@ async function teardownBrokerSession(stale: BrokerSession): Promise<void> {
 
   if (session.cfpSessionId && session.remoteEndpoint && session.status !== "disconnected") {
     try {
+      // Sessions are only torn down once their link left "active" (revoked or
+      // rejected by an operator), which is final: the peer must not retry.
       const revoke = await signMessage(
         {
           type: "REVOKE" as const,
           sessionId: session.cfpSessionId,
-          reason: "link deactivated",
-          permanent: false,
+          reason: "link revoked",
+          permanent: true,
           timestamp: new Date().toISOString(),
         },
         (payload) => signAsCollective(session.localTenantId, payload),
@@ -789,63 +808,340 @@ export async function initiateOutboundHandshake(
   }
 }
 
-// ── Route installation (Headscale ACL) ───────────────────────────────────
+// ── Cross-instance link messages (ADR-0019 §2) ───────────────────────────
+
+/** Base URL peers reach this collective's broker at (as in its discovery document). */
+export async function localBrokerUrl(tenantId: string): Promise<string> {
+  const [row] = await db
+    .select({ brokerEndpoint: collectiveDids.brokerEndpoint })
+    .from(collectiveDids)
+    .where(eq(collectiveDids.tenantId, tenantId))
+    .limit(1);
+  return row?.brokerEndpoint ?? config.publicUrl;
+}
+
+/** The local tenant owning `did`, or null when the collective lives on another instance. */
+export async function localTenantForDid(did: string): Promise<string | null> {
+  const [row] = await db
+    .select({ tenantId: collectiveDids.tenantId })
+    .from(collectiveDids)
+    .where(eq(collectiveDids.did, did))
+    .limit(1);
+  return row?.tenantId ?? null;
+}
+
+const AUDIT_ACTION_FOR: Record<UnsignedLinkMessage["type"], "federation_requested" | "federation_accepted" | "federation_rejected" | "federation_revoked"> = {
+  LINK_REQUEST: "federation_requested",
+  LINK_ACCEPT: "federation_accepted",
+  LINK_REJECT: "federation_rejected",
+  LINK_REVOKE: "federation_revoked",
+};
+
+function auditDelivery(
+  link: Pick<FederationLink, "id" | "localTenantId" | "peerDid">,
+  entry: OutboxEntry,
+  delivery: "delivered" | "failed",
+): void {
+  const meta = {
+    delivery,
+    messageType: entry.message.type,
+    messageId: entry.message.messageId,
+    peerDid: link.peerDid,
+    attempts: entry.attempts,
+    ...(entry.lastError ? { error: entry.lastError } : {}),
+  };
+  if (delivery === "failed") logger.warn({ linkId: link.id, ...meta }, "federation link message delivery abandoned");
+  else logger.info({ linkId: link.id, ...meta }, "federation link message delivered");
+  if (!entry.actorUserId) return;
+  logAudit({
+    tenantId: link.localTenantId,
+    actorUserId: entry.actorUserId,
+    action: AUDIT_ACTION_FOR[entry.message.type],
+    targetType: "federation_link",
+    targetId: link.id,
+    metadata: meta,
+  });
+}
+
+/**
+ * Queue a signed link message for the link's peer (replacing any earlier
+ * undelivered one — the newest operator decision wins) and try to deliver it
+ * right away; the broker loop retries with backoff until it gets through.
+ */
+export async function queueLinkMessage(
+  link: Pick<FederationLink, "id" | "peerDid" | "peerBrokerUrl">,
+  message: UnsignedLinkMessage,
+  actorUserId: string | null,
+): Promise<void> {
+  if (!link.peerBrokerUrl) throw new Error("Link has no peer broker URL");
+  const entry = newOutboxEntry(message, link.peerDid, link.peerBrokerUrl, actorUserId);
+  await db
+    .update(federationLinks)
+    .set({ outbox: entry as unknown as Record<string, unknown>, updatedAt: new Date() })
+    .where(eq(federationLinks.id, link.id));
+  setImmediate(() => {
+    deliverLinkOutbox(link.id).catch((err) =>
+      logger.warn({ linkId: link.id, err }, "federation link message delivery attempt failed"),
+    );
+  });
+}
+
+const deliveriesInFlight = new Set<string>();
+
+/**
+ * One delivery attempt of the link's queued message, if it is due. The row is
+ * only updated while it still holds the same message (an operator may have
+ * queued a newer one meanwhile). Returns the outcome, or null when nothing was
+ * attempted.
+ */
+export async function deliverLinkOutbox(linkId: string): Promise<DeliveryOutcome | null> {
+  if (deliveriesInFlight.has(linkId)) return null;
+  deliveriesInFlight.add(linkId);
+  try {
+    const [link] = await db.select().from(federationLinks).where(eq(federationLinks.id, linkId)).limit(1);
+    const entry = parseOutboxEntry(link?.outbox);
+    if (!link || !entry || !isDue(entry)) return null;
+
+    let outcome: DeliveryOutcome;
+    let error: string | null = null;
+    if (!(await isAllowedBrokerUrl(entry.brokerUrl))) {
+      outcome = "failed";
+      error = `Peer broker URL ${entry.brokerUrl} is not allowed`;
+    } else {
+      const signed = await signMessage(
+        { ...entry.message, timestamp: new Date().toISOString() },
+        (payload) => signAsCollective(link.localTenantId, payload),
+      );
+      const result = await sendMessage(entry.brokerUrl, signed, entry.recipientDid);
+      outcome = classifyDelivery(entry.message.type, result);
+      error = result.ok ? null : (result.error ?? "send failed");
+    }
+
+    const next = afterAttempt(entry, outcome, error);
+    const sameMessage = and(
+      eq(federationLinks.id, linkId),
+      sql`${federationLinks.outbox}->'message'->>'messageId' = ${entry.message.messageId}`,
+    );
+    const finalOutcome: DeliveryOutcome = next === null ? "delivered" : next.failedAt ? "failed" : "retry";
+
+    if (finalOutcome === "failed" && entry.message.type === "LINK_REQUEST") {
+      // The peer refused (or never took) the request: the link cannot proceed.
+      await db
+        .update(federationLinks)
+        .set({ outbox: next as unknown as Record<string, unknown>, status: "rejected", updatedAt: new Date() })
+        .where(and(sameMessage, eq(federationLinks.status, "pending")));
+    } else {
+      await db
+        .update(federationLinks)
+        .set({ outbox: next as unknown as Record<string, unknown> | null, updatedAt: new Date() })
+        .where(sameMessage);
+    }
+
+    if (finalOutcome === "delivered") {
+      auditDelivery(link, { ...entry, attempts: entry.attempts + 1 }, "delivered");
+      // The peer's link is active now; we (the accepting side) open the session.
+      if (entry.message.type === "LINK_ACCEPT" && link.status === "active") {
+        handshakeBackoff.delete(link.id);
+        initiateOutboundHandshake(link.id, link.localTenantId).catch((err) =>
+          logger.warn({ linkId: link.id, err }, "handshake after LINK_ACCEPT delivery failed"),
+        );
+      }
+    } else if (finalOutcome === "failed") {
+      auditDelivery(link, next!, "failed");
+    } else {
+      logger.info(
+        { linkId, messageType: entry.message.type, attempts: next!.attempts, retryAt: next!.nextAttemptAt, error },
+        "federation link message will be retried",
+      );
+    }
+    return finalOutcome;
+  } finally {
+    deliveriesInFlight.delete(linkId);
+  }
+}
+
+/** Broker-loop step: attempt every queued link message that is due. */
+async function deliverPendingLinkMessages(): Promise<void> {
+  const rows = await db
+    .select({ id: federationLinks.id, outbox: federationLinks.outbox })
+    .from(federationLinks)
+    .where(isNotNull(federationLinks.outbox))
+    .limit(200);
+  for (const row of rows) {
+    const entry = parseOutboxEntry(row.outbox);
+    if (!entry || !isDue(entry)) continue;
+    try {
+      await deliverLinkOutbox(row.id);
+    } catch (err) {
+      logger.warn({ linkId: row.id, err }, "federation link message delivery attempt failed");
+    }
+  }
+}
+
+// ── Route installation ───────────────────────────────────────────────────
+//
+// Imported prefixes are approved only when advertised by a relay node tagged
+// FEDERATION_RELAY_TAG. Headscale mode edits the policy's `autoApprovers`;
+// coordinator mode edits the coordinator's per-tenant auto-approvers
+// (`PUT /api/tenants/{id}/auto-approvers`), which live in memory there and
+// are re-asserted every broker tick (see reconcileCoordinatorAutoApprovers).
+
+type RouteApprovers = Record<string, string[]>;
 
 type AclPolicy = {
   tagOwners?: Record<string, string[]>;
-  autoApprovers?: { routes?: Record<string, string[]>; [k: string]: unknown };
+  autoApprovers?: { routes?: RouteApprovers; [k: string]: unknown };
   [k: string]: unknown;
 };
+
+/** Coordinator auto-approvers (contract A): `{routes: {cidr: [tag]}, exit_node: [tag]}`. */
+export interface CoordinatorAutoApprovers {
+  routes: RouteApprovers;
+  exit_node: string[];
+}
+
+/** The CoordinatorApiClient methods this module needs (contract A). */
+interface AutoApproverApi {
+  getAutoApprovers(): Promise<Partial<CoordinatorAutoApprovers> | null | undefined>;
+  setAutoApprovers(approvers: CoordinatorAutoApprovers): Promise<unknown>;
+}
+
+function withRelayApprovers(routes: RouteApprovers | undefined, cidrs: string[]): RouteApprovers {
+  const next = { ...(routes ?? {}) };
+  for (const cidr of cidrs) {
+    const approvers = next[cidr] ?? [];
+    if (!approvers.includes(FEDERATION_RELAY_TAG)) next[cidr] = [...approvers, FEDERATION_RELAY_TAG];
+  }
+  return next;
+}
+
+function withoutRelayApprovers(routes: RouteApprovers | undefined, cidrs: string[]): RouteApprovers {
+  const next = { ...(routes ?? {}) };
+  for (const cidr of cidrs) {
+    const remaining = (next[cidr] ?? []).filter((a) => a !== FEDERATION_RELAY_TAG);
+    if (remaining.length > 0) next[cidr] = remaining;
+    else delete next[cidr];
+  }
+  return next;
+}
 
 /** Add federated CIDRs to a policy's route auto-approvers for the relay tag. */
 export function addFederatedRoutesToPolicy(policy: AclPolicy, cidrs: string[]): AclPolicy {
   const tagOwners = { ...(policy.tagOwners ?? {}) };
   tagOwners[FEDERATION_RELAY_TAG] ??= [];
-
-  const routes = { ...(policy.autoApprovers?.routes ?? {}) };
-  for (const cidr of cidrs) {
-    const approvers = routes[cidr] ?? [];
-    if (!approvers.includes(FEDERATION_RELAY_TAG)) {
-      routes[cidr] = [...approvers, FEDERATION_RELAY_TAG];
-    }
-  }
-
+  const routes = withRelayApprovers(policy.autoApprovers?.routes, cidrs);
   return { ...policy, tagOwners, autoApprovers: { ...policy.autoApprovers, routes } };
 }
 
 /** Inverse of {@link addFederatedRoutesToPolicy}; other approvers are left alone. */
 export function removeFederatedRoutesFromPolicy(policy: AclPolicy, cidrs: string[]): AclPolicy {
-  const routes = { ...(policy.autoApprovers?.routes ?? {}) };
-  for (const cidr of cidrs) {
-    const remaining = (routes[cidr] ?? []).filter((a) => a !== FEDERATION_RELAY_TAG);
-    if (remaining.length > 0) routes[cidr] = remaining;
-    else delete routes[cidr];
-  }
+  const routes = withoutRelayApprovers(policy.autoApprovers?.routes, cidrs);
   return { ...policy, autoApprovers: { ...policy.autoApprovers, routes } };
 }
 
-async function updateTenantPolicy(
-  tenantId: string,
-  update: (policy: AclPolicy) => AclPolicy,
-): Promise<boolean> {
-  const { getControlClient } = await import("./control-client.js");
+/** Normalise whatever the coordinator returned into the contract shape. */
+export function normalizeAutoApprovers(
+  raw: Partial<CoordinatorAutoApprovers> | null | undefined,
+): CoordinatorAutoApprovers {
+  return {
+    routes: { ...(raw?.routes ?? {}) },
+    exit_node: [...(raw?.exit_node ?? [])],
+  };
+}
+
+/** Coordinator counterpart of {@link addFederatedRoutesToPolicy}; exit-node and other entries are kept. */
+export function addFederatedRoutesToAutoApprovers(
+  current: CoordinatorAutoApprovers,
+  cidrs: string[],
+): CoordinatorAutoApprovers {
+  return { ...current, routes: withRelayApprovers(current.routes, cidrs) };
+}
+
+/** Coordinator counterpart of {@link removeFederatedRoutesFromPolicy}. */
+export function removeFederatedRoutesFromAutoApprovers(
+  current: CoordinatorAutoApprovers,
+  cidrs: string[],
+): CoordinatorAutoApprovers {
+  return { ...current, routes: withoutRelayApprovers(current.routes, cidrs) };
+}
+
+/**
+ * Make the relay tag approve exactly `imported` among the CIDRs it approves:
+ * add missing ones, drop ones no session imports any more. Other approvers
+ * and exit-node entries are untouched.
+ */
+export function reconcileFederatedAutoApprovers(
+  current: CoordinatorAutoApprovers,
+  imported: string[],
+): CoordinatorAutoApprovers {
+  const want = new Set(imported);
+  const stale = Object.entries(current.routes)
+    .filter(([cidr, approvers]) => approvers.includes(FEDERATION_RELAY_TAG) && !want.has(cidr))
+    .map(([cidr]) => cidr);
+  return addFederatedRoutesToAutoApprovers(removeFederatedRoutesFromAutoApprovers(current, stale), imported);
+}
+
+function sameAutoApprovers(a: CoordinatorAutoApprovers, b: CoordinatorAutoApprovers): boolean {
+  const norm = (x: CoordinatorAutoApprovers) =>
+    JSON.stringify({
+      routes: Object.keys(x.routes).sort().map((k) => [k, [...x.routes[k]].sort()]),
+      exit_node: [...x.exit_node].sort(),
+    });
+  return norm(a) === norm(b);
+}
+
+type ControlTenantRow = {
+  port: number | null;
+  apiKey: string | null;
+  status: string;
+  coordinatorTenantId: string | null;
+};
+
+async function loadControlTenant(tenantId: string): Promise<ControlTenantRow | null> {
   const [tenant] = await db
     .select({ port: tenants.port, apiKey: tenants.apiKey, status: tenants.status, coordinatorTenantId: tenants.coordinatorTenantId })
     .from(tenants)
     .where(eq(tenants.id, tenantId))
     .limit(1);
+  return tenant ?? null;
+}
 
-  if (!tenant?.port || tenant.status !== "running") return false;
-  if (tenant.coordinatorTenantId) {
-    // The coordinator has no route auto-approval (autoApprovers/tagOwners); federated
-    // routes cannot be installed there yet, and its ACL model rejects those fields.
-    logger.warn({ tenantId }, "federated route auto-approval is not supported in coordinator mode; skipping");
-    return false;
+/**
+ * Apply a change to the tenant's federated-route approvals: the Headscale
+ * policy in Headscale mode, the coordinator's auto-approvers in coordinator
+ * mode. False when the tenant's control plane is not running.
+ */
+async function updateRouteApprovals(
+  tenantId: string,
+  cidrs: string[],
+  mode: "add" | "remove",
+): Promise<boolean> {
+  const { getControlClient, useCoordinator } = await import("./control-client.js");
+  const tenant = await loadControlTenant(tenantId);
+  if (!tenant || tenant.status !== "running") return false;
+
+  if (useCoordinator) {
+    if (!tenant.coordinatorTenantId) return false;
+    const client = getControlClient({
+      port: tenant.port ?? 0,
+      apiKey: tenant.apiKey ?? "",
+      coordinatorTenantId: tenant.coordinatorTenantId,
+    }) as unknown as AutoApproverApi;
+    const current = normalizeAutoApprovers(await client.getAutoApprovers());
+    const next =
+      mode === "add"
+        ? addFederatedRoutesToAutoApprovers(current, cidrs)
+        : removeFederatedRoutesFromAutoApprovers(current, cidrs);
+    if (!sameAutoApprovers(current, next)) await client.setAutoApprovers(next);
+    return true;
   }
 
-  const client = getControlClient(tenant);
+  if (!tenant.port || !tenant.apiKey) return false;
+  const client = getControlClient({ port: tenant.port, apiKey: tenant.apiKey });
   const policy = (await client.getPolicy()) as AclPolicy;
-  await client.setPolicy(update(policy));
+  await client.setPolicy(
+    mode === "add" ? addFederatedRoutesToPolicy(policy, cidrs) : removeFederatedRoutesFromPolicy(policy, cidrs),
+  );
   return true;
 }
 
@@ -856,13 +1152,11 @@ export async function installFederatedRoutes(
   if (importedCidrs.length === 0) return;
 
   try {
-    const applied = await updateTenantPolicy(tenantId, (policy) =>
-      addFederatedRoutesToPolicy(policy, importedCidrs),
-    );
+    const applied = await updateRouteApprovals(tenantId, importedCidrs, "add");
     if (applied) {
-      logger.info({ tenantId, cidrs: importedCidrs }, "installed federated routes in Headscale ACL");
+      logger.info({ tenantId, cidrs: importedCidrs }, "installed federated route auto-approvals");
     } else {
-      logger.warn({ tenantId }, "federated routes not installed: tenant instance not running");
+      logger.warn({ tenantId }, "federated routes not installed: tenant control plane not running");
     }
   } catch (err) {
     logger.warn({ tenantId, err }, "failed to install federated routes");
@@ -870,8 +1164,8 @@ export async function installFederatedRoutes(
 }
 
 /**
- * Remove federated CIDRs from the tenant's ACL, keeping any that another of
- * its sessions still imports.
+ * Remove federated CIDRs from the tenant's route approvals, keeping any that
+ * another of its sessions still imports.
  */
 export async function withdrawFederatedRoutes(
   tenantId: string,
@@ -884,14 +1178,57 @@ export async function withdrawFederatedRoutes(
     const cidrs = cidrsToRemove.filter((c) => !stillImported.has(c));
     if (cidrs.length === 0) return;
 
-    const applied = await updateTenantPolicy(tenantId, (policy) =>
-      removeFederatedRoutesFromPolicy(policy, cidrs),
-    );
+    const applied = await updateRouteApprovals(tenantId, cidrs, "remove");
     if (applied) {
-      logger.info({ tenantId, cidrs }, "withdrew federated routes from Headscale ACL");
+      logger.info({ tenantId, cidrs }, "withdrew federated route auto-approvals");
     }
   } catch (err) {
     logger.warn({ tenantId, err }, "failed to withdraw federated routes");
+  }
+}
+
+/**
+ * Coordinator mode: auto-approvers are in-memory on the coordinator, so a
+ * restart (or another writer replacing the set) loses federated entries.
+ * Re-assert, per tenant with federation sessions, that the relay tag approves
+ * exactly the prefixes its live sessions import.
+ */
+async function reconcileCoordinatorAutoApprovers(): Promise<void> {
+  const { getControlClient, useCoordinator } = await import("./control-client.js");
+  if (!useCoordinator) return;
+
+  const rows = await db
+    .select({
+      tenantId: brokerSessions.localTenantId,
+      status: brokerSessions.status,
+      importedRoutes: brokerSessions.importedRoutes,
+    })
+    .from(brokerSessions);
+  const importedByTenant = new Map<string, Set<string>>();
+  for (const r of rows) {
+    const set = importedByTenant.get(r.tenantId) ?? new Set<string>();
+    if (r.status !== "disconnected") r.importedRoutes.forEach((c) => set.add(c));
+    importedByTenant.set(r.tenantId, set);
+  }
+
+  for (const [tenantId, imported] of importedByTenant) {
+    try {
+      const tenant = await loadControlTenant(tenantId);
+      if (!tenant || tenant.status !== "running" || !tenant.coordinatorTenantId) continue;
+      const client = getControlClient({
+        port: tenant.port ?? 0,
+        apiKey: tenant.apiKey ?? "",
+        coordinatorTenantId: tenant.coordinatorTenantId,
+      }) as unknown as AutoApproverApi;
+      const current = normalizeAutoApprovers(await client.getAutoApprovers());
+      const next = reconcileFederatedAutoApprovers(current, [...imported]);
+      if (!sameAutoApprovers(current, next)) {
+        await client.setAutoApprovers(next);
+        logger.info({ tenantId, cidrs: [...imported] }, "re-asserted federated route auto-approvals on the coordinator");
+      }
+    } catch (err) {
+      logger.warn({ tenantId, err }, "failed to reconcile coordinator auto-approvers");
+    }
   }
 }
 

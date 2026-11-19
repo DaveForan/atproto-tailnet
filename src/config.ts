@@ -35,6 +35,14 @@ const configSchema = z.object({
    */
   coordinatorUrl: z.string().url().optional(),
   coordinatorApiKey: z.string().min(1).optional(),
+  /**
+   * Allow notification webhooks to target private/loopback addresses and plain
+   * http. Only for single-organisation self-hosting where the webhook receiver
+   * (ntfy, Gotify, a Matrix bridge…) lives on the same private network. Never
+   * enable on a multi-tenant instance: any tenant admin could then make the
+   * service POST to internal hosts.
+   */
+  webhookAllowPrivate: z.boolean().default(false),
   headscale: z.object({
     image: z.string().default("headscale/headscale:0.29.1"),
     portRangeStart: z.coerce.number().default(10001),
@@ -61,6 +69,7 @@ export const config = configSchema.parse({
   coordinatorUrl: process.env.COORDINATOR_URL || undefined,
   coordinatorApiKey: process.env.COORDINATOR_API_KEY || undefined,
   atprotoPrivateKey: process.env.ATPROTO_PRIVATE_KEY,
+  webhookAllowPrivate: process.env.WEBHOOK_ALLOW_PRIVATE === "true",
   federationKeyEncryptionKey: process.env.FEDERATION_KEY_ENCRYPTION_KEY || undefined,
   headscale: {
     image: process.env.HEADSCALE_IMAGE,

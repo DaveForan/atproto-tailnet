@@ -4,12 +4,13 @@
  * Headscale and allows approving them or withdrawing approval. Route ids are
  * synthesized per node + prefix (`routeId()` in orchestrator/headscale-api);
  * DELETE withdraws approval, since Headscale no longer deletes routes.
+ * Works the same in coordinator mode (node advertised/approved routes).
  * Gated by the "manage_devices" permission.
  */
 
 import { Router } from "express";
 import { parseRouteId } from "../orchestrator/headscale-api.js";
-import { getControlClient, useCoordinator } from "../orchestrator/control-client.js";
+import { getControlClient } from "../orchestrator/control-client.js";
 import {
   requireAuth,
   param,
@@ -79,11 +80,6 @@ routesRouter.post(
       return;
     }
 
-    if (useCoordinator) {
-      res.status(501).json({ error: "Per-route approval is not applicable in coordinator mode — routes are derived from tenant CIDR prefixes" });
-      return;
-    }
-
     if (!result.tenant.apiKey || !result.tenant.port) {
       res.status(503).json({ error: "Tenant instance not available" });
       return;
@@ -131,11 +127,6 @@ routesRouter.post(
       return;
     }
 
-    if (useCoordinator) {
-      res.status(501).json({ error: "Per-route approval is not applicable in coordinator mode — routes are derived from tenant CIDR prefixes" });
-      return;
-    }
-
     if (!result.tenant.apiKey || !result.tenant.port) {
       res.status(503).json({ error: "Tenant instance not available" });
       return;
@@ -180,11 +171,6 @@ routesRouter.delete(
 
     if (!hasPermission(result.membership, result.role, "manage_devices", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
-
-    if (useCoordinator) {
-      res.status(501).json({ error: "Per-route approval is not applicable in coordinator mode — routes are derived from tenant CIDR prefixes" });
       return;
     }
 

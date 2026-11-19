@@ -144,10 +144,10 @@ async fn pg_preauth_key_single_use() {
     let tenant = store.create_tenant(unique("key"), None, None).await.unwrap();
     let key = store.create_preauth_key(tenant.id, false).await.unwrap();
 
-    let tid = store.validate_preauth_key(&key).await;
+    let tid = store.validate_preauth_key(&key).await.map(|g| g.tenant_id);
     assert_eq!(tid, Some(tenant.id));
 
-    let tid2 = store.validate_preauth_key(&key).await;
+    let tid2 = store.validate_preauth_key(&key).await.map(|g| g.tenant_id);
     assert_eq!(tid2, None, "single-use key should be consumed");
 }
 
@@ -158,10 +158,10 @@ async fn pg_preauth_key_reusable() {
     let tenant = store.create_tenant(unique("reuse"), None, None).await.unwrap();
     let key = store.create_preauth_key(tenant.id, true).await.unwrap();
 
-    let tid1 = store.validate_preauth_key(&key).await;
+    let tid1 = store.validate_preauth_key(&key).await.map(|g| g.tenant_id);
     assert_eq!(tid1, Some(tenant.id));
 
-    let tid2 = store.validate_preauth_key(&key).await;
+    let tid2 = store.validate_preauth_key(&key).await.map(|g| g.tenant_id);
     assert_eq!(tid2, Some(tenant.id), "reusable key should still validate");
 }
 

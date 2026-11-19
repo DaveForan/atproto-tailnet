@@ -36,12 +36,20 @@ import {
 import { logAudit } from "./audit.js";
 import { logger } from "../logger.js";
 import { ALL_PERMISSIONS, type Permission } from "./permissions.js";
+import { config } from "../config.js";
+import { validateWebhookUrl } from "../notifications/webhook.js";
+import { notificationsRouter } from "./notifications.js";
+import { enforceDeviceLimit, enforceMemberLimit } from "./limits.js";
+import { issueMemberKey } from "./access.js";
 
 /**
  * Router for tenant settings, roles CRUD, role assignment, device approvals/locks,
  * join-request management, and audit log retrieval.
  */
 export const securityRouter = Router();
+
+// Notifications live in their own module; mounted here so index.ts is unchanged.
+securityRouter.use(notificationsRouter);
 
 const settingsBody = z.object({
   requireDeviceApproval: z.boolean().optional(),
@@ -55,7 +63,35 @@ const settingsBody = z.object({
   allowAgentTokens: z.boolean().optional(),
   allowMemberAgentTokens: z.boolean().optional(),
   hibernateAfterDays: z.number().int().min(0).max(365).optional(),
+  /** https only (unless WEBHOOK_ALLOW_PRIVATE); null/"" clears it. */
+  notificationWebhookUrl: z.string().max(2048).nullable().optional(),
+  /** Write-only; null/"" clears it. */
+  notificationWebhookSecret: z.string().max(256).nullable().optional(),
 });
+
+/** Settings response; the webhook URL is shown only to settings managers, the secret never. */
+function settingsView(
+  t: typeof tenants.$inferSelect,
+  canManage: boolean,
+) {
+  return {
+    requireDeviceApproval: t.requireDeviceApproval,
+    lockdownMode: t.lockdownMode,
+    allowJoinRequests: t.allowJoinRequests,
+    boardEnabled: t.boardEnabled,
+    maxBoardPosts: t.maxBoardPosts,
+    maxBoardPostsDisplayed: t.maxBoardPostsDisplayed,
+    requireServiceApproval: t.requireServiceApproval,
+    requireServiceDeviceApproval: t.requireServiceDeviceApproval,
+    allowAgentTokens: t.allowAgentTokens,
+    allowMemberAgentTokens: t.allowMemberAgentTokens,
+    hibernateAfterDays: t.hibernateAfterDays,
+    lastActivityAt: t.lastActivityAt,
+    defaultRoleId: t.defaultRoleId,
+    notificationWebhookUrl: canManage ? (t.notificationWebhookUrl ?? null) : null,
+    hasWebhookSecret: Boolean(t.notificationWebhookSecret),
+  };
+}
 
 const roleBody = z.object({
   name: z.string().min(1).max(50),
@@ -102,21 +138,12 @@ securityRouter.get(
       return;
     }
 
-    res.json({
-      requireDeviceApproval: result.tenant.requireDeviceApproval,
-      lockdownMode: result.tenant.lockdownMode,
-      allowJoinRequests: result.tenant.allowJoinRequests,
-      boardEnabled: result.tenant.boardEnabled,
-      maxBoardPosts: result.tenant.maxBoardPosts,
-      maxBoardPostsDisplayed: result.tenant.maxBoardPostsDisplayed,
-      requireServiceApproval: result.tenant.requireServiceApproval,
-      requireServiceDeviceApproval: result.tenant.requireServiceDeviceApproval,
-      allowAgentTokens: result.tenant.allowAgentTokens,
-      allowMemberAgentTokens: result.tenant.allowMemberAgentTokens,
-      hibernateAfterDays: result.tenant.hibernateAfterDays,
-      lastActivityAt: result.tenant.lastActivityAt,
-      defaultRoleId: result.tenant.defaultRoleId,
-    });
+    res.json(
+      settingsView(
+        result.tenant,
+        hasPermission(result.membership, result.role, "manage_settings", req),
+      ),
+    );
   },
 );
 
@@ -144,6 +171,40 @@ securityRouter.patch(
     }
 
     const updates: Record<string, unknown> = { updatedAt: new Date() };
+
+    if (parsed.data.notificationWebhookUrl !== undefined) {
+      const url = parsed.data.notificationWebhookUrl?.trim() || null;
+      if (url) {
+        const invalid = await validateWebhookUrl(url, {
+          allowPrivate: config.webhookAllowPrivate,
+        });
+        if (invalid) {
+          res.status(400).json({ error: invalid });
+          return;
+        }
+      }
+      updates.notificationWebhookUrl = url;
+    }
+    if (parsed.data.notificationWebhookSecret !== undefined) {
+      updates.notificationWebhookSecret = parsed.data.notificationWebhookSecret || null;
+    }
+    if (
+      parsed.data.notificationWebhookUrl !== undefined ||
+      parsed.data.notificationWebhookSecret !== undefined
+    ) {
+      logAudit({
+        tenantId: result.tenant.id,
+        actorUserId: authUserId(req),
+        action: "notification_settings_updated",
+        targetType: "tenant",
+        targetId: result.tenant.id,
+        // Never log the secret or the URL (it may embed a token)
+        metadata: {
+          webhookUrlSet: updates.notificationWebhookUrl !== undefined ? Boolean(updates.notificationWebhookUrl) : undefined,
+          webhookSecretChanged: parsed.data.notificationWebhookSecret !== undefined,
+        },
+      });
+    }
 
     if (parsed.data.requireDeviceApproval !== undefined) {
       updates.requireDeviceApproval = parsed.data.requireDeviceApproval;
@@ -273,21 +334,7 @@ securityRouter.patch(
       .from(tenants)
       .where(eq(tenants.id, result.tenant.id));
 
-    res.json({
-      requireDeviceApproval: updated.requireDeviceApproval,
-      lockdownMode: updated.lockdownMode,
-      allowJoinRequests: updated.allowJoinRequests,
-      boardEnabled: updated.boardEnabled,
-      maxBoardPosts: updated.maxBoardPosts,
-      maxBoardPostsDisplayed: updated.maxBoardPostsDisplayed,
-      requireServiceApproval: updated.requireServiceApproval,
-      requireServiceDeviceApproval: updated.requireServiceDeviceApproval,
-      allowAgentTokens: updated.allowAgentTokens,
-      allowMemberAgentTokens: updated.allowMemberAgentTokens,
-      hibernateAfterDays: updated.hibernateAfterDays,
-      lastActivityAt: updated.lastActivityAt,
-      defaultRoleId: updated.defaultRoleId,
-    });
+    res.json(settingsView(updated, true));
   },
 );
 
@@ -831,9 +878,16 @@ securityRouter.post(
       return;
     }
 
+    const client = getControlClient(result.tenant);
+    if (!(await enforceDeviceLimit(res, result.tenant, client))) return;
+
     try {
-      const client = getControlClient(result.tenant);
-      const authKey = await client.createPreAuthKey(approval.hsUsername);
+      const authKey = await issueMemberKey({
+        tenant: result.tenant,
+        client,
+        userId: approval.requesterId,
+        hsUsername: approval.hsUsername,
+      });
       const loginServer = tenantLoginServer(result.tenant.slug);
       const command = `tailscale up --login-server ${loginServer} --authkey ${authKey.key}`;
 
@@ -996,6 +1050,8 @@ securityRouter.post(
       res.status(404).json({ error: "Pending join request not found" });
       return;
     }
+
+    if (!(await enforceMemberLimit(res, result.tenant))) return;
 
     const [requester] = await db
       .select()

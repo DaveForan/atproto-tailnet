@@ -5,17 +5,68 @@
  * backed by the coordinator's admin API instead of Headscale's gRPC-gateway.
  */
 
-import type {
-  HeadscaleNode,
-  HeadscaleUser,
-  HeadscalePreAuthKey,
-  HeadscaleRoute,
+import {
+  routesOfNode,
+  parseRouteId,
+  withRouteApproval,
+  type HeadscaleNode,
+  type HeadscaleUser,
+  type HeadscalePreAuthKey,
+  type HeadscaleRoute,
+  type PreAuthKeyOptions,
+  type ControlPreAuthKeyInfo,
+  type AutoApproversConfig,
 } from "./headscale-api.js";
 import {
   headscaleToCoordinatorPolicy,
   coordinatorToHeadscalePolicy,
   type HeadscaleAclPolicy,
 } from "./coordinator-acl.js";
+
+/** Default key lifetime when the caller gives none (coordinator keys otherwise never expire). */
+const DEFAULT_KEY_EXPIRY_SECONDS = 24 * 60 * 60;
+
+/** Node summary as returned by the coordinator admin API. */
+interface CoordinatorNode {
+  id: number;
+  tenant_id: string;
+  ipv4: string;
+  ipv6?: string | null;
+  stable_id: string;
+  hostname: string;
+  online: boolean;
+  owner?: string | null;
+  tags?: string[];
+  ephemeral?: boolean;
+  advertised_routes?: string[];
+  approved_routes?: string[];
+}
+
+/**
+ * Map a coordinator node to the Headscale node shape. The node's `user` is
+ * derived from its owner (our user id) — `null` for unowned/tagged nodes.
+ */
+export function toHeadscaleNode(n: CoordinatorNode): HeadscaleNode {
+  const owner = n.owner ?? null;
+  return {
+    id: String(n.id),
+    name: n.hostname,
+    givenName: n.hostname,
+    ipAddresses: [n.ipv4, ...(n.ipv6 ? [n.ipv6] : [])],
+    online: n.online,
+    lastSeen: null,
+    expiry: null,
+    user: owner ? { id: owner, name: owner } : null,
+    machineKey: n.stable_id ? `mkey:${n.stable_id}` : undefined,
+    availableRoutes: n.advertised_routes ?? [],
+    approvedRoutes: n.approved_routes ?? [],
+    subnetRoutes: n.approved_routes ?? [],
+  };
+}
+
+function isNotFound(err: unknown): boolean {
+  return err instanceof Error && err.message.includes("failed (404)");
+}
 
 /**
  * Client for a single tenant's operations against the shared coordinator.
@@ -87,30 +138,102 @@ export class CoordinatorApiClient {
 
   // ── Pre-auth keys ──
 
+  /**
+   * Create a pre-auth key. `owner` (our user id) is copied onto nodes that
+   * register with it, which is what makes per-member device ownership,
+   * delete-by-owner and kick work in coordinator mode. Returns the Headscale
+   * shape plus the coordinator's non-secret key `id`.
+   */
   async createPreAuthKey(
     _userName: string,
-    opts?: { reusable?: boolean; ephemeral?: boolean; expirationSeconds?: number },
-  ): Promise<HeadscalePreAuthKey> {
+    opts?: PreAuthKeyOptions,
+  ): Promise<HeadscalePreAuthKey & { id: string }> {
     const data = (await this.request("POST", "/api/preauth-keys", {
       tenant_id: this.tenantId,
       reusable: opts?.reusable ?? false,
       ephemeral: opts?.ephemeral ?? false,
-      expiration_seconds: opts?.expirationSeconds,
-    })) as { key: string; tenant_id: string };
+      // Keys without an expiry never expire on the coordinator — always send one.
+      expiration_seconds: opts?.expirationSeconds ?? DEFAULT_KEY_EXPIRY_SECONDS,
+      ...(opts?.owner ? { owner: opts.owner } : {}),
+      ...(opts?.tags?.length ? { tags: opts.tags } : {}),
+    })) as { key: string; id: string; tenant_id: string; expires_at?: string | null };
 
     return {
+      id: data.id,
       key: data.key,
       reusable: opts?.reusable ?? false,
       ephemeral: opts?.ephemeral ?? false,
       used: false,
+      ...(data.expires_at ? { expiration: data.expires_at } : {}),
     };
   }
 
+  /** Create a key whose nodes carry the given ACL tags and belong to no member. */
   async createTaggedPreAuthKey(
-    _aclTags: string[],
-    opts?: { expirationSeconds?: number },
-  ): Promise<HeadscalePreAuthKey> {
-    return this.createPreAuthKey("tagged", { reusable: false, ...opts });
+    aclTags: string[],
+    opts?: { expirationSeconds?: number; ephemeral?: boolean },
+  ): Promise<HeadscalePreAuthKey & { id: string }> {
+    return this.createPreAuthKey("tagged", {
+      reusable: false,
+      ephemeral: opts?.ephemeral ?? false,
+      expirationSeconds: opts?.expirationSeconds ?? 300,
+      tags: aclTags,
+    });
+  }
+
+  /** List the tenant's pre-auth keys (prefix only, never the secret). */
+  async listPreAuthKeys(): Promise<ControlPreAuthKeyInfo[]> {
+    const data = (await this.request(
+      "GET",
+      `/api/tenants/${this.tenantId}/preauth-keys`,
+    )) as {
+      keys: Array<{
+        id: string;
+        prefix: string;
+        owner: string | null;
+        tags?: string[];
+        reusable: boolean;
+        ephemeral: boolean;
+        used: boolean;
+        expires_at: string | null;
+        created_at: string;
+        revoked: boolean;
+      }>;
+    };
+    return (data.keys ?? []).map((k) => ({
+      id: k.id,
+      prefix: k.prefix,
+      owner: k.owner ?? null,
+      tags: k.tags ?? [],
+      reusable: k.reusable,
+      ephemeral: k.ephemeral,
+      used: k.used,
+      expiresAt: k.expires_at ?? null,
+      createdAt: k.created_at ?? null,
+      revoked: k.revoked,
+    }));
+  }
+
+  /** Revoke one key. Treats 404 (already gone / not in tenant) as done. */
+  async revokePreAuthKey(keyId: string): Promise<void> {
+    try {
+      await this.request(
+        "DELETE",
+        `/api/tenants/${this.tenantId}/preauth-keys/${encodeURIComponent(keyId)}`,
+      );
+    } catch (err) {
+      if (isNotFound(err)) return;
+      throw err;
+    }
+  }
+
+  /** Revoke every key issued to `owner`; returns how many were revoked. */
+  async revokePreAuthKeysByOwner(owner: string): Promise<number> {
+    const data = (await this.request(
+      "DELETE",
+      `/api/tenants/${this.tenantId}/preauth-keys?owner=${encodeURIComponent(owner)}`,
+    )) as { revoked?: number } | null;
+    return data?.revoked ?? 0;
   }
 
   // ── Node operations ──
@@ -119,86 +242,44 @@ export class CoordinatorApiClient {
     const data = (await this.request(
       "GET",
       `/api/tenants/${this.tenantId}/nodes`,
-    )) as {
-      nodes: Array<{
-        id: number;
-        tenant_id: string;
-        ipv4: string;
-        stable_id: string;
-        hostname: string;
-        online: boolean;
-      }>;
-    };
-
-    return data.nodes.map((n) => ({
-      id: String(n.id),
-      name: n.hostname,
-      givenName: n.hostname,
-      ipAddresses: [n.ipv4],
-      online: n.online,
-      lastSeen: null,
-      expiry: null,
-      user: { id: "1", name: "coordinator" },
-      machineKey: n.stable_id ? `mkey:${n.stable_id}` : undefined,
-    }));
+    )) as { nodes: CoordinatorNode[] };
+    return data.nodes.map(toHeadscaleNode);
   }
 
   async getNode(nodeId: string): Promise<HeadscaleNode> {
-    const data = (await this.request("GET", `/api/nodes/${nodeId}`)) as {
-      id: number;
-      tenant_id: string;
-      ipv4: string;
-      stable_id: string;
-      hostname: string;
-      online: boolean;
-    };
+    const data = (await this.request(
+      "GET",
+      `/api/nodes/${encodeURIComponent(nodeId)}`,
+    )) as CoordinatorNode;
     if (data.tenant_id !== this.tenantId) {
       throw new Error("Node belongs to different tenant");
     }
-    return {
-      id: String(data.id),
-      name: data.hostname,
-      givenName: data.hostname,
-      ipAddresses: [data.ipv4],
-      online: data.online,
-      lastSeen: null,
-      expiry: null,
-      user: { id: "1", name: "coordinator" },
-      machineKey: data.stable_id ? `mkey:${data.stable_id}` : undefined,
-    };
+    return toHeadscaleNode(data);
   }
 
   async deleteNode(nodeId: string): Promise<void> {
     await this.request(
       "DELETE",
-      `/api/nodes/${nodeId}?tenant_id=${this.tenantId}`,
+      `/api/nodes/${encodeURIComponent(nodeId)}?tenant_id=${this.tenantId}`,
     );
+  }
+
+  /** Delete every node owned by `owner` (ends their map streams); returns the count. */
+  async deleteNodesByOwner(owner: string): Promise<number> {
+    const data = (await this.request(
+      "DELETE",
+      `/api/tenants/${this.tenantId}/nodes?owner=${encodeURIComponent(owner)}`,
+    )) as { deleted?: number } | null;
+    return data?.deleted ?? 0;
   }
 
   async renameNode(nodeId: string, newName: string): Promise<HeadscaleNode> {
     const data = (await this.request(
       "POST",
-      `/api/nodes/${nodeId}/name?tenant_id=${this.tenantId}`,
+      `/api/nodes/${encodeURIComponent(nodeId)}/name?tenant_id=${this.tenantId}`,
       { name: newName },
-    )) as {
-      id: number;
-      tenant_id: string;
-      ipv4: string;
-      stable_id: string;
-      hostname: string;
-      online: boolean;
-    };
-    return {
-      id: String(data.id),
-      name: data.hostname,
-      givenName: data.hostname,
-      ipAddresses: [data.ipv4],
-      online: data.online,
-      lastSeen: null,
-      expiry: null,
-      user: { id: "1", name: "coordinator" },
-      machineKey: data.stable_id ? `mkey:${data.stable_id}` : undefined,
-    };
+    )) as CoordinatorNode;
+    return toHeadscaleNode(data);
   }
 
   // ── ACL policy ──
@@ -251,7 +332,7 @@ export class CoordinatorApiClient {
       await this.request("GET", `/api/tenants/${this.tenantId}`);
       return true;
     } catch (err) {
-      if (err instanceof Error && err.message.includes("failed (404)")) return false;
+      if (isNotFound(err)) return false;
       throw err;
     }
   }
@@ -304,44 +385,73 @@ export class CoordinatorApiClient {
 
   // ── Routes ──
 
+  /**
+   * Every node's advertised/approved routes, with the same synthesized route
+   * ids as Headscale mode (`routeId(nodeId, prefix)`).
+   */
   async listRoutes(): Promise<HeadscaleRoute[]> {
+    return (await this.listNodes()).flatMap(routesOfNode);
+  }
+
+  private async setRouteApproval(id: string, enable: boolean): Promise<void> {
+    const parsed = parseRouteId(id);
+    if (!parsed) throw new Error(`Invalid route id "${id}"`);
+    const node = await this.getNode(parsed.nodeId);
+    const advertised = node.availableRoutes ?? [];
+    // The coordinator rejects approvals that aren't advertised (400)
+    const approved = withRouteApproval(node.approvedRoutes ?? [], parsed.prefix, enable)
+      .filter((p) => advertised.includes(p));
+    await this.request(
+      "POST",
+      `/api/tenants/${this.tenantId}/nodes/${encodeURIComponent(parsed.nodeId)}/routes`,
+      { approved },
+    );
+  }
+
+  async enableRoute(id: string): Promise<void> {
+    await this.setRouteApproval(id, true);
+  }
+
+  async disableRoute(id: string): Promise<void> {
+    await this.setRouteApproval(id, false);
+  }
+
+  /** Routes exist while advertised; "delete" withdraws approval (as in Headscale mode). */
+  async deleteRoute(id: string): Promise<void> {
+    await this.setRouteApproval(id, false);
+  }
+
+  // ── Auto-approvers ──
+
+  async getAutoApprovers(): Promise<AutoApproversConfig> {
     const data = (await this.request(
       "GET",
-      `/api/tenants/${this.tenantId}/routes`,
-    )) as {
-      own_routes: string[];
-      aggregated_child_routes: Array<{
-        tenant_id: string;
-        slug: string;
-        routes: string[];
-        node_count: number;
-      }>;
-    };
-
-    const routes: HeadscaleRoute[] = [];
-    for (const prefix of data.own_routes) {
-      routes.push({
-        id: `coord-${Buffer.from(prefix).toString("base64url")}`,
-        node: { id: "0", name: "coordinator", online: true },
-        prefix,
-        advertised: true,
-        enabled: true,
-        isPrimary: true,
-      });
-    }
-    return routes;
+      `/api/tenants/${this.tenantId}/auto-approvers`,
+    )) as Partial<AutoApproversConfig> | null;
+    return { routes: data?.routes ?? {}, exit_node: data?.exit_node ?? [] };
   }
 
-  async enableRoute(_id: string): Promise<void> {
-    throw new Error("Route management is not yet supported in coordinator mode");
+  /**
+   * Store the auto-approvers in the DB (the source of truth, replayed by the
+   * monitor after a coordinator restart) and push them to the coordinator.
+   */
+  async setAutoApprovers(aa: AutoApproversConfig): Promise<void> {
+    const value: AutoApproversConfig = { routes: aa.routes ?? {}, exit_node: aa.exit_node ?? [] };
+    const [{ db }, { tenants }, { eq }] = await Promise.all([
+      import("../db/index.js"),
+      import("../db/schema.js"),
+      import("drizzle-orm"),
+    ]);
+    await db
+      .update(tenants)
+      .set({ coordinatorAutoApprovers: value, updatedAt: new Date() })
+      .where(eq(tenants.coordinatorTenantId, this.tenantId));
+    await this.pushAutoApprovers(value);
   }
 
-  async disableRoute(_id: string): Promise<void> {
-    throw new Error("Route management is not yet supported in coordinator mode");
-  }
-
-  async deleteRoute(_id: string): Promise<void> {
-    throw new Error("Route management is not yet supported in coordinator mode");
+  /** Push auto-approvers without persisting (used by the monitor's replay). */
+  async pushAutoApprovers(aa: AutoApproversConfig): Promise<void> {
+    await this.request("PUT", `/api/tenants/${this.tenantId}/auto-approvers`, aa);
   }
 
   // ── Health ──

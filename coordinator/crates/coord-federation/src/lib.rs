@@ -17,6 +17,10 @@ pub mod discovery;
 pub mod handshake;
 pub mod transport;
 
+// Signing: RFC 8785 canonicalization + detached-JWS Ed25519 (TS-compatible)
+pub mod canonical;
+pub mod signing;
+
 // Tier 3: broker orchestration, federation store, inbound handlers
 pub mod broker;
 pub mod federation_store_memory;
@@ -33,3 +37,6 @@ pub use inbound::{InboundError, InboundHandler};
 pub use pg_store::PgFederationStore;
 pub use sqlite_store::SqliteFederationStore;
 pub use store::FederationStore;
+
+#[cfg(test)]
+mod cfp_vectors;

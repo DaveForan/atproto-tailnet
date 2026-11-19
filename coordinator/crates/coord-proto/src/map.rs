@@ -87,6 +87,10 @@ pub struct MapNode {
     #[serde(rename = "AllowedIPs")]
     pub allowed_ips: Vec<String>,
 
+    /// Subnet routes this node is the primary router for.
+    #[serde(rename = "PrimaryRoutes", default, skip_serializing_if = "Vec::is_empty")]
+    pub primary_routes: Vec<String>,
+
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub endpoints: Vec<String>,
 

@@ -33,6 +33,9 @@ import {
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
 import { logger } from "../logger.js";
+import { notify } from "../notifications/service.js";
+import { enforceDeviceLimit } from "./limits.js";
+import { issueMemberKey } from "./access.js";
 
 /**
  * Router for service device registration/approval and service CRUD/approval.
@@ -143,20 +146,33 @@ servicesRouter.post(
         metadata: { name: parsed.data.name },
       });
 
+      notify(tenantId, "service_device_approval_requested", {
+        title: "Service device approval requested",
+        body: `@${user.handle} registered service device "${parsed.data.name}" in ${result.tenant.name}.`,
+        link: "/#services",
+      });
+
       res.status(202).json({ id: created.id, status: "pending" });
       return;
     }
 
-    try {
-      const client = getControlClient(result.tenant);
+    const client = getControlClient(result.tenant);
+    if (!(await enforceDeviceLimit(res, result.tenant, client))) return;
 
+    try {
       try {
         await client.createUser(hsUsername);
       } catch {
         // user may already exist
       }
 
-      const authKey = await client.createPreAuthKey(hsUsername);
+      const authKey = await issueMemberKey({
+        tenant: result.tenant,
+        client,
+        userId,
+        hsUsername,
+        kind: "service_device",
+      });
       const loginServer = tenantLoginServer(result.tenant.slug);
       const command = `tailscale up --login-server ${loginServer} --authkey ${authKey.key}`;
 
@@ -242,9 +258,10 @@ servicesRouter.post(
       return;
     }
 
-    try {
-      const client = getControlClient(result.tenant);
+    const client = getControlClient(result.tenant);
+    if (!(await enforceDeviceLimit(res, result.tenant, client))) return;
 
+    try {
       const hsUsername = device.hsUsername!;
       try {
         await client.createUser(hsUsername);
@@ -252,7 +269,13 @@ servicesRouter.post(
         // user may already exist
       }
 
-      const authKey = await client.createPreAuthKey(hsUsername);
+      const authKey = await issueMemberKey({
+        tenant: result.tenant,
+        client,
+        userId: device.ownerId,
+        hsUsername,
+        kind: "service_device",
+      });
       const loginServer = tenantLoginServer(result.tenant.slug);
       const command = `tailscale up --login-server ${loginServer} --authkey ${authKey.key}`;
 
@@ -556,6 +579,14 @@ servicesRouter.post(
       targetId: created.id,
       metadata: { name: parsed.data.name, status },
     });
+
+    if (status === "pending") {
+      notify(tenantId, "service_approval_requested", {
+        title: "Service approval requested",
+        body: `A new service "${parsed.data.name}" in ${result.tenant.name} is waiting for approval.`,
+        link: "/#services",
+      });
+    }
 
     res.status(201).json(created);
   },

@@ -10,17 +10,22 @@ import { verifyDetached } from "../identity/keys.js";
 import type { HandshakeCallbacks } from "./handshake.js";
 import type { FederationType, RouteAnnouncement } from "./protocol.js";
 import { isWithinAgreed, parseCidr } from "./cidr.js";
+import { canonicalize } from "./jcs.js";
 
 /** Reject signed messages whose timestamp is further than this from now. */
 export const MAX_MESSAGE_SKEW_MS = 5 * 60 * 1000;
 
 /**
- * Canonical signing payload of a CFP message: the message minus its
- * `signature` field, in transmitted key order. Matches what
- * `federation/handshake.ts` signs for HELLO / CHALLENGE / ESTABLISHED.
+ * The exact bytes a CFP message's signature covers: the RFC 8785 (JCS)
+ * canonical form of the message without its `signature` member. Key order
+ * on the wire is irrelevant; every other transmitted member (including ones
+ * this service does not know) is covered. The Rust coordinator computes the
+ * same bytes (`coord_federation::auth::message_signing_payload`); both are
+ * pinned by `coordinator/crates/coord-federation/tests/fixtures/cfp_vectors.json`.
  */
 export function signedPayload(message: object): string {
-  return JSON.stringify({ ...message, signature: undefined });
+  const { signature: _omit, ...rest } = message as Record<string, unknown>;
+  return canonicalize(rest);
 }
 
 /** Sign a message that has no `signature` yet and return it with one appended. */
@@ -28,11 +33,15 @@ export async function signMessage<T extends object>(
   message: T,
   sign: (payload: string) => Promise<string>,
 ): Promise<T & { signature: string }> {
-  const signature = await sign(JSON.stringify(message));
+  const signature = await sign(signedPayload(message));
   return { ...message, signature };
 }
 
-/** True when `message.signature` is `did`'s signature over the rest of the message. */
+/**
+ * True when `message.signature` is `did`'s signature over the rest of the
+ * message (see {@link signedPayload}). Pass the message as received (e.g.
+ * `req.body`), never a schema-parsed copy that may have dropped members.
+ */
 export async function verifyMessage(
   resolver: PublicKeyResolver,
   did: string,
@@ -40,9 +49,20 @@ export async function verifyMessage(
 ): Promise<boolean> {
   const { signature } = message as { signature?: unknown };
   if (typeof signature !== "string" || !signature) return false;
+  let payload: string;
+  try {
+    payload = signedPayload(message);
+  } catch {
+    return false;
+  }
   const publicKey = await resolver.resolve(did);
   if (!publicKey) return false;
-  return verifyDetached(publicKey, signedPayload(message), signature);
+  return verifyDetached(publicKey, payload, signature);
+}
+
+/** Signing payload of a route announcement's `originSignature`. */
+export function routeOriginPayload(prefix: string, originDid: string): string {
+  return canonicalize({ prefix, originDid });
 }
 
 export function isFresh(timestamp: string, now = Date.now()): boolean {
@@ -86,7 +106,7 @@ export async function buildAnnouncements(
       originDid: localDid,
       pathVector: [localDid],
       preference: 100,
-      originSignature: await sign(JSON.stringify({ prefix, originDid: localDid })),
+      originSignature: await sign(routeOriginPayload(prefix, localDid)),
     })),
   );
 }

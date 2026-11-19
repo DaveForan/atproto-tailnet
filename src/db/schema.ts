@@ -10,8 +10,8 @@
  * Enums are used for status columns (tenant_status, invitation_status, etc.)
  * and the audit_action enum tracks all auditable events in the system.
  *
- * Migrations are generated with `npx drizzle-kit generate` — never edit
- * migration SQL files by hand.
+ * Migrations 0018+ are hand-written SQL (no drizzle-kit snapshots) — add the
+ * SQL file and a matching drizzle/meta/_journal.json entry with each change.
  */
 
 import { sql } from "drizzle-orm";
@@ -40,6 +40,12 @@ export interface DerpRegion {
   regionCode: string;
   regionName: string;
   nodes: DerpRegionNode[];
+}
+
+/** Route auto-approvers in the coordinator's wire shape. */
+export interface AutoApprovers {
+  routes: Record<string, string[]>;
+  exit_node: string[];
 }
 
 export const tenantStatusEnum = pgEnum("tenant_status", [
@@ -122,6 +128,9 @@ export const auditActionEnum = pgEnum("audit_action", [
   "sub_collective_quota_updated",
   "credential_revoked",
   "floor_policy_updated",
+  "auth_key_revoked",
+  "limits_updated",
+  "notification_settings_updated",
 ]);
 
 export const deviceApprovalStatusEnum = pgEnum("device_approval_status", [
@@ -256,7 +265,7 @@ export const tenants = pgTable("tenants", {
   ipv6Prefix: text("ipv6_prefix").notNull().default("fd7a:115c:a1e0::/48"),
   /** IP allocation strategy: sequential or random. */
   ipAllocation: text("ip_allocation").notNull().default("sequential"),
-  /** Billing plan name (free, starter, pro, enterprise). */
+  /** Legacy billing plan label — no longer read or exposed (caps are maxDevices/maxMembers). */
   planName: text("plan_name").notNull().default("free"),
   /** Maximum devices allowed (0 = unlimited). */
   maxDevices: integer("max_devices").notNull().default(0),
@@ -290,6 +299,15 @@ export const tenants = pgTable("tenants", {
   federationScopePolicies: jsonb("federation_scope_policies").$type<Record<string, { autoAccept: boolean; verification: string }>>(),
   /** UUID of this tenant in the Rust mesh coordinator (ADR-0023). NULL when using Headscale. */
   coordinatorTenantId: text("coordinator_tenant_id"),
+  /**
+   * Coordinator mode: last route auto-approvers pushed (`{routes, exit_node}`),
+   * replayed after a coordinator restart like the ACL policy.
+   */
+  coordinatorAutoApprovers: jsonb("coordinator_auto_approvers").$type<AutoApprovers>(),
+  /** Optional webhook (self-hosted ntfy/Gotify/Matrix bridge…) fired on every notification. */
+  notificationWebhookUrl: text("notification_webhook_url"),
+  /** HMAC-SHA256 secret for the webhook signature. Write-only via the API. */
+  notificationWebhookSecret: text("notification_webhook_secret"),
   /** Role assigned to new members on invitation acceptance. */
   defaultRoleId: uuid("default_role_id"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -580,6 +598,19 @@ export const federationLinks = pgTable(
     signedRequest: text("signed_request"),
     /** Protocol version agreed on link establishment. */
     protocolVersion: integer("protocol_version").notNull().default(1),
+    /**
+     * Set when the link ended with a permanent revocation (REVOKE /
+     * LINK_REVOKE `permanent: true`, from either side). The broker never
+     * re-handshakes such a link; federating again needs a new link request.
+     */
+    revokedPermanently: boolean("revoked_permanently").notNull().default(false),
+    /**
+     * Cross-instance link message (LINK_REQUEST/ACCEPT/REJECT/REVOKE) not yet
+     * delivered to the peer's broker; retried with backoff by the broker loop
+     * and re-signed (fresh timestamp, same messageId) on every attempt.
+     * Null when nothing is pending. Shape owned by `federation/outbox.ts`.
+     */
+    outbox: jsonb("outbox").$type<Record<string, unknown> | null>(),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     updatedAt: timestamp("updated_at").defaultNow().notNull(),
   },
@@ -725,3 +756,62 @@ export interface FederationRouteEntry {
   origin: string;
   timestamp: string;
 }
+
+/**
+ * Pre-auth keys issued through the service (both control-plane modes). The
+ * secret key itself is never stored — only its prefix and the control plane's
+ * non-secret key id, so keys can be listed and revoked later.
+ */
+export const authKeys = pgTable(
+  "auth_keys",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    /** Member the key was issued for (devices it registers are theirs). */
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id),
+    /** Key id on the control plane (Headscale numeric id / coordinator uuid). */
+    controlKeyId: text("control_key_id"),
+    /** First 12 chars of the key, for identification in the UI. */
+    prefix: text("prefix").notNull(),
+    /** Headscale user the key belongs to (Headscale mode only). */
+    hsUsername: text("hs_username"),
+    /** "device" (members' devices) or "service_device". */
+    kind: text("kind").notNull().default("device"),
+    reusable: boolean("reusable").notNull().default(false),
+    ephemeral: boolean("ephemeral").notNull().default(false),
+    expiresAt: timestamp("expires_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    revokedAt: timestamp("revoked_at"),
+  },
+  (t) => [
+    index("auth_keys_tenant_created_idx").on(t.tenantId, t.createdAt),
+    index("auth_keys_tenant_user_idx").on(t.tenantId, t.userId),
+  ],
+);
+
+/** Dashboard notifications — one row per recipient. */
+export const notifications = pgTable(
+  "notifications",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id),
+    type: text("type").notNull(),
+    title: text("title").notNull(),
+    body: text("body").notNull().default(""),
+    link: text("link"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    readAt: timestamp("read_at"),
+  },
+  (t) => [
+    index("notifications_user_tenant_created_idx").on(t.userId, t.tenantId, t.createdAt),
+  ],
+);

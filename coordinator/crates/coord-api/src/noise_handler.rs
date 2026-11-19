@@ -241,7 +241,7 @@ fn frame_map_response(json_bytes: &[u8]) -> Result<Vec<u8>, std::io::Error> {
     Ok(out)
 }
 
-async fn handle_map_request(
+pub(crate) async fn handle_map_request(
     state: Arc<CoordinatorState>,
     machine_key: [u8; 32],
     body: &str,

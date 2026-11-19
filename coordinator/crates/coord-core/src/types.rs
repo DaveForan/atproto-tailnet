@@ -93,7 +93,12 @@ pub struct PeerInfo {
     pub machine_key: Vec<u8>,
     pub disco_key: Option<String>,
     pub endpoints: Vec<String>,
+    /// The node's own tailnet addresses (e.g. `100.64.0.1/32`).
+    pub addresses: Vec<String>,
+    /// addresses + effective (approved ∩ advertised) routes.
     pub allowed_ips: Vec<String>,
+    /// Effective subnet routes this node serves (exit routes excluded).
+    pub primary_routes: Vec<String>,
     pub hostname: String,
     pub derp_region: Option<i32>,
     pub online: bool,
@@ -272,6 +277,16 @@ pub struct CollectiveDid {
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Ownership / routing attributes of a node.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeAttrs {
+    pub owner: Option<String>,
+    pub tags: Vec<String>,
+    pub ephemeral: bool,
+    pub advertised_routes: Vec<String>,
+    pub approved_routes: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct NodeSummary {
     pub id: NodeId,
@@ -280,6 +295,7 @@ pub struct NodeSummary {
     pub stable_id: String,
     pub online: bool,
     pub hostname: String,
+    pub attrs: NodeAttrs,
 }
 
 #[derive(Debug, Clone)]
@@ -289,6 +305,85 @@ pub struct NodeDetail {
     pub stable_id: String,
     pub info: NodeInfo,
     pub online: bool,
+    pub attrs: NodeAttrs,
+}
+
+/// Attributes applied when a *new* node registers. Re-registration of a known
+/// machine keeps owner/tags/ephemeral; `advertised_routes` (if `Some`) replaces
+/// the advertised set.
+#[derive(Debug, Clone, Default)]
+pub struct NodeRegistration {
+    pub owner: Option<String>,
+    pub tags: Vec<String>,
+    pub ephemeral: bool,
+    pub advertised_routes: Option<Vec<String>>,
+}
+
+// ── Pre-auth keys ──
+
+#[derive(Debug, Clone, Default)]
+pub struct PreAuthKeyOptions {
+    pub reusable: bool,
+    pub ephemeral: bool,
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub owner: Option<String>,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CreatedPreAuthKey {
+    pub id: Uuid,
+    pub key: String,
+    pub tenant_id: TenantId,
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Listing view of a pre-auth key — never carries the full secret.
+#[derive(Debug, Clone)]
+pub struct PreAuthKeyInfo {
+    pub id: Uuid,
+    pub tenant_id: TenantId,
+    pub prefix: String,
+    pub owner: Option<String>,
+    pub tags: Vec<String>,
+    pub reusable: bool,
+    pub ephemeral: bool,
+    pub used: bool,
+    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub revoked: bool,
+}
+
+/// What a successfully consumed pre-auth key grants the registering node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreAuthGrant {
+    pub tenant_id: TenantId,
+    pub owner: Option<String>,
+    pub tags: Vec<String>,
+    pub ephemeral: bool,
+}
+
+pub const PREAUTH_KEY_PREFIX_LEN: usize = 12;
+
+pub fn preauth_key_prefix(key: &str) -> String {
+    key.chars().take(PREAUTH_KEY_PREFIX_LEN).collect()
+}
+
+/// (addresses, allowed_ips, primary_routes) for a node, given its routes.
+pub fn node_route_sets(
+    ipv4: &str,
+    advertised: &[String],
+    approved: &[String],
+) -> (Vec<String>, Vec<String>, Vec<String>) {
+    let addresses = vec![format!("{}/32", ipv4)];
+    let effective = crate::routes::effective_routes(advertised, approved);
+    let mut allowed = addresses.clone();
+    allowed.extend(effective.iter().cloned());
+    let primary = effective
+        .into_iter()
+        .filter(|r| !crate::routes::is_exit_route(r))
+        .collect();
+    (addresses, allowed, primary)
 }
 
 pub fn is_valid_slug(s: &str) -> bool {

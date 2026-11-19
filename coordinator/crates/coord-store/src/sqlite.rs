@@ -2,7 +2,11 @@ use std::net::Ipv4Addr;
 use sqlx::SqlitePool;
 use tokio::sync::broadcast;
 
-use coord_core::{CoordError, FederationPosture, NodeDetail, NodeId, NodeInfo, NodeSummary, PeerInfo, StorageError, Tenant, TenantId};
+use coord_core::{
+    CoordError, CreatedPreAuthKey, FederationPosture, NodeAttrs, NodeDetail, NodeId, NodeInfo,
+    NodeRegistration, NodeSummary, PeerInfo, PreAuthGrant, PreAuthKeyInfo, PreAuthKeyOptions,
+    StorageError, Tenant, TenantId,
+};
 use crate::memory::PeerEvent;
 use crate::generate_random_id;
 
@@ -248,35 +252,115 @@ impl SqliteStore {
     }
 
     pub async fn create_preauth_key(&self, tenant_id: TenantId, reusable: bool) -> Result<String, CoordError> {
+        self.create_preauth_key_with(tenant_id, PreAuthKeyOptions { reusable, ..Default::default() })
+            .await
+            .map(|k| k.key)
+    }
+
+    pub async fn create_preauth_key_with(
+        &self,
+        tenant_id: TenantId,
+        opts: PreAuthKeyOptions,
+    ) -> Result<CreatedPreAuthKey, CoordError> {
         let key = format!("tskey-auth-{}", generate_random_id());
+        let id = uuid::Uuid::new_v4();
         sqlx::query(
-            "INSERT INTO coord_preauth_keys (key, tenant_id, reusable) VALUES (?1, ?2, ?3)"
+            "INSERT INTO coord_preauth_keys (key, id, tenant_id, reusable, ephemeral, expires_at, owner, tags) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"
         )
             .bind(&key)
+            .bind(id.to_string())
             .bind(tenant_id.as_uuid().to_string())
-            .bind(reusable)
+            .bind(opts.reusable)
+            .bind(opts.ephemeral)
+            .bind(opts.expires_at.map(format_datetime))
+            .bind(&opts.owner)
+            .bind(to_json(&opts.tags))
             .execute(&self.pool)
             .await
             .map_err(db)?;
-        Ok(key)
+        Ok(CreatedPreAuthKey { id, key, tenant_id, expires_at: opts.expires_at })
     }
 
-    pub async fn validate_preauth_key(&self, key: &str) -> Option<TenantId> {
-        let tenant_str: Option<String> = sqlx::query_scalar(
+    pub async fn list_preauth_keys(&self, tenant_id: TenantId) -> Vec<PreAuthKeyInfo> {
+        type Row = (String, String, Option<String>, String, bool, bool, bool, Option<String>, String, Option<String>);
+        let rows = sqlx::query_as::<_, Row>(
+            "SELECT id, key, owner, tags, reusable, ephemeral, used, expires_at, created_at, revoked_at \
+             FROM coord_preauth_keys WHERE tenant_id = ?1 ORDER BY created_at, id"
+        )
+            .bind(tenant_id.as_uuid().to_string())
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default();
+
+        rows.into_iter()
+            .filter_map(|(id, key, owner, tags, reusable, ephemeral, used, expires_at, created_at, revoked_at)| {
+                Some(PreAuthKeyInfo {
+                    id: uuid::Uuid::parse_str(&id).ok()?,
+                    tenant_id,
+                    prefix: coord_core::preauth_key_prefix(&key),
+                    owner,
+                    tags: from_json(&tags),
+                    reusable,
+                    ephemeral,
+                    used,
+                    expires_at: expires_at.as_deref().map(parse_datetime),
+                    created_at: parse_datetime(&created_at),
+                    revoked: revoked_at.is_some(),
+                })
+            })
+            .collect()
+    }
+
+    pub async fn revoke_preauth_key(&self, tenant_id: TenantId, key_id: uuid::Uuid) -> Result<bool, CoordError> {
+        let found: Option<String> = sqlx::query_scalar(
+            "UPDATE coord_preauth_keys SET revoked_at = COALESCE(revoked_at, datetime('now')) \
+             WHERE tenant_id = ?1 AND id = ?2 RETURNING id"
+        )
+            .bind(tenant_id.as_uuid().to_string())
+            .bind(key_id.to_string())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(found.is_some())
+    }
+
+    pub async fn revoke_preauth_keys_by_owner(&self, tenant_id: TenantId, owner: &str) -> Result<u64, CoordError> {
+        let result = sqlx::query(
+            "UPDATE coord_preauth_keys SET revoked_at = datetime('now') \
+             WHERE tenant_id = ?1 AND owner = ?2 AND revoked_at IS NULL"
+        )
+            .bind(tenant_id.as_uuid().to_string())
+            .bind(owner)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(result.rows_affected())
+    }
+
+    /// Atomically consume a key: the conditional UPDATE means two registrations
+    /// racing on a single-use key cannot both succeed.
+    pub async fn validate_preauth_key(&self, key: &str) -> Option<PreAuthGrant> {
+        let row: Option<(String, Option<String>, String, bool)> = sqlx::query_as(
             "UPDATE coord_preauth_keys SET used = 1 \
              WHERE key = ?1 \
                AND (used = 0 OR reusable = 1) \
+               AND revoked_at IS NULL \
                AND (expires_at IS NULL OR expires_at > datetime('now')) \
-             RETURNING tenant_id"
+             RETURNING tenant_id, owner, tags, ephemeral"
         )
             .bind(key)
             .fetch_optional(&self.pool)
             .await
             .ok()?;
 
-        tenant_str
-            .and_then(|s| uuid::Uuid::parse_str(&s).ok())
-            .map(TenantId::new)
+        let (tenant_str, owner, tags, ephemeral) = row?;
+        Some(PreAuthGrant {
+            tenant_id: TenantId::new(uuid::Uuid::parse_str(&tenant_str).ok()?),
+            owner,
+            tags: from_json(&tags),
+            ephemeral,
+        })
     }
 
     pub async fn register_node(
@@ -284,6 +368,16 @@ impl SqliteStore {
         tenant_id: TenantId,
         machine_key: [u8; 32],
         info: NodeInfo,
+    ) -> Result<(NodeId, Ipv4Addr, u64), CoordError> {
+        self.register_node_with(tenant_id, machine_key, info, NodeRegistration::default()).await
+    }
+
+    pub async fn register_node_with(
+        &self,
+        tenant_id: TenantId,
+        machine_key: [u8; 32],
+        info: NodeInfo,
+        reg: NodeRegistration,
     ) -> Result<(NodeId, Ipv4Addr, u64), CoordError> {
         let tid_str = tenant_id.as_uuid().to_string();
         let endpoints_json = serde_json::to_string(&info.endpoints).unwrap();
@@ -318,6 +412,15 @@ impl SqliteStore {
                 .await
                 .map_err(db)?;
 
+            if let Some(routes) = reg.advertised_routes {
+                sqlx::query("UPDATE coord_nodes SET advertised_routes = ?1 WHERE id = ?2")
+                    .bind(to_json(&routes))
+                    .bind(id)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(db)?;
+            }
+
             let ipv4: Ipv4Addr = ip_str.parse().map_err(|_| CoordError::Protocol("invalid stored IPv4".into()))?;
             let node_id = NodeId::new(id);
             let _ = self.peer_tx.send(PeerEvent::NodeUpdated {
@@ -348,8 +451,9 @@ impl SqliteStore {
         let new_ip_str = new_ipv4.to_string();
 
         let row = sqlx::query_as::<_, (i64, i64)>(
-            "INSERT INTO coord_nodes (tenant_id, machine_key, node_key, disco_key, stable_id, ipv4, hostname, os, endpoints, session_generation) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1) \
+            "INSERT INTO coord_nodes (tenant_id, machine_key, node_key, disco_key, stable_id, ipv4, hostname, os, endpoints, session_generation, \
+                                      owner, tags, ephemeral, advertised_routes) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 1, ?10, ?11, ?12, ?13) \
              RETURNING id, session_generation"
         )
             .bind(&tid_str)
@@ -361,6 +465,10 @@ impl SqliteStore {
             .bind(&info.hostname)
             .bind(&info.os)
             .bind(&endpoints_json)
+            .bind(&reg.owner)
+            .bind(to_json(&reg.tags))
+            .bind(reg.ephemeral)
+            .bind(to_json(&reg.advertised_routes.unwrap_or_default()))
             .fetch_one(&self.pool)
             .await
             .map_err(db)?;
@@ -462,8 +570,8 @@ impl SqliteStore {
     }
 
     pub async fn get_peers(&self, tenant_id: TenantId, exclude_node: NodeId) -> Vec<PeerInfo> {
-        let rows = sqlx::query_as::<_, (i64, Vec<u8>, Vec<u8>, Option<String>, String, String, String, bool, String)>(
-            "SELECT id, node_key, machine_key, disco_key, endpoints, ipv4, hostname, online, last_seen \
+        let rows = sqlx::query_as::<_, PeerRow>(
+            "SELECT id, node_key, machine_key, disco_key, endpoints, ipv4, hostname, online, last_seen, advertised_routes, approved_routes \
              FROM coord_nodes WHERE tenant_id = ?1 AND id != ?2"
         )
             .bind(tenant_id.as_uuid().to_string())
@@ -472,23 +580,7 @@ impl SqliteStore {
             .await
             .unwrap_or_default();
 
-        rows.into_iter()
-            .map(|(id, node_key, machine_key, disco_key, endpoints_str, ip_str, hostname, online, last_seen_str)| {
-                let endpoints: Vec<String> = serde_json::from_str(&endpoints_str).unwrap_or_default();
-                PeerInfo {
-                    node_id: NodeId::new(id),
-                    node_key,
-                    machine_key,
-                    disco_key,
-                    endpoints,
-                    allowed_ips: vec![format!("{}/32", ip_str)],
-                    hostname,
-                    derp_region: Some(1),
-                    online,
-                    last_seen: Some(parse_datetime(&last_seen_str)),
-                }
-            })
-            .collect()
+        rows.into_iter().map(peer_row_to_info).collect()
     }
 
     pub async fn get_peers_with_children(
@@ -497,8 +589,8 @@ impl SqliteStore {
         exclude_node: NodeId,
     ) -> Vec<PeerInfo> {
         let tid_str = tenant_id.as_uuid().to_string();
-        let rows = sqlx::query_as::<_, (i64, Vec<u8>, Vec<u8>, Option<String>, String, String, String, bool, String)>(
-            "SELECT n.id, n.node_key, n.machine_key, n.disco_key, n.endpoints, n.ipv4, n.hostname, n.online, n.last_seen \
+        let rows = sqlx::query_as::<_, PeerRow>(
+            "SELECT n.id, n.node_key, n.machine_key, n.disco_key, n.endpoints, n.ipv4, n.hostname, n.online, n.last_seen, n.advertised_routes, n.approved_routes \
              FROM coord_nodes n \
              WHERE n.id != ?2 AND ( \
                  n.tenant_id = ?1 \
@@ -514,28 +606,12 @@ impl SqliteStore {
             .await
             .unwrap_or_default();
 
-        rows.into_iter()
-            .map(|(id, node_key, machine_key, disco_key, endpoints_str, ip_str, hostname, online, last_seen_str)| {
-                let endpoints: Vec<String> = serde_json::from_str(&endpoints_str).unwrap_or_default();
-                PeerInfo {
-                    node_id: NodeId::new(id),
-                    node_key,
-                    machine_key,
-                    disco_key,
-                    endpoints,
-                    allowed_ips: vec![format!("{}/32", ip_str)],
-                    hostname,
-                    derp_region: Some(1),
-                    online,
-                    last_seen: Some(parse_datetime(&last_seen_str)),
-                }
-            })
-            .collect()
+        rows.into_iter().map(peer_row_to_info).collect()
     }
 
     pub async fn list_tenant_nodes(&self, tenant_id: TenantId) -> Vec<PeerInfo> {
-        let rows = sqlx::query_as::<_, (i64, Vec<u8>, Vec<u8>, Option<String>, String, String, String, bool, String)>(
-            "SELECT id, node_key, machine_key, disco_key, endpoints, ipv4, hostname, online, last_seen \
+        let rows = sqlx::query_as::<_, PeerRow>(
+            "SELECT id, node_key, machine_key, disco_key, endpoints, ipv4, hostname, online, last_seen, advertised_routes, approved_routes \
              FROM coord_nodes WHERE tenant_id = ?1"
         )
             .bind(tenant_id.as_uuid().to_string())
@@ -543,47 +619,19 @@ impl SqliteStore {
             .await
             .unwrap_or_default();
 
-        rows.into_iter()
-            .map(|(id, node_key, machine_key, disco_key, endpoints_str, ip_str, hostname, online, last_seen_str)| {
-                let endpoints: Vec<String> = serde_json::from_str(&endpoints_str).unwrap_or_default();
-                PeerInfo {
-                    node_id: NodeId::new(id),
-                    node_key,
-                    machine_key,
-                    disco_key,
-                    endpoints,
-                    allowed_ips: vec![format!("{}/32", ip_str)],
-                    hostname,
-                    derp_region: Some(1),
-                    online,
-                    last_seen: Some(parse_datetime(&last_seen_str)),
-                }
-            })
-            .collect()
+        rows.into_iter().map(peer_row_to_info).collect()
     }
 
     pub async fn list_nodes_for_tenant(&self, tenant_id: TenantId) -> Vec<NodeSummary> {
-        let rows = sqlx::query_as::<_, (i64, String, String, String, bool, String)>(
-            "SELECT id, tenant_id, ipv4, stable_id, online, hostname FROM coord_nodes WHERE tenant_id = ?1 ORDER BY id"
+        let rows = sqlx::query_as::<_, SummaryRow>(
+            "SELECT id, tenant_id, ipv4, stable_id, online, hostname, owner, tags, ephemeral, advertised_routes, approved_routes FROM coord_nodes WHERE tenant_id = ?1 ORDER BY id"
         )
             .bind(tenant_id.as_uuid().to_string())
             .fetch_all(&self.pool)
             .await
             .unwrap_or_default();
 
-        rows.into_iter()
-            .filter_map(|(id, tenant_str, ip_str, stable_id, online, hostname)| {
-                let ipv4: Ipv4Addr = ip_str.parse().ok()?;
-                Some(NodeSummary {
-                    id: NodeId::new(id),
-                    tenant_id: TenantId::new(uuid::Uuid::parse_str(&tenant_str).ok()?),
-                    ipv4,
-                    stable_id,
-                    online,
-                    hostname,
-                })
-            })
-            .collect()
+        rows.into_iter().filter_map(summary_row_to_summary).collect()
     }
 
     pub async fn get_node_info(&self, node_id: NodeId) -> Option<NodeDetail> {
@@ -598,6 +646,14 @@ impl SqliteStore {
 
         let info_row = sqlx::query_as::<_, (Vec<u8>, Vec<u8>, Option<String>, String, String, String)>(
             "SELECT node_key, machine_key, disco_key, endpoints, hostname, os FROM coord_nodes WHERE id = ?1"
+        )
+            .bind(node_id.as_i64())
+            .fetch_optional(&self.pool)
+            .await
+            .ok()??;
+
+        let attrs_row = sqlx::query_as::<_, (Option<String>, String, bool, String, String)>(
+            "SELECT owner, tags, ephemeral, advertised_routes, approved_routes FROM coord_nodes WHERE id = ?1"
         )
             .bind(node_id.as_i64())
             .fetch_optional(&self.pool)
@@ -624,6 +680,7 @@ impl SqliteStore {
                 ipv6: None,
             },
             online,
+            attrs: attrs_from_parts(attrs_row),
         })
     }
 
@@ -661,26 +718,14 @@ impl SqliteStore {
     }
 
     pub async fn list_nodes(&self) -> Vec<NodeSummary> {
-        let rows = sqlx::query_as::<_, (i64, String, String, String, bool, String)>(
-            "SELECT id, tenant_id, ipv4, stable_id, online, hostname FROM coord_nodes ORDER BY id"
+        let rows = sqlx::query_as::<_, SummaryRow>(
+            "SELECT id, tenant_id, ipv4, stable_id, online, hostname, owner, tags, ephemeral, advertised_routes, approved_routes FROM coord_nodes ORDER BY id"
         )
             .fetch_all(&self.pool)
             .await
             .unwrap_or_default();
 
-        rows.into_iter()
-            .filter_map(|(id, tenant_str, ip_str, stable_id, online, hostname)| {
-                let ipv4: Ipv4Addr = ip_str.parse().ok()?;
-                Some(NodeSummary {
-                    id: NodeId::new(id),
-                    tenant_id: TenantId::new(uuid::Uuid::parse_str(&tenant_str).ok()?),
-                    ipv4,
-                    stable_id,
-                    online,
-                    hostname,
-                })
-            })
-            .collect()
+        rows.into_iter().filter_map(summary_row_to_summary).collect()
     }
 
     pub async fn delete_node(&self, node_id: NodeId) -> Result<TenantId, CoordError> {
@@ -779,6 +824,84 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub async fn set_advertised_routes(&self, node_id: NodeId, routes: Vec<String>) -> Result<bool, CoordError> {
+        self.set_routes_column(node_id, "advertised_routes", routes).await
+    }
+
+    pub async fn set_approved_routes(&self, node_id: NodeId, routes: Vec<String>) -> Result<bool, CoordError> {
+        self.set_routes_column(node_id, "approved_routes", routes).await
+    }
+
+    async fn set_routes_column(&self, node_id: NodeId, column: &'static str, routes: Vec<String>) -> Result<bool, CoordError> {
+        let json = to_json(&routes);
+        // Only rows whose value actually changes are returned, so `None` means
+        // either "no such node" or "unchanged" — disambiguate below.
+        let sql = format!(
+            "UPDATE coord_nodes SET {column} = ?1 WHERE id = ?2 AND {column} != ?1 RETURNING tenant_id"
+        );
+        let changed: Option<String> = sqlx::query_scalar(&sql)
+            .bind(&json)
+            .bind(node_id.as_i64())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db)?;
+        match changed {
+            Some(tenant_str) => {
+                if let Ok(uuid) = uuid::Uuid::parse_str(&tenant_str) {
+                    let _ = self.peer_tx.send(PeerEvent::NodeUpdated { tenant_id: TenantId::new(uuid), node_id });
+                }
+                Ok(true)
+            }
+            None => {
+                if self.get_node_tenant(node_id).await.is_none() {
+                    return Err(CoordError::Protocol("node not found".into()));
+                }
+                Ok(false)
+            }
+        }
+    }
+
+    pub async fn delete_nodes_by_owner(&self, tenant_id: TenantId, owner: &str) -> Result<Vec<NodeId>, CoordError> {
+        let mut ids: Vec<i64> = sqlx::query_scalar(
+            "DELETE FROM coord_nodes WHERE tenant_id = ?1 AND owner = ?2 RETURNING id"
+        )
+            .bind(tenant_id.as_uuid().to_string())
+            .bind(owner)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db)?;
+        ids.sort_unstable();
+        let ids: Vec<NodeId> = ids.into_iter().map(NodeId::new).collect();
+        for node_id in &ids {
+            let _ = self.peer_tx.send(PeerEvent::NodeOffline { tenant_id, node_id: *node_id });
+        }
+        Ok(ids)
+    }
+
+    pub async fn delete_stale_ephemeral_nodes(
+        &self,
+        max_offline: chrono::Duration,
+    ) -> Result<Vec<(TenantId, NodeId)>, CoordError> {
+        let cutoff = format_datetime(chrono::Utc::now() - max_offline);
+        let mut rows: Vec<(i64, String)> = sqlx::query_as(
+            "DELETE FROM coord_nodes WHERE ephemeral = 1 AND online = 0 AND last_seen <= ?1 \
+             RETURNING id, tenant_id"
+        )
+            .bind(cutoff)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(db)?;
+        rows.sort_unstable_by_key(|(id, _)| *id);
+        let removed: Vec<(TenantId, NodeId)> = rows
+            .into_iter()
+            .filter_map(|(id, t)| Some((TenantId::new(uuid::Uuid::parse_str(&t).ok()?), NodeId::new(id))))
+            .collect();
+        for (tenant_id, node_id) in &removed {
+            let _ = self.peer_tx.send(PeerEvent::NodeOffline { tenant_id: *tenant_id, node_id: *node_id });
+        }
+        Ok(removed)
+    }
+
     pub async fn get_tenant_route_snapshot(
         &self,
         tenant_id: TenantId,
@@ -844,8 +967,8 @@ impl SqliteStore {
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         tenant_id: TenantId,
     ) -> Vec<PeerInfo> {
-        let rows = sqlx::query_as::<_, (i64, Vec<u8>, Vec<u8>, Option<String>, String, String, String, bool, String)>(
-            "SELECT id, node_key, machine_key, disco_key, endpoints, ipv4, hostname, online, last_seen \
+        let rows = sqlx::query_as::<_, PeerRow>(
+            "SELECT id, node_key, machine_key, disco_key, endpoints, ipv4, hostname, online, last_seen, advertised_routes, approved_routes \
              FROM coord_nodes WHERE tenant_id = ?1"
         )
             .bind(tenant_id.as_uuid().to_string())
@@ -853,23 +976,7 @@ impl SqliteStore {
             .await
             .unwrap_or_default();
 
-        rows.into_iter()
-            .map(|(id, node_key, machine_key, disco_key, endpoints_str, ip_str, hostname, online, last_seen_str)| {
-                let endpoints: Vec<String> = serde_json::from_str(&endpoints_str).unwrap_or_default();
-                PeerInfo {
-                    node_id: NodeId::new(id),
-                    node_key,
-                    machine_key,
-                    disco_key,
-                    endpoints,
-                    allowed_ips: vec![format!("{}/32", ip_str)],
-                    hostname,
-                    derp_region: Some(1),
-                    online,
-                    last_seen: Some(parse_datetime(&last_seen_str)),
-                }
-            })
-            .collect()
+        rows.into_iter().map(peer_row_to_info).collect()
     }
 }
 
@@ -884,6 +991,69 @@ fn parse_posture(s: &str) -> FederationPosture {
         tracing::warn!(value = s, "unknown federation posture, defaulting to Closed");
         FederationPosture::Closed
     })
+}
+
+type PeerRow = (i64, Vec<u8>, Vec<u8>, Option<String>, String, String, String, bool, String, String, String);
+type SummaryRow = (i64, String, String, String, bool, String, Option<String>, String, bool, String, String);
+
+fn to_json(v: &[String]) -> String {
+    serde_json::to_string(v).unwrap_or_else(|_| "[]".into())
+}
+
+fn from_json(s: &str) -> Vec<String> {
+    serde_json::from_str(s).unwrap_or_default()
+}
+
+fn attrs_from_parts((owner, tags, ephemeral, advertised, approved): (Option<String>, String, bool, String, String)) -> NodeAttrs {
+    NodeAttrs {
+        owner,
+        tags: from_json(&tags),
+        ephemeral,
+        advertised_routes: from_json(&advertised),
+        approved_routes: from_json(&approved),
+    }
+}
+
+fn peer_row_to_info(
+    (id, node_key, machine_key, disco_key, endpoints_str, ip_str, hostname, online, last_seen_str, advertised, approved): PeerRow,
+) -> PeerInfo {
+    let endpoints: Vec<String> = serde_json::from_str(&endpoints_str).unwrap_or_default();
+    let (addresses, allowed_ips, primary_routes) =
+        coord_core::node_route_sets(&ip_str, &from_json(&advertised), &from_json(&approved));
+    PeerInfo {
+        node_id: NodeId::new(id),
+        node_key,
+        machine_key,
+        disco_key,
+        endpoints,
+        addresses,
+        allowed_ips,
+        primary_routes,
+        hostname,
+        derp_region: Some(1),
+        online,
+        last_seen: Some(parse_datetime(&last_seen_str)),
+    }
+}
+
+fn summary_row_to_summary(
+    (id, tenant_str, ip_str, stable_id, online, hostname, owner, tags, ephemeral, advertised, approved): SummaryRow,
+) -> Option<NodeSummary> {
+    let ipv4: Ipv4Addr = ip_str.parse().ok()?;
+    Some(NodeSummary {
+        id: NodeId::new(id),
+        tenant_id: TenantId::new(uuid::Uuid::parse_str(&tenant_str).ok()?),
+        ipv4,
+        stable_id,
+        online,
+        hostname,
+        attrs: attrs_from_parts((owner, tags, ephemeral, advertised, approved)),
+    })
+}
+
+/// Same text format as SQLite's `datetime('now')`, so string comparison works.
+fn format_datetime(dt: chrono::DateTime<chrono::Utc>) -> String {
+    dt.format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
 fn parse_datetime(s: &str) -> chrono::DateTime<chrono::Utc> {

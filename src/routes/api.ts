@@ -22,6 +22,7 @@ import { requireAuth, param, getTenantForUser, tenantLoginServer, authUserId } f
 import { logAudit } from "./audit.js";
 import { checkTenantHealth } from "../orchestrator/monitor.js";
 import { logger } from "../logger.js";
+import { notify } from "../notifications/service.js";
 
 /**
  * Router for /health, /api/me, /api/tenants (list, detail, delete,
@@ -67,6 +68,7 @@ apiRouter.get("/api/tenants", requireAuth, async (req, res) => {
       status: tenants.status,
       isOriginator: memberships.isOriginator,
       roleName: roles.name,
+      coordinatorTenantId: tenants.coordinatorTenantId,
     })
     .from(memberships)
     .innerJoin(tenants, eq(memberships.tenantId, tenants.id))
@@ -75,7 +77,9 @@ apiRouter.get("/api/tenants", requireAuth, async (req, res) => {
     .orderBy(desc(tenants.createdAt))
     .limit(200);
 
-  res.json(userTenants);
+  res.json(
+    userTenants.map((t) => ({ ...t, coordinatorMode: useCoordinator })),
+  );
 });
 
 apiRouter.get("/api/tenants/:id", requireAuth, async (req, res) => {
@@ -95,6 +99,8 @@ apiRouter.get("/api/tenants/:id", requireAuth, async (req, res) => {
     roleId: result.membership.roleId,
     defaultRoleId: result.tenant.defaultRoleId,
     loginServer: tenantLoginServer(result.tenant.slug),
+    coordinatorTenantId: result.tenant.coordinatorTenantId ?? null,
+    coordinatorMode: useCoordinator,
   });
 });
 
@@ -200,6 +206,16 @@ apiRouter.post(
       action: "join_request_created",
       targetType: "join_request",
       targetId: created.id,
+    });
+
+    const [requester] = await db
+      .select({ handle: users.handle })
+      .from(users)
+      .where(eq(users.id, userId));
+    notify(tenantId, "join_request", {
+      title: "New join request",
+      body: `@${requester?.handle ?? "someone"} asked to join ${tenant.name}.`,
+      link: "/#security",
     });
 
     res.status(201).json({ id: created.id, status: "pending" });
@@ -396,7 +412,10 @@ apiRouter.get(
       return;
     }
 
-    if (!result.tenant.containerId || !result.tenant.apiKey) {
+    const reachable = useCoordinator
+      ? Boolean(result.tenant.coordinatorTenantId)
+      : Boolean(result.tenant.containerId && result.tenant.apiKey);
+    if (!reachable) {
       res.json({ status: result.tenant.status, healthy: false });
       return;
     }

@@ -107,7 +107,7 @@ async function checkCoordinator(): Promise<void> {
 
 /**
  * Pushes the DB-held per-tenant config the coordinator keeps only in memory
- * (ACL policy, custom DERP regions + public-relay toggle) and recovers tenants
+ * (ACL policy, route auto-approvers, custom DERP regions + public-relay toggle) and recovers tenants
  * that the coordinator still knows about but that are marked "error".
  *
  * @returns true when every tenant was resynced successfully.
@@ -123,6 +123,7 @@ export async function resyncCoordinatorState(): Promise<boolean> {
       customDerpRegions: tenants.customDerpRegions,
       usePublicDerp: tenants.usePublicDerp,
       coordinatorAclPolicy: tenants.coordinatorAclPolicy,
+      coordinatorAutoApprovers: tenants.coordinatorAutoApprovers,
     })
     .from(tenants)
     .where(
@@ -153,6 +154,10 @@ export async function resyncCoordinatorState(): Promise<boolean> {
 
       if (t.coordinatorAclPolicy) {
         await client.setHeadscalePolicy(t.coordinatorAclPolicy as Parameters<CoordinatorApiClient["setHeadscalePolicy"]>[0]);
+      }
+
+      if (t.coordinatorAutoApprovers) {
+        await client.pushAutoApprovers(t.coordinatorAutoApprovers);
       }
 
       const regions = (t.customDerpRegions ?? []) as DerpRegion[];

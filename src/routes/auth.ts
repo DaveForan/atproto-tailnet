@@ -159,15 +159,18 @@ async function provisionTenant(
  * stores its API key, installs the default ACL policy.
  *
  * Both modes sync Caddy routes at the end. On failure the tenant is marked "error".
+ * Sub-collectives pass the parent's coordinator tenant id so the coordinator
+ * knows the hierarchy (route aggregation, federation posture).
  */
 export async function provisionTenantInstance(
   tenantId: string,
   slug: string,
   port: number,
+  opts: { parentCoordinatorTenantId?: string | null } = {},
 ): Promise<boolean> {
   try {
     if (useCoordinator) {
-      await provisionViaCoordinator(tenantId, slug, port);
+      await provisionViaCoordinator(tenantId, slug, port, opts.parentCoordinatorTenantId ?? null);
     } else {
       await provisionViaHeadscale(tenantId, slug, port);
     }
@@ -195,6 +198,7 @@ async function provisionViaCoordinator(
   tenantId: string,
   slug: string,
   _port: number,
+  parentCoordinatorTenantId: string | null,
 ): Promise<void> {
   const { config } = await import("../config.js");
   const coordUrl = config.coordinatorUrl!;
@@ -207,7 +211,9 @@ async function provisionViaCoordinator(
         ? { Authorization: `Bearer ${config.coordinatorApiKey}` }
         : {}),
     },
-    body: JSON.stringify({ slug }),
+    body: JSON.stringify(
+      parentCoordinatorTenantId ? { slug, parent_id: parentCoordinatorTenantId } : { slug },
+    ),
   });
 
   if (!res.ok) {

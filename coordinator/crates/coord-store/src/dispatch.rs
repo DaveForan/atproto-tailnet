@@ -1,7 +1,10 @@
 use std::net::Ipv4Addr;
 use tokio::sync::broadcast;
 
-use coord_core::{CoordError, FederationPosture, NodeDetail, NodeId, NodeInfo, NodeSummary, PeerInfo, Tenant, TenantId};
+use coord_core::{
+    CoordError, CreatedPreAuthKey, FederationPosture, NodeDetail, NodeId, NodeInfo, NodeRegistration,
+    NodeSummary, PeerInfo, PreAuthGrant, PreAuthKeyInfo, PreAuthKeyOptions, Tenant, TenantId,
+};
 use crate::memory::{MemoryStore, PeerEvent};
 use crate::pg::PgStore;
 use crate::sqlite::SqliteStore;
@@ -86,11 +89,83 @@ impl Store {
         }
     }
 
-    pub async fn validate_preauth_key(&self, key: &str) -> Option<TenantId> {
+    pub async fn validate_preauth_key(&self, key: &str) -> Option<PreAuthGrant> {
         match self {
             Store::Memory(m) => m.validate_preauth_key(key),
             Store::Pg(p) => p.validate_preauth_key(key).await,
             Store::Sqlite(s) => s.validate_preauth_key(key).await,
+        }
+    }
+
+    pub async fn create_preauth_key_with(&self, tenant_id: TenantId, opts: PreAuthKeyOptions) -> Result<CreatedPreAuthKey, CoordError> {
+        match self {
+            Store::Memory(m) => m.create_preauth_key_with(tenant_id, opts),
+            Store::Pg(p) => p.create_preauth_key_with(tenant_id, opts).await,
+            Store::Sqlite(s) => s.create_preauth_key_with(tenant_id, opts).await,
+        }
+    }
+
+    pub async fn list_preauth_keys(&self, tenant_id: TenantId) -> Vec<PreAuthKeyInfo> {
+        match self {
+            Store::Memory(m) => m.list_preauth_keys(tenant_id),
+            Store::Pg(p) => p.list_preauth_keys(tenant_id).await,
+            Store::Sqlite(s) => s.list_preauth_keys(tenant_id).await,
+        }
+    }
+
+    pub async fn revoke_preauth_key(&self, tenant_id: TenantId, key_id: uuid::Uuid) -> Result<bool, CoordError> {
+        match self {
+            Store::Memory(m) => m.revoke_preauth_key(tenant_id, key_id),
+            Store::Pg(p) => p.revoke_preauth_key(tenant_id, key_id).await,
+            Store::Sqlite(s) => s.revoke_preauth_key(tenant_id, key_id).await,
+        }
+    }
+
+    pub async fn revoke_preauth_keys_by_owner(&self, tenant_id: TenantId, owner: &str) -> Result<u64, CoordError> {
+        match self {
+            Store::Memory(m) => m.revoke_preauth_keys_by_owner(tenant_id, owner),
+            Store::Pg(p) => p.revoke_preauth_keys_by_owner(tenant_id, owner).await,
+            Store::Sqlite(s) => s.revoke_preauth_keys_by_owner(tenant_id, owner).await,
+        }
+    }
+
+    pub async fn register_node_with(&self, tenant_id: TenantId, machine_key: [u8; 32], info: NodeInfo, reg: NodeRegistration) -> Result<(NodeId, Ipv4Addr, u64), CoordError> {
+        match self {
+            Store::Memory(m) => m.register_node_with(tenant_id, machine_key, info, reg),
+            Store::Pg(p) => p.register_node_with(tenant_id, machine_key, info, reg).await,
+            Store::Sqlite(s) => s.register_node_with(tenant_id, machine_key, info, reg).await,
+        }
+    }
+
+    pub async fn set_advertised_routes(&self, node_id: NodeId, routes: Vec<String>) -> Result<bool, CoordError> {
+        match self {
+            Store::Memory(m) => m.set_advertised_routes(node_id, routes),
+            Store::Pg(p) => p.set_advertised_routes(node_id, routes).await,
+            Store::Sqlite(s) => s.set_advertised_routes(node_id, routes).await,
+        }
+    }
+
+    pub async fn set_approved_routes(&self, node_id: NodeId, routes: Vec<String>) -> Result<bool, CoordError> {
+        match self {
+            Store::Memory(m) => m.set_approved_routes(node_id, routes),
+            Store::Pg(p) => p.set_approved_routes(node_id, routes).await,
+            Store::Sqlite(s) => s.set_approved_routes(node_id, routes).await,
+        }
+    }
+
+    pub async fn delete_nodes_by_owner(&self, tenant_id: TenantId, owner: &str) -> Result<Vec<NodeId>, CoordError> {
+        match self {
+            Store::Memory(m) => m.delete_nodes_by_owner(tenant_id, owner),
+            Store::Pg(p) => p.delete_nodes_by_owner(tenant_id, owner).await,
+            Store::Sqlite(s) => s.delete_nodes_by_owner(tenant_id, owner).await,
+        }
+    }
+
+    pub async fn delete_stale_ephemeral_nodes(&self, max_offline: chrono::Duration) -> Result<Vec<(TenantId, NodeId)>, CoordError> {
+        match self {
+            Store::Memory(m) => m.delete_stale_ephemeral_nodes(max_offline),
+            Store::Pg(p) => p.delete_stale_ephemeral_nodes(max_offline).await,
+            Store::Sqlite(s) => s.delete_stale_ephemeral_nodes(max_offline).await,
         }
     }
 

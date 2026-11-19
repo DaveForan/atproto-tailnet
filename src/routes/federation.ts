@@ -23,8 +23,13 @@ import {
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
 import { logger } from "../logger.js";
+import { randomUUID } from "node:crypto";
 import {
+  LOCAL_CAPABILITIES,
   ensureCollectiveDid,
+  localBrokerUrl,
+  localTenantForDid,
+  queueLinkMessage,
   rotateCollectiveDid,
   getBrokerStatus,
   getRouteTable,
@@ -40,6 +45,25 @@ import { getControlClient, useCoordinator } from "../orchestrator/control-client
 import { CoordinatorApiClient } from "../orchestrator/coordinator-api.js";
 import { CFP_VERSION } from "../federation/protocol.js";
 import { scopeDeclarationSchema } from "../federation/scoping.js";
+import { signedPayload } from "../federation/auth.js";
+import { discoverPeer } from "../federation/discovery.js";
+import { outboxStatus, parseOutboxEntry } from "../federation/outbox.js";
+
+/**
+ * Message id of the peer's LINK_REQUEST stored on an incoming link, which our
+ * LINK_ACCEPT / LINK_REJECT answers (`inResponseTo`). Falls back to the link id.
+ */
+function requestMessageId(link: { id: string; signedRequest: string | null }): string {
+  if (link.signedRequest) {
+    try {
+      const parsed = JSON.parse(link.signedRequest) as { messageId?: unknown };
+      if (typeof parsed.messageId === "string" && parsed.messageId) return parsed.messageId;
+    } catch {
+      // fall through
+    }
+  }
+  return link.id;
+}
 
 export const federationRouter = Router();
 
@@ -79,6 +103,9 @@ federationRouter.get(
         message: link.message,
         localCidrs: link.localCidrs,
         peerCidrs: link.peerCidrs,
+        revokedPermanently: link.revokedPermanently,
+        /** Undelivered cross-instance link message, if any. */
+        delivery: outboxStatus(link.outbox),
         createdAt: link.createdAt,
         updatedAt: link.updatedAt,
       })),
@@ -87,6 +114,11 @@ federationRouter.get(
 );
 
 export const createFederationBody = z.object({
+  /**
+   * A collective on this instance (its slug), or a remote one as `slug@host`
+   * — discovered through its signed `/.well-known/collective-federation`
+   * descriptor and asked with a signed LINK_REQUEST (ADR-0019).
+   */
   targetSlug: z.string().min(1).max(100),
   message: z.string().max(500).optional(),
   cidrs: z.array(z.string().min(1)).max(20).optional(),
@@ -123,7 +155,30 @@ federationRouter.post(
       return;
     }
 
-    // Look up target tenant by slug (same-instance for now)
+    // `slug@host` names a collective by its instance. If its DID turns out to
+    // be hosted here, the same-instance path below handles it.
+    let targetFilter = eq(tenants.slug, parsed.data.targetSlug);
+    if (parsed.data.targetSlug.includes("@")) {
+      const discovery = await discoverPeer(parsed.data.targetSlug);
+      if (!discovery.ok) {
+        res.status(400).json({ error: discovery.error });
+        return;
+      }
+      const localTarget = await localTenantForDid(discovery.peer.did);
+      if (!localTarget) {
+        await requestRemoteLink(req, res, {
+          tenantId,
+          tenantName: result.tenant.name,
+          peer: discovery.peer,
+          peerAddress: parsed.data.targetSlug,
+          message: parsed.data.message,
+          cidrs: parsed.data.cidrs ?? [],
+        });
+        return;
+      }
+      targetFilter = eq(tenants.id, localTarget);
+    }
+
     const targetRows = await db
       .select({
         id: tenants.id,
@@ -132,7 +187,7 @@ federationRouter.post(
         lockdownMode: tenants.lockdownMode,
       })
       .from(tenants)
-      .where(eq(tenants.slug, parsed.data.targetSlug))
+      .where(targetFilter)
       .limit(1);
 
     if (targetRows.length === 0) {
@@ -261,6 +316,88 @@ federationRouter.post(
   },
 );
 
+/** Cross-instance half of POST /federation: local outgoing row + queued LINK_REQUEST. */
+async function requestRemoteLink(
+  req: import("express").Request,
+  res: import("express").Response,
+  opts: {
+    tenantId: string;
+    tenantName: string;
+    peer: { did: string; brokerUrl: string; name: string };
+    peerAddress: string;
+    message?: string;
+    cidrs: string[];
+  },
+): Promise<void> {
+  const { tenantId, peer } = opts;
+
+  const existing = await db
+    .select({ id: federationLinks.id })
+    .from(federationLinks)
+    .where(
+      and(
+        eq(federationLinks.localTenantId, tenantId),
+        eq(federationLinks.peerDid, peer.did),
+        or(eq(federationLinks.status, "pending"), eq(federationLinks.status, "active")),
+      ),
+    )
+    .limit(1);
+  if (existing.length > 0) {
+    res.status(409).json({ error: "An active or pending federation link already exists" });
+    return;
+  }
+
+  // We may only offer our own prefixes; the peer validates its side on receipt.
+  const localCheck = await validateLocalCidrsForTenant(tenantId, opts.cidrs);
+  if (localCheck.errors.length > 0) {
+    res.status(400).json({ error: "Invalid CIDRs", details: localCheck.errors });
+    return;
+  }
+
+  const { did: requesterDid } = await ensureCollectiveDid(tenantId);
+
+  const [link] = await db
+    .insert(federationLinks)
+    .values({
+      localTenantId: tenantId,
+      peerDid: peer.did,
+      peerBrokerUrl: peer.brokerUrl,
+      peerName: peer.name,
+      direction: "outgoing",
+      message: opts.message,
+      localCidrs: localCheck.cidrs,
+    })
+    .returning();
+
+  const messageId = randomUUID();
+  await queueLinkMessage(
+    link,
+    {
+      type: "LINK_REQUEST",
+      messageId,
+      collectiveDid: requesterDid,
+      brokerUrl: await localBrokerUrl(tenantId),
+      collectiveName: opts.tenantName,
+      federationType: "peer",
+      offeredCidrs: localCheck.cidrs,
+      capabilities: LOCAL_CAPABILITIES,
+      ...(opts.message ? { message: opts.message } : {}),
+    },
+    authUserId(req),
+  );
+
+  logAudit({
+    tenantId,
+    actorUserId: authUserId(req),
+    action: "federation_requested",
+    targetType: "federation_link",
+    targetId: link.id,
+    metadata: { peerAddress: opts.peerAddress, peerDid: peer.did, crossInstance: true, messageId },
+  });
+
+  res.status(201).json({ status: "requested", link });
+}
+
 export const respondBody = z.object({
   cidrs: z.array(z.string().min(1)).max(20).optional(),
 });
@@ -342,6 +479,12 @@ federationRouter.post(
         .limit(1),
     ]);
 
+    const crossInstance = peerDidRows.length === 0;
+    if (crossInstance && !link.peerBrokerUrl) {
+      res.status(409).json({ error: "The requesting collective's broker URL is unknown" });
+      return;
+    }
+
     // The requester must be able to import what we share.
     if (peerDidRows.length > 0) {
       const mirrorCheck = await validatePeerCidrsForTenant(peerDidRows[0].tenantId, acceptedCidrs);
@@ -381,19 +524,41 @@ federationRouter.post(
         );
     }
 
+    if (crossInstance) {
+      // The requester's row becomes active when our LINK_ACCEPT arrives; the
+      // handshake starts once it has been delivered (see deliverLinkOutbox).
+      const { did: ourDid } = await ensureCollectiveDid(tenantId);
+      await queueLinkMessage(
+        link,
+        {
+          type: "LINK_ACCEPT",
+          messageId: randomUUID(),
+          inResponseTo: requestMessageId(link),
+          collectiveDid: ourDid,
+          brokerUrl: await localBrokerUrl(tenantId),
+          collectiveName: result.tenant.name,
+          acceptedCidrs,
+        },
+        authUserId(req),
+      );
+    }
+
     logAudit({
       tenantId,
       actorUserId: authUserId(req),
       action: "federation_accepted",
       targetType: "federation_link",
       targetId: linkId,
+      ...(crossInstance ? { metadata: { peerDid: link.peerDid, crossInstance: true } } : {}),
     });
 
-    setImmediate(() => {
-      initiateOutboundHandshake(link.id, link.localTenantId).catch((err) => {
-        logger.warn({ linkId: link.id, err }, "failed to initiate outbound handshake");
+    if (!crossInstance) {
+      setImmediate(() => {
+        initiateOutboundHandshake(link.id, link.localTenantId).catch((err) => {
+          logger.warn({ linkId: link.id, err }, "failed to initiate outbound handshake");
+        });
       });
-    });
+    }
 
     res.json({ status: "accepted" });
   },
@@ -461,6 +626,21 @@ federationRouter.post(
         .where(eq(collectiveDids.did, link.peerDid))
         .limit(1),
     ]);
+
+    if (peerDidRows.length === 0 && link.peerBrokerUrl) {
+      // Cross-instance: tell the requester's broker.
+      const { did: ourDid } = await ensureCollectiveDid(tenantId);
+      await queueLinkMessage(
+        link,
+        {
+          type: "LINK_REJECT",
+          messageId: randomUUID(),
+          inResponseTo: requestMessageId(link),
+          collectiveDid: ourDid,
+        },
+        authUserId(req),
+      );
+    }
 
     if (ourDidRows.length > 0 && peerDidRows.length > 0) {
       await db
@@ -532,10 +712,13 @@ federationRouter.post(
 
     const link = linkRows[0];
 
+    // An operator's revocation is final: a new link request is needed to
+    // federate again, and the broker never re-handshakes this link.
     await db
       .update(federationLinks)
       .set({
         status: "revoked",
+        revokedPermanently: true,
         reviewedById: authUserId(req),
         updatedAt: new Date(),
       })
@@ -555,11 +738,34 @@ federationRouter.post(
         .limit(1),
     ]);
 
+    if (peerDidRows.length === 0 && link.peerBrokerUrl) {
+      // Cross-instance. A LINK_REQUEST that never left needs no revocation —
+      // the peer has never heard of the link; drop it instead.
+      const pending = parseOutboxEntry(link.outbox);
+      if (pending?.message.type === "LINK_REQUEST" && pending.attempts === 0) {
+        await db.update(federationLinks).set({ outbox: null }).where(eq(federationLinks.id, linkId));
+      } else {
+        const { did: ourDid } = await ensureCollectiveDid(tenantId);
+        await queueLinkMessage(
+          link,
+          {
+            type: "LINK_REVOKE",
+            messageId: randomUUID(),
+            collectiveDid: ourDid,
+            reason: "revoked by operator",
+            permanent: true,
+          },
+          authUserId(req),
+        );
+      }
+    }
+
     if (ourDidRows.length > 0 && peerDidRows.length > 0) {
       await db
         .update(federationLinks)
         .set({
           status: "revoked",
+          revokedPermanently: true,
           updatedAt: new Date(),
         })
         .where(
@@ -770,13 +976,10 @@ federationRouter.get(
       signature: "",
     };
 
-    // Detached JWS by the collective's key over the document as serialized
-    // here with `signature: ""`.
+    // Detached JWS by the collective's key over the JCS form of the document
+    // without `signature` (the CFP signing payload, see federation/auth.ts).
     try {
-      discovery.signature = await signAsCollective(
-        tenant.id,
-        JSON.stringify(discovery),
-      );
+      discovery.signature = await signAsCollective(tenant.id, signedPayload(discovery));
     } catch (err) {
       logger.error({ tenantId: tenant.id, err }, "failed to sign discovery document");
       res.status(500).json({ error: "Failed to sign discovery document" });

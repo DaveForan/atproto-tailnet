@@ -6,7 +6,7 @@ use coord_federation::{
     BrokerConfig, BrokerService, FederationMemoryStore, FederationStore,
     HandshakeCallbacks, InboundHandler,
 };
-use coord_netmap::{DerpRegistry, NetmapService};
+use coord_netmap::{AutoApproverRegistry, DerpRegistry, NetmapService};
 use coord_proto::map::DerpMap;
 use coord_store::{MemoryStore, Store};
 
@@ -15,6 +15,8 @@ pub struct CoordinatorState {
     pub(crate) store: Arc<Store>,
     pub(crate) acl: Arc<PolicyEngine>,
     pub(crate) derp: Arc<DerpRegistry>,
+    /// Per-tenant route auto-approvers (in-memory; TS service replays them).
+    pub(crate) auto_approvers: Arc<AutoApproverRegistry>,
     pub(crate) admin_api_key: Option<String>,
     pub(crate) netmap: NetmapService,
     /// Fires when a tenant's ACL or DERP config changes so live map streams resend a snapshot.
@@ -22,6 +24,7 @@ pub struct CoordinatorState {
     pub(crate) federation_inbound: Arc<InboundHandler<dyn FederationStore>>,
     pub(crate) federation_broker: Arc<BrokerService<dyn FederationStore>>,
     pub(crate) federation_callbacks: Option<Arc<dyn HandshakeCallbacks>>,
+    pub(crate) federation_enabled: bool,
 }
 
 impl CoordinatorState {
@@ -38,6 +41,7 @@ impl CoordinatorState {
             store,
             acl,
             derp,
+            auto_approvers: Arc::new(AutoApproverRegistry::new()),
             admin_api_key: None,
             netmap,
             config_changed,
@@ -47,6 +51,7 @@ impl CoordinatorState {
             )),
             federation_broker: Arc::new(BrokerService::new(fed_store, fed_config)),
             federation_callbacks: None,
+            federation_enabled: true,
         }
     }
 
@@ -77,6 +82,16 @@ impl CoordinatorState {
         self
     }
 
+    /// When false, the CFP federation endpoints are not mounted (the TS service is authoritative).
+    pub fn with_federation_enabled(mut self, enabled: bool) -> Self {
+        self.federation_enabled = enabled;
+        self
+    }
+
+    pub fn federation_enabled(&self) -> bool {
+        self.federation_enabled
+    }
+
     pub fn with_federation_callbacks(mut self, cb: Arc<dyn HandshakeCallbacks>) -> Self {
         self.federation_callbacks = Some(cb);
         self
@@ -100,6 +115,10 @@ impl CoordinatorState {
 
     pub fn derp(&self) -> &Arc<DerpRegistry> {
         &self.derp
+    }
+
+    pub fn auto_approvers(&self) -> &Arc<AutoApproverRegistry> {
+        &self.auto_approvers
     }
 
     pub fn federation_inbound(&self) -> &Arc<InboundHandler<dyn FederationStore>> {

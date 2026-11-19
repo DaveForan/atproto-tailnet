@@ -2010,3 +2010,505 @@ async fn known_machine_reregisters_without_auth_key() {
     let resp: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_ne!(resp["MachineAuthorized"], true, "unknown machine without auth key must not be authorized");
 }
+
+// ── Pre-auth key lifecycle, ownership, routes, ephemeral (contract §A) ──
+
+async fn api_call(
+    app: &axum::Router,
+    method: &str,
+    uri: String,
+    body: Option<serde_json::Value>,
+) -> (StatusCode, serde_json::Value) {
+    let mut req = admin_req().method(method).uri(uri);
+    let body = match body {
+        Some(b) => {
+            req = req.header("content-type", "application/json");
+            Body::from(b.to_string())
+        }
+        None => Body::empty(),
+    };
+    let resp = app.clone().oneshot(req.body(body).unwrap()).await.unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let json = if bytes.is_empty() { serde_json::Value::Null } else { serde_json::from_slice(&bytes).unwrap() };
+    (status, json)
+}
+
+async fn api_key(app: &axum::Router, body: serde_json::Value) -> serde_json::Value {
+    let (status, json) = api_call(app, "POST", "/api/preauth-keys".into(), Some(body)).await;
+    assert_eq!(status, StatusCode::CREATED, "{json}");
+    json
+}
+
+/// Register `mkey` with `auth_key`, advertising `routes` (None = no RoutableIPs).
+async fn register_routes(
+    state: &Arc<CoordinatorState>,
+    mkey: u8,
+    auth_key: &str,
+    hostname: &str,
+    routes: Option<&[&str]>,
+) -> serde_json::Value {
+    let mut hostinfo = serde_json::json!({ "Hostname": hostname, "OS": "linux" });
+    if let Some(r) = routes {
+        hostinfo["RoutableIPs"] = serde_json::json!(r);
+    }
+    let body = serde_json::json!({
+        "Version": 2,
+        "NodeKey": format!("nodekey:{}", hex::encode([mkey.wrapping_add(1); 32])),
+        "Auth": { "AuthKey": auth_key },
+        "Hostinfo": hostinfo,
+    });
+    let out = coord_api::__test_handle_register(state, &[mkey; 32], &body.to_string()).await.unwrap();
+    serde_json::from_str(&out).unwrap()
+}
+
+async fn map_of(state: &Arc<CoordinatorState>, mkey: u8, hostinfo: Option<serde_json::Value>) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "Version": 2,
+        "NodeKey": format!("nodekey:{}", hex::encode([mkey.wrapping_add(1); 32])),
+    });
+    if let Some(h) = hostinfo {
+        body["Hostinfo"] = h;
+    }
+    let out = coord_api::__test_handle_map(state, &[mkey; 32], &body.to_string()).await.unwrap();
+    serde_json::from_str(&out).unwrap()
+}
+
+async fn node_id_of(state: &Arc<CoordinatorState>, mkey: u8) -> i64 {
+    state.store().get_node_by_machine_key(&[mkey; 32]).await.unwrap().as_i64()
+}
+
+type MapBody = http_body_util::combinators::BoxBody<bytes::Bytes, std::io::Error>;
+
+/// Next decoded map frame; `None` once the stream has ended. Panics on timeout.
+async fn next_map_frame(body: &mut MapBody) -> Option<serde_json::Value> {
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(3), body.frame())
+        .await
+        .expect("timed out waiting for map frame")?;
+    let data = frame.unwrap().into_data().unwrap();
+    let len = u32::from_le_bytes(data[..4].try_into().unwrap()) as usize;
+    let json = zstd::bulk::decompress(&data[4..4 + len], 1 << 20).unwrap();
+    Some(serde_json::from_slice(&json).unwrap())
+}
+
+async fn open_stream(state: &Arc<CoordinatorState>, mkey: u8) -> MapBody {
+    let body = serde_json::json!({
+        "Version": 2,
+        "NodeKey": format!("nodekey:{}", hex::encode([mkey.wrapping_add(1); 32])),
+        "Stream": true,
+    });
+    let resp = coord_api::__test_map_request(state.clone(), [mkey; 32], &body.to_string()).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    let mut body = resp.into_body();
+    let first = next_map_frame(&mut body).await.expect("initial snapshot");
+    assert!(first["Node"].is_object());
+    body
+}
+
+#[tokio::test]
+async fn preauth_key_create_validates_and_reports_expiry() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "key-create").await;
+
+    let k = api_key(&app, serde_json::json!({
+        "tenant_id": t.to_string(), "expiration_seconds": 3600,
+        "owner": "user-1", "tags": ["tag:relay"], "ephemeral": true,
+    })).await;
+    assert!(k["key"].as_str().unwrap().starts_with("tskey-auth-"));
+    assert!(uuid::Uuid::parse_str(k["id"].as_str().unwrap()).is_ok());
+    assert_eq!(k["tenant_id"], t.to_string());
+    let exp = chrono::DateTime::parse_from_rfc3339(k["expires_at"].as_str().unwrap()).unwrap();
+    let delta = exp.timestamp() - chrono::Utc::now().timestamp();
+    assert!((3590..=3601).contains(&delta), "expires_at off: {delta}");
+
+    let k = api_key(&app, serde_json::json!({ "tenant_id": t.to_string() })).await;
+    assert!(k["expires_at"].is_null(), "no expiration_seconds = never expires");
+
+    for bad in [
+        serde_json::json!({ "tenant_id": t.to_string(), "expiration_seconds": 0 }),
+        serde_json::json!({ "tenant_id": t.to_string(), "expiration_seconds": 31536001u64 }),
+        serde_json::json!({ "tenant_id": t.to_string(), "tags": ["relay"] }),
+        serde_json::json!({ "tenant_id": t.to_string(), "tags": ["tag:UPPER"] }),
+        serde_json::json!({ "tenant_id": t.to_string(), "tags": (0..9).map(|i| format!("tag:t{i}")).collect::<Vec<_>>() }),
+        serde_json::json!({ "tenant_id": t.to_string(), "owner": "x".repeat(129) }),
+    ] {
+        let (status, _) = api_call(&app, "POST", "/api/preauth-keys".into(), Some(bad.clone())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "expected 400 for {bad}");
+    }
+}
+
+#[tokio::test]
+async fn expired_preauth_key_rejected_at_register() {
+    let (_, state) = setup();
+    let t = create_test_tenant(&state, "key-expired").await;
+    let expired = state
+        .store()
+        .create_preauth_key_with(t, coord_core::PreAuthKeyOptions {
+            reusable: true,
+            expires_at: chrono::DateTime::from_timestamp(chrono::Utc::now().timestamp() - 1, 0),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let resp = register_routes(&state, 30, &expired.key, "late", None).await;
+    assert_eq!(resp["MachineAuthorized"], false);
+    assert!(resp["Error"].as_str().unwrap().contains("expired"));
+    assert!(state.store().get_node_by_machine_key(&[30u8; 32]).await.is_none());
+}
+
+#[tokio::test]
+async fn revoked_reusable_key_rejected() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "key-revoke").await;
+    let other = create_test_tenant(&state, "key-revoke-other").await;
+    let k = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "reusable": true, "owner": "bob" })).await;
+    let key = k["key"].as_str().unwrap();
+    let id = k["id"].as_str().unwrap();
+
+    assert_eq!(register_routes(&state, 40, key, "first", None).await["MachineAuthorized"], true);
+
+    // Another tenant can't revoke it; unknown ids are 404.
+    let (status, _) = api_call(&app, "DELETE", format!("/api/tenants/{other}/preauth-keys/{id}"), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = api_call(&app, "DELETE", format!("/api/tenants/{t}/preauth-keys/{}", uuid::Uuid::new_v4()), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    let (status, body) = api_call(&app, "DELETE", format!("/api/tenants/{t}/preauth-keys/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "revoked");
+
+    let resp = register_routes(&state, 42, key, "second", None).await;
+    assert_eq!(resp["MachineAuthorized"], false, "revoked reusable key must be rejected");
+
+    // Bulk revoke by owner.
+    for _ in 0..2 {
+        api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "reusable": true, "owner": "carol" })).await;
+    }
+    let (status, body) = api_call(&app, "DELETE", format!("/api/tenants/{t}/preauth-keys?owner=carol"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["revoked"], 2);
+    let (status, _) = api_call(&app, "DELETE", format!("/api/tenants/{t}/preauth-keys"), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "owner is required for bulk revoke");
+}
+
+#[tokio::test]
+async fn key_listing_never_exposes_full_key() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "key-list").await;
+    let k = api_key(&app, serde_json::json!({
+        "tenant_id": t.to_string(), "owner": "u1", "tags": ["tag:b", "tag:a"], "expiration_seconds": 60,
+    })).await;
+    let full_key = k["key"].as_str().unwrap().to_string();
+
+    let resp = app.clone().oneshot(
+        admin_req().uri(format!("/api/tenants/{t}/preauth-keys")).body(Body::empty()).unwrap(),
+    ).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let raw = resp.into_body().collect().await.unwrap().to_bytes();
+    let text = String::from_utf8(raw.to_vec()).unwrap();
+    assert!(!text.contains(&full_key), "listing leaked the full key: {text}");
+
+    let body: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let keys = body["keys"].as_array().unwrap();
+    assert_eq!(keys.len(), 1);
+    let entry = &keys[0];
+    assert_eq!(entry["id"], k["id"]);
+    assert_eq!(entry["prefix"], full_key[..12]);
+    assert_eq!(entry["owner"], "u1");
+    assert_eq!(entry["tags"], serde_json::json!(["tag:a", "tag:b"]));
+    assert_eq!(entry["reusable"], false);
+    assert_eq!(entry["ephemeral"], false);
+    assert_eq!(entry["used"], false);
+    assert_eq!(entry["revoked"], false);
+    assert_eq!(entry["expires_at"], k["expires_at"]);
+    assert!(entry["created_at"].is_string());
+    assert!(entry.get("key").is_none());
+
+    let (status, _) = api_call(&app, "GET", format!("/api/tenants/{}/preauth-keys", uuid::Uuid::new_v4()), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn owner_and_tags_propagate_from_key_to_node() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "owner-prop").await;
+    let k = api_key(&app, serde_json::json!({
+        "tenant_id": t.to_string(), "owner": "did:plc:alice", "tags": ["tag:relay"], "ephemeral": true, "reusable": true,
+    })).await;
+    register_routes(&state, 50, k["key"].as_str().unwrap(), "alice-laptop", None).await;
+    let nid = node_id_of(&state, 50).await;
+
+    let check = |n: &serde_json::Value| {
+        assert_eq!(n["owner"], "did:plc:alice", "{n}");
+        assert_eq!(n["tags"], serde_json::json!(["tag:relay"]), "{n}");
+        assert_eq!(n["ephemeral"], true, "{n}");
+        assert_eq!(n["advertised_routes"], serde_json::json!([]), "{n}");
+        assert_eq!(n["approved_routes"], serde_json::json!([]), "{n}");
+    };
+    let (_, body) = api_call(&app, "GET", format!("/api/tenants/{t}/nodes"), None).await;
+    check(&body["nodes"][0]);
+    let (_, body) = api_call(&app, "GET", "/api/nodes".into(), None).await;
+    check(&body["nodes"][0]);
+    let (_, body) = api_call(&app, "GET", format!("/api/nodes/{nid}"), None).await;
+    check(&body);
+    let (_, body) = api_call(&app, "POST", format!("/api/nodes/{nid}/name"), Some(serde_json::json!({"name": "renamed"}))).await;
+    check(&body);
+
+    // A key-less node has no owner.
+    let plain = state.store().create_preauth_key(t, false).await.unwrap();
+    register_routes(&state, 52, &plain, "plain", None).await;
+    let (_, body) = api_call(&app, "GET", format!("/api/nodes/{}", node_id_of(&state, 52).await), None).await;
+    assert!(body["owner"].is_null());
+    assert_eq!(body["ephemeral"], false);
+}
+
+#[tokio::test]
+async fn delete_nodes_by_owner_ends_their_streams() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "owner-del").await;
+    let bob = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "owner": "bob", "reusable": true })).await;
+    let carol = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "owner": "carol" })).await;
+    register_routes(&state, 60, bob["key"].as_str().unwrap(), "bob-1", None).await;
+    register_routes(&state, 62, bob["key"].as_str().unwrap(), "bob-2", None).await;
+    register_routes(&state, 64, carol["key"].as_str().unwrap(), "carol-1", None).await;
+    let bob1 = node_id_of(&state, 60).await;
+
+    let mut bob_stream = open_stream(&state, 60).await;
+    let mut carol_stream = open_stream(&state, 64).await;
+
+    let (status, body) = api_call(&app, "DELETE", format!("/api/tenants/{t}/nodes?owner=bob"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["deleted"], 2);
+
+    // Bob's stream ends promptly.
+    let mut ended = false;
+    for _ in 0..5 {
+        if next_map_frame(&mut bob_stream).await.is_none() {
+            ended = true;
+            break;
+        }
+    }
+    assert!(ended, "deleted node's map stream must end");
+
+    // Carol sees both of Bob's nodes removed.
+    let mut removed = Vec::new();
+    while removed.len() < 2 {
+        let frame = next_map_frame(&mut carol_stream).await.expect("carol stream still open");
+        if let Some(ids) = frame["PeersRemoved"].as_array() {
+            removed.extend(ids.iter().map(|v| v.as_i64().unwrap()));
+        }
+    }
+    assert!(removed.contains(&bob1));
+
+    let (_, body) = api_call(&app, "GET", format!("/api/tenants/{t}/nodes"), None).await;
+    assert_eq!(body["count"], 1);
+    assert_eq!(body["nodes"][0]["owner"], "carol");
+
+    let (status, _) = api_call(&app, "DELETE", format!("/api/tenants/{t}/nodes"), None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "owner is required; never delete every node");
+}
+
+#[tokio::test]
+async fn route_advertisement_and_approval_reach_peers() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "routes").await;
+    let key = state.store().create_preauth_key(t, true).await.unwrap();
+    register_routes(&state, 70, &key, "router", Some(&["10.0.0.9/24", "0.0.0.0/0", "bogus"])).await;
+    register_routes(&state, 72, &key, "laptop", None).await;
+    let router = node_id_of(&state, 70).await;
+
+    let (_, node) = api_call(&app, "GET", format!("/api/nodes/{router}"), None).await;
+    assert_eq!(node["advertised_routes"], serde_json::json!(["0.0.0.0/0", "10.0.0.0/24"]));
+    assert_eq!(node["approved_routes"], serde_json::json!([]));
+
+    // Unapproved routes are not served.
+    let m = map_of(&state, 72, None).await;
+    assert_eq!(m["Peers"][0]["AllowedIPs"].as_array().unwrap().len(), 1);
+    assert!(m["Peers"][0].get("PrimaryRoutes").is_none());
+
+    let mut router_stream = open_stream(&state, 70).await;
+    let (status, node) = api_call(
+        &app, "POST", format!("/api/tenants/{t}/nodes/{router}/routes"),
+        Some(serde_json::json!({ "approved": ["10.0.0.0/24", "0.0.0.0/0"] })),
+    ).await;
+    assert_eq!(status, StatusCode::OK, "{node}");
+    assert_eq!(node["approved_routes"], serde_json::json!(["0.0.0.0/0", "10.0.0.0/24"]));
+    assert_eq!(node["id"], router);
+
+    let m = map_of(&state, 72, None).await;
+    let peer = &m["Peers"][0];
+    let ip = format!("{}/32", node["ipv4"].as_str().unwrap());
+    assert_eq!(peer["Addresses"], serde_json::json!([ip]));
+    assert_eq!(peer["AllowedIPs"], serde_json::json!([ip, "0.0.0.0/0", "10.0.0.0/24"]));
+    assert_eq!(peer["PrimaryRoutes"], serde_json::json!(["10.0.0.0/24"]));
+
+    // The router's own netmap reflects it, and its live stream got a fresh snapshot.
+    let me = map_of(&state, 70, None).await;
+    assert_eq!(me["Node"]["PrimaryRoutes"], serde_json::json!(["10.0.0.0/24"]));
+    let mut saw = false;
+    for _ in 0..5 {
+        let f = next_map_frame(&mut router_stream).await.expect("stream open");
+        if f["Node"]["PrimaryRoutes"] == serde_json::json!(["10.0.0.0/24"]) {
+            saw = true;
+            break;
+        }
+    }
+    assert!(saw, "approval must push a snapshot to the router's own stream");
+
+    // Peer deltas carry routes too.
+    let ev = coord_store::PeerEvent::NodeUpdated { tenant_id: t, node_id: coord_core::NodeId::new(router) };
+    let delta: serde_json::Value =
+        serde_json::from_str(&coord_api::__test_build_delta(&state, &[72u8; 32], &ev).await.unwrap()).unwrap();
+    assert_eq!(delta["PeersChanged"][0]["PrimaryRoutes"], serde_json::json!(["10.0.0.0/24"]));
+
+    // Withdrawing an advertisement (map request Hostinfo) stops serving it.
+    map_of(&state, 70, Some(serde_json::json!({ "Hostname": "router", "RoutableIPs": ["0.0.0.0/0"] }))).await;
+    let m = map_of(&state, 72, None).await;
+    assert_eq!(m["Peers"][0]["AllowedIPs"], serde_json::json!([ip, "0.0.0.0/0"]));
+}
+
+#[tokio::test]
+async fn approving_unadvertised_route_is_400() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "routes-bad").await;
+    let other = create_test_tenant(&state, "routes-bad-o").await;
+    let key = state.store().create_preauth_key(t, true).await.unwrap();
+    register_routes(&state, 80, &key, "router", Some(&["10.0.0.0/24"])).await;
+    let router = node_id_of(&state, 80).await;
+    let uri = format!("/api/tenants/{t}/nodes/{router}/routes");
+
+    let (status, _) = api_call(&app, "POST", uri.clone(), Some(serde_json::json!({ "approved": ["192.168.0.0/24"] }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = api_call(&app, "POST", uri.clone(), Some(serde_json::json!({ "approved": ["10.0.0.0/16"] }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "a supernet of an advertised route is not a subset");
+    let (status, _) = api_call(&app, "POST", uri.clone(), Some(serde_json::json!({ "approved": ["not-a-cidr"] }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = api_call(
+        &app, "POST", format!("/api/tenants/{other}/nodes/{router}/routes"),
+        Some(serde_json::json!({ "approved": ["10.0.0.0/24"] })),
+    ).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "node must belong to the tenant in the path");
+
+    let (_, node) = api_call(&app, "GET", format!("/api/nodes/{router}"), None).await;
+    assert_eq!(node["approved_routes"], serde_json::json!([]));
+
+    // Approving the empty set clears approvals.
+    let (status, _) = api_call(&app, "POST", uri.clone(), Some(serde_json::json!({ "approved": ["10.0.0.0/24"] }))).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, node) = api_call(&app, "POST", uri, Some(serde_json::json!({ "approved": [] }))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(node["approved_routes"], serde_json::json!([]));
+}
+
+#[tokio::test]
+async fn auto_approver_approves_only_tagged_contained_routes() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "auto-approve").await;
+    let uri = format!("/api/tenants/{t}/auto-approvers");
+
+    let (_, empty) = api_call(&app, "GET", uri.clone(), None).await;
+    assert_eq!(empty, serde_json::json!({ "routes": {}, "exit_node": [] }));
+
+    let (status, _) = api_call(&app, "PUT", uri.clone(), Some(serde_json::json!({ "routes": { "10.0.0.0/8": ["relay"] } }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let (status, _) = api_call(&app, "PUT", uri.clone(), Some(serde_json::json!({ "routes": { "10.0.0.0/88": ["tag:relay"] } }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let (status, cfg) = api_call(&app, "PUT", uri.clone(), Some(serde_json::json!({
+        "routes": { "10.0.0.1/8": ["tag:relay"] }, "exit_node": ["tag:exit"],
+    }))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(cfg, serde_json::json!({ "routes": { "10.0.0.0/8": ["tag:relay"] }, "exit_node": ["tag:exit"] }));
+    let (_, got) = api_call(&app, "GET", uri.clone(), None).await;
+    assert_eq!(got, cfg);
+
+    let tagged = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "tags": ["tag:relay"] })).await;
+    let untagged = state.store().create_preauth_key(t, true).await.unwrap();
+
+    register_routes(&state, 90, tagged["key"].as_str().unwrap(), "relay",
+        Some(&["10.1.0.0/16", "192.168.0.0/24", "0.0.0.0/0"])).await;
+    register_routes(&state, 92, &untagged, "plain", Some(&["10.2.0.0/16"])).await;
+    let relay = node_id_of(&state, 90).await;
+    let plain = node_id_of(&state, 92).await;
+
+    let (_, n) = api_call(&app, "GET", format!("/api/nodes/{relay}"), None).await;
+    assert_eq!(n["approved_routes"], serde_json::json!(["10.1.0.0/16"]), "only the contained route, no exit");
+    let (_, n) = api_call(&app, "GET", format!("/api/nodes/{plain}"), None).await;
+    assert_eq!(n["approved_routes"], serde_json::json!([]), "untagged nodes are never auto-approved");
+
+    // A node can't grant itself tags via Hostinfo.RequestTags.
+    map_of(&state, 92, Some(serde_json::json!({
+        "Hostname": "plain", "RoutableIPs": ["10.3.0.0/16"], "RequestTags": ["tag:relay"],
+    }))).await;
+    let (_, n) = api_call(&app, "GET", format!("/api/nodes/{plain}"), None).await;
+    assert_eq!(n["advertised_routes"], serde_json::json!(["10.3.0.0/16"]));
+    assert_eq!(n["approved_routes"], serde_json::json!([]));
+
+    // Map-time advertisement of a new contained route is auto-approved.
+    map_of(&state, 90, Some(serde_json::json!({
+        "Hostname": "relay", "RoutableIPs": ["10.1.0.0/16", "10.9.9.0/24"],
+    }))).await;
+    let (_, n) = api_call(&app, "GET", format!("/api/nodes/{relay}"), None).await;
+    assert_eq!(n["approved_routes"], serde_json::json!(["10.1.0.0/16", "10.9.9.0/24"]));
+
+    // Updating the policy applies to already-registered nodes (exit route now covered).
+    map_of(&state, 90, Some(serde_json::json!({ "Hostname": "relay", "RoutableIPs": ["10.1.0.0/16", "::/0"] }))).await;
+    let exit_key = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "tags": ["tag:exit"] })).await;
+    register_routes(&state, 94, exit_key["key"].as_str().unwrap(), "exit", Some(&["0.0.0.0/0", "::/0"])).await;
+    let exit = node_id_of(&state, 94).await;
+    let (_, n) = api_call(&app, "GET", format!("/api/nodes/{exit}"), None).await;
+    assert_eq!(n["approved_routes"], serde_json::json!(["0.0.0.0/0", "::/0"]));
+
+    let (status, _) = api_call(&app, "PUT", uri, Some(serde_json::json!({
+        "routes": { "10.0.0.0/8": ["tag:relay"] }, "exit_node": ["tag:exit", "tag:relay"],
+    }))).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, n) = api_call(&app, "GET", format!("/api/nodes/{relay}"), None).await;
+    let approved = n["approved_routes"].as_array().unwrap();
+    assert!(approved.contains(&serde_json::json!("::/0")), "{n}");
+
+    // Unknown tenants are 404.
+    let (status, _) = api_call(&app, "GET", format!("/api/tenants/{}/auto-approvers", uuid::Uuid::new_v4()), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn ephemeral_nodes_swept_after_offline_grace() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "ephemeral").await;
+    let eph = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "ephemeral": true, "reusable": true })).await;
+    let durable = state.store().create_preauth_key(t, true).await.unwrap();
+
+    register_routes(&state, 100, eph["key"].as_str().unwrap(), "eph-off", None).await;
+    register_routes(&state, 102, eph["key"].as_str().unwrap(), "eph-on", None).await;
+    register_routes(&state, 104, &durable, "durable", None).await;
+    let off = state.store().get_node_by_machine_key(&[100u8; 32]).await.unwrap();
+    let durable_id = state.store().get_node_by_machine_key(&[104u8; 32]).await.unwrap();
+    state.store().set_node_online(off, false).await.unwrap();
+    state.store().set_node_online(durable_id, false).await.unwrap();
+
+    assert_eq!(coord_api::sweep_ephemeral_nodes(&state, coord_api::EPHEMERAL_OFFLINE_GRACE).await, 0);
+    assert_eq!(coord_api::sweep_ephemeral_nodes(&state, std::time::Duration::ZERO).await, 1);
+    assert!(state.store().get_node_tenant(off).await.is_none());
+    assert!(state.store().get_node_by_machine_key(&[102u8; 32]).await.is_some(), "online ephemeral node kept");
+    assert!(state.store().get_node_tenant(durable_id).await.is_some(), "non-ephemeral node kept");
+}
+
+#[tokio::test]
+async fn federation_routes_absent_when_disabled() {
+    let state = Arc::new(
+        CoordinatorState::new(coord_noise::generate_control_key()).with_federation_enabled(false),
+    );
+    let resp = coord_api::router(state)
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/federation/messages/hello")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}

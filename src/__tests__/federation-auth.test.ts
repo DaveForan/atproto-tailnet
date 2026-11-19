@@ -164,6 +164,18 @@ describe("message signing", () => {
     expect(signedPayload({ a: 1, signature: "x", b: 2 })).toBe('{"a":1,"b":2}');
   });
 
+  it("signs the JCS form, so transmitted key order does not matter", async () => {
+    const keepalive = await signMessage(
+      { type: "KEEPALIVE" as const, sessionId: "s1", sequenceNumber: 1, timestamp: new Date().toISOString() },
+      alpha.sign,
+    );
+    const reordered = Object.fromEntries(Object.entries(wire(keepalive)).reverse());
+    expect(signedPayload(reordered)).toBe(signedPayload(keepalive));
+    expect(await verifyMessage(resolver, ALPHA, reordered)).toBe(true);
+    // Members the receiver does not know about are still covered.
+    expect(await verifyMessage(resolver, ALPHA, { ...wire(keepalive), extra: 1 })).toBe(false);
+  });
+
   it("only accepts timestamps close to now", () => {
     const now = Date.now();
     expect(isFresh(new Date(now).toISOString(), now)).toBe(true);
@@ -256,7 +268,7 @@ describe("CFP challenge response is domain-separated", () => {
     // Replace the response with ALPHA's signature over the bare nonce (a holder-binding proof).
     const bareProof = await alpha.sign(challenge.message.nonce);
     const unsigned = { ...wire(commit.message), challengeSignature: bareProof, signature: undefined };
-    const forged = { ...unsigned, signature: await alpha.sign(JSON.stringify(unsigned)) };
+    const forged = { ...unsigned, signature: await alpha.sign(signedPayload(unsigned)) };
     const result = await handleCommit(challenge.state, wire(forged), bCb);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain("nonce signature");

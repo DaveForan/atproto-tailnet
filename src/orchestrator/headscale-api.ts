@@ -74,13 +74,49 @@ export interface HeadscaleRoute {
 
 const EXIT_ROUTES = ["0.0.0.0/0", "::/0"];
 
+/** Options accepted by every control client's `createPreAuthKey`. */
+export interface PreAuthKeyOptions {
+  reusable?: boolean;
+  ephemeral?: boolean;
+  expirationSeconds?: number;
+  /** Opaque owner (our user id). Recorded by the coordinator; Headscale uses the user instead. */
+  owner?: string;
+  /** ACL tags (`tag:x`) the registered node receives. */
+  tags?: string[];
+}
+
+/** A pre-auth key as listed by the control plane (never includes the secret). */
+export interface ControlPreAuthKeyInfo {
+  id: string;
+  prefix: string;
+  owner: string | null;
+  tags: string[];
+  reusable: boolean;
+  ephemeral: boolean;
+  used: boolean;
+  expiresAt: string | null;
+  createdAt: string | null;
+  revoked: boolean;
+}
+
+/** Route auto-approvers in the coordinator wire shape. */
+export interface AutoApproversConfig {
+  routes: Record<string, string[]>;
+  exit_node: string[];
+}
+
 /** URL- and attribute-safe id for one node's route: `<nodeId>-<base64url(prefix)>`. */
 export function routeId(nodeId: string, prefix: string): string {
   return `${nodeId}-${Buffer.from(prefix).toString("base64url")}`;
 }
 
-/** Inverse of {@link routeId}; null when the id is malformed. */
+/**
+ * Inverse of {@link routeId}; null when the id is malformed. Also accepts the
+ * readable `<nodeId>:<cidr>` form (the `/` must then be percent-encoded in URLs).
+ */
 export function parseRouteId(id: string): { nodeId: string; prefix: string } | null {
+  const plain = /^(\d+):([0-9A-Fa-f.:]+\/\d{1,3})$/.exec(id);
+  if (plain) return { nodeId: plain[1], prefix: plain[2] };
   const m = /^(\d+)-([A-Za-z0-9_-]+)$/.exec(id);
   if (!m) return null;
   const prefix = Buffer.from(m[2], "base64url").toString();
@@ -207,7 +243,7 @@ export class HeadscaleApiClient {
    */
   async createPreAuthKey(
     userName: string,
-    opts?: { reusable?: boolean; ephemeral?: boolean; expirationSeconds?: number },
+    opts?: PreAuthKeyOptions,
   ): Promise<HeadscalePreAuthKey> {
     const user = await this.getUserByName(userName);
     if (!user) throw new Error(`Headscale user "${userName}" not found`);
@@ -220,8 +256,69 @@ export class HeadscaleApiClient {
       reusable: opts?.reusable ?? false,
       ephemeral: opts?.ephemeral ?? false,
       expiration,
+      ...(opts?.tags?.length ? { aclTags: opts.tags } : {}),
     })) as { preAuthKey: unknown };
     return headscalePreAuthKeySchema.parse(data.preAuthKey);
+  }
+
+  /**
+   * Expire (revoke) a pre-auth key by its numeric id. Headscale 0.28+ addresses
+   * keys by id; an expired key is rejected at registration, even if reusable.
+   */
+  async expirePreAuthKey(id: string): Promise<void> {
+    await this.request("POST", "/api/v1/preauthkey/expire", { id });
+  }
+
+  /** List all pre-auth keys (the secret is reduced to its prefix). */
+  async listPreAuthKeys(): Promise<ControlPreAuthKeyInfo[]> {
+    const data = (await this.request("GET", "/api/v1/preauthkey")) as {
+      preAuthKeys?: unknown[];
+    };
+    return (data.preAuthKeys ?? []).map((raw) => {
+      const k = headscalePreAuthKeySchema
+        .extend({ aclTags: z.array(z.string()).optional() })
+        .parse(raw);
+      const expired = k.expiration ? new Date(k.expiration).getTime() <= Date.now() : false;
+      return {
+        id: k.id ?? "",
+        prefix: k.key.slice(0, 12),
+        owner: typeof k.user === "object" && k.user ? k.user.name : (k.user ?? null),
+        tags: k.aclTags ?? [],
+        reusable: k.reusable ?? false,
+        ephemeral: k.ephemeral ?? false,
+        used: k.used ?? false,
+        expiresAt: k.expiration ?? null,
+        createdAt: k.createdAt ?? null,
+        revoked: expired,
+      };
+    });
+  }
+
+  /** Route auto-approvers from the ACL policy, in the coordinator's shape. */
+  async getAutoApprovers(): Promise<AutoApproversConfig> {
+    const policy = (await this.getPolicy()) as {
+      autoApprovers?: { routes?: Record<string, string[]>; exitNode?: string[] };
+    };
+    return {
+      routes: policy.autoApprovers?.routes ?? {},
+      exit_node: policy.autoApprovers?.exitNode ?? [],
+    };
+  }
+
+  /** Replace the policy's route auto-approvers, keeping the rest of the policy. */
+  async setAutoApprovers(aa: AutoApproversConfig): Promise<void> {
+    const policy = (await this.getPolicy()) as Record<string, unknown>;
+    await this.setPolicy({
+      ...policy,
+      autoApprovers: { routes: aa.routes, exitNode: aa.exit_node },
+    });
+  }
+
+  /** Delete every node belonging to the named Headscale user; returns how many. */
+  async deleteNodesByUser(userName: string): Promise<number> {
+    const nodes = (await this.listNodes()).filter((n) => n.user?.name === userName);
+    for (const n of nodes) await this.deleteNode(n.id);
+    return nodes.length;
   }
 
   /**
@@ -230,7 +327,7 @@ export class HeadscaleApiClient {
    */
   async createTaggedPreAuthKey(
     aclTags: string[],
-    opts?: { expirationSeconds?: number },
+    opts?: { expirationSeconds?: number; ephemeral?: boolean },
   ): Promise<HeadscalePreAuthKey> {
     const expiration = new Date(
       Date.now() + (opts?.expirationSeconds ?? 300) * 1000,
@@ -239,7 +336,7 @@ export class HeadscaleApiClient {
     const data = (await this.request("POST", "/api/v1/preauthkey", {
       aclTags,
       reusable: false,
-      ephemeral: false,
+      ephemeral: opts?.ephemeral ?? false,
       expiration,
     })) as { preAuthKey: unknown };
     return headscalePreAuthKeySchema.parse(data.preAuthKey);

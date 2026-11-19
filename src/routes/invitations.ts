@@ -26,6 +26,7 @@ import {
   authUserDid,
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
+import { enforceMemberLimit } from "./limits.js";
 
 /** Router for invitation CRUD: create, list, accept, decline, and revoke. */
 export const invitationsRouter = Router();
@@ -292,6 +293,8 @@ invitationsRouter.post(
       res.status(500).json({ error: "User not found" });
       return;
     }
+
+    if (!(await enforceMemberLimit(res, tenant))) return;
 
     const hsUsername = user.handle
       .replace(/[^a-z0-9]+/gi, "-")

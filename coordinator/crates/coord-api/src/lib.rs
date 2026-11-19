@@ -13,7 +13,7 @@ use axum::{
     http::{Request, StatusCode},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
 };
 use std::sync::Arc;
 
@@ -68,7 +68,20 @@ pub fn router(state: Arc<CoordinatorState>) -> Router {
         .route("/tenants/{id}/routes", get(admin::get_tenant_routes))
         .route("/tenants/{id}/acl", get(admin::get_acl).post(admin::set_acl_for_tenant))
         .route("/tenants/{id}/posture", put(admin::update_tenant_posture))
-        .route("/tenants/{id}/nodes", get(admin::list_tenant_nodes_handler))
+        .route(
+            "/tenants/{id}/nodes",
+            get(admin::list_tenant_nodes_handler).delete(admin::delete_tenant_nodes_by_owner),
+        )
+        .route("/tenants/{id}/nodes/{node_id}/routes", post(admin::approve_node_routes))
+        .route(
+            "/tenants/{id}/preauth-keys",
+            get(admin::list_preauth_keys).delete(admin::revoke_preauth_keys_by_owner),
+        )
+        .route("/tenants/{id}/preauth-keys/{key_id}", delete(admin::revoke_preauth_key))
+        .route(
+            "/tenants/{id}/auto-approvers",
+            get(admin::get_auto_approvers).put(admin::set_auto_approvers),
+        )
         .route("/tenants/{id}/derp", get(admin::get_tenant_derp).put(admin::set_tenant_derp))
         .route("/preauth-keys", post(admin::create_preauth_key))
         .route("/nodes", get(admin::list_nodes))
@@ -87,14 +100,51 @@ pub fn router(state: Arc<CoordinatorState>) -> Router {
         .route("/link-reject", post(federation::handle_link_reject))
         .route("/link-revoke", post(federation::handle_link_revoke));
 
-    Router::new()
+    let mut app = Router::new()
         .route("/health", get(health))
         .route("/key", get(key_handler::key_handler))
         .route("/ts2021", post(noise_handler::ts2021_handler))
-        .nest("/api", admin_routes)
-        .nest("/api/federation/messages", federation_routes)
-        .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
+        .nest("/api", admin_routes);
+    if state.federation_enabled() {
+        app = app.nest("/api/federation/messages", federation_routes);
+    }
+    app.layer(DefaultBodyLimit::max(2 * 1024 * 1024))
         .with_state(state)
+}
+
+/// Ephemeral nodes offline at least this long are deleted by the sweeper.
+pub const EPHEMERAL_OFFLINE_GRACE: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+/// How often the ephemeral sweeper runs.
+pub const EPHEMERAL_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Delete ephemeral nodes that have been offline for at least `max_offline`.
+/// Returns the number of nodes removed (their peers get PeersRemoved deltas).
+pub async fn sweep_ephemeral_nodes(state: &Arc<CoordinatorState>, max_offline: std::time::Duration) -> usize {
+    let max_offline = chrono::Duration::from_std(max_offline).unwrap_or(chrono::Duration::MAX);
+    match state.store.delete_stale_ephemeral_nodes(max_offline).await {
+        Ok(removed) => {
+            if !removed.is_empty() {
+                tracing::info!(count = removed.len(), "swept offline ephemeral nodes");
+            }
+            removed.len()
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "ephemeral node sweep failed");
+            0
+        }
+    }
+}
+
+/// Spawn the background task that sweeps offline ephemeral nodes every minute.
+pub fn spawn_ephemeral_sweeper(state: Arc<CoordinatorState>) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(EPHEMERAL_SWEEP_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        loop {
+            interval.tick().await;
+            sweep_ephemeral_nodes(&state, EPHEMERAL_OFFLINE_GRACE).await;
+        }
+    })
 }
 
 /// Changes on every process start so the service can detect a restart and resync in-memory state.
@@ -131,4 +181,15 @@ pub async fn __test_build_delta(
     event: &coord_store::PeerEvent,
 ) -> Option<String> {
     control::build_delta_response(state, machine_key, event).await
+}
+
+/// Drive `/machine/map` (streaming or not) as the Noise H2 server would; the
+/// body yields length-prefixed zstd frames.
+#[doc(hidden)]
+pub async fn __test_map_request(
+    state: Arc<CoordinatorState>,
+    machine_key: [u8; 32],
+    body: &str,
+) -> axum::http::Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::io::Error>> {
+    noise_handler::handle_map_request(state, machine_key, body).await
 }

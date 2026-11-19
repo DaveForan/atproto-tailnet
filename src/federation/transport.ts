@@ -1,27 +1,14 @@
 /**
  * @module federation/transport
- * HTTP transport for inter-instance CFP messages (ADR-0016).
- * Sends and receives handshake, keepalive, and revoke messages
- * between federation broker instances over HTTPS.
+ * HTTP transport for inter-instance CFP messages (ADR-0016, ADR-0019).
+ * Sends handshake, keepalive, revoke and link-negotiation messages between
+ * federation broker instances over HTTPS.
  */
 
 import { logger } from "../logger.js";
-import type {
-  HelloMessage,
-  ChallengeMessage,
-  CommitMessage,
-  EstablishedMessage,
-  KeepaliveMessage,
-  RevokeMessage,
-} from "./protocol.js";
+import type { CFPMessage, KeepaliveMessage, RevokeMessage } from "./protocol.js";
 
-export type CFPMessage =
-  | HelloMessage
-  | ChallengeMessage
-  | CommitMessage
-  | EstablishedMessage
-  | KeepaliveMessage
-  | RevokeMessage;
+export type { CFPMessage };
 
 const SEND_TIMEOUT_MS = 10_000;
 
@@ -32,13 +19,25 @@ const SEND_TIMEOUT_MS = 10_000;
  */
 export const RECIPIENT_HEADER = "CFP-Recipient";
 
+/** Endpoint path segment of a message type: `LINK_REQUEST` → `link-request`. */
+export function messageEndpoint(type: CFPMessage["type"]): string {
+  return type.toLowerCase().replace(/_/g, "-");
+}
+
+export interface SendResult {
+  ok: boolean;
+  /** HTTP status when the peer answered; absent on network errors/timeouts. */
+  status?: number;
+  response?: CFPMessage;
+  error?: string;
+}
+
 export async function sendMessage(
   remoteEndpoint: string,
   message: CFPMessage,
   recipientDid: string,
-): Promise<{ ok: boolean; response?: CFPMessage; error?: string }> {
-  const messageType = message.type.toLowerCase();
-  const url = `${remoteEndpoint.replace(/\/+$/, "")}/api/federation/messages/${messageType}`;
+): Promise<SendResult> {
+  const url = `${remoteEndpoint.replace(/\/+$/, "")}/api/federation/messages/${messageEndpoint(message.type)}`;
 
   try {
     const res = await fetch(url, {
@@ -49,6 +48,8 @@ export async function sendMessage(
       },
       body: JSON.stringify(message),
       signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
+      // A peer-controlled URL must not bounce us somewhere else (ADR-0019 §5).
+      redirect: "error",
     });
 
     if (!res.ok) {
@@ -57,11 +58,11 @@ export async function sendMessage(
         { url, status: res.status, body },
         "federation message send failed",
       );
-      return { ok: false, error: `HTTP ${res.status}: ${body}` };
+      return { ok: false, status: res.status, error: `HTTP ${res.status}: ${body.slice(0, 500)}` };
     }
 
-    const response = (await res.json()) as CFPMessage;
-    return { ok: true, response };
+    const response = (await res.json().catch(() => undefined)) as CFPMessage | undefined;
+    return { ok: true, status: res.status, response };
   } catch (err) {
     const message_str = err instanceof Error ? err.message : "Unknown error";
     logger.warn({ url, err }, "federation message send error");

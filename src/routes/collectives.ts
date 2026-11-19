@@ -18,16 +18,25 @@ import {
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
 import { logger } from "../logger.js";
-import { allocateSyntheticPort } from "../orchestrator/ports.js";
+import { allocateTenantPort } from "../orchestrator/ports.js";
+import { useCoordinator } from "../orchestrator/control-client.js";
+import { provisionTenantInstance } from "./auth.js";
+import { MAX_LIMIT, checkChildLimit } from "./limits.js";
 
 export const collectivesRouter = Router();
 
-const SLUG_RE = /^[a-z0-9_]+$/;
+/**
+ * Sub-collectives are provisioned like top-level tenants, so the slug must be
+ * a DNS label (it becomes `<slug>.<BASE_DOMAIN>`, a container name and the
+ * coordinator slug, which requires ^[a-z0-9][a-z0-9-]{0,62}$). No dots: the
+ * materialized path uses "." as separator.
+ */
+const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
 const MAX_DEPTH = 5;
 
 const createSubCollectiveBody = z.object({
   name: z.string().min(1).max(100),
-  slug: z.string().min(2).max(40).regex(SLUG_RE, "Slug must be lowercase alphanumeric + underscores only"),
+  slug: z.string().min(2).max(40).regex(SLUG_RE, "Slug must be lowercase letters, digits and inner hyphens only"),
 });
 
 const floorPolicyBody = z.object({
@@ -147,6 +156,11 @@ collectivesRouter.post(
       return;
     }
 
+    if (useCoordinator && !tenant.coordinatorTenantId) {
+      res.status(409).json({ error: "Parent collective is not provisioned yet" });
+      return;
+    }
+
     if (tenant.maxSubCollectives > 0) {
       const [{ count }] = await db
         .select({ count: sql<number>`count(*)::int` })
@@ -179,8 +193,6 @@ collectivesRouter.post(
     const prefixes = await allocateTenantPrefixes();
 
     try {
-      // Sub-collectives have no Headscale container: use a unique synthetic
-      // placeholder port (a shared 0 violates tenants.port UNIQUE on the 2nd).
       let child: typeof tenants.$inferSelect | undefined;
       for (let attempt = 0; attempt < 3 && !child; attempt++) {
         try {
@@ -190,7 +202,8 @@ collectivesRouter.post(
               name,
               slug,
               ownerUserId: userId,
-              port: await allocateSyntheticPort(),
+              // Provisioned like a top-level tenant: Headscale mode needs a real port
+              port: await allocateTenantPort(!useCoordinator),
               apiKey: "",
               status: "provisioning",
               parentId: tenantId,
@@ -200,7 +213,10 @@ collectivesRouter.post(
               ipv4Prefix: prefixes.ipv4Prefix,
               ipv6Prefix: prefixes.ipv6Prefix,
               ipAllocation: tenant.ipAllocation,
-              planName: "free",
+              // Inherit the parent's caps: an unlimited (0) child under a
+              // capped parent would bypass the parent's limits.
+              maxDevices: tenant.maxDevices,
+              maxMembers: tenant.maxMembers,
             })
             .returning();
         } catch (err: unknown) {
@@ -239,6 +255,15 @@ collectivesRouter.post(
         tenantId: child.id,
         roleId: originatorRole.id,
         isOriginator: true,
+      });
+
+      // Bring up its control plane exactly like a top-level tenant (async;
+      // the dashboard polls until status leaves "provisioning").
+      const created = child;
+      setImmediate(() => {
+        void provisionTenantInstance(created.id, created.slug, created.port, {
+          parentCoordinatorTenantId: tenant.coordinatorTenantId,
+        });
       });
 
       logAudit({
@@ -485,9 +510,9 @@ collectivesRouter.get(
 );
 
 const quotaBody = z.object({
-  maxDevices: z.number().int().min(0).optional(),
-  maxMembers: z.number().int().min(0).optional(),
-  maxSubCollectives: z.number().int().min(0).optional(),
+  maxDevices: z.number().int().min(0).max(MAX_LIMIT).optional(),
+  maxMembers: z.number().int().min(0).max(MAX_LIMIT).optional(),
+  maxSubCollectives: z.number().int().min(0).max(1000).optional(),
 });
 
 /** Adjust a child collective's resource quota. */
@@ -529,12 +554,12 @@ collectivesRouter.put(
     const { maxDevices, maxMembers, maxSubCollectives } = parsed.data;
     const parent = result.tenant;
 
-    if (maxDevices !== undefined && parent.maxDevices > 0 && maxDevices > parent.maxDevices) {
-      res.status(400).json({ error: "Cannot exceed parent's device limit" });
-      return;
-    }
-    if (maxMembers !== undefined && parent.maxMembers > 0 && maxMembers > parent.maxMembers) {
-      res.status(400).json({ error: "Cannot exceed parent's member limit" });
+    // 0 = unlimited: allowed only under an unlimited parent
+    const limitErr =
+      (maxDevices !== undefined && checkChildLimit("device", maxDevices, parent.maxDevices)) ||
+      (maxMembers !== undefined && checkChildLimit("member", maxMembers, parent.maxMembers));
+    if (limitErr) {
+      res.status(400).json({ error: limitErr });
       return;
     }
 

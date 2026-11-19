@@ -9,7 +9,8 @@ rust-version.workspace = true
 [dependencies]
 coord-core = { workspace = true }
 serde = { workspace = true }
-serde_json = { workspace = true }
+# float_roundtrip: correctly-rounded float parsing, required for JCS parity with JS.
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 chrono = { workspace = true }
 ipnetwork = { workspace = true }
 tracing = { workspace = true }
@@ -21,6 +22,8 @@ sqlx = { workspace = true }
 async-trait = "0.1"
 reqwest = { version = "0.12", features = ["json"] }
 url = "2"
+ed25519-dalek = "2"
+base64 = "0.22"
 
 [dev-dependencies]
 tokio = { workspace = true }

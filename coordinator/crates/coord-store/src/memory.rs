@@ -3,7 +3,11 @@ use std::net::Ipv4Addr;
 use std::sync::Mutex;
 use tokio::sync::broadcast;
 
-use coord_core::{CoordError, FederationPosture, NodeDetail, NodeId, NodeInfo, NodeSummary, PeerInfo, Tenant, TenantId};
+use coord_core::{
+    CoordError, CreatedPreAuthKey, FederationPosture, NodeAttrs, NodeDetail, NodeId, NodeInfo,
+    NodeRegistration, NodeSummary, PeerInfo, PreAuthGrant, PreAuthKeyInfo, PreAuthKeyOptions, Tenant,
+    TenantId,
+};
 
 use crate::generate_random_id;
 
@@ -23,17 +27,25 @@ struct StoredNode {
     stable_id: String,
     online: bool,
     session_generation: u64,
+    #[allow(dead_code)]
     registered_at: chrono::DateTime<chrono::Utc>,
+    last_seen: chrono::DateTime<chrono::Utc>,
+    attrs: NodeAttrs,
 }
 
 #[derive(Debug)]
 struct PreAuthKey {
-    #[allow(dead_code)]
+    id: uuid::Uuid,
     key: String,
     tenant_id: TenantId,
     used: bool,
     reusable: bool,
+    ephemeral: bool,
+    owner: Option<String>,
+    tags: Vec<String>,
     expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    created_at: chrono::DateTime<chrono::Utc>,
+    revoked_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 pub struct MemoryStore {
@@ -197,6 +209,15 @@ impl MemoryStore {
     }
 
     pub fn create_preauth_key(&self, tenant_id: TenantId, reusable: bool) -> Result<String, CoordError> {
+        self.create_preauth_key_with(tenant_id, PreAuthKeyOptions { reusable, ..Default::default() })
+            .map(|k| k.key)
+    }
+
+    pub fn create_preauth_key_with(
+        &self,
+        tenant_id: TenantId,
+        opts: PreAuthKeyOptions,
+    ) -> Result<CreatedPreAuthKey, CoordError> {
         let tenants = self.tenants.lock().unwrap_or_else(|e| e.into_inner());
         if !tenants.contains_key(&tenant_id) {
             return Err(CoordError::TenantNotFound(tenant_id));
@@ -204,35 +225,101 @@ impl MemoryStore {
         drop(tenants);
 
         let key = format!("tskey-auth-{}", generate_random_id());
+        let id = uuid::Uuid::new_v4();
         let mut keys = self.preauth_keys.lock().unwrap_or_else(|e| e.into_inner());
         keys.insert(
             key.clone(),
             PreAuthKey {
+                id,
                 key: key.clone(),
                 tenant_id,
                 used: false,
-                reusable,
-                expires_at: None,
+                reusable: opts.reusable,
+                ephemeral: opts.ephemeral,
+                owner: opts.owner,
+                tags: opts.tags,
+                expires_at: opts.expires_at,
+                created_at: chrono::Utc::now(),
+                revoked_at: None,
             },
         );
-        Ok(key)
+        Ok(CreatedPreAuthKey { id, key, tenant_id, expires_at: opts.expires_at })
     }
 
-    pub fn validate_preauth_key(&self, key: &str) -> Option<TenantId> {
+    pub fn list_preauth_keys(&self, tenant_id: TenantId) -> Vec<PreAuthKeyInfo> {
+        let keys = self.preauth_keys.lock().unwrap_or_else(|e| e.into_inner());
+        let mut out: Vec<PreAuthKeyInfo> = keys
+            .values()
+            .filter(|k| k.tenant_id == tenant_id)
+            .map(|k| PreAuthKeyInfo {
+                id: k.id,
+                tenant_id: k.tenant_id,
+                prefix: coord_core::preauth_key_prefix(&k.key),
+                owner: k.owner.clone(),
+                tags: k.tags.clone(),
+                reusable: k.reusable,
+                ephemeral: k.ephemeral,
+                used: k.used,
+                expires_at: k.expires_at,
+                created_at: k.created_at,
+                revoked: k.revoked_at.is_some(),
+            })
+            .collect();
+        out.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
+        out
+    }
+
+    /// Revoke one key. `Ok(false)` if no such key in this tenant.
+    pub fn revoke_preauth_key(&self, tenant_id: TenantId, key_id: uuid::Uuid) -> Result<bool, CoordError> {
+        let mut keys = self.preauth_keys.lock().unwrap_or_else(|e| e.into_inner());
+        match keys.values_mut().find(|k| k.tenant_id == tenant_id && k.id == key_id) {
+            Some(k) => {
+                if k.revoked_at.is_none() {
+                    k.revoked_at = Some(chrono::Utc::now());
+                }
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Revoke every not-yet-revoked key of `owner` in this tenant; returns the count.
+    pub fn revoke_preauth_keys_by_owner(&self, tenant_id: TenantId, owner: &str) -> Result<u64, CoordError> {
+        let mut keys = self.preauth_keys.lock().unwrap_or_else(|e| e.into_inner());
+        let now = chrono::Utc::now();
+        let mut n = 0;
+        for k in keys.values_mut() {
+            if k.tenant_id == tenant_id && k.owner.as_deref() == Some(owner) && k.revoked_at.is_none() {
+                k.revoked_at = Some(now);
+                n += 1;
+            }
+        }
+        Ok(n)
+    }
+
+    pub fn validate_preauth_key(&self, key: &str) -> Option<PreAuthGrant> {
         let mut keys = self.preauth_keys.lock().unwrap_or_else(|e| e.into_inner());
         let pak = keys.get_mut(key)?;
 
+        if pak.revoked_at.is_some() {
+            return None;
+        }
         if pak.used && !pak.reusable {
             return None;
         }
         if let Some(expires) = pak.expires_at {
-            if chrono::Utc::now() > expires {
+            if chrono::Utc::now() >= expires {
                 return None;
             }
         }
 
         pak.used = true;
-        Some(pak.tenant_id)
+        Some(PreAuthGrant {
+            tenant_id: pak.tenant_id,
+            owner: pak.owner.clone(),
+            tags: pak.tags.clone(),
+            ephemeral: pak.ephemeral,
+        })
     }
 
     pub fn register_node(
@@ -240,6 +327,16 @@ impl MemoryStore {
         tenant_id: TenantId,
         machine_key: [u8; 32],
         info: NodeInfo,
+    ) -> Result<(NodeId, Ipv4Addr, u64), CoordError> {
+        self.register_node_with(tenant_id, machine_key, info, NodeRegistration::default())
+    }
+
+    pub fn register_node_with(
+        &self,
+        tenant_id: TenantId,
+        machine_key: [u8; 32],
+        info: NodeInfo,
+        reg: NodeRegistration,
     ) -> Result<(NodeId, Ipv4Addr, u64), CoordError> {
         let mut machine_index = self.machine_key_index.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(&existing_id) = machine_index.get(&machine_key) {
@@ -252,7 +349,11 @@ impl MemoryStore {
                 }
                 node.info = info;
                 node.online = true;
+                node.last_seen = chrono::Utc::now();
                 node.session_generation += 1;
+                if let Some(routes) = reg.advertised_routes {
+                    node.attrs.advertised_routes = routes;
+                }
                 let ipv4 = node.ipv4;
                 let tid = node.tenant_id;
                 let generation = node.session_generation;
@@ -297,6 +398,14 @@ impl MemoryStore {
             online: true,
             session_generation: 1,
             registered_at: chrono::Utc::now(),
+            last_seen: chrono::Utc::now(),
+            attrs: NodeAttrs {
+                owner: reg.owner,
+                tags: reg.tags,
+                ephemeral: reg.ephemeral,
+                advertised_routes: reg.advertised_routes.unwrap_or_default(),
+                approved_routes: vec![],
+            },
         };
 
         let mut nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner());
@@ -433,6 +542,7 @@ impl MemoryStore {
             stable_id: n.stable_id.clone(),
             info: n.info.clone(),
             online: n.online,
+            attrs: n.attrs.clone(),
         })
     }
 
@@ -496,6 +606,7 @@ impl MemoryStore {
         let mut nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(node) = nodes.get_mut(&node_id) {
             node.online = online;
+            node.last_seen = chrono::Utc::now();
             let tid = node.tenant_id;
             drop(nodes);
             if online {
@@ -520,6 +631,7 @@ impl MemoryStore {
                 return Ok(());
             }
             node.online = false;
+            node.last_seen = chrono::Utc::now();
             let tid = node.tenant_id;
             drop(nodes);
             let _ = self.peer_tx.send(PeerEvent::NodeOffline {
@@ -528,6 +640,86 @@ impl MemoryStore {
             });
         }
         Ok(())
+    }
+
+    /// Replace a node's advertised routes. Returns true if they changed.
+    pub fn set_advertised_routes(&self, node_id: NodeId, routes: Vec<String>) -> Result<bool, CoordError> {
+        self.update_attrs(node_id, |a| {
+            if a.advertised_routes == routes {
+                return false;
+            }
+            a.advertised_routes = routes;
+            true
+        })
+    }
+
+    /// Replace a node's approved routes. Returns true if they changed.
+    pub fn set_approved_routes(&self, node_id: NodeId, routes: Vec<String>) -> Result<bool, CoordError> {
+        self.update_attrs(node_id, |a| {
+            if a.approved_routes == routes {
+                return false;
+            }
+            a.approved_routes = routes;
+            true
+        })
+    }
+
+    fn update_attrs(
+        &self,
+        node_id: NodeId,
+        f: impl FnOnce(&mut NodeAttrs) -> bool,
+    ) -> Result<bool, CoordError> {
+        let mut nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner());
+        let node = nodes
+            .get_mut(&node_id)
+            .ok_or(CoordError::Protocol("node not found".into()))?;
+        let changed = f(&mut node.attrs);
+        let tid = node.tenant_id;
+        drop(nodes);
+        if changed {
+            let _ = self.peer_tx.send(PeerEvent::NodeUpdated { tenant_id: tid, node_id });
+        }
+        Ok(changed)
+    }
+
+    /// Delete every node in `tenant_id` owned by `owner`; returns the deleted IDs.
+    pub fn delete_nodes_by_owner(&self, tenant_id: TenantId, owner: &str) -> Result<Vec<NodeId>, CoordError> {
+        let removed = self.remove_nodes_where(|n| {
+            n.tenant_id == tenant_id && n.attrs.owner.as_deref() == Some(owner)
+        });
+        Ok(removed.into_iter().map(|(_, nid)| nid).collect())
+    }
+
+    /// Delete ephemeral nodes that have been offline for at least `max_offline`.
+    pub fn delete_stale_ephemeral_nodes(
+        &self,
+        max_offline: chrono::Duration,
+    ) -> Result<Vec<(TenantId, NodeId)>, CoordError> {
+        let cutoff = chrono::Utc::now() - max_offline;
+        Ok(self.remove_nodes_where(|n| n.attrs.ephemeral && !n.online && n.last_seen <= cutoff))
+    }
+
+    fn remove_nodes_where(&self, pred: impl Fn(&StoredNode) -> bool) -> Vec<(TenantId, NodeId)> {
+        // Lock ordering: machine_key_index before nodes (matches register_node).
+        let mut machine_index = self.machine_key_index.lock().unwrap_or_else(|e| e.into_inner());
+        let mut nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner());
+        let ids: Vec<NodeId> = nodes.values().filter(|n| pred(n)).map(|n| n.id).collect();
+        let mut removed = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(node) = nodes.remove(&id) {
+                if let Ok(key) = <[u8; 32]>::try_from(node.info.machine_key.as_slice()) {
+                    machine_index.remove(&key);
+                }
+                removed.push((node.tenant_id, id));
+            }
+        }
+        drop(nodes);
+        drop(machine_index);
+        removed.sort_by_key(|(_, id)| id.as_i64());
+        for (tenant_id, node_id) in &removed {
+            let _ = self.peer_tx.send(PeerEvent::NodeOffline { tenant_id: *tenant_id, node_id: *node_id });
+        }
+        removed
     }
 
     /// Atomically snapshot a tenant's routes: own nodes + children + visible child
@@ -599,21 +791,29 @@ fn stored_node_to_summary(n: &StoredNode) -> NodeSummary {
         stable_id: n.stable_id.clone(),
         online: n.online,
         hostname: n.info.hostname.clone(),
+        attrs: n.attrs.clone(),
     }
 }
 
 fn stored_node_to_peer_info(n: &StoredNode) -> PeerInfo {
+    let (addresses, allowed_ips, primary_routes) = coord_core::node_route_sets(
+        &n.ipv4.to_string(),
+        &n.attrs.advertised_routes,
+        &n.attrs.approved_routes,
+    );
     PeerInfo {
         node_id: n.id,
         node_key: n.info.node_key.clone(),
         machine_key: n.info.machine_key.clone(),
         disco_key: n.info.disco_key.clone(),
         endpoints: n.info.endpoints.clone(),
-        allowed_ips: vec![format!("{}/32", n.ipv4)],
+        addresses,
+        allowed_ips,
+        primary_routes,
         hostname: n.info.hostname.clone(),
         derp_region: Some(1),
         online: n.online,
-        last_seen: Some(n.registered_at),
+        last_seen: Some(n.last_seen),
     }
 }
 
@@ -639,7 +839,7 @@ mod tests {
         let t = store.create_tenant("single-use".into(), None, None).unwrap();
         let key = store.create_preauth_key(t.id, false).unwrap();
 
-        assert_eq!(store.validate_preauth_key(&key), Some(t.id));
+        assert_eq!(store.validate_preauth_key(&key).map(|g| g.tenant_id), Some(t.id));
         assert_eq!(store.validate_preauth_key(&key), None);
     }
 
@@ -649,8 +849,8 @@ mod tests {
         let t = store.create_tenant("reusable".into(), None, None).unwrap();
         let key = store.create_preauth_key(t.id, true).unwrap();
 
-        assert_eq!(store.validate_preauth_key(&key), Some(t.id));
-        assert_eq!(store.validate_preauth_key(&key), Some(t.id));
+        assert_eq!(store.validate_preauth_key(&key).map(|g| g.tenant_id), Some(t.id));
+        assert_eq!(store.validate_preauth_key(&key).map(|g| g.tenant_id), Some(t.id));
     }
 
     #[test]

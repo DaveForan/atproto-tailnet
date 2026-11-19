@@ -9,6 +9,10 @@
  *   POST hello  → CHALLENGE
  *   POST commit → ESTABLISHED
  * followed by signed KEEPALIVE and REVOKE messages for the session's lifetime.
+ *
+ * Signatures cover the RFC 8785 (JCS) form of the message as received
+ * (`req.body`, minus `signature`) — never the Zod output, which drops unknown
+ * members. Transmitted key order is irrelevant (see federation/auth.ts).
  */
 
 import { Router, type Request, type Response } from "express";
@@ -19,7 +23,6 @@ import { brokerSessions, collectiveDids, federationLinks, tenants } from "../db/
 import { logger } from "../logger.js";
 import {
   LOCAL_CAPABILITIES,
-  initiateOutboundHandshake,
   markSessionEstablished,
   signAsCollective,
   validatePeerCidrsForTenant,
@@ -288,7 +291,7 @@ federationMessagesRouter.post(
       res.status(400).json({ error: "Invalid HELLO message", details: parsed.error.issues });
       return;
     }
-    // Verify over the body as transmitted: the signature covers its key order.
+    // Verify over the body as received (all members), not the Zod output.
     const hello = req.body as HelloMessage;
 
     const ip = clientIp(req);
@@ -471,6 +474,22 @@ federationMessagesRouter.post(
       .update(brokerSessions)
       .set({ status: "disconnected", importedRoutes: [], updatedAt: new Date() })
       .where(eq(brokerSessions.id, session.id));
+
+    // ADR-0014 §6: a permanent revocation ends the link itself — record it so
+    // the broker never re-handshakes; a temporary one leaves the link active
+    // and the initiator reconnects with backoff.
+    if (revoke.permanent) {
+      await db
+        .update(federationLinks)
+        .set({ status: "revoked", revokedPermanently: true, outbox: null, updatedAt: new Date() })
+        .where(
+          and(
+            eq(federationLinks.id, session.federationLinkId),
+            eq(federationLinks.localTenantId, session.localTenantId),
+            sql`status IN ('pending', 'active')`,
+          ),
+        );
+    }
 
     await withdrawFederatedRoutes(session.localTenantId, session.importedRoutes);
 
@@ -725,20 +744,18 @@ federationMessagesRouter.post(
         peerCidrs: accepted.cidrs,
         peerBrokerUrl: msg.brokerUrl,
         peerName: msg.collectiveName,
+        // Our LINK_REQUEST evidently arrived; stop retrying it.
+        outbox: null,
         updatedAt: new Date(),
       })
       .where(eq(federationLinks.id, link.id));
 
+    // The accepting side initiates the handshake (it does so once this
+    // LINK_ACCEPT is acknowledged); initiating here too would race it.
     logger.info(
       { remoteDid: msg.collectiveDid, linkId: link.id },
       "inbound LINK_ACCEPT — link active",
     );
-
-    setImmediate(() => {
-      initiateOutboundHandshake(link.id, link.localTenantId).catch((err) => {
-        logger.warn({ linkId: link.id, err }, "failed to initiate handshake after link accept");
-      });
-    });
 
     res.json({ status: "accepted" });
   },
@@ -783,7 +800,7 @@ federationMessagesRouter.post(
 
     await db
       .update(federationLinks)
-      .set({ status: "rejected", updatedAt: new Date() })
+      .set({ status: "rejected", outbox: null, updatedAt: new Date() })
       .where(eq(federationLinks.id, link.id));
 
     logger.info(
@@ -831,9 +848,11 @@ federationMessagesRouter.post(
       return;
     }
 
+    // The flag is stored so a permanently revoked link is never re-handshaked;
+    // anything we still had queued for the peer is moot.
     await db
       .update(federationLinks)
-      .set({ status: "revoked", updatedAt: new Date() })
+      .set({ status: "revoked", revokedPermanently: msg.permanent, outbox: null, updatedAt: new Date() })
       .where(eq(federationLinks.id, link.id));
 
     if (link.status === "active") {

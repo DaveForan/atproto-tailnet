@@ -39,6 +39,9 @@ pub struct Hostinfo {
     pub backend_log_id: Option<String>,
     #[serde(default)]
     pub request_tags: Option<Vec<String>>,
+    /// Subnet routes / exit routes the node wants to advertise.
+    #[serde(rename = "RoutableIPs", default, skip_serializing_if = "Option::is_none")]
+    pub routable_ips: Option<Vec<String>>,
 }
 
 /// Matches tailcfg.RegisterResponse

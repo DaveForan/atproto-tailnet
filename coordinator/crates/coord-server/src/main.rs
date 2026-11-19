@@ -1,6 +1,6 @@
+use serde::Deserialize;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use serde::Deserialize;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Deserialize)]
@@ -33,7 +33,9 @@ impl Default for Config {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .json()
         .init();
 
@@ -78,29 +80,31 @@ async fn main() -> anyhow::Result<()> {
     let store_backend = std::env::var("COORD_STORE_BACKEND")
         .ok()
         .or(config.store_backend)
-        .ok_or_else(|| anyhow::anyhow!(
-            "store_backend is required in config file or COORD_STORE_BACKEND env var\n  \
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "store_backend is required in config file or COORD_STORE_BACKEND env var\n  \
              valid values: \"sqlite\", \"postgres\", \"memory\""
-        ))?;
+            )
+        })?;
 
     match store_backend.as_str() {
         "postgres" => {
             let database_url = std::env::var("DATABASE_URL")
                 .ok()
                 .or(config.database_url)
-                .ok_or_else(|| anyhow::anyhow!(
-                    "database_url is required when store_backend = \"postgres\"\n  \
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "database_url is required when store_backend = \"postgres\"\n  \
                      set it in config file or DATABASE_URL env var"
-                ))?;
+                    )
+                })?;
 
             let pool = coord_store::create_pool(&database_url).await?;
             let pg_store = coord_store::PgStore::new(pool.clone()).await?;
             tracing::info!("store: PostgreSQL (migrations applied)");
             coordinator = coordinator.with_store(coord_store::Store::Pg(pg_store));
 
-            let fed_store = std::sync::Arc::new(
-                coord_federation::PgFederationStore::new(pool),
-            );
+            let fed_store = std::sync::Arc::new(coord_federation::PgFederationStore::new(pool));
             coordinator = coordinator.with_federation_store(fed_store);
             tracing::info!("federation store: PostgreSQL");
         }
@@ -115,9 +119,7 @@ async fn main() -> anyhow::Result<()> {
             tracing::info!(path = %sqlite_path, "store: SQLite (WAL mode, migrations applied)");
             coordinator = coordinator.with_store(coord_store::Store::Sqlite(sqlite_store));
 
-            let fed_store = std::sync::Arc::new(
-                coord_federation::SqliteFederationStore::new(pool)
-            );
+            let fed_store = std::sync::Arc::new(coord_federation::SqliteFederationStore::new(pool));
             coordinator = coordinator.with_federation_store(fed_store);
             tracing::info!("federation store: SQLite");
         }
@@ -136,26 +138,45 @@ async fn main() -> anyhow::Result<()> {
     if admin_key.is_some() {
         tracing::info!("admin API key authentication enabled");
     } else {
-        tracing::warn!("COORD_ADMIN_KEY not set — admin API is disabled (all admin requests return 503)");
+        tracing::warn!(
+            "COORD_ADMIN_KEY not set — admin API is disabled (all admin requests return 503)"
+        );
     }
     coordinator = coordinator.with_admin_api_key(admin_key);
 
+    // The TS service is the authoritative federation endpoint; the Rust CFP
+    // implementation only runs when explicitly enabled.
+    let federation_enabled = std::env::var("COORD_FEDERATION_ENABLED")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+    coordinator = coordinator.with_federation_enabled(federation_enabled);
+
     let state = Arc::new(coordinator);
 
-    // Spawn the federation broker background loop.
-    let broker = state.federation_broker().clone();
-    let tick_interval = broker.config().tick_interval;
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(tick_interval);
-        interval.tick().await; // first tick fires immediately
-        loop {
-            interval.tick().await;
-            if let Err(e) = broker.tick().await {
-                tracing::warn!(error = %e, "federation broker tick failed");
+    if federation_enabled {
+        // Spawn the federation broker background loop.
+        let broker = state.federation_broker().clone();
+        let tick_interval = broker.config().tick_interval;
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(tick_interval);
+            interval.tick().await; // first tick fires immediately
+            loop {
+                interval.tick().await;
+                if let Err(e) = broker.tick().await {
+                    tracing::warn!(error = %e, "federation broker tick failed");
+                }
             }
-        }
-    });
-    tracing::info!(interval_secs = tick_interval.as_secs(), "federation broker started");
+        });
+        tracing::info!(
+            interval_secs = tick_interval.as_secs(),
+            "federation broker started"
+        );
+    } else {
+        tracing::info!("Rust federation endpoints disabled (COORD_FEDERATION_ENABLED not set)");
+    }
+
+    coord_api::spawn_ephemeral_sweeper(state.clone());
+    tracing::info!("ephemeral node sweeper started");
 
     let app = coord_api::router(state);
 
@@ -169,7 +190,9 @@ async fn main() -> anyhow::Result<()> {
 /// Clients pin the control server's Noise key, so it must survive restarts.
 fn load_or_create_control_key(path: Option<String>) -> anyhow::Result<coord_core::ControlKey> {
     let Some(path) = path else {
-        tracing::warn!("COORD_CONTROL_KEY_PATH not set; using an ephemeral control key (clients re-handshake after every restart)");
+        tracing::warn!(
+            "COORD_CONTROL_KEY_PATH not set; using an ephemeral control key (clients re-handshake after every restart)"
+        );
         return Ok(coord_noise::generate_control_key());
     };
     match std::fs::read_to_string(&path) {
