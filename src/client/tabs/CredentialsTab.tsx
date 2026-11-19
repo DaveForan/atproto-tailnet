@@ -43,7 +43,6 @@ export function CredentialsTab() {
   // Capability form
   const [capDid, setCapDid] = useState("");
   const [capName, setCapName] = useState("");
-  const [capResource, setCapResource] = useState("");
   const [capResult, setCapResult] = useState<string | null>(null);
 
   // Verify form
@@ -101,7 +100,6 @@ export function CredentialsTab() {
         currentTenant.id,
         capDid.trim(),
         capName.trim(),
-        capResource.trim() || undefined,
       );
       setCapResult(result?.jwt ?? null);
       toast("Capability credential issued");
@@ -172,7 +170,7 @@ export function CredentialsTab() {
           />
           <input
             type="text"
-            placeholder="Permissions (comma-separated)"
+            placeholder="Permissions to attest (comma-separated; blank = all of the member's role)"
             value={rolePerms}
             onChange={(e) => setRolePerms(e.target.value)}
           />
@@ -193,15 +191,9 @@ export function CredentialsTab() {
           />
           <input
             type="text"
-            placeholder="Capability name"
+            placeholder="Capability (a permission the member holds, e.g. create_posts)"
             value={capName}
             onChange={(e) => setCapName(e.target.value)}
-          />
-          <input
-            type="text"
-            placeholder="Resource"
-            value={capResource}
-            onChange={(e) => setCapResource(e.target.value)}
           />
           <button className="btn-primary" onClick={issueCapability} disabled={busy}>
             {busyAction === "capability" ? "Issuing..." : "Issue"}

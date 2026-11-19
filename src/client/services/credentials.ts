@@ -8,16 +8,16 @@ export const credentialsService = {
       body: JSON.stringify({ subjectDid }),
     }),
 
-  issueRole: (tid: string, subjectDid: string, roleName: string) =>
+  issueRole: (tid: string, subjectDid: string, permissions: string) =>
     tenantApi<CredentialResult>(tid, "/credentials/role", {
       method: "POST",
-      body: JSON.stringify({ subjectDid, roleName }),
+      body: JSON.stringify({ subjectDid, permissions }),
     }),
 
-  issueCapability: (tid: string, subjectDid: string, capability: string, resource?: string) =>
+  issueCapability: (tid: string, subjectDid: string, capability: string) =>
     tenantApi<CredentialResult>(tid, "/credentials/capability", {
       method: "POST",
-      body: JSON.stringify({ subjectDid, capability, ...(resource ? { resource } : {}) }),
+      body: JSON.stringify({ subjectDid, capability }),
     }),
 
   verify: (jwt: string) =>

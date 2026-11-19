@@ -10,6 +10,7 @@ import {
   tenants,
   memberships,
   roles,
+  users,
   collectiveDids,
   credentialRevocations,
   federationLinks,
@@ -23,7 +24,9 @@ import {
   authUserId,
   authUserDid,
   isLockedDown,
+  missingPermissions,
 } from "./helpers.js";
+import { ALL_PERMISSIONS } from "./permissions.js";
 import { logAudit } from "./audit.js";
 import { logger } from "../logger.js";
 import {
@@ -43,6 +46,46 @@ import { config } from "../config.js";
 import * as jose from "jose";
 
 export const credentialsRouter = Router();
+
+/** Subject DID from the body (`subjectDid` from the dashboard, `userDid` from API callers). */
+function subjectDidFrom(body: unknown): string | null {
+  const b = (body ?? {}) as Record<string, unknown>;
+  const did = b.subjectDid ?? b.userDid;
+  return typeof did === "string" && did.startsWith("did:") && did.length <= 512 ? did : null;
+}
+
+/**
+ * The subject's membership and role in this tenant, or null when the DID is
+ * not a member. Credentials are only issued to members.
+ */
+async function loadSubjectMember(tenantId: string, did: string) {
+  const [row] = await db
+    .select({ membership: memberships, role: roles })
+    .from(memberships)
+    .innerJoin(users, eq(memberships.userId, users.id))
+    .leftJoin(roles, eq(memberships.roleId, roles.id))
+    .where(and(eq(memberships.tenantId, tenantId), eq(users.did, did)));
+  return row ?? null;
+}
+
+/** Permissions a member holds (originators hold all). */
+function memberPermissions(
+  m: { membership: typeof memberships.$inferSelect; role: typeof roles.$inferSelect | null },
+): string[] {
+  if (m.membership.isOriginator) return [...ALL_PERMISSIONS];
+  return ((m.role?.permissions ?? []) as string[]).filter((p) => (ALL_PERMISSIONS as readonly string[]).includes(p));
+}
+
+/** Parse a permission list from an array or a comma-separated string. */
+function permissionList(value: unknown): string[] | null {
+  const list = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(",").map((p) => p.trim()).filter(Boolean)
+      : null;
+  if (!list || list.length > ALL_PERMISSIONS.length || !list.every((p) => typeof p === "string")) return null;
+  return [...new Set(list as string[])];
+}
 
 /** The collective's issuer identity, or null if it has no DID yet. */
 async function getCollectiveIssuerKeys(tenantId: string): Promise<IssuerKeyPair | null> {
@@ -70,9 +113,13 @@ credentialsRouter.post(
       return;
     }
 
-    const { userDid } = req.body ?? {};
+    const userDid = subjectDidFrom(req.body);
     if (!userDid) {
-      res.status(400).json({ error: "userDid is required" });
+      res.status(400).json({ error: "subjectDid is required" });
+      return;
+    }
+    if (!(await loadSubjectMember(tenantId, userDid))) {
+      res.status(404).json({ error: "The subject is not a member of this tailnet" });
       return;
     }
 
@@ -115,7 +162,7 @@ credentialsRouter.post(
         metadata: { operation: "credential_issued", type: "membership", subjectDid: userDid },
       });
 
-      res.json({ credential: cred });
+      res.json({ credential: cred, jwt: cred.jwt });
     } catch (err) {
       logger.error({ tenantId, err }, "failed to issue membership credential");
       res.status(500).json({ error: "Failed to issue credential" });
@@ -144,11 +191,37 @@ credentialsRouter.post(
       return;
     }
 
-    const { userDid, permissions } = req.body ?? {};
-    if (!userDid || !Array.isArray(permissions)) {
-      res.status(400).json({ error: "userDid and permissions[] are required" });
+    const userDid = subjectDidFrom(req.body);
+    if (!userDid) {
+      res.status(400).json({ error: "subjectDid is required" });
       return;
     }
+    const subject = await loadSubjectMember(tenantId, userDid);
+    if (!subject) {
+      res.status(404).json({ error: "The subject is not a member of this tailnet" });
+      return;
+    }
+    // The attestation states what the subject's role actually grants. An
+    // optional list narrows it; it can never add permissions the subject's
+    // role lacks, or that the caller does not hold.
+    const held = memberPermissions(subject);
+    const requested = req.body?.permissions ?? req.body?.roleName;
+    const asked = requested === undefined || requested === "" ? held : permissionList(requested);
+    if (!asked) {
+      res.status(400).json({ error: "permissions must be a list of permission names" });
+      return;
+    }
+    const notHeldBySubject = asked.filter((p) => !held.includes(p));
+    if (notHeldBySubject.length > 0) {
+      res.status(400).json({ error: "The subject's role does not grant these permissions", permissions: notHeldBySubject });
+      return;
+    }
+    const lacking = missingPermissions(result.membership, result.role, asked, req);
+    if (lacking.length > 0) {
+      res.status(403).json({ error: "Cannot attest permissions you do not hold", permissions: lacking });
+      return;
+    }
+    const permissions = asked;
 
     const issuer = await getCollectiveIssuerKeys(tenantId);
     if (!issuer) {
@@ -167,7 +240,16 @@ credentialsRouter.post(
         userDid,
       );
 
-      res.json({ credential: cred });
+      logAudit({
+        tenantId,
+        actorUserId: authUserId(req),
+        action: "tenant_settings_updated",
+        targetType: "tenant",
+        targetId: tenantId,
+        metadata: { operation: "credential_issued", type: "role", subjectDid: userDid, permissions },
+      });
+
+      res.json({ credential: cred, jwt: cred.jwt });
     } catch (err) {
       logger.error({ tenantId, err }, "failed to issue role attestation");
       res.status(500).json({ error: "Failed to issue credential" });
@@ -196,11 +278,47 @@ credentialsRouter.post(
       return;
     }
 
-    const { userDid, scope, traversalPath } = req.body ?? {};
-    if (!userDid || !Array.isArray(scope)) {
-      res.status(400).json({ error: "userDid and scope[] are required" });
+    const userDid = subjectDidFrom(req.body);
+    if (!userDid) {
+      res.status(400).json({ error: "subjectDid is required" });
       return;
     }
+    const scope = permissionList(req.body?.scope ?? req.body?.capability);
+    if (!scope || scope.length === 0) {
+      res.status(400).json({ error: "capability (or scope[]) is required" });
+      return;
+    }
+    const unknown = scope.filter((p) => !(ALL_PERMISSIONS as readonly string[]).includes(p));
+    if (unknown.length > 0) {
+      res.status(400).json({ error: "Unknown capability", permissions: unknown });
+      return;
+    }
+    const subject = await loadSubjectMember(tenantId, userDid);
+    if (!subject) {
+      res.status(404).json({ error: "The subject is not a member of this tailnet" });
+      return;
+    }
+    // A capability may only delegate what both the subject and the caller hold.
+    const subjectHeld = memberPermissions(subject);
+    const notHeldBySubject = scope.filter((p) => !subjectHeld.includes(p));
+    if (notHeldBySubject.length > 0) {
+      res.status(400).json({ error: "The subject's role does not grant these capabilities", permissions: notHeldBySubject });
+      return;
+    }
+    const lacking = missingPermissions(result.membership, result.role, scope, req);
+    if (lacking.length > 0) {
+      res.status(403).json({ error: "Cannot grant capabilities you do not hold", permissions: lacking });
+      return;
+    }
+    const rawPath = req.body?.traversalPath;
+    if (
+      rawPath !== undefined &&
+      !(Array.isArray(rawPath) && rawPath.length <= 16 && rawPath.every((d) => typeof d === "string" && d.length <= 512))
+    ) {
+      res.status(400).json({ error: "traversalPath must be a list of DIDs" });
+      return;
+    }
+    const traversalPath = rawPath as string[] | undefined;
 
     const issuer = await getCollectiveIssuerKeys(tenantId);
     if (!issuer) {
@@ -219,7 +337,16 @@ credentialsRouter.post(
         userDid,
       );
 
-      res.json({ credential: cred });
+      logAudit({
+        tenantId,
+        actorUserId: authUserId(req),
+        action: "tenant_settings_updated",
+        targetType: "tenant",
+        targetId: tenantId,
+        metadata: { operation: "credential_issued", type: "capability", subjectDid: userDid, scope },
+      });
+
+      res.json({ credential: cred, jwt: cred.jwt });
     } catch (err) {
       logger.error({ tenantId, err }, "failed to issue capability token");
       res.status(500).json({ error: "Failed to issue credential" });
