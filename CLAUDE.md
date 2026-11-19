@@ -13,6 +13,10 @@ Tailscale-as-a-service where users authenticate with their AT Protocol (Bluesky)
 - **Security model**: Composable role-based permissions, device approval, lockdown
 - **ADRs**: `docs/adr/` — design decision records (0001-0024)
 
+## Deployment
+
+To deploy to DigitalOcean, follow `deploy/digitalocean/AGENT.md` step by step. It covers DNS, the Cloud Firewall, `.env` (secrets, `OPERATOR_DIDS`, `ATPROTO_PRIVATE_KEY` generated on the Droplet), TLS, first sign-in, and connecting Claude. It works with `doctl` or the DigitalOcean MCP server; Droplet-side steps need SSH. Never print secrets.
+
 ## Development
 
 ```sh

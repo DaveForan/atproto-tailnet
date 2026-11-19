@@ -24,6 +24,21 @@ Machine-readable instructions for an AI agent. The agent deploys atproto-tailnet
 
 Only `doctl` on your workstation needs the full read+write token. It uses this token to create the Droplet, the firewall, and the DNS records.
 
+### If you use the DigitalOcean MCP server instead of `doctl`
+
+You can do the DigitalOcean API steps with the DigitalOcean MCP tools. Map each `doctl` command to the matching MCP tool:
+
+- Droplet create, get, and delete.
+- Domain record create, list, and delete.
+- Cloud Firewall create and delete.
+- SSH key list.
+
+The MCP server does not give shell access to the Droplet. Steps that use `ssh root@$DROPLET_IP` need a shell on your workstation with the SSH key. These steps write `.env`, run `droplet-setup.sh`, generate `ATPROTO_PRIVATE_KEY`, and start the stack. Do not skip them.
+
+Do not print secrets (`SESSION_SECRET`, `POSTGRES_PASSWORD`, `COORDINATOR_API_KEY`, `FEDERATION_KEY_ENCRYPTION_KEY`, `ATPROTO_PRIVATE_KEY`, `DO_AUTH_TOKEN`) in your output. Generate them and write them directly to `.env` on the Droplet.
+
+Ask the user for the operator's Bluesky handle or DID before you write `OPERATOR_DIDS`. To convert a handle to a DID, run `curl "https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle?handle=<handle>"`. Show the DID to the user and get confirmation.
+
 ## Required Inputs
 
 ### Provided by operator
