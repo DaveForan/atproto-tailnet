@@ -19,6 +19,52 @@ import { logger } from "../logger.js";
 
 export const DEFAULT_KEY_HOURS = 24;
 export const MAX_KEY_HOURS = 720;
+/** Longest key a member without manage_devices may mint (single-use only). */
+export const MEMBER_MAX_KEY_HOURS = 24;
+
+/**
+ * Key options a member may request. Reusable or long-lived keys can enrol any
+ * number of devices as that member, so only device managers (manage_devices /
+ * originator) may mint them. Returns an error message, or null when allowed.
+ */
+export function memberKeyOptionsError(
+  opts: { reusable?: boolean; expiresInHours?: number },
+  canManageDevices: boolean,
+): string | null {
+  if (canManageDevices) return null;
+  if (opts.reusable) return "Only device managers can create reusable keys";
+  if ((opts.expiresInHours ?? DEFAULT_KEY_HOURS) > MEMBER_MAX_KEY_HOURS) {
+    return `Keys can last at most ${MEMBER_MAX_KEY_HOURS} hours unless you can manage devices`;
+  }
+  return null;
+}
+
+/**
+ * Revoke every outstanding key of a tenant (lockdown). Best effort per key;
+ * returns how many were revoked on the control plane.
+ */
+export async function revokeAllTenantKeys(
+  tenantId: string,
+  client: ControlClient,
+): Promise<number> {
+  const outstanding = await db
+    .select()
+    .from(authKeys)
+    .where(and(eq(authKeys.tenantId, tenantId), isNull(authKeys.revokedAt)));
+  let revoked = 0;
+  for (const k of outstanding) {
+    if (!k.controlKeyId) continue; // unknown on the control plane — leave visible
+    try {
+      await revokeControlKey(client, k.controlKeyId);
+    } catch (err) {
+      logger.error({ tenantId, keyId: k.id, err }, "lockdown key revocation failed");
+      continue; // leave the row unrevoked so it stays visible
+    }
+    revoked++;
+    await db.update(authKeys).set({ revokedAt: new Date() }).where(eq(authKeys.id, k.id));
+  }
+  return revoked;
+}
 
 /** Mint a pre-auth key for a member and record it in `auth_keys`. */
 export async function issueMemberKey(params: {

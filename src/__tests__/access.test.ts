@@ -15,7 +15,14 @@ vi.mock("../db/index.js", () => ({
   },
 }));
 
-import { revokeMemberAccess, filterVisibleKeys, type AuthKeyView } from "../routes/access.js";
+import {
+  revokeMemberAccess,
+  filterVisibleKeys,
+  memberKeyOptionsError,
+  revokeAllTenantKeys,
+  MEMBER_MAX_KEY_HOURS,
+  type AuthKeyView,
+} from "../routes/access.js";
 import { CoordinatorApiClient } from "../orchestrator/coordinator-api.js";
 import { HeadscaleApiClient } from "../orchestrator/headscale-api.js";
 
@@ -102,6 +109,56 @@ describe("revokeMemberAccess (kick cascade)", () => {
     outstanding = [{ id: "a", controlKeyId: "11" }];
     const r = await revokeMemberAccess({ tenantId: "t1", client: null, userId: "u", hsUsername: "h" });
     expect(r.devicesDeleted).toBe(0);
+    expect(updates).toHaveLength(1);
+  });
+});
+
+describe("memberKeyOptionsError (who may mint which keys)", () => {
+  it("device managers may mint reusable, long-lived keys", () => {
+    expect(memberKeyOptionsError({ reusable: true, expiresInHours: 720 }, true)).toBeNull();
+  });
+
+  it("members may mint single-use keys up to the member limit", () => {
+    expect(memberKeyOptionsError({}, false)).toBeNull();
+    expect(memberKeyOptionsError({ reusable: false, expiresInHours: MEMBER_MAX_KEY_HOURS }, false)).toBeNull();
+  });
+
+  it("members may not mint reusable keys", () => {
+    expect(memberKeyOptionsError({ reusable: true }, false)).toMatch(/reusable/);
+  });
+
+  it("members may not mint keys that outlive the member limit", () => {
+    expect(memberKeyOptionsError({ expiresInHours: MEMBER_MAX_KEY_HOURS + 1 }, false)).toMatch(/at most/);
+  });
+});
+
+describe("revokeAllTenantKeys (lockdown)", () => {
+  beforeEach(() => {
+    outstanding = [];
+    updates.length = 0;
+  });
+
+  it("revokes every outstanding key on the control plane and marks it revoked", async () => {
+    const client = new CoordinatorApiClient("http://coord", "coord-tenant", "k");
+    const revoke = vi.spyOn(client, "revokePreAuthKey").mockResolvedValue(undefined);
+    outstanding = [
+      { id: "k1", controlKeyId: "c1" },
+      { id: "k2", controlKeyId: "c2" },
+    ];
+    expect(await revokeAllTenantKeys("t1", client)).toBe(2);
+    expect(revoke).toHaveBeenCalledWith("c1");
+    expect(revoke).toHaveBeenCalledWith("c2");
+    expect(updates).toHaveLength(2);
+  });
+
+  it("leaves a key unrevoked locally when the control plane refuses", async () => {
+    const client = new CoordinatorApiClient("http://coord", "coord-tenant", "k");
+    vi.spyOn(client, "revokePreAuthKey").mockRejectedValueOnce(new Error("down")).mockResolvedValue(undefined);
+    outstanding = [
+      { id: "k1", controlKeyId: "c1" },
+      { id: "k2", controlKeyId: "c2" },
+    ];
+    expect(await revokeAllTenantKeys("t1", client)).toBe(1);
     expect(updates).toHaveLength(1);
   });
 });

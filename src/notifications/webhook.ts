@@ -12,11 +12,11 @@
  */
 
 import { createHmac } from "node:crypto";
-import dns, { type LookupAddress } from "node:dns";
+import type dns from "node:dns";
 import http from "node:http";
 import https from "node:https";
 import net from "node:net";
-import { isPublicAddress, resolvesToPublicAddresses } from "../identity/resolver.js";
+import { guardedLookup, isPublicAddress, resolvesToPublicAddresses } from "../identity/resolver.js";
 
 /** Delivery timeout (connect + response headers). */
 export const WEBHOOK_TIMEOUT_MS = 5_000;
@@ -109,29 +109,6 @@ export type WebhookTransport = (
   body: string,
   opts: { allowPrivate: boolean; timeoutMs: number },
 ) => Promise<{ status: number }>;
-
-/**
- * DNS lookup that refuses non-public answers — the connect-time half of the
- * SSRF guard (defeats rebinding between validation and connect).
- */
-function guardedLookup(
-  hostname: string,
-  options: dns.LookupOptions,
-  callback: (err: NodeJS.ErrnoException | null, address: string | LookupAddress[], family?: number) => void,
-): void {
-  dns.lookup(hostname, { ...options, all: true }, (err, addresses) => {
-    if (err) return callback(err, "");
-    const list = addresses as LookupAddress[];
-    if (list.length === 0 || !list.every((a) => isPublicAddress(a.address))) {
-      return callback(
-        Object.assign(new Error("Webhook host resolves to a non-public address"), { code: "EPRIVATE" }),
-        "",
-      );
-    }
-    if (options.all) callback(null, list);
-    else callback(null, list[0].address, list[0].family);
-  });
-}
 
 /** Default transport: node:http(s), no redirect following, guarded DNS. */
 export const nodeTransport: WebhookTransport = (url, headers, body, opts) =>

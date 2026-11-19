@@ -254,11 +254,18 @@ export const TOOL_DEFS: ToolDef[] = [
     name: "create_auth_key",
     title: "Create auth key",
     description:
-      "Create a pre-auth key for adding a device to the tailnet (tailscale up --auth-key=…). The key is shown once.",
+      "Create a pre-auth key for adding a device to the tailnet (tailscale up --auth-key=…). The key is shown once. " +
+      "Only members who can manage devices may create reusable keys or keys lasting more than 24 hours.",
     shape: {
       tailnet_id: tailnetId,
-      reusable: z.boolean().optional().describe("Allow the key to register several devices"),
-      expires_in_hours: z.number().int().min(1).max(720).optional().describe("Default 24"),
+      reusable: z.boolean().optional().describe("Allow the key to register several devices (device managers only)"),
+      expires_in_hours: z
+        .number()
+        .int()
+        .min(1)
+        .max(720)
+        .optional()
+        .describe("Default 24; more than 24 needs device-manager permission"),
     },
     annotations: WRITE,
     run: (api, a) => {

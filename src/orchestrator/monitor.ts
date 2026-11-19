@@ -18,6 +18,7 @@ import { CoordinatorApiClient } from "./coordinator-api.js";
 import { startInstance, stopInstance } from "./headscale.js";
 import { syncTenantRoutes } from "./caddy.js";
 import { sweepExpiredJtis } from "../credentials/service-auth.js";
+import { sweepExpiredOAuthStates } from "../auth/atproto.js";
 import { logAudit } from "../routes/audit.js";
 import { logger } from "../logger.js";
 
@@ -317,6 +318,9 @@ export function startHealthMonitor(intervalMs = 60_000): void {
         await recordUsageSnapshots();
         await sweepExpiredJtis().catch((err) =>
           logger.warn({ err }, "failed to sweep expired JTIs"),
+        );
+        await sweepExpiredOAuthStates().catch((err) =>
+          logger.warn({ err }, "failed to sweep expired OAuth states"),
         );
       }
     } catch (err) {

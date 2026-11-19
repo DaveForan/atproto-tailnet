@@ -57,6 +57,7 @@ import { reconcileTenantRouting } from "./orchestrator/caddy.js";
 import { logger } from "./logger.js";
 
 const app = express();
+app.disable("x-powered-by");
 
 // ── Internal endpoint for Caddy on-demand TLS ───────────────────────
 // Caddy calls this before issuing a certificate for a hostname.
@@ -217,7 +218,13 @@ app.use(authRouter);
 // peer broker's single address, so they get their own, higher limit.
 if (!config.federationEnabled) {
   app.use(
-    ["/api/federation", "/api/tenants/:tenantId/federation", "/api/tenants/:tenantId/traversal-policy"],
+    [
+      "/api/federation",
+      "/api/tenants/:tenantId/federation",
+      "/api/tenants/:tenantId/traversal-policy",
+      // Federation discovery (posture, region) — collective DID docs stay served
+      "/.well-known/collective-federation",
+    ],
     (_req: Request, res: Response) => {
       res.status(404).json({ error: "Federation is not enabled on this instance" });
     },

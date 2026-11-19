@@ -43,6 +43,7 @@ import {
   revokeControlKey,
   revokeMemberAccess,
   filterVisibleKeys,
+  memberKeyOptionsError,
   DEFAULT_KEY_HOURS,
   MAX_KEY_HOURS,
   type AuthKeyView,
@@ -170,6 +171,15 @@ devicesRouter.post(
     const parsedBody = authKeyBody.safeParse(req.body ?? {});
     if (!parsedBody.success) {
       res.status(400).json({ error: "Invalid body", details: parsedBody.error.issues });
+      return;
+    }
+
+    const keyOptionsError = memberKeyOptionsError(
+      parsedBody.data,
+      hasPermission(result.membership, result.role, "manage_devices", req),
+    );
+    if (keyOptionsError) {
+      res.status(403).json({ error: keyOptionsError, code: "key_options_forbidden" });
       return;
     }
 

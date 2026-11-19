@@ -6,6 +6,8 @@ import { copyToClipboard, errorCode, errorMessage } from "../lib/utils";
 import { deviceService } from "../services/devices";
 
 const EXPIRY_OPTIONS = [1, 24, 24 * 7, 24 * 30];
+/** Members without manage_devices get single-use keys of at most 24 hours. */
+const MEMBER_EXPIRY_OPTIONS = [1, 24];
 const expiryLabel = (h: number) => (h < 24 ? `${h} hour` : h === 24 ? "24 hours" : `${h / 24} days`);
 
 interface IssuedKey {
@@ -15,7 +17,9 @@ interface IssuedKey {
 }
 
 export function ConnectTab() {
-  const { currentTenant, setTab } = useApp();
+  const { currentTenant, setTab, hasPerm } = useApp();
+  const canManageDevices = hasPerm("manage_devices");
+  const expiryOptions = canManageDevices ? EXPIRY_OPTIONS : MEMBER_EXPIRY_OPTIONS;
   const { toast, toastError } = useToast();
   const [issued, setIssued] = useState<IssuedKey | null>(null);
   const [pending, setPending] = useState(false);
@@ -29,7 +33,10 @@ export function ConnectTab() {
     setGenerating(true);
     setLimitError(null);
     try {
-      const result = await deviceService.generateAuthKey(currentTenant.id, { reusable, expiresInHours });
+      const opts = canManageDevices
+        ? { reusable, expiresInHours }
+        : { reusable: false, expiresInHours: Math.min(expiresInHours, 24) };
+      const result = await deviceService.generateAuthKey(currentTenant.id, opts);
       if (!result) return;
       if ("approvalId" in result) {
         setIssued(null);
@@ -40,8 +47,8 @@ export function ConnectTab() {
       setPending(false);
       setIssued({
         command: result.command || `tailscale up --login-server ${result.loginServer} --authkey ${result.key}`,
-        reusable,
-        expiresInHours,
+        reusable: opts.reusable,
+        expiresInHours: opts.expiresInHours,
       });
       toast("Auth key generated");
     } catch (e) {
@@ -73,18 +80,20 @@ export function ConnectTab() {
             value={expiresInHours}
             onChange={(e) => setExpiresInHours(Number(e.target.value))}
           >
-            {EXPIRY_OPTIONS.map((h) => (
+            {expiryOptions.map((h) => (
               <option key={h} value={h}>{expiryLabel(h)}</option>
             ))}
           </select>
-          <label>
-            <input
-              type="checkbox"
-              checked={reusable}
-              onChange={(e) => setReusable(e.target.checked)}
-            />{" "}
-            Reusable (connect several devices with one key)
-          </label>
+          {canManageDevices && (
+            <label>
+              <input
+                type="checkbox"
+                checked={reusable}
+                onChange={(e) => setReusable(e.target.checked)}
+              />{" "}
+              Reusable (connect several devices with one key)
+            </label>
+          )}
         </div>
 
         {limitError && (

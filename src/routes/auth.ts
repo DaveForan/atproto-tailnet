@@ -4,6 +4,7 @@
  * Also handles first-login tenant provisioning (async via setImmediate).
  */
 
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { Router } from "express";
 import { eq } from "drizzle-orm";
 import { Agent } from "@atproto/api";
@@ -44,6 +45,48 @@ const ACCOUNT_DISABLED_HTML = `<!DOCTYPE html>
   </main>
 </body>
 </html>`;
+
+/** Shown when an OAuth callback arrives in a browser that did not start it. */
+const LOGIN_MISMATCH_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sign-in expired — atproto-tailnet</title>
+  <link rel="stylesheet" href="/css/dashboard.css" />
+</head>
+<body>
+  <main class="container">
+    <h1>Sign-in could not be completed</h1>
+    <p>This sign-in link was not started in this browser, or it has expired. Start again from the home page.</p>
+    <p><a href="/">Back to the home page</a></p>
+  </main>
+</body>
+</html>`;
+
+/** Sign-ins a browser may have in flight at once (one nonce each). */
+const MAX_PENDING_LOGIN_NONCES = 5;
+
+/**
+ * `Sec-Fetch-Site` values allowed to start a sign-in: our own pages
+ * (`same-origin`), a typed URL or bookmark (`none`), or an old browser that
+ * sends no header.
+ */
+export function loginFetchSiteAllowed(value: string | string[] | undefined): boolean {
+  if (value === undefined) return true;
+  return value === "same-origin" || value === "none";
+}
+
+/**
+ * True only when the browser session holds a login nonce and the OAuth state
+ * returned by the callback is that same nonce (constant-time compare).
+ */
+export function loginNonceMatches(expected: string | undefined, actual: string | null | undefined): boolean {
+  if (!expected || !actual) return false;
+  const a = Buffer.from(expected);
+  const b = Buffer.from(actual);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
 
 /**
  * Router for authentication routes: login initiation, OAuth callback,
@@ -329,6 +372,14 @@ async function provisionViaHeadscale(
 
 authRouter.get("/auth/login", async (req, res) => {
   try {
+    // Forced-login CSRF: sign-in only starts from our own pages (or a typed
+    // URL). A cross-site link could otherwise start a flow against an
+    // attacker's auto-approving PDS and sign the victim in as the attacker.
+    if (!loginFetchSiteAllowed(req.headers["sec-fetch-site"])) {
+      res.status(403).type("html").send(LOGIN_MISMATCH_HTML);
+      return;
+    }
+
     const handle = req.query.handle as string;
     if (!handle) {
       res.status(400).json({ error: "handle query parameter required" });
@@ -340,12 +391,29 @@ authRouter.get("/auth/login", async (req, res) => {
       req.session.postLoginRedirect = redirect;
     }
 
+    // Bind this OAuth flow to this browser: the callback only completes in the
+    // session that started it, so a callback URL cannot be replayed in another
+    // browser to sign it in as someone else (login CSRF).
+    // A few nonces are kept so sign-ins started in parallel tabs all complete.
+    const loginNonce = randomBytes(32).toString("hex");
+    req.session.oauthLoginNonces = [...(req.session.oauthLoginNonces ?? []), loginNonce].slice(
+      -MAX_PENDING_LOGIN_NONCES,
+    );
+
     const client = await getOAuthClient();
     const url = await client.authorize(handle, {
       scope: "atproto transition:generic",
+      state: loginNonce,
     });
 
-    res.redirect(url.toString());
+    req.session.save((err) => {
+      if (err) {
+        logger.error({ err }, "session save failed before login redirect");
+        res.status(500).json({ error: "Failed to initiate login" });
+        return;
+      }
+      res.redirect(url.toString());
+    });
   } catch (err) {
     logger.error({ err }, "login initiation failed");
     res.status(500).json({ error: "Failed to initiate login" });
@@ -356,7 +424,17 @@ authRouter.get("/auth/callback", async (req, res) => {
   try {
     const client = await getOAuthClient();
     const params = new URLSearchParams(req.url.split("?")[1]);
-    const { session } = await client.callback(params);
+    const pendingNonces = req.session.oauthLoginNonces ?? [];
+    const { session, state } = await client.callback(params);
+    const matched = pendingNonces.find((n) => loginNonceMatches(n, state));
+    if (!matched) {
+      // Not signing out: the OAuth session store is keyed by DID, so that
+      // would also drop the account's legitimate stored session.
+      logger.warn({ did: session.did }, "OAuth callback refused: not started in this browser");
+      res.status(400).type("html").send(LOGIN_MISMATCH_HTML);
+      return;
+    }
+    req.session.oauthLoginNonces = pendingNonces.filter((n) => n !== matched);
 
     const did = session.did;
 

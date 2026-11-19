@@ -291,134 +291,22 @@ boardRouter.get("/api/tenants/by-slug/:slug/board", async (req, res) => {
   });
 });
 
+// Script and styles are static files (public/js/board.js from
+// src/client/board.ts, public/css/board.css) so the page works under the
+// global CSP (script-src 'self'; style-src 'self').
 const BOARD_PAGE_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Board — atproto-tailnet</title>
-  <style>
-    :root {
-      --bg: #0a0a0f;
-      --surface: #13131a;
-      --border: #23232f;
-      --text: #e4e4ed;
-      --text-dim: #8888a0;
-      --accent: #6366f1;
-      --accent-hover: #818cf8;
-    }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      line-height: 1.5;
-      padding: 24px;
-    }
-    .container { max-width: 720px; margin: 0 auto; }
-    h1 { font-size: 28px; font-weight: 600; margin-bottom: 4px; }
-    .subtitle { color: var(--text-dim); font-size: 14px; margin-bottom: 32px; }
-    .post-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 20px;
-      margin-bottom: 16px;
-      cursor: pointer;
-      transition: border-color 0.15s;
-    }
-    .post-card:hover { border-color: var(--accent); }
-    .post-title { font-size: 18px; font-weight: 600; margin-bottom: 4px; }
-    .post-desc { color: var(--text-dim); font-size: 14px; margin-bottom: 12px; }
-    .post-meta { display: flex; gap: 16px; font-size: 12px; color: var(--text-dim); }
-    .service-tag {
-      display: inline-block;
-      background: var(--accent);
-      color: white;
-      padding: 2px 8px;
-      border-radius: 4px;
-      font-size: 11px;
-      font-weight: 500;
-    }
-    a { color: var(--accent); text-decoration: none; }
-    a:hover { text-decoration: underline; }
-    .empty { text-align: center; padding: 48px; color: var(--text-dim); }
-    .back-link { display: block; margin-top: 24px; text-align: center; font-size: 14px; }
-  </style>
+  <link rel="stylesheet" href="/css/board.css" />
 </head>
 <body>
   <div class="container">
     <div id="board-app">Loading...</div>
   </div>
-  <script>
-    var slug = window.location.pathname.split('/board/')[1];
-    var app = document.getElementById('board-app');
-
-    function esc(s) {
-      if (s == null) return '';
-      return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-    }
-    function safeUrl(url) {
-      if (!url || typeof url !== 'string') return '';
-      try { var u = new URL(url); if (u.protocol === 'https:' || u.protocol === 'http:') return esc(url); } catch(e) {}
-      return '';
-    }
-
-    async function init() {
-      try {
-        var res = await fetch('/api/tenants/by-slug/' + encodeURIComponent(slug) + '/board');
-        if (!res.ok) {
-          app.innerHTML = '<div class="empty"><h1>Board not available</h1><p>This tailnet does not have a public board.</p><a class="back-link" href="/">Go to dashboard</a></div>';
-          return;
-        }
-        var data = await res.json();
-        renderBoard(data);
-      } catch (e) {
-        app.innerHTML = '<div class="empty">Failed to load board.</div>';
-      }
-    }
-
-    function renderBoard(data) {
-      var html = '<h1>' + esc(data.tenant.name) + '</h1>' +
-        '<p class="subtitle">Public service board</p>';
-
-      if (data.posts.length === 0) {
-        html += '<div class="empty">No posts yet.</div>';
-      } else {
-        html += data.posts.map(function(p) {
-          return '<div class="post-card" onclick="showService(this, event)" data-url="' + esc(p.serviceUrl) + '" data-service-desc="' + esc(p.serviceDescription || '') + '">' +
-            '<div class="post-title">' + esc(p.title) + '</div>' +
-            (p.description ? '<div class="post-desc">' + esc(p.description) + '</div>' : '') +
-            '<div class="post-meta">' +
-              '<span class="service-tag">' + esc(p.serviceName) + '</span>' +
-              '<span>by ' + esc(p.authorDisplayName || p.authorHandle) + '</span>' +
-              '<span>' + new Date(p.createdAt).toLocaleDateString() + '</span>' +
-            '</div>' +
-          '</div>';
-        }).join('');
-      }
-
-      html += '<a class="back-link" href="/">Go to dashboard</a>';
-      app.innerHTML = html;
-    }
-
-    function showService(el, event) {
-      var url = el.getAttribute('data-url');
-      var desc = el.getAttribute('data-service-desc');
-      var existing = el.querySelector('.service-detail');
-      if (existing) { existing.remove(); return; }
-      var detail = document.createElement('div');
-      detail.className = 'service-detail';
-      detail.style.cssText = 'margin-top:12px;padding:12px;background:var(--bg);border:1px solid var(--border);border-radius:6px;font-size:13px';
-      var safe = safeUrl(url);
-      detail.innerHTML = (desc ? '<p style="margin-bottom:8px">' + esc(desc) + '</p>' : '') +
-        (safe ? '<p>Service URL: <a href="' + safe + '" target="_blank" rel="noopener">' + safe + '</a></p>' : '<p>Service URL: ' + esc(url) + '</p>');
-      el.appendChild(detail);
-      event.stopPropagation();
-    }
-
-    init();
-  </script>
+  <script src="/js/board.js"></script>
 </body>
 </html>`;
 

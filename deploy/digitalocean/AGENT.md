@@ -189,7 +189,7 @@ COORD_LISTEN=0.0.0.0:9443
 COORD_ADMIN_KEY=${COORDINATOR_API_KEY}
 
 # Caddy
-CADDY_ADMIN_URL=http://caddy:2019
+CADDY_ADMIN_URL=http://10.250.250.2:2019
 APP_DOMAIN=${APP_DOMAIN}
 
 # TLS — DigitalOcean DNS-01 wildcard
@@ -292,7 +292,7 @@ curl -f "https://${APP_DOMAIN}/health"
 # Expected: {"status":"ok"} with HTTP 200
 ```
 
-Caddy sets HSTS on `APP_DOMAIN`. Tenant subdomains (`<slug>.BASE_DOMAIN`) expose only `/key`, `/ts2021`, and `/health` from the coordinator. The `app` and `coordinator` containers run as non-root users.
+Caddy sets HSTS on `APP_DOMAIN`. Tenant subdomains (`<slug>.BASE_DOMAIN`) expose only `/key` and `/ts2021` from the coordinator. The Caddy admin API listens only on the private `caddy_admin` network (10.250.250.0/29), which only the `app` container joins. The `app` and `coordinator` containers run as non-root users.
 
 ### Operator check
 

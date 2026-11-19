@@ -8,6 +8,8 @@ import * as jose from "jose";
 import * as crypto from "node:crypto";
 import * as net from "node:net";
 import { lookup } from "node:dns/promises";
+import dns, { type LookupAddress } from "node:dns";
+import https from "node:https";
 import {
   parseMultikey,
   formatDidKey,
@@ -34,6 +36,8 @@ const RESOLUTION_TIMEOUT_MS = 5000;
 const DEFAULT_CACHE_TTL_MS = 5 * 60 * 1000;
 const MAX_CACHE_SIZE = 500;
 const MAX_DID_LENGTH = 512;
+/** Largest DID document accepted from an attacker-chosen did:web host. */
+export const MAX_DID_DOC_BYTES = 256 * 1024;
 
 export interface DIDResolverOptions {
   cacheTtlMs?: number;
@@ -103,18 +107,8 @@ export class DIDResolver implements PublicKeyResolver {
         return null;
       }
 
-      const res = await fetch(url, {
-        signal: AbortSignal.timeout(RESOLUTION_TIMEOUT_MS),
-        headers: { Accept: "application/did+json,application/json" },
-        redirect: "error",
-      });
-
-      if (!res.ok) {
-        logger.warn({ did, status: res.status }, "did:web resolution failed");
-        return null;
-      }
-
-      const doc = (await res.json()) as DIDDocument;
+      const doc = (await this.getDidWebJson(did, url)) as DIDDocument | null;
+      if (!doc) return null;
       if (doc.id !== did) {
         logger.warn({ did, docId: doc.id }, "did:web document id mismatch");
         return null;
@@ -204,6 +198,36 @@ export class DIDResolver implements PublicKeyResolver {
     return null;
   }
 
+  /**
+   * GET a did:web document. With the default host policy (production) this
+   * goes through {@link guardedGetJson}: the public-address check is repeated
+   * at connect time (no DNS-rebinding window) and the body is size-capped.
+   * A custom `hostCheck` (tests) uses plain `fetch`.
+   */
+  private async getDidWebJson(did: string, url: string): Promise<unknown | null> {
+    if (this.hostCheck === isPublicHost) {
+      const out = await guardedGetJson(url, {
+        timeoutMs: RESOLUTION_TIMEOUT_MS,
+        maxBytes: MAX_DID_DOC_BYTES,
+      });
+      if (!out.ok) {
+        logger.warn({ did, status: out.status }, "did:web resolution failed");
+        return null;
+      }
+      return out.json;
+    }
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(RESOLUTION_TIMEOUT_MS),
+      headers: { Accept: "application/did+json,application/json" },
+      redirect: "error",
+    });
+    if (!res.ok) {
+      logger.warn({ did, status: res.status }, "did:web resolution failed");
+      return null;
+    }
+    return res.json();
+  }
+
   private async fetchDidWebDoc(did: string): Promise<DIDDocument | null> {
     try {
       const url = didWebToUrl(did);
@@ -211,16 +235,8 @@ export class DIDResolver implements PublicKeyResolver {
         logger.warn({ did }, "did:web host refused (not a public address)");
         return null;
       }
-      const res = await fetch(url, {
-        signal: AbortSignal.timeout(RESOLUTION_TIMEOUT_MS),
-        headers: { Accept: "application/did+json,application/json" },
-        redirect: "error",
-      });
-      if (!res.ok) {
-        logger.warn({ did, status: res.status }, "did:web resolution failed");
-        return null;
-      }
-      const doc = (await res.json()) as DIDDocument;
+      const doc = (await this.getDidWebJson(did, url)) as DIDDocument | null;
+      if (!doc) return null;
       if (doc.id !== did) {
         logger.warn({ did, docId: doc.id }, "did:web document id mismatch");
         return null;
@@ -464,9 +480,8 @@ export function isPublicAddress(address: string): boolean {
 
 /**
  * Default did:web host policy: HTTPS default port only, and every address the
- * name resolves to must be public. (A name that re-resolves differently
- * between this check and the fetch can still slip through; the fetch also
- * refuses redirects and the response is only ever parsed as a DID document.)
+ * name resolves to must be public. The fetch repeats the check at connect
+ * time ({@link guardedGetJson}), refuses redirects and caps the body size.
  */
 export async function isPublicHost(host: string): Promise<boolean> {
   let hostname: string;
@@ -525,4 +540,92 @@ export function getResolver(): DIDResolver {
     defaultResolver = new DIDResolver({ localLookup: lookupLocalCollectiveKey });
   }
   return defaultResolver;
+}
+
+/**
+ * DNS lookup that refuses non-public answers. Used at connect time so a
+ * DNS-rebinding answer cannot slip a private address in after validation.
+ */
+export function guardedLookup(
+  hostname: string,
+  options: dns.LookupOptions,
+  callback: (err: NodeJS.ErrnoException | null, address: string | LookupAddress[], family?: number) => void,
+): void {
+  dns.lookup(hostname, { ...options, all: true }, (err, addresses) => {
+    if (err) return callback(err, "");
+    const list = addresses as LookupAddress[];
+    if (list.length === 0 || !list.every((a) => isPublicAddress(a.address))) {
+      return callback(
+        Object.assign(new Error("Host resolves to a non-public address"), { code: "EPRIVATE" }),
+        "",
+      );
+    }
+    if (options.all) callback(null, list);
+    else callback(null, list[0].address, list[0].family);
+  });
+}
+
+/**
+ * HTTPS GET of a JSON document from an untrusted host: public addresses only
+ * (checked at connect time), no redirects, timeout, and a body size cap.
+ */
+export function guardedGetJson(
+  url: string,
+  opts: { timeoutMs: number; maxBytes: number },
+): Promise<{ ok: boolean; status: number; json: unknown }> {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    if (u.protocol !== "https:") {
+      reject(new Error("Only https is allowed"));
+      return;
+    }
+    const host = u.hostname.replace(/^\[|\]$/g, "");
+    if (net.isIP(host) && !isPublicAddress(host)) {
+      reject(new Error("Host is a non-public address"));
+      return;
+    }
+    const req = https.get(
+      u,
+      {
+        headers: { Accept: "application/did+json,application/json" },
+        lookup: guardedLookup as unknown as typeof dns.lookup,
+        signal: AbortSignal.timeout(opts.timeoutMs),
+        timeout: opts.timeoutMs,
+      },
+      (res) => {
+        const status = res.statusCode ?? 0;
+        if (status < 200 || status >= 300) {
+          res.resume(); // 3xx is never followed
+          resolve({ ok: false, status, json: null });
+          return;
+        }
+        const declared = Number(res.headers["content-length"]);
+        if (Number.isFinite(declared) && declared > opts.maxBytes) {
+          res.destroy();
+          reject(new Error("Response too large"));
+          return;
+        }
+        const chunks: Buffer[] = [];
+        let size = 0;
+        res.on("data", (chunk: Buffer) => {
+          size += chunk.length;
+          if (size > opts.maxBytes) {
+            res.destroy(new Error("Response too large"));
+            return;
+          }
+          chunks.push(chunk);
+        });
+        res.on("error", reject);
+        res.on("end", () => {
+          try {
+            resolve({ ok: true, status, json: JSON.parse(Buffer.concat(chunks).toString("utf8")) });
+          } catch (err) {
+            reject(err);
+          }
+        });
+      },
+    );
+    req.on("timeout", () => req.destroy(new Error("Request timed out")));
+    req.on("error", reject);
+  });
 }

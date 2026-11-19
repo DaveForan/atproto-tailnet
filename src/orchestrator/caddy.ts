@@ -145,7 +145,9 @@ export function tenantUpstream(
  * 404 for any other name under the base domain so it never falls through to
  * the main app.
  */
-export const COORDINATOR_PUBLIC_PATHS = ["/key", "/ts2021", "/health"];
+// /health is not exposed: it leaks the coordinator boot_id and is not needed
+// by Tailscale clients (the monitor probes the coordinator directly).
+export const COORDINATOR_PUBLIC_PATHS = ["/key", "/ts2021"];
 
 export function buildTenantRouter(
   routable: RoutableTenant[],

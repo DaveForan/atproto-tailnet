@@ -5,7 +5,8 @@ const watch = process.argv.includes("--watch");
 const shared: esbuild.BuildOptions = {
   bundle: true,
   minify: !watch,
-  sourcemap: true,
+  // No public source maps in production builds
+  sourcemap: watch,
   target: "es2021",
   jsx: "automatic",
   jsxImportSource: "react",
@@ -22,6 +23,10 @@ const configs: esbuild.BuildOptions[] = [
   {
     ...shared,
     entryPoints: { "js/join": "src/client/join.tsx" },
+  },
+  {
+    ...shared,
+    entryPoints: { "js/board": "src/client/board.ts" },
   },
 ];
 

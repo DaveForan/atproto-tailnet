@@ -167,7 +167,7 @@ describe("buildTenantRouter in coordinator mode", () => {
   it("exposes only the Tailscale client paths, never the coordinator admin API", () => {
     const router = buildTenantRouter([{ slug: "acme", port: -1 }], { ...opts, coordinator: true });
     const [tenantRoute, fallback] = router.handle[0].routes as Array<{ match?: Array<{ path?: string[] }> }>;
-    expect(tenantRoute.match?.[0].path).toEqual(["/key", "/ts2021", "/health"]);
+    expect(tenantRoute.match?.[0].path).toEqual(["/key", "/ts2021"]);
     expect(tenantRoute.match?.[0].path).not.toContain("/api/*");
     expect(fallback.match).toBeUndefined();
   });

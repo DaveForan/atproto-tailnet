@@ -60,7 +60,8 @@ services:
       PORT: "3000"
       PUBLIC_URL: ${PUBLIC_URL:-http://127.0.0.1:3000}
       BASE_DOMAIN: ${BASE_DOMAIN:-ts.localhost}
-      CADDY_ADMIN_URL: http://caddy:2019
+      # Caddy admin lives on the private caddy_admin network (app only)
+      CADDY_ADMIN_URL: http://10.250.250.2:2019
       LOG_LEVEL: ${LOG_LEVEL:-info}
       ATPROTO_PRIVATE_KEY: ${ATPROTO_PRIVATE_KEY:-}
       FEDERATION_KEY_ENCRYPTION_KEY: ${FEDERATION_KEY_ENCRYPTION_KEY:-}
@@ -83,8 +84,11 @@ services:
       retries: 5
       start_period: 30s
     networks:
-      - internal
-      - edge
+      internal:
+      edge:
+      # Fixed address so it can never take Caddy's (10.250.250.2)
+      caddy_admin:
+        ipv4_address: 10.250.250.3
 
   # ---------- PostgreSQL --------------------------------------------------
   postgres:
@@ -121,9 +125,10 @@ services:
       - "${CADDY_HTTP_PORT:-80}:80"
       - "${CADDY_HTTPS_PORT:-443}:443"
       - "${CADDY_HTTPS_PORT:-443}:443/udp"
-    expose:
-      - "2019"
     environment:
+      # Admin API bound to the caddy_admin network only — not reachable from
+      # the coordinator or anything else on the edge network.
+      CADDY_ADMIN_LISTEN: 10.250.250.2:2019
       APP_DOMAIN: ${APP_DOMAIN:-tailnets.example.com}
       BASE_DOMAIN: ${BASE_DOMAIN:-ts.example.com}
       CF_API_TOKEN: ${CF_API_TOKEN:-}
@@ -148,7 +153,9 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     networks:
-      - edge
+      edge:
+      caddy_admin:
+        ipv4_address: 10.250.250.2
 
 volumes:
   coord_data:
@@ -160,6 +167,13 @@ networks:
   # Postgres lives only here; Caddy is never attached to it.
   internal:
     driver: bridge
-  # Caddy and the services it proxies. Caddy's admin API (2019) is reachable only on this network.
+  # Caddy and the services it proxies.
   edge:
     driver: bridge
+  # Caddy admin API (2019): only Caddy and the app are attached. No egress.
+  caddy_admin:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.250.250.0/29

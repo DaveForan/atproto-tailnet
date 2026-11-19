@@ -129,6 +129,9 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
     s.userId = userId;
     s.did = did;
   }
+  // x-login-nonce: the nonce /auth/login would have stored in this browser
+  const nonce = req.headers["x-login-nonce"];
+  if (typeof nonce === "string") s.oauthLoginNonces = nonce.split(",");
   (req as unknown as { session: FakeSession }).session = s;
   next();
 });
@@ -140,13 +143,20 @@ const server = app.listen(0);
 const base = () => `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 afterAll(() => server.close());
 
-async function call(method: string, path: string, user?: string, body?: unknown) {
+async function call(
+  method: string,
+  path: string,
+  user?: string,
+  body?: unknown,
+  extraHeaders: Record<string, string> = {},
+) {
   const res = await fetch(base() + path, {
     method,
     redirect: "manual",
     headers: {
       "content-type": "application/json",
       ...(user ? { "x-user": user } : {}),
+      ...extraHeaders,
     },
     body: body ? JSON.stringify(body) : undefined,
   });
@@ -206,14 +216,14 @@ describe("canCreateTailnet", () => {
 // ── Sign-in ──
 describe("auth callback", () => {
   it("no membership and no right to create → no tenant provisioned, redirect to /", async () => {
-    oauthCallback.mockResolvedValue({ session: { did: "did:plc:stranger" } });
+    oauthCallback.mockResolvedValue({ session: { did: "did:plc:stranger" }, state: "nonce-1" });
     results.push(
       [], // users by did → new user
       [{ id: "u-new", did: "did:plc:stranger", handle: "stranger.test", disabledAt: null }], // insert returning
       [], // memberships → none
       [], // tailnet_creators → not a creator
     );
-    const r = await call("GET", "/auth/callback?code=x&state=y");
+    const r = await call("GET", "/auth/callback?code=x&state=y", undefined, undefined, { "x-login-nonce": "nonce-1" });
     expect(r.status).toBe(302);
     expect(r.location).toBe("/");
     expect(writes.some((w) => w.table === "tenants" && w.op === "insert")).toBe(false);
@@ -221,11 +231,50 @@ describe("auth callback", () => {
   });
 
   it("disabled users are refused with a page, no session", async () => {
-    oauthCallback.mockResolvedValue({ session: { did: "did:plc:bob" } });
+    oauthCallback.mockResolvedValue({ session: { did: "did:plc:bob" }, state: "nonce-2" });
     results.push([{ id: "u-bob", did: "did:plc:bob", handle: "bob.test", disabledAt: new Date() }]);
-    const r = await call("GET", "/auth/callback?code=x&state=y");
+    const r = await call("GET", "/auth/callback?code=x&state=y", undefined, undefined, { "x-login-nonce": "nonce-2" });
     expect(r.status).toBe(403);
     expect(r.text).toMatch(/Account disabled/);
+  });
+
+  // Login CSRF: a callback URL replayed in another browser must not sign it in
+  it.each([
+    ["no nonce in this browser", undefined, "nonce-3"],
+    ["a different browser's nonce", "other-nonce", "nonce-3"],
+    ["no state returned", "nonce-3", null],
+  ])("refuses a callback with %s", async (_label, browserNonce, returnedState) => {
+    const signOut = vi.fn().mockResolvedValue(undefined);
+    oauthCallback.mockResolvedValue({ session: { did: "did:plc:attacker", signOut }, state: returnedState });
+    const r = await call(
+      "GET",
+      "/auth/callback?code=x&state=y",
+      undefined,
+      undefined,
+      browserNonce ? { "x-login-nonce": browserNonce } : {},
+    );
+    expect(r.status).toBe(400);
+    expect(r.text).toMatch(/not started in this browser/);
+    // The DID-keyed stored OAuth session is left alone
+    expect(signOut).not.toHaveBeenCalled();
+    expect(writes.some((w) => w.table === "users")).toBe(false);
+  });
+
+  it("completes a sign-in started in another tab of the same browser", async () => {
+    oauthCallback.mockResolvedValue({ session: { did: "did:plc:bob" }, state: "tab-1" });
+    results.push([{ id: "u-bob", did: "did:plc:bob", handle: "bob.test", disabledAt: new Date() }]);
+    const r = await call("GET", "/auth/callback?code=x&state=y", undefined, undefined, {
+      "x-login-nonce": "tab-1,tab-2",
+    });
+    // Reaches the account check (disabled page), i.e. the nonce matched
+    expect(r.status).toBe(403);
+  });
+
+  it("refuses to start a sign-in from a cross-site request", async () => {
+    const r = await call("GET", "/auth/login?handle=evil.example", undefined, undefined, {
+      "sec-fetch-site": "cross-site",
+    });
+    expect(r.status).toBe(403);
   });
 });
 
@@ -618,5 +667,18 @@ describe("operator suspension bypass via MCP", () => {
     );
     expect(next).not.toHaveBeenCalled();
     expect(res.code).toBe(403);
+  });
+});
+
+describe("loginFetchSiteAllowed", () => {
+  it.each([
+    [undefined, true],
+    ["same-origin", true],
+    ["none", true],
+    ["same-site", false],
+    ["cross-site", false],
+  ])("Sec-Fetch-Site %s → %s", async (value, expected) => {
+    const { loginFetchSiteAllowed } = await import("../routes/auth.js");
+    expect(loginFetchSiteAllowed(value)).toBe(expected);
   });
 });

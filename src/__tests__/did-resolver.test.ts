@@ -325,3 +325,20 @@ describe("DIDResolver trust boundaries", () => {
     expect(await isPublicHost("8.8.8.8")).toBe(true);
   });
 });
+
+describe("guardedGetJson (did:web fetch from untrusted hosts)", () => {
+  it("refuses plain http", async () => {
+    const { guardedGetJson } = await import("../identity/resolver.js");
+    await expect(guardedGetJson("http://example.com/did.json", { timeoutMs: 1000, maxBytes: 1024 })).rejects.toThrow(
+      /https/,
+    );
+  });
+
+  it.each(["https://127.0.0.1/did.json", "https://[::1]/did.json", "https://10.0.0.1/did.json", "https://[::ffff:7f00:1]/did.json"])(
+    "refuses non-public IP literal %s without connecting",
+    async (url) => {
+      const { guardedGetJson } = await import("../identity/resolver.js");
+      await expect(guardedGetJson(url, { timeoutMs: 1000, maxBytes: 1024 })).rejects.toThrow(/non-public/);
+    },
+  );
+});

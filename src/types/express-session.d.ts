@@ -13,5 +13,7 @@ declare module "express-session" {
     did?: string;
     postLoginRedirect?: string;
     csrfToken?: string;
+    /** Nonces sent as OAuth `state` at /auth/login; the callback must match one. */
+    oauthLoginNonces?: string[];
   }
 }

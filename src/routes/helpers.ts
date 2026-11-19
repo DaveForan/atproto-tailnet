@@ -33,6 +33,10 @@ import { isInternalMcpCall } from "../mcp/internal.js";
  * persist a session cookie. Also verifies the tenant's `allowAgentTokens`
  * and `allowMemberAgentTokens` settings at runtime.
  *
+ * A Bearer header that does not resolve to a credential is refused with 401.
+ * It never falls back to the session cookie: the CSRF middleware exempts
+ * Bearer requests, so a cookie fallback would be a CSRF bypass.
+ *
  * Must be mounted **before** `requireAuth` in the middleware chain.
  */
 export async function resolveAgentToken(
@@ -40,13 +44,31 @@ export async function resolveAgentToken(
   res: Response,
   next: NextFunction,
 ): Promise<void> {
-  const authHeader = req.headers.authorization;
-  if (!authHeader?.startsWith("Bearer ")) {
+  if (!req.headers.authorization?.startsWith("Bearer ")) {
     next();
     return;
   }
+  let resolved = false;
+  await resolveBearer(req, res, () => {
+    resolved = true;
+  });
+  if (!resolved) return; // resolveBearer already sent a response
+  if (!req.agentToken && !req.mcpAuth) {
+    res
+      .status(401)
+      .set("WWW-Authenticate", 'Bearer error="invalid_token"')
+      .json({ error: "Invalid or expired token" });
+    return;
+  }
+  next();
+}
 
-  const raw = authHeader.slice(7);
+async function resolveBearer(
+  req: Request,
+  res: Response,
+  next: () => void,
+): Promise<void> {
+  const raw = req.headers.authorization!.slice(7);
 
   // MCP OAuth access tokens (`mcp_…`) authenticate the request AS THE USER:
   // req.mcpAuth is set, req.agentToken stays unset, so agent-token scope and

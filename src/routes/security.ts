@@ -40,7 +40,7 @@ import { config } from "../config.js";
 import { validateWebhookUrl } from "../notifications/webhook.js";
 import { notificationsRouter } from "./notifications.js";
 import { enforceDeviceLimit, enforceMemberLimit } from "./limits.js";
-import { issueMemberKey } from "./access.js";
+import { issueMemberKey, revokeAllTenantKeys } from "./access.js";
 
 /**
  * Router for tenant settings, roles CRUD, role assignment, device approvals/locks,
@@ -329,6 +329,27 @@ securityRouter.patch(
       .set(updates)
       .where(eq(tenants.id, result.tenant.id));
 
+    // Entering lockdown also revokes keys already handed out, so a leaked
+    // reusable key can't keep enrolling devices during the lockdown.
+    if (parsed.data.lockdownMode === true && !result.tenant.lockdownMode) {
+      // Lockdown is already on at this point; a revocation failure is logged,
+      // never turned into an error response.
+      try {
+        const client = getControlClient(result.tenant);
+        const keysRevoked = await revokeAllTenantKeys(result.tenant.id, client);
+        logAudit({
+          tenantId: result.tenant.id,
+          actorUserId: authUserId(req),
+          action: "tenant_settings_updated",
+          targetType: "tenant",
+          targetId: result.tenant.id,
+          metadata: { lockdownKeysRevoked: keysRevoked },
+        });
+      } catch (err) {
+        logger.error({ tenantId: result.tenant.id, err }, "lockdown: failed to revoke outstanding keys");
+      }
+    }
+
     const [updated] = await db
       .select()
       .from(tenants)
@@ -560,6 +581,28 @@ securityRouter.delete(
       return;
     }
 
+    // Anti-escalation: holders (possibly the caller) move to the default role,
+    // so the caller must already hold everything the default role grants.
+    if (tenant.defaultRoleId) {
+      const [defaultRole] = await db
+        .select()
+        .from(roles)
+        .where(and(eq(roles.id, tenant.defaultRoleId), eq(roles.tenantId, tenantId)));
+      const lacking = missingPermissions(
+        result.membership,
+        result.role,
+        (defaultRole?.permissions as string[] | undefined) ?? [],
+        req,
+      );
+      if (lacking.length > 0) {
+        res.status(403).json({
+          error: "Deleting this role would move its members to a default role with permissions you do not hold",
+          permissions: lacking,
+        });
+        return;
+      }
+    }
+
     // Reassign members to the tenant's default role (or null as last resort)
     await db
       .update(memberships)
@@ -709,6 +752,19 @@ securityRouter.patch(
 
     if (targetRole.isSystem && targetRole.name === "originator") {
       res.status(403).json({ error: "Cannot set originator as the default role" });
+      return;
+    }
+
+    // Anti-escalation: new members (and holders of deleted roles) get the
+    // default role, so it may only grant permissions the caller holds.
+    const lacking = missingPermissions(
+      result.membership,
+      result.role,
+      targetRole.permissions as string[],
+      req,
+    );
+    if (lacking.length > 0) {
+      res.status(403).json({ error: "Cannot make a role with permissions you do not hold the default", permissions: lacking });
       return;
     }
 

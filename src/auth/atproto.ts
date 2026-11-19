@@ -12,7 +12,7 @@ import type {
   NodeSavedSession,
 } from "@atproto/oauth-client-node";
 import { JoseKey } from "@atproto/jwk-jose";
-import { eq } from "drizzle-orm";
+import { eq, lt } from "drizzle-orm";
 import { config, isLoopbackDeployment } from "../config.js";
 import { db } from "../db/index.js";
 import { oauthStates, oauthSessions } from "../db/schema.js";
@@ -50,6 +50,16 @@ const dbStateStore: StateStore = {
     await db.delete(oauthStates).where(eq(oauthStates.key, key));
   },
 };
+
+/** Pending OAuth states older than this are abandoned sign-ins. */
+export const OAUTH_STATE_TTL_MS = 60 * 60 * 1000;
+
+/** Delete abandoned OAuth login states (called from the monitor sweep). */
+export async function sweepExpiredOAuthStates(now = new Date()): Promise<void> {
+  await db
+    .delete(oauthStates)
+    .where(lt(oauthStates.createdAt, new Date(now.getTime() - OAUTH_STATE_TTL_MS)));
+}
 
 const dbSessionStore: SessionStore = {
   async get(key) {

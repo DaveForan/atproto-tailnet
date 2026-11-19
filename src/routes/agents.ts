@@ -94,8 +94,9 @@ agentsRouter.post(
       return;
     }
 
-    if (req.agentToken && !hasPermission(result.membership, result.role, "create_agent_tokens", req)) {
-      res.status(403).json({ error: "Agent token lacks create_agent_tokens permission" });
+    // A token minting tokens could outlive its own expiry and revocation.
+    if (req.agentToken) {
+      res.status(403).json({ error: "Agent tokens cannot create agent tokens" });
       return;
     }
 
