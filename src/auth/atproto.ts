@@ -112,7 +112,7 @@ export async function getOAuthClient(): Promise<NodeOAuthClient> {
   } else {
     const privateKey = await JoseKey.fromImportable(
       config.atprotoPrivateKey ?? "",
-      "key1",
+      atprotoKeyId(config.atprotoPrivateKey),
     );
 
     clientInstance = new NodeOAuthClient({
@@ -158,11 +158,22 @@ export function getClientMetadata(): object {
   };
 }
 
+/** Use the JWK's own `kid` when it has one; a mismatched kid breaks every login. */
+export function atprotoKeyId(keyStr: string | undefined): string {
+  try {
+    const kid = (JSON.parse(keyStr ?? "") as { kid?: unknown }).kid;
+    if (typeof kid === "string" && kid.length > 0) return kid;
+  } catch {
+    // PEM or malformed input: fall through to the default
+  }
+  return "key1";
+}
+
 /** Returns the public JWKS, served at `/.well-known/jwks.json`. Empty if no private key is configured. */
 export async function getPublicJwks(): Promise<{ keys: unknown[] }> {
   const keyStr = config.atprotoPrivateKey;
   if (!keyStr) return { keys: [] };
-  const key = await JoseKey.fromImportable(keyStr, "key1");
+  const key = await JoseKey.fromImportable(keyStr, atprotoKeyId(keyStr));
   const pub = key.publicJwk;
   return { keys: pub ? [pub] : [] };
 }

@@ -194,3 +194,17 @@ pub async fn __test_map_request(
 ) -> axum::http::Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::io::Error>> {
     noise_handler::handle_map_request(state, machine_key, body).await
 }
+
+/// Serve the Noise-side control HTTP/2 protocol over an arbitrary stream
+/// (tests drive it over an in-memory duplex without the Noise layer).
+#[doc(hidden)]
+pub async fn __test_serve_control_h2(
+    state: Arc<CoordinatorState>,
+    io: tokio::io::DuplexStream,
+    machine_key: [u8; 32],
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    noise_handler::serve_control_h2(state, io, machine_key).await
+}
+
+pub use noise_handler::{MAX_CONCURRENT_STREAMS, MAX_CONTROL_BODY};
+pub use state::DEFAULT_MAX_NOISE_CONNECTIONS;

@@ -348,6 +348,7 @@ dependencies = [
  "coord-noise",
  "coord-proto",
  "coord-store",
+ "h2",
  "hex",
  "http-body-util",
  "hyper",

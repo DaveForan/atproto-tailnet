@@ -2699,3 +2699,279 @@ async fn hierarchy_parent_blocked_when_child_suspended() {
     let peers = resp["Peers"].as_array().map(|p| p.len()).unwrap_or(0);
     assert_eq!(peers, 0, "parent must not see a suspended child's nodes");
 }
+
+// ── Security hardening: re-auth, client field bounds, Noise limits ──
+
+/// Register `mkey` with an explicit node key byte / old node key / auth key.
+async fn register_raw(
+    state: &Arc<CoordinatorState>,
+    mkey: u8,
+    node_key: u8,
+    old_node_key: Option<u8>,
+    auth_key: Option<&str>,
+    hostinfo: serde_json::Value,
+) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "Version": 2,
+        "NodeKey": format!("nodekey:{}", hex::encode([node_key; 32])),
+        "Hostinfo": hostinfo,
+    });
+    if let Some(old) = old_node_key {
+        body["OldNodeKey"] = serde_json::json!(format!("nodekey:{}", hex::encode([old; 32])));
+    }
+    if let Some(k) = auth_key {
+        body["Auth"] = serde_json::json!({ "AuthKey": k });
+    }
+    let out = coord_api::__test_handle_register(state, &[mkey; 32], &body.to_string()).await.unwrap();
+    serde_json::from_str(&out).unwrap()
+}
+
+#[tokio::test]
+async fn reauth_with_new_key_replaces_owner_tags_and_auto_approvals() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "reauth").await;
+    let (status, _) = api_call(&app, "PUT", format!("/api/tenants/{t}/auto-approvers"),
+        Some(serde_json::json!({ "routes": { "10.0.0.0/8": ["tag:relay"] } }))).await;
+    assert_eq!(status, StatusCode::OK);
+    let tagged = api_key(&app, serde_json::json!({
+        "tenant_id": t.to_string(), "owner": "did:plc:alice", "tags": ["tag:relay"],
+    })).await;
+    let plain = api_key(&app, serde_json::json!({
+        "tenant_id": t.to_string(), "owner": "did:plc:bob", "ephemeral": true,
+    })).await;
+
+    let hi = serde_json::json!({ "Hostname": "relay", "OS": "linux", "RoutableIPs": ["10.1.0.0/16"] });
+    let r = register_raw(&state, 60, 61, None, Some(tagged["key"].as_str().unwrap()), hi.clone()).await;
+    assert_eq!(r["MachineAuthorized"], true);
+    let nid = node_id_of(&state, 60).await;
+    let (_, n) = api_call(&app, "GET", format!("/api/nodes/{nid}"), None).await;
+    assert_eq!(n["approved_routes"], serde_json::json!(["10.1.0.0/16"]));
+    let ip_before = n["ipv4"].clone();
+
+    // The node's own map stream must hear about the re-auth.
+    let mut own_stream = open_stream(&state, 60).await;
+
+    // `tailscale up --force-reauth --auth-key=<untagged>`: new node key + OldNodeKey + key.
+    let r = register_raw(&state, 60, 62, Some(61), Some(plain["key"].as_str().unwrap()), hi.clone()).await;
+    assert_eq!(r["MachineAuthorized"], true, "{r}");
+    assert_eq!(node_id_of(&state, 60).await, nid, "same machine keeps its node");
+    let (_, n) = api_call(&app, "GET", format!("/api/nodes/{nid}"), None).await;
+    assert_eq!(n["owner"], "did:plc:bob", "{n}");
+    assert_eq!(n["tags"], serde_json::json!([]), "{n}");
+    assert_eq!(n["ephemeral"], true, "{n}");
+    assert_eq!(n["approved_routes"], serde_json::json!([]), "auto-approval from the old tags must not persist: {n}");
+    assert_eq!(n["advertised_routes"], serde_json::json!(["10.1.0.0/16"]), "{n}");
+    assert_eq!(n["ipv4"], ip_before, "{n}");
+    let frame = next_map_frame(&mut own_stream).await.expect("re-auth pushes a snapshot");
+    assert!(frame["Node"].is_object(), "{frame}");
+
+    // Re-auth back onto a tagged key re-evaluates auto-approval.
+    let tagged2 = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "tags": ["tag:relay"] })).await;
+    let r = register_raw(&state, 60, 63, Some(62), Some(tagged2["key"].as_str().unwrap()), hi).await;
+    assert_eq!(r["MachineAuthorized"], true);
+    let (_, n) = api_call(&app, "GET", format!("/api/nodes/{nid}"), None).await;
+    assert_eq!(n["tags"], serde_json::json!(["tag:relay"]), "{n}");
+    assert_eq!(n["approved_routes"], serde_json::json!(["10.1.0.0/16"]), "{n}");
+}
+
+#[tokio::test]
+async fn reregister_with_matching_node_key_does_not_burn_single_use_key() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "no-burn").await;
+    let first = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "tags": ["tag:a"] })).await;
+    let hi = serde_json::json!({ "Hostname": "box", "OS": "linux" });
+    assert_eq!(register_raw(&state, 66, 67, None, Some(first["key"].as_str().unwrap()), hi.clone()).await["MachineAuthorized"], true);
+
+    // Restart re-sending the (now used) key with the same node key stays authorized.
+    assert_eq!(register_raw(&state, 66, 67, None, Some(first["key"].as_str().unwrap()), hi.clone()).await["MachineAuthorized"], true);
+
+    // Same node key + a fresh single-use key: authorized, key untouched, attrs unchanged.
+    let fresh = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "tags": ["tag:b"] })).await;
+    assert_eq!(register_raw(&state, 66, 67, None, Some(fresh["key"].as_str().unwrap()), hi.clone()).await["MachineAuthorized"], true);
+    let (_, n) = api_call(&app, "GET", format!("/api/nodes/{}", node_id_of(&state, 66).await), None).await;
+    assert_eq!(n["tags"], serde_json::json!(["tag:a"]), "{n}");
+    let r = register_raw(&state, 68, 69, None, Some(fresh["key"].as_str().unwrap()), hi).await;
+    assert_eq!(r["MachineAuthorized"], true, "single-use key must still be usable: {r}");
+}
+
+#[tokio::test]
+async fn reauth_with_other_tenants_key_refused_without_consuming_it() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "mine").await;
+    let other = create_test_tenant(&state, "theirs").await;
+    let mine = state.store().create_preauth_key(t, false).await.unwrap();
+    let theirs = api_key(&app, serde_json::json!({ "tenant_id": other.to_string() })).await;
+    let theirs = theirs["key"].as_str().unwrap();
+    let hi = serde_json::json!({ "Hostname": "box", "OS": "linux" });
+    register_raw(&state, 70, 71, None, Some(&mine), hi.clone()).await;
+
+    let r = register_raw(&state, 70, 72, Some(71), Some(theirs), hi.clone()).await;
+    assert_eq!(r["MachineAuthorized"], false, "{r}");
+    assert!(r["Error"].as_str().unwrap().contains("different tailnet"), "{r}");
+    assert_eq!(register_raw(&state, 74, 75, None, Some(theirs), hi).await["MachineAuthorized"], true);
+}
+
+#[tokio::test]
+async fn hostnames_are_single_dns_labels_and_cannot_spoof_fqdns() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "names").await;
+    let key = state.store().create_preauth_key(t, true).await.unwrap();
+    let long = "Ab".repeat(200);
+    for (mkey, name) in [(80u8, "observer"), (82, "victim.other.mesh.local"), (84, "..."), (86, long.as_str()), (88, "My Laptop")] {
+        let r = register_raw(&state, mkey, mkey + 1, None, Some(&key), serde_json::json!({ "Hostname": name, "OS": "x".repeat(5000) })).await;
+        assert_eq!(r["MachineAuthorized"], true);
+    }
+    let map = map_of(&state, 80, None).await;
+    let names: std::collections::HashMap<i64, String> = map["Peers"].as_array().unwrap().iter()
+        .map(|p| (p["ID"].as_i64().unwrap(), p["Name"].as_str().unwrap().to_string()))
+        .collect();
+    let dots = names[&node_id_of(&state, 82).await].clone();
+    assert_eq!(dots, "victim-other-mesh-local.mesh.local.");
+    let empty_id = node_id_of(&state, 84).await;
+    assert_eq!(names[&empty_id], format!("node-{empty_id}.mesh.local."));
+    let label = names[&node_id_of(&state, 86).await].trim_end_matches(".mesh.local.").to_string();
+    assert_eq!(label.len(), 63);
+    assert!(label.chars().all(|c| c.is_ascii_lowercase()), "{label}");
+    assert_eq!(names[&node_id_of(&state, 88).await], "my-laptop.mesh.local.");
+    for name in names.values() {
+        assert_eq!(name.matches('.').count(), 3, "exactly <label>.mesh.local.: {name}");
+    }
+    let (_, n) = api_call(&app, "GET", format!("/api/nodes/{}", node_id_of(&state, 82).await), None).await;
+    assert_eq!(n["hostname"], "victim-other-mesh-local", "stored sanitised: {n}");
+    let os = state.store().get_node_info(coord_core::NodeId::new(node_id_of(&state, 82).await)).await.unwrap().info.os;
+    assert_eq!(os.len(), coord_core::sanitize::MAX_OS_LEN);
+
+    // Admin renames are re-sanitised on the way out too.
+    let id = node_id_of(&state, 88).await;
+    let (status, _) = api_call(&app, "POST", format!("/api/nodes/{id}/name"), Some(serde_json::json!({ "name": "a.observer" }))).await;
+    assert_eq!(status, StatusCode::OK);
+    let map = map_of(&state, 80, None).await;
+    let peer = map["Peers"].as_array().unwrap().iter().find(|p| p["ID"] == id).unwrap().clone();
+    assert_eq!(peer["Name"], "a-observer.mesh.local.");
+}
+
+#[tokio::test]
+async fn map_bounds_endpoints_and_validates_disco_key() {
+    let (_, state) = setup();
+    let t = create_test_tenant(&state, "ep-bounds").await;
+    let key = state.store().create_preauth_key(t, true).await.unwrap();
+    for mkey in [90u8, 92] {
+        register_raw(&state, mkey, mkey + 1, None, Some(&key), serde_json::json!({ "Hostname": "n", "OS": "linux" })).await;
+    }
+    let mut endpoints: Vec<String> = (0..200).map(|i| format!("192.0.2.{}:41641", i % 250)).collect();
+    endpoints.insert(0, "x".repeat(100_000));
+    endpoints.insert(0, "not an endpoint".into());
+    let push = |disco: String, eps: Vec<String>| serde_json::json!({
+        "Version": 2,
+        "NodeKey": format!("nodekey:{}", hex::encode([93u8; 32])),
+        "DiscoKey": disco,
+        "Endpoints": eps,
+    }).to_string();
+    let good_disco = format!("discokey:{}", "cd".repeat(32));
+    coord_api::__test_handle_map(&state, &[92u8; 32], &push(good_disco.clone(), endpoints)).await.unwrap();
+    let peer = map_of(&state, 90, None).await["Peers"][0].clone();
+    let eps = peer["Endpoints"].as_array().unwrap();
+    assert_eq!(eps.len(), coord_core::sanitize::MAX_ENDPOINTS);
+    assert_eq!(eps[0], "192.0.2.0:41641");
+    assert_eq!(peer["DiscoKey"], good_disco);
+
+    // Oversized / malformed disco keys are ignored (previous value kept).
+    for bad in [format!("discokey:{}", "a".repeat(10_000)), "discokey:zz".into(), "cd".repeat(32)] {
+        coord_api::__test_handle_map(&state, &[92u8; 32], &push(bad, vec![])).await.unwrap();
+        assert_eq!(map_of(&state, 90, None).await["Peers"][0]["DiscoKey"], good_disco);
+    }
+}
+
+#[tokio::test]
+async fn noise_connection_cap_refuses_before_handshake() {
+    let key = coord_noise::generate_control_key();
+    let ts2021 = || Request::builder()
+        .method("POST")
+        .uri("/ts2021")
+        .header("upgrade", "tailscale-control-protocol")
+        .header("connection", "upgrade")
+        .header("X-Tailscale-Handshake", "AAAA")
+        .body(Body::empty())
+        .unwrap();
+
+    let capped = coord_api::router(Arc::new(CoordinatorState::new(key.clone()).with_max_noise_connections(0)));
+    let resp = capped.oneshot(ts2021()).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    // With headroom the same request reaches the handshake (and fails there).
+    let open = coord_api::router(Arc::new(CoordinatorState::new(key)));
+    let resp = open.oneshot(ts2021()).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    const { assert!(coord_api::DEFAULT_MAX_NOISE_CONNECTIONS >= 1024) };
+}
+
+#[tokio::test]
+async fn noise_h2_caps_streams_and_body_size() {
+    let (_, state) = setup();
+
+    // The server advertises a small SETTINGS_MAX_CONCURRENT_STREAMS.
+    let (client_io, server_io) = tokio::io::duplex(1 << 20);
+    tokio::spawn(coord_api::__test_serve_control_h2(state.clone(), server_io, [99u8; 32]));
+    let (mut client, mut conn) = h2::client::handshake(client_io).await.unwrap();
+    // Drive the connection until the server's SETTINGS frame has been applied.
+    let req = axum::http::Request::post("/machine/register").body(()).unwrap();
+    let (resp, mut send) = client.send_request(req, false).unwrap();
+    send.send_data(bytes::Bytes::from_static(b"{}"), true).unwrap();
+    let resp = tokio::select! {
+        r = resp => r.unwrap(),
+        _ = &mut conn => panic!("connection closed"),
+    };
+    assert!(resp.status().is_server_error() || resp.status().is_client_error());
+    assert_eq!(conn.max_concurrent_send_streams(), coord_api::MAX_CONCURRENT_STREAMS as usize);
+    const { assert!(coord_api::MAX_CONCURRENT_STREAMS <= 16) };
+    drop(client);
+
+    // Bodies over the cap are rejected (not buffered); small ones are processed.
+    let (client_io, server_io) = tokio::io::duplex(1 << 20);
+    tokio::spawn(coord_api::__test_serve_control_h2(state.clone(), server_io, [98u8; 32]));
+    let (mut sender, conn) = hyper::client::conn::http2::handshake(
+        hyper_util::rt::TokioExecutor::new(),
+        hyper_util::rt::TokioIo::new(client_io),
+    )
+    .await
+    .unwrap();
+    tokio::spawn(conn);
+    let post = |len: usize| {
+        axum::http::Request::post("/machine/register")
+            .body(http_body_util::Full::new(bytes::Bytes::from(vec![b' '; len])))
+            .unwrap()
+    };
+    let resp = sender.send_request(post(coord_api::MAX_CONTROL_BODY + 1)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let body = resp.into_body().collect().await.unwrap().to_bytes();
+    assert!(String::from_utf8_lossy(&body).contains("too large"));
+    let resp = sender.send_request(post(1024)).await.unwrap();
+    assert_ne!(resp.status(), StatusCode::BAD_REQUEST, "small body must reach the handler");
+    const { assert!(coord_api::MAX_CONTROL_BODY <= 512 * 1024) };
+}
+
+#[tokio::test]
+async fn suspension_tells_clients_to_drop_peers_before_cutting_the_stream() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "cutoff").await;
+    let key = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "reusable": true })).await;
+    let key = key["key"].as_str().unwrap().to_string();
+    register_routes(&state, 70, &key, "cut-a", None).await;
+    register_routes(&state, 80, &key, "cut-b", None).await;
+    let peer_b = state.store().get_node_by_machine_key(&[80u8; 32]).await.unwrap().as_i64();
+    let mut stream = open_stream(&state, 70).await;
+
+    set_suspended(&app, t, true).await;
+
+    let mut cutoff = None;
+    for _ in 0..8 {
+        match next_map_frame(&mut stream).await {
+            Some(frame) if frame.get("PeersRemoved").is_some() => cutoff = Some(frame),
+            Some(_) => continue,
+            None => break,
+        }
+    }
+    let cutoff = cutoff.expect("a cutoff frame before the stream ends");
+    assert!(cutoff["PeersRemoved"].as_array().unwrap().iter().any(|id| id == peer_b));
+    assert_eq!(cutoff["PacketFilter"], serde_json::json!([]), "deny-all filter");
+}

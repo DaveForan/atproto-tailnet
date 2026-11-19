@@ -2,7 +2,8 @@
  * @module routes/mcp-connections
  * The signed-in user's MCP OAuth grants ("connections") for the dashboard:
  *
- * - GET    /api/mcp/connections      → [{id, clientName, createdAt, lastUsedAt}]
+ * - GET    /api/mcp/connections      → [{id, clientName, operator, createdAt, lastUsedAt}]
+ *   (`operator: true` when the grant includes the instance-operator scope)
  * - DELETE /api/mcp/connections/:id  → revokes the grant and all its tokens
  *
  * Dashboard session only: agent tokens and MCP tokens cannot list or revoke
@@ -23,6 +24,7 @@ export function createMcpConnectionsRouter(provider: TailnetOAuthProvider): Rout
       grants.map((g) => ({
         id: g.id,
         clientName: g.clientName,
+        operator: g.operator,
         createdAt: g.createdAt,
         lastUsedAt: g.lastUsedAt,
       })),

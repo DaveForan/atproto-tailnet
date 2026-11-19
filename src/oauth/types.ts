@@ -2,8 +2,9 @@
  * @module oauth/types
  * Request/session augmentations for MCP OAuth.
  *
- * - `req.mcpAuth` — set by `resolveAgentToken` (routes/helpers.ts) when the
- *   request carries a valid MCP access token (`Authorization: Bearer mcp_…`).
+ * - `req.mcpAuth` — set by `resolveAgentToken` (routes/helpers.ts) when an
+ *   internal /mcp tool call carries a valid MCP access token (`Authorization:
+ *   Bearer mcp_…` plus the per-process secret header; external use is a 401).
  *   It authenticates the request AS THE USER; it is never an agent token, so
  *   `req.agentToken` stays unset.
  * - `session.mcpPendingAuthz` — consent requests awaiting Allow/Deny.
@@ -19,6 +20,8 @@ export interface PendingAuthorization {
   state?: string;
   scopes: string[];
   resource: string;
+  /** Whether the consent page may offer the operator checkbox (user is an operator). */
+  operatorEligible?: boolean;
   /** ms since epoch */
   expiresAt: number;
 }
@@ -38,6 +41,8 @@ declare global {
         userId: string;
         clientId: string;
         grantId: string;
+        /** The grant includes the instance-operator scope (consent checkbox). */
+        operator: boolean;
       };
     }
   }

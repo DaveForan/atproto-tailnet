@@ -20,7 +20,7 @@ services:
       COORD_LISTEN: "0.0.0.0:9443"
       COORD_STORE_BACKEND: postgres
       COORD_CONTROL_KEY_PATH: /var/lib/coordinator/control.key
-      COORD_ADMIN_KEY: dev-coordinator-key
+      COORD_ADMIN_KEY: dev-coordinator-key-local-only-0000000000
       DATABASE_URL: postgresql://atproto_tailnet:atproto_tailnet@postgres:5432/atproto_tailnet
       RUST_LOG: "debug"
     volumes:

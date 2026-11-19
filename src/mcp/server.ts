@@ -7,7 +7,7 @@
  * Mcp-Session-Id, JSON responses). Nothing lives in memory between requests,
  * so restarts and multiple instances need no session affinity, and the tool
  * list is computed per request from the caller (operator tools only for
- * operators). The tools are thin REST calls, so there is nothing to stream and
+ * operators whose grant includes the operator scope). The tools are thin REST calls, so there is nothing to stream and
  * no server-initiated messages — GET (SSE) and DELETE answer 405.
  */
 import { Router } from "express";
@@ -102,7 +102,10 @@ export function createMcpRouter(opts: McpRouterOptions): Router {
       { name: "atproto-tailnet", version: "1.0.0" },
       { instructions: MCP_INSTRUCTIONS },
     );
-    registerTools(server, api, { isOperator: await isOperator(grantKey, api) });
+    // Operator tools need BOTH the operator scope on this grant (opt-in
+    // checkbox at consent) and the user still being an operator.
+    const operatorScope = auth.extra?.operator === true;
+    registerTools(server, api, { isOperator: operatorScope && (await isOperator(grantKey, api)) });
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,

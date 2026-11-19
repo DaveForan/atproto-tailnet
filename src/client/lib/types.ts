@@ -118,6 +118,26 @@ export interface OperatorSettings {
   defaultTailnetId: string | null;
 }
 
+export interface OperatorAuditEntry {
+  id: string;
+  tenantId: string | null;
+  tenantSlug: string | null;
+  actorUserId: string;
+  actorHandle: string | null;
+  action: string;
+  targetType: string | null;
+  targetId: string | null;
+  metadata: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+export interface OperatorAuditPage {
+  entries: OperatorAuditEntry[];
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+}
+
 export interface OperatorOverview {
   tenants: OperatorTenant[];
   users: OperatorUser[];
@@ -136,6 +156,8 @@ export interface TailnetCreator {
 export interface McpConnection {
   id: string;
   clientName: string;
+  /** Grant includes the instance-operator scope. */
+  operator?: boolean;
   createdAt: string;
   lastUsedAt: string | null;
 }

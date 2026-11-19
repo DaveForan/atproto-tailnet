@@ -177,7 +177,7 @@ impl NetmapService {
         let self_node = MapNode {
             id: node_id.as_i64(),
             stable_id: detail.stable_id,
-            name: format!("{}.mesh.local.", detail.info.hostname),
+            name: format!("{}.mesh.local.", node_label(&detail.info.hostname, node_id.as_i64())),
             user: 1,
             key: node_key_str,
             machine: format_machine_key(&MachineKey(*machine_key)),
@@ -188,7 +188,7 @@ impl NetmapService {
             endpoints: vec![],
             derp: Some(format!("127.3.3.40:{}", home_region)),
             home_derp: Some(home_region),
-            hostinfo: minimal_hostinfo(&detail.info.hostname),
+            hostinfo: minimal_hostinfo(&node_label(&detail.info.hostname, node_id.as_i64())),
             online: Some(true),
             last_seen: None,
             machine_authorized: Some(true),
@@ -254,7 +254,7 @@ impl NetmapService {
                 let peer = MapNode {
                     id: node_id.as_i64(),
                     stable_id: format!("peer-{}", node_id.as_i64()),
-                    name: format!("{}.mesh.local.", detail.info.hostname),
+                    name: format!("{}.mesh.local.", node_label(&detail.info.hostname, node_id.as_i64())),
                     user: 1,
                     key: node_key,
                     machine: machine_key_str,
@@ -265,7 +265,7 @@ impl NetmapService {
                     endpoints: detail.info.endpoints.clone(),
                     derp: Some(format!("127.3.3.40:{}", home_region)),
                     home_derp: Some(home_region),
-                    hostinfo: minimal_hostinfo(&detail.info.hostname),
+                    hostinfo: minimal_hostinfo(&node_label(&detail.info.hostname, node_id.as_i64())),
                     online: Some(detail.online),
                     last_seen: None,
                     machine_authorized: Some(true),
@@ -285,6 +285,13 @@ impl NetmapService {
             }),
         }
     }
+}
+
+/// Names are re-sanitised at render time (defence in depth: covers admin
+/// renames and rows stored before registration-time sanitisation) so a peer
+/// never receives a dotted name that spoofs another FQDN.
+fn node_label(hostname: &str, node_id: i64) -> String {
+    coord_core::sanitize::node_dns_label(hostname, node_id)
 }
 
 /// Tailscale clients dereference `Node.Hostinfo` unconditionally (e.g. in
@@ -324,7 +331,7 @@ fn peer_info_to_map_node(p: &coord_core::PeerInfo, home_region: i32) -> MapNode 
     MapNode {
         id: p.node_id.as_i64(),
         stable_id: format!("peer-{}", p.node_id.as_i64()),
-        name: format!("{}.mesh.local.", p.hostname),
+        name: format!("{}.mesh.local.", node_label(&p.hostname, p.node_id.as_i64())),
         user: 1,
         key: peer_key,
         machine: machine_key_str,
@@ -335,7 +342,7 @@ fn peer_info_to_map_node(p: &coord_core::PeerInfo, home_region: i32) -> MapNode 
         endpoints: p.endpoints.clone(),
         derp: Some(format!("127.3.3.40:{}", derp_region)),
         home_derp: Some(derp_region),
-        hostinfo: minimal_hostinfo(&p.hostname),
+        hostinfo: minimal_hostinfo(&node_label(&p.hostname, p.node_id.as_i64())),
         online: Some(p.online),
         last_seen: p.last_seen.map(|t| t.to_rfc3339()),
         machine_authorized: Some(true),

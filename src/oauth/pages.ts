@@ -48,25 +48,44 @@ export function signInPage(opts: { clientName: string; returnTo: string }): stri
   );
 }
 
-/** Consent step: Allow / Deny posted with a session-bound CSRF token. */
+/**
+ * Consent step: Allow / Deny posted with a session-bound CSRF token.
+ *
+ * Anti-phishing: the app name is self-asserted at dynamic registration, so it
+ * is labelled "Unverified app" and the redirect host — the one thing the
+ * client cannot fake — is shown prominently in the heading and body. The
+ * operator scope is a separate, unchecked opt-in shown only to operators.
+ */
 export function consentPage(opts: {
   clientName: string;
   handle: string;
   redirectHost: string;
   requestId: string;
   csrfToken: string;
+  /** False for dynamically registered clients (all of them today). */
+  verified?: boolean;
+  /** Show the "Also allow instance operator actions" checkbox (operators only). */
+  offerOperatorScope?: boolean;
 }): string {
+  const host = esc(opts.redirectHost);
+  const badge = opts.verified
+    ? ""
+    : `\n    <p><strong>Unverified app.</strong> The name &ldquo;${esc(opts.clientName)}&rdquo; was chosen by the app itself and has not been verified. Only continue if you started this connection and trust <strong>${host}</strong>.</p>`;
+  const operatorBox = opts.offerOperatorScope
+    ? `\n      <p><label><input type="checkbox" name="operator" value="1" />
+        Also allow instance operator actions (delete tailnets, disable users, suspend tailnets, change instance settings)</label></p>`
+    : "";
   return page(
     "Allow access",
-    `    <h1>Allow access?</h1>
-    <p>Allow <strong>${esc(opts.clientName)}</strong> to manage atproto-tailnet as
+    `    <h1>Allow ${host} to access your account?</h1>${badge}
+    <p>Allow <strong>${esc(opts.clientName)}</strong> at <strong>${host}</strong> to manage atproto-tailnet as
     <strong>@${esc(opts.handle)}</strong>?</p>
     <p>It gets the same access you have in the dashboard. It can change settings,
     remove devices and members, and more. You can revoke it at any time in the dashboard.</p>
-    <p class="text-dim">After you decide, you go back to ${esc(opts.redirectHost)}.</p>
+    <p>After you decide, you go back to <strong>${host}</strong>.</p>
     <form action="/oauth/consent" method="post">
       <input type="hidden" name="request_id" value="${esc(opts.requestId)}" />
-      <input type="hidden" name="csrf_token" value="${esc(opts.csrfToken)}" />
+      <input type="hidden" name="csrf_token" value="${esc(opts.csrfToken)}" />${operatorBox}
       <button type="submit" name="decision" value="allow">Allow</button>
       <button type="submit" name="decision" value="deny" class="btn-ghost">Deny</button>
     </form>`,

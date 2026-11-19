@@ -54,7 +54,6 @@ pub struct MemoryStore {
     machine_key_index: Mutex<HashMap<[u8; 32], NodeId>>,
     preauth_keys: Mutex<HashMap<String, PreAuthKey>>,
     next_node_id: Mutex<i64>,
-    next_ipv4: Mutex<u32>,
     peer_tx: broadcast::Sender<PeerEvent>,
 }
 
@@ -67,7 +66,6 @@ impl MemoryStore {
             machine_key_index: Mutex::new(HashMap::new()),
             preauth_keys: Mutex::new(HashMap::new()),
             next_node_id: Mutex::new(1),
-            next_ipv4: Mutex::new(u32::from(Ipv4Addr::new(100, 64, 0, 1))),
             peer_tx,
         }
     }
@@ -373,6 +371,13 @@ impl MemoryStore {
                 node.online = true;
                 node.last_seen = chrono::Utc::now();
                 node.session_generation += 1;
+                if node.attrs.owner != reg.owner || node.attrs.tags != reg.tags {
+                    // A new identity must not inherit approvals granted to the old one.
+                    node.attrs.approved_routes.clear();
+                }
+                node.attrs.owner = reg.owner;
+                node.attrs.tags = reg.tags;
+                node.attrs.ephemeral = reg.ephemeral;
                 if let Some(routes) = reg.advertised_routes {
                     node.attrs.advertised_routes = routes;
                 }
@@ -389,6 +394,10 @@ impl MemoryStore {
             }
         }
 
+        // machine_key_index is held, so allocations are serialized.
+        let mut nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner());
+        let ipv4 = crate::lowest_free_ipv4(nodes.values().map(|n| n.ipv4))?;
+
         let node_id = {
             let mut id = self.next_node_id.lock().unwrap_or_else(|e| e.into_inner());
             let current = *id;
@@ -396,17 +405,6 @@ impl MemoryStore {
                 CoordError::Protocol("node ID space exhausted".into())
             })?;
             NodeId::new(current)
-        };
-
-        let ipv4 = {
-            let mut ip = self.next_ipv4.lock().unwrap_or_else(|e| e.into_inner());
-            let current = *ip;
-            let max_cgnat = u32::from(Ipv4Addr::new(100, 127, 255, 255));
-            if current > max_cgnat {
-                return Err(CoordError::AddressSpaceExhausted);
-            }
-            *ip += 1;
-            Ipv4Addr::from(current)
         };
 
         let stable_id = generate_random_id();
@@ -430,7 +428,6 @@ impl MemoryStore {
             },
         };
 
-        let mut nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner());
         nodes.insert(node_id, stored);
         machine_index.insert(machine_key, node_id);
         drop(nodes);

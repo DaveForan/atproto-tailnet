@@ -197,6 +197,20 @@
       "when": 1794028808001,
       "tag": "0027_mcp_oauth",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1794028809001,
+      "tag": "0028_join_request_pending_unique",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1794028810001,
+      "tag": "0029_mcp_operator_scope_suspension_cascade",
+      "breakpoints": true
     }
   ]
 }

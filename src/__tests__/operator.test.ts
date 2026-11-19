@@ -327,8 +327,12 @@ describe("disable user", () => {
     const t1 = { id: "t1", status: "running", apiKey: "k", port: 1 };
     const t2 = { id: "t2", status: "running", apiKey: "k", port: 2 };
     results.push(
-      [], // users.disabledAt
+      [{ did: "did:plc:bob" }], // users.disabledAt (returning did)
       [{ id: "tok1" }], // agent tokens revoked
+      [{ id: "g1" }, { id: "g2" }], // MCP grants revoked
+      [], // their MCP tokens revoked
+      [{ id: "j1", tenantId: "t9" }], // pending join requests → rejected
+      [{ id: "i1", tenantId: "t8" }], // pending invitations to their DID → revoked
       [{ tenant: t1, isOriginator: false }, { tenant: t2, isOriginator: true }],
       [{ id: "u-bob", handle: "bob.test" }], // user lookup for originated tenant
     );
@@ -337,8 +341,15 @@ describe("disable user", () => {
     expect(removeMemberCascade).toHaveBeenCalledWith(t1, "u-bob");
     expect(removeMemberCascade).toHaveBeenCalledTimes(1);
     expect(revokeMemberAccess).toHaveBeenCalledWith(expect.objectContaining({ tenantId: "t2", userId: "u-bob" }));
+    expect(writes).toContainEqual(expect.objectContaining({ op: "update", table: "mcp_oauth_grants", arg: { revokedAt: expect.any(Date) } }));
+    expect(writes).toContainEqual(expect.objectContaining({ op: "update", table: "mcp_oauth_tokens", arg: { revokedAt: expect.any(Date) } }));
+    expect(writes).toContainEqual(expect.objectContaining({ op: "update", table: "join_requests", arg: expect.objectContaining({ status: "rejected" }) }));
+    expect(writes).toContainEqual(expect.objectContaining({ op: "update", table: "invitations", arg: expect.objectContaining({ status: "revoked" }) }));
     expect(out).toMatchObject({
       agentTokensRevoked: 1,
+      mcpGrantsRevoked: 2,
+      joinRequestsCancelled: 1,
+      invitationsRevoked: 1,
       removedFrom: [{ tenantId: "t1", devicesDeleted: 2, keysRevoked: 1 }],
       ownedTenants: [{ tenantId: "t2" }],
     });
@@ -442,5 +453,170 @@ describe("withTailnetCreationLock", () => {
     expect(maxActive).toBe(1);
     expect(created).toEqual([1]);
     expect(results.map((r) => r.status)).toEqual(["rejected", "fulfilled", "fulfilled"]);
+  });
+});
+
+// ── Security fixes ──
+import { setTenantSuspendedCascade, OperatorActionError } from "../operator/lifecycle.js";
+import { memberAccess } from "../operator/policy.js";
+import { tenantIdFromPath } from "../operator/access.js";
+import { startInstance, stopInstance } from "../orchestrator/headscale.js";
+
+describe("suspension check uses the decoded tenant id", () => {
+  const TENANT = "11111111-2222-3333-4444-555555555555";
+
+  it("tenantIdFromPath decodes like Express and flags encoded slashes", () => {
+    expect(tenantIdFromPath(`/api/tenants/${TENANT}/devices`)).toBe(TENANT);
+    expect(tenantIdFromPath(`/api/tenants/%31${TENANT.slice(1)}/devices`)).toBe(TENANT);
+    expect(tenantIdFromPath(`/API/TENANTS/${TENANT.toUpperCase()}`)).toBe(TENANT);
+    expect(tenantIdFromPath(`/api/tenants/${TENANT}%2Fdevices`)).toBe("invalid");
+    expect(tenantIdFromPath(`/api/tenants/a%5Cb`)).toBe("invalid");
+    expect(tenantIdFromPath(`/api/tenants/%E0%A4%A`)).toBe("invalid");
+    expect(tenantIdFromPath(`/api/tenants/mine`)).toBeNull();
+    expect(tenantIdFromPath(`/api/me`)).toBeNull();
+  });
+
+  it("a percent-encoded tenant id still gets 403 tenant_suspended", async () => {
+    results.push([{ did: "did:plc:bob", disabledAt: null }], [{ suspended: true, membershipId: "m1" }]);
+    const r = await call("GET", `/api/tenants/%31${TENANT.slice(1)}/invitations`, BOB);
+    expect(r.status).toBe(403);
+    expect(r.json.code).toBe("tenant_suspended");
+  });
+
+  it("malformed encoding and encoded slashes are 400", async () => {
+    results.push([{ did: "did:plc:bob", disabledAt: null }]);
+    let r = await call("GET", `/api/tenants/${TENANT}%2Finvitations`, BOB);
+    expect(r.status).toBe(400);
+    results.push([{ did: "did:plc:bob", disabledAt: null }]);
+    r = await call("GET", `/api/tenants/%E0%A4%A/invitations`, BOB);
+    expect(r.status).toBe(400);
+  });
+});
+
+describe("suspension cascades to sub-tailnets", () => {
+  const P = { id: "p", parentId: null, status: "running", containerId: "c-p", suspended: false, suspendedByParentId: null };
+  const C1 = { id: "c1", parentId: "p", status: "running", containerId: "c-c1", suspended: false, suspendedByParentId: null };
+  const C2 = { id: "c2", parentId: "p", status: "stopped", containerId: "c-c2", suspended: true, suspendedByParentId: null };
+  const G = { id: "g", parentId: "c1", status: "running", containerId: null, suspended: false, suspendedByParentId: null };
+
+  it("suspending a parent suspends unsuspended descendants and records the cascade", async () => {
+    results.push(
+      [{ ...P, suspended: true }], // root update
+      [C1, C2], // children of p
+      [G], // children of c1, c2
+      [], // children of g
+      [{ ...C1, suspended: true }], // c1 update
+      [{ ...G, suspended: true }], // g update
+    );
+    const r = await setTenantSuspendedCascade(P as never, true);
+    expect(r.cascaded).toEqual(["c1", "g"]);
+    expect(r.failed).toEqual([]);
+    expect(stopInstance).toHaveBeenCalledWith("c-p");
+    expect(stopInstance).toHaveBeenCalledWith("c-c1");
+    expect(stopInstance).not.toHaveBeenCalledWith("c-c2");
+    const tenantWrites = writes.filter((w) => w.table === "tenants").map((w) => w.arg as Record<string, unknown>);
+    expect(tenantWrites[0]).toMatchObject({ suspended: true, suspendedByParentId: null });
+    expect(tenantWrites.slice(1)).toEqual([
+      expect.objectContaining({ suspended: true, suspendedByParentId: "p" }),
+      expect.objectContaining({ suspended: true, suspendedByParentId: "p" }),
+    ]);
+  });
+
+  it("unsuspending restores only the tenants its suspension cascaded to", async () => {
+    results.push(
+      [{ ...P, suspended: false }], // root update
+      [{ ...C1, suspended: true, suspendedByParentId: "p" }, { ...G, suspended: true, suspendedByParentId: "p" }], // restore set
+      [C1],
+      [G],
+    );
+    const r = await setTenantSuspendedCascade({ ...P, suspended: true } as never, false);
+    expect(r.cascaded).toEqual(["c1", "g"]);
+    expect(startInstance).toHaveBeenCalledWith("c-p");
+    expect(startInstance).toHaveBeenCalledWith("c-c1");
+    expect(startInstance).not.toHaveBeenCalledWith("c-c2");
+    const tenantWrites = writes.filter((w) => w.table === "tenants").map((w) => w.arg as Record<string, unknown>);
+    expect(tenantWrites.every((w) => w.suspended === false && w.suspendedByParentId === null)).toBe(true);
+  });
+
+  it("a child of a suspended parent cannot be unsuspended on its own", async () => {
+    results.push([{ suspended: true }]);
+    await expect(
+      setTenantSuspendedCascade({ ...C1, suspended: true, suspendedByParentId: "p" } as never, false),
+    ).rejects.toBeInstanceOf(OperatorActionError);
+    expect(startInstance).not.toHaveBeenCalled();
+  });
+
+  it("descendant control-plane failures are reported (502) and retryable", async () => {
+    vi.mocked(stopInstance).mockImplementation(async (id: string) => {
+      if (id === "c-c1") throw new Error("docker down");
+    });
+    const SUSP = "11111111-2222-3333-4444-555555555555";
+    results.push(
+      [{ did: "did:plc:operator", disabledAt: null }], // enforceOperatorState
+      [{ ...P, id: SUSP }], // loadTenant
+      [{ ...P, id: SUSP, suspended: true }], // root update
+      [{ ...C1, parentId: SUSP }],
+      [],
+    );
+    const r = await call("POST", `/api/operator/tenants/${SUSP}/suspend`, OP);
+    expect(r.status).toBe(502);
+    expect(r.json.code).toBe("cascade_incomplete");
+    expect(r.json.failed).toEqual([{ tenantId: "c1", error: "docker down" }]);
+    vi.mocked(stopInstance).mockReset();
+  });
+});
+
+describe("/api/me access", () => {
+  it("memberships only in suspended tailnets count as no_access", async () => {
+    results.push([]); // no live, unsuspended membership
+    expect(await memberAccess("u-bob")).toBe("no_access");
+    results.push([{ id: "m1" }]);
+    expect(await memberAccess("u-bob")).toBe("member");
+  });
+});
+
+describe("GET /api/operator/audit", () => {
+  const row = (i: number) => ({
+    id: `a${i}`,
+    tenantId: null,
+    tenantSlug: null,
+    actorUserId: "u-op",
+    actorHandle: "op.test",
+    action: "user_disabled",
+    targetType: "user",
+    targetId: "u-bob",
+    metadata: null,
+    createdAt: new Date().toISOString(),
+  });
+
+  it("returns a page of instance activity with hasMore", async () => {
+    results.push([{ did: "did:plc:operator", disabledAt: null }], [row(1), row(2), row(3)]);
+    const r = await call("GET", "/api/operator/audit?limit=2&offset=0", OP);
+    expect(r.status).toBe(200);
+    expect((r.json.entries as unknown[]).length).toBe(2);
+    expect(r.json).toMatchObject({ limit: 2, offset: 0, hasMore: true });
+  });
+
+  it("validates paging and is operator-only", async () => {
+    results.push([{ did: "did:plc:operator", disabledAt: null }]);
+    expect((await call("GET", "/api/operator/audit?limit=500", OP)).status).toBe(400);
+    results.push([{ did: "did:plc:bob", disabledAt: null }]);
+    expect((await call("GET", "/api/operator/audit", BOB)).status).toBe(403);
+  });
+});
+
+describe("operator suspension bypass via MCP", () => {
+  it("an operator's MCP token without the operator scope does not bypass suspension", async () => {
+    const TENANT = "11111111-2222-3333-4444-555555555555";
+    results.push([{ did: "did:plc:operator", disabledAt: null }], [{ suspended: true, membershipId: "m1" }]);
+    const res = { code: 0, body: null as unknown, status(c: number) { this.code = c; return this; }, json(b: unknown) { this.body = b; return this; } };
+    const next = vi.fn();
+    await enforceOperatorState(
+      { path: `/api/tenants/${TENANT}/devices`, session: {}, mcpAuth: { userId: "u-op", clientId: "c", grantId: "g", operator: false } } as never,
+      res as never,
+      next,
+    );
+    expect(next).not.toHaveBeenCalled();
+    expect(res.code).toBe(403);
   });
 });

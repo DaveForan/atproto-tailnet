@@ -231,7 +231,21 @@ async fn registration_attrs_and_routes() {
         assert_eq!(p.allowed_ips, vec![format!("{ip1}/32"), "0.0.0.0/0".into()], "{}", b.name);
         assert!(p.primary_routes.is_empty(), "{}", b.name);
 
-        // Re-register keeps owner/tags/ephemeral; replaces advertised routes when given.
+        // Re-register with the same grant identity keeps approvals; replaces
+        // advertised routes when given.
+        let same = NodeRegistration {
+            owner: Some("alice".into()),
+            tags: strs(&["tag:relay"]),
+            ephemeral: true,
+            advertised_routes: None,
+        };
+        s.register_node_with(t, mk, info("router", mk), same).await.unwrap();
+        let d = s.get_node_info(n1).await.unwrap();
+        assert_eq!(d.attrs.approved_routes, strs(&["0.0.0.0/0", "10.0.0.0/24"]), "{}", b.name);
+        assert_eq!(d.attrs.advertised_routes, strs(&["0.0.0.0/0"]), "{}", b.name);
+
+        // Re-register with a different grant (re-auth with a new key) replaces
+        // owner/tags/ephemeral and drops approvals granted to the old identity.
         s.register_node_with(
             t,
             mk,
@@ -246,10 +260,12 @@ async fn registration_attrs_and_routes() {
         .await
         .unwrap();
         let d = s.get_node_info(n1).await.unwrap();
-        assert_eq!(d.attrs.owner.as_deref(), Some("alice"), "{}", b.name);
-        assert_eq!(d.attrs.tags, strs(&["tag:relay"]), "{}", b.name);
-        assert!(d.attrs.ephemeral, "{}", b.name);
+        assert_eq!(d.attrs.owner.as_deref(), Some("mallory"), "{}", b.name);
+        assert!(d.attrs.tags.is_empty(), "{}", b.name);
+        assert!(!d.attrs.ephemeral, "{}", b.name);
+        assert!(d.attrs.approved_routes.is_empty(), "{}: approvals must not survive re-auth", b.name);
         assert_eq!(d.attrs.advertised_routes, strs(&["192.168.1.0/24"]), "{}", b.name);
+        assert_eq!(d.ipv4, ip1, "{}: re-auth keeps the address", b.name);
 
         let summaries = s.list_nodes_for_tenant(t).await;
         let sum = summaries.iter().find(|n| n.id == n1).unwrap();
@@ -389,4 +405,94 @@ async fn sqlite_tenant_suspension_persists_across_reopen() {
     let pool = coord_store::create_sqlite_pool(path.to_str().unwrap()).await.unwrap();
     let s = Store::Sqlite(coord_store::SqliteStore::new(pool).await.unwrap());
     assert!(s.get_tenant(t).await.unwrap().suspended);
+}
+
+/// Register `n` fresh nodes in `t`, returning (node id, address) pairs.
+async fn register_many(s: &Store, t: TenantId, n: usize) -> Vec<(coord_core::NodeId, std::net::Ipv4Addr)> {
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let mk = rand_bytes::<32>();
+        let (id, ip, _) = s.register_node(t, mk, info(&format!("churn-{i}"), mk)).await.unwrap();
+        out.push((id, ip));
+    }
+    out
+}
+
+/// No two live nodes (across all tenants) may share an address.
+async fn assert_live_addresses_unique(s: &Store, name: &str) {
+    let nodes = s.list_nodes().await;
+    let mut seen = std::collections::HashSet::new();
+    for n in &nodes {
+        assert!(seen.insert(n.ipv4), "{name}: duplicate live address {}", n.ipv4);
+    }
+}
+
+#[tokio::test]
+async fn ipv4_addresses_reused_after_delete_and_never_duplicated() {
+    for b in backends().await {
+        let s = &b.store;
+        // Postgres shares one database with concurrently running tests, so
+        // exact "lowest free" assertions only hold for the private backends.
+        let exact = b.name != "postgres";
+        let t = tenant(s, "churn").await;
+        let eph = tenant(s, "churn-eph").await;
+
+        let first = register_many(s, t, 20).await;
+        let mut freed = Vec::new();
+        for (id, ip) in first.iter().step_by(2) {
+            s.delete_node(*id).await.unwrap();
+            freed.push(*ip);
+        }
+        let refill = register_many(s, t, freed.len()).await;
+        if exact {
+            let mut got: Vec<_> = refill.iter().map(|(_, ip)| *ip).collect();
+            got.sort();
+            freed.sort();
+            assert_eq!(got, freed, "{}: freed addresses are reused lowest-first", b.name);
+        }
+        assert_live_addresses_unique(s, b.name).await;
+
+        // Sustained churn (incl. ephemeral sweep) must not walk the address space.
+        let mut distinct = std::collections::HashSet::new();
+        for _ in 0..20 {
+            let batch = register_many(s, t, 10).await;
+            for (id, ip) in &batch {
+                distinct.insert(*ip);
+                s.delete_node(*id).await.unwrap();
+            }
+            let mk = rand_bytes::<32>();
+            let (_, ip, g) = s
+                .register_node_with(eph, mk, info("eph", mk), NodeRegistration { ephemeral: true, ..Default::default() })
+                .await
+                .unwrap();
+            distinct.insert(ip);
+            let id = s.get_node_by_machine_key(&mk).await.unwrap();
+            s.set_node_offline_if_current(id, g).await.unwrap();
+            s.delete_stale_ephemeral_nodes(chrono::Duration::zero()).await.unwrap();
+        }
+        // 220 registrations; a never-reusing allocator would hand out 220 addresses.
+        let bound = if exact { 11 } else { 120 };
+        assert!(distinct.len() <= bound, "{}: churn used {} distinct addresses", b.name, distinct.len());
+        assert_live_addresses_unique(s, b.name).await;
+
+        // Concurrent registrations never collide.
+        let handles: Vec<_> = (0..24)
+            .map(|i| {
+                let s = b.store.clone();
+                tokio::spawn(async move {
+                    let mk = rand_bytes::<32>();
+                    s.register_node(t, mk, info(&format!("par-{i}"), mk)).await.unwrap().1
+                })
+            })
+            .collect();
+        let mut ips = std::collections::HashSet::new();
+        for h in handles {
+            assert!(ips.insert(h.await.unwrap()), "{}: concurrent registrations got the same address", b.name);
+        }
+        assert_live_addresses_unique(s, b.name).await;
+
+        for n in s.list_nodes_for_tenant(t).await {
+            s.delete_node(n.id).await.unwrap();
+        }
+    }
 }

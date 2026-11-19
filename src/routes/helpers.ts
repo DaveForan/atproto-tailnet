@@ -22,6 +22,7 @@ import type { Permission } from "./permissions.js";
 import { oauthProvider, isMcpToken, MCP_RESOURCE_URL } from "../oauth/index.js";
 import { sameResource } from "../oauth/provider.js";
 import { InvalidTokenError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
+import { isInternalMcpCall } from "../mcp/internal.js";
 
 /**
  * Express middleware that resolves a Bearer token from the `Authorization`
@@ -36,7 +37,7 @@ import { InvalidTokenError } from "@modelcontextprotocol/sdk/server/auth/errors.
  */
 export async function resolveAgentToken(
   req: Request,
-  _res: Response,
+  res: Response,
   next: NextFunction,
 ): Promise<void> {
   const authHeader = req.headers.authorization;
@@ -51,13 +52,30 @@ export async function resolveAgentToken(
   // req.mcpAuth is set, req.agentToken stays unset, so agent-token scope and
   // restrictions never apply. Invalid/expired/revoked tokens (or a disabled
   // user) leave the request unauthenticated.
+  //
+  // They are honoured ONLY on the loopback calls our /mcp tools make (the
+  // per-process secret header, see mcp/internal.ts), so a token's power is
+  // exactly the curated /mcp tool surface. Presented anywhere else on the
+  // REST API, an MCP token is refused with 401.
   if (isMcpToken(raw)) {
+    if (!isInternalMcpCall(req)) {
+      res
+        .status(401)
+        .set("WWW-Authenticate", 'Bearer error="invalid_token"')
+        .json({ error: "MCP tokens are only valid at the /mcp endpoint" });
+      return;
+    }
     try {
       const info = await oauthProvider.verifyAccessToken(raw);
-      const extra = info.extra as { userId: string; grantId: string };
+      const extra = info.extra as { userId: string; grantId: string; operator?: boolean };
       // Audience check: only tokens issued for this server's /mcp resource.
       if (info.resource && sameResource(info.resource.href, MCP_RESOURCE_URL)) {
-        req.mcpAuth = { userId: extra.userId, clientId: info.clientId, grantId: extra.grantId };
+        req.mcpAuth = {
+          userId: extra.userId,
+          clientId: info.clientId,
+          grantId: extra.grantId,
+          operator: extra.operator === true,
+        };
       }
     } catch (err) {
       if (!(err instanceof InvalidTokenError)) throw err;

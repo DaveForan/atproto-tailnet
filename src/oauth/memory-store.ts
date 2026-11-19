@@ -32,8 +32,15 @@ export class MemoryOAuthStore implements OAuthStore {
       if (!used && c.createdAt < before) this.clients.delete(id);
     }
   }
-  async createGrant(g: { userId: string; clientId: string; resource: string; scopes: string[] }) {
-    const row: GrantRow = { id: randomUUID(), ...g, createdAt: new Date(), lastUsedAt: null, revokedAt: null };
+  async createGrant(g: { userId: string; clientId: string; resource: string; scopes: string[]; operator?: boolean }) {
+    const row: GrantRow = {
+      id: randomUUID(),
+      ...g,
+      operator: g.operator === true,
+      createdAt: new Date(),
+      lastUsedAt: null,
+      revokedAt: null,
+    };
     this.grants.set(row.id, row);
     return row;
   }
@@ -55,6 +62,13 @@ export class MemoryOAuthStore implements OAuthStore {
     for (const t of this.tokens.values()) if (t.grantId === grantId && !t.revokedAt) t.revokedAt = now;
     return wasActive;
   }
+  async revokeAllGrantsForUser(userId: string) {
+    const out: string[] = [];
+    for (const g of this.grants.values()) {
+      if (g.userId === userId && !g.revokedAt && (await this.revokeGrant(g.id))) out.push(g.id);
+    }
+    return out;
+  }
   async touchGrant(grantId: string) {
     const g = this.grants.get(grantId);
     if (g) g.lastUsedAt = new Date();
@@ -66,6 +80,7 @@ export class MemoryOAuthStore implements OAuthStore {
         id: g.id,
         clientId: g.clientId,
         clientName: this.clients.get(g.clientId)?.info.client_name ?? "Unnamed client",
+        operator: g.operator,
         createdAt: g.createdAt,
         lastUsedAt: g.lastUsedAt,
       }));

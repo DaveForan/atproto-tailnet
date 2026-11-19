@@ -8,7 +8,7 @@
  */
 
 import { Router } from "express";
-import { eq, and, desc, count, sql } from "drizzle-orm";
+import { eq, and, desc, count, sql, ne } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/index.js";
 import {
@@ -232,9 +232,11 @@ boardRouter.delete(
 
 // ── Public board page ──────────────────────────────────────────────
 
-boardRouter.get("/api/tenants/by-slug/:slug/board", async (req, res) => {
-  const slug = param(req, "slug");
-
+/**
+ * The tenant behind a public board, or null when the board isn't publicly
+ * visible: unknown slug, deleted or suspended tenant, lockdown, or board off.
+ */
+export async function findPublicBoardTenant(slug: string) {
   const [tenant] = await db
     .select({
       id: tenants.id,
@@ -245,9 +247,15 @@ boardRouter.get("/api/tenants/by-slug/:slug/board", async (req, res) => {
       maxBoardPostsDisplayed: tenants.maxBoardPostsDisplayed,
     })
     .from(tenants)
-    .where(eq(tenants.slug, slug));
+    .where(and(eq(tenants.slug, slug), ne(tenants.status, "deleted"), eq(tenants.suspended, false)));
 
-  if (!tenant || tenant.lockdownMode || !tenant.boardEnabled) {
+  if (!tenant || tenant.lockdownMode || !tenant.boardEnabled) return null;
+  return tenant;
+}
+
+boardRouter.get("/api/tenants/by-slug/:slug/board", async (req, res) => {
+  const tenant = await findPublicBoardTenant(param(req, "slug"));
+  if (!tenant) {
     res.status(404).json({ error: "Board not found" });
     return;
   }
@@ -414,6 +422,10 @@ const BOARD_PAGE_HTML = `<!DOCTYPE html>
 </body>
 </html>`;
 
-boardRouter.get("/board/:slug", (_req, res) => {
+boardRouter.get("/board/:slug", async (req, res) => {
+  if (!(await findPublicBoardTenant(param(req, "slug")))) {
+    res.status(404).type("text/plain").send("Board not found");
+    return;
+  }
   res.type("html").send(BOARD_PAGE_HTML);
 });

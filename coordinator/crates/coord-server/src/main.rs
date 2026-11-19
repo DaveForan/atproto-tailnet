@@ -53,6 +53,9 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(config.listen)
         .parse()?;
 
+    // Validate before touching the database so a weak key fails fast.
+    let admin_key = validate_admin_key(std::env::var("COORD_ADMIN_KEY").ok())?;
+
     let control_key = load_or_create_control_key(std::env::var("COORD_CONTROL_KEY_PATH").ok())?;
     tracing::info!(
         control_public_key = hex::encode(control_key.public),
@@ -134,7 +137,6 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    let admin_key = std::env::var("COORD_ADMIN_KEY").ok();
     if admin_key.is_some() {
         tracing::info!("admin API key authentication enabled");
     } else {
@@ -187,6 +189,30 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Minimum COORD_ADMIN_KEY length (32 chars ~ 128+ bits for a random key).
+const MIN_ADMIN_KEY_LEN: usize = 32;
+
+/// Refuse to start with a guessable admin key. Unset keeps the admin API
+/// disabled (503); set-but-weak is a hard error rather than a silent downgrade.
+fn validate_admin_key(key: Option<String>) -> anyhow::Result<Option<String>> {
+    let Some(key) = key else { return Ok(None) };
+    let lower = key.to_ascii_lowercase();
+    if lower.contains("change-me") || lower.contains("changeme") {
+        anyhow::bail!(
+            "COORD_ADMIN_KEY contains a placeholder (\"change-me\"/\"changeme\"); \
+             set it to a random secret, e.g. `openssl rand -hex 32`"
+        );
+    }
+    if key.chars().count() < MIN_ADMIN_KEY_LEN {
+        anyhow::bail!(
+            "COORD_ADMIN_KEY is too short ({} chars, minimum {MIN_ADMIN_KEY_LEN}); \
+             set it to a random secret, e.g. `openssl rand -hex 32`, or unset it to disable the admin API",
+            key.chars().count()
+        );
+    }
+    Ok(Some(key))
+}
+
 /// Clients pin the control server's Noise key, so it must survive restarts.
 fn load_or_create_control_key(path: Option<String>) -> anyhow::Result<coord_core::ControlKey> {
     let Some(path) = path else {
@@ -230,4 +256,23 @@ fn write_secret_file(path: &str, contents: &str) -> anyhow::Result<()> {
     }
     opts.open(path)?.write_all(contents.as_bytes())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn admin_key_validation() {
+        assert!(validate_admin_key(None).unwrap().is_none());
+        let good = "a".repeat(32);
+        assert_eq!(validate_admin_key(Some(good.clone())).unwrap(), Some(good));
+        assert!(validate_admin_key(Some("".into())).is_err());
+        assert!(validate_admin_key(Some("short-key".into())).is_err());
+        assert!(validate_admin_key(Some("a".repeat(31))).is_err());
+        let placeholder = format!("{}CHANGE-ME", "x".repeat(40));
+        let err = validate_admin_key(Some(placeholder)).unwrap_err().to_string();
+        assert!(err.contains("placeholder"), "{err}");
+        assert!(validate_admin_key(Some(format!("{}ChangeMe", "x".repeat(40)))).is_err());
+    }
 }

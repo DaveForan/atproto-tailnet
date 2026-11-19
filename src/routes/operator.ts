@@ -9,9 +9,10 @@
 
 import { Router } from "express";
 import { z } from "zod";
-import { and, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne, or, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import {
+  auditLogs,
   memberships,
   tailnetCreators,
   tenants,
@@ -29,12 +30,12 @@ import {
   disableUser,
   enableUser,
   OperatorActionError,
-  setTenantSuspended,
+  setTenantSuspendedCascade,
 } from "../operator/lifecycle.js";
 import { authUserId, param } from "./helpers.js";
 import { logAudit } from "./audit.js";
 import { deleteTenantInstance } from "./api.js";
-import { ACCOUNT_DID_RE, resolveDidToHandle, resolveHandleToDid } from "./invitations.js";
+import { ACCOUNT_DID_RE, normalizeAccountDid, resolveDidToHandle, resolveHandleToDid } from "./invitations.js";
 import { logger } from "../logger.js";
 
 /** Router for /api/operator/* (all routes behind requireOperator). */
@@ -139,7 +140,7 @@ operatorRouter.get("/api/operator/overview", async (_req, res) => {
       handle: users.handle,
       createdAt: users.createdAt,
       disabledAt: users.disabledAt,
-      tenantCount: sql<number>`(select count(*)::int from ${memberships} m join ${tenants} t on t.id = m.tenant_id where m.user_id = ${users.id} and t.status <> 'deleted')`,
+      tenantCount: sql<number>`(select count(*)::int from ${memberships} m join ${tenants} t on t.id = m.tenant_id where m.user_id = ${users}.id and t.status <> 'deleted')`,
     })
     .from(users)
     .orderBy(desc(users.createdAt))
@@ -259,7 +260,7 @@ operatorRouter.get("/api/operator/tailnet-creators", async (_req, res) => {
       handle: tailnetCreators.handle,
       addedBy: tailnetCreators.addedByUserId,
       createdAt: tailnetCreators.createdAt,
-      hasTailnet: sql<boolean>`exists (select 1 from ${tenants} t join ${users} u on u.id = t.owner_user_id where u.did = ${tailnetCreators.did} and t.parent_id is null and t.status <> 'deleted')`,
+      hasTailnet: sql<boolean>`exists (select 1 from ${tenants} t join ${users} u on u.id = t.owner_user_id where u.did = ${tailnetCreators}.did and t.parent_id is null and t.status <> 'deleted')`,
     })
     .from(tailnetCreators)
     .orderBy(desc(tailnetCreators.createdAt))
@@ -290,7 +291,7 @@ operatorRouter.post("/api/operator/tailnet-creators", async (req, res) => {
       res.status(400).json({ error: "did must be a did:plc or did:web identifier" });
       return;
     }
-    did = didIn;
+    did = normalizeAccountDid(didIn);
     handle = await resolveDidToHandle(did);
   } else {
     handle = handleIn!.replace(/^@/, "");
@@ -299,7 +300,7 @@ operatorRouter.post("/api/operator/tailnet-creators", async (req, res) => {
       res.status(404).json({ error: `Could not resolve handle: ${handle}` });
       return;
     }
-    did = resolved;
+    did = normalizeAccountDid(resolved);
   }
 
   const [created] = await db
@@ -373,16 +374,43 @@ for (const action of ["suspend", "unsuspend"] as const) {
     }
     const suspended = action === "suspend";
     try {
-      const updated = await setTenantSuspended(tenant, suspended);
+      // Suspension cascades to sub-tailnets; unsuspend restores those it cascaded to.
+      const result = await setTenantSuspendedCascade(tenant, suspended);
+      const actorUserId = authUserId(req);
       logAudit({
         tenantId: tenant.id,
-        actorUserId: authUserId(req),
+        actorUserId,
         action: suspended ? "tenant_suspended" : "tenant_unsuspended",
         targetType: "tenant",
         targetId: tenant.id,
-        metadata: { slug: tenant.slug },
+        metadata: { slug: tenant.slug, cascaded: result.cascaded },
       });
-      res.json({ id: updated.id, status: updated.status, suspended: updated.suspended });
+      for (const childId of result.cascaded) {
+        logAudit({
+          tenantId: childId,
+          actorUserId,
+          action: suspended ? "tenant_suspended" : "tenant_unsuspended",
+          targetType: "tenant",
+          targetId: childId,
+          metadata: { cascadeFrom: tenant.id },
+        });
+      }
+      const body = {
+        id: result.tenant.id,
+        status: result.tenant.status,
+        suspended: result.tenant.suspended,
+        cascaded: result.cascaded,
+        failed: result.failed,
+      };
+      if (result.failed.length > 0) {
+        res.status(502).json({
+          ...body,
+          error: `Failed to ${action} ${result.failed.length} sub-tailnet(s) on the control plane; retry`,
+          code: "cascade_incomplete",
+        });
+        return;
+      }
+      res.json(body);
     } catch (err) {
       if (err instanceof OperatorActionError) {
         res.status(err.status).json({ error: err.message, ...(err.code ? { code: err.code } : {}) });
@@ -427,6 +455,60 @@ operatorRouter.delete("/api/operator/tenants/:id", async (req, res) => {
   }
 });
 
+// ── Instance activity (audit) ───────────────────────────────────────
+
+/** Tenant-scoped audit actions that are operator actions (shown with instance rows). */
+const OPERATOR_TENANT_ACTIONS = ["tenant_suspended", "tenant_unsuspended", "tenant_deleted_by_operator"] as const;
+
+const auditQuery = z.object({
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  offset: z.coerce.number().int().min(0).max(100_000).default(0),
+});
+
+/**
+ * Instance activity: every instance-level audit row (tenant_id NULL —
+ * operator settings/creators/user actions, MCP grants) plus operator actions
+ * logged under a tenant. Newest first, paginated.
+ */
+operatorRouter.get("/api/operator/audit", async (req, res) => {
+  const parsed = auditQuery.safeParse(req.query);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid query", details: parsed.error.issues });
+    return;
+  }
+  const { limit, offset } = parsed.data;
+  const rows = await db
+    .select({
+      id: auditLogs.id,
+      tenantId: auditLogs.tenantId,
+      tenantSlug: tenants.slug,
+      actorUserId: auditLogs.actorUserId,
+      actorHandle: users.handle,
+      action: auditLogs.action,
+      targetType: auditLogs.targetType,
+      targetId: auditLogs.targetId,
+      metadata: auditLogs.metadata,
+      createdAt: auditLogs.createdAt,
+    })
+    .from(auditLogs)
+    .leftJoin(users, eq(auditLogs.actorUserId, users.id))
+    .leftJoin(tenants, eq(auditLogs.tenantId, tenants.id))
+    .where(or(isNull(auditLogs.tenantId), inArray(auditLogs.action, [...OPERATOR_TENANT_ACTIONS])))
+    .orderBy(desc(auditLogs.createdAt), desc(auditLogs.id))
+    .limit(limit + 1)
+    .offset(offset);
+  res.json({
+    entries: rows.slice(0, limit).map((r) => ({
+      ...r,
+      tenantSlug: r.tenantSlug ?? null,
+      actorHandle: r.actorHandle ?? null,
+    })),
+    limit,
+    offset,
+    hasMore: rows.length > limit,
+  });
+});
+
 // ── Users ───────────────────────────────────────────────────────────
 
 operatorRouter.post("/api/operator/users/:id/disable", async (req, res) => {
@@ -467,6 +549,9 @@ operatorRouter.post("/api/operator/users/:id/disable", async (req, res) => {
       removedFrom: result.removedFrom.map((r) => r.tenantId),
       ownedTenants: result.ownedTenants.map((r) => r.tenantId),
       agentTokensRevoked: result.agentTokensRevoked,
+      mcpGrantsRevoked: result.mcpGrantsRevoked,
+      joinRequestsCancelled: result.joinRequestsCancelled,
+      invitationsRevoked: result.invitationsRevoked,
     },
   });
   res.json({ status: "disabled", ...result });

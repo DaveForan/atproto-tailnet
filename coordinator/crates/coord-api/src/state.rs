@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, Semaphore};
 use coord_core::{ControlKey, TenantId};
 use coord_acl::PolicyEngine;
 use coord_federation::{
@@ -25,7 +25,19 @@ pub struct CoordinatorState {
     pub(crate) federation_broker: Arc<BrokerService<dyn FederationStore>>,
     pub(crate) federation_callbacks: Option<Arc<dyn HandshakeCallbacks>>,
     pub(crate) federation_enabled: bool,
+    /// Caps simultaneous Noise (ts2021) connections instance-wide. Behind Caddy
+    /// every connection shares Caddy's source IP, so a per-IP cap isn't possible.
+    pub(crate) noise_conns: Arc<Semaphore>,
+    pub(crate) max_noise_conns: usize,
+    /// Caps request bodies being buffered at once across all Noise connections
+    /// (pre-auth memory bound: permits x MAX_CONTROL_BODY).
+    pub(crate) noise_body_reads: Arc<Semaphore>,
 }
+
+/// Default instance-wide cap on concurrent Noise connections.
+pub const DEFAULT_MAX_NOISE_CONNECTIONS: usize = 4096;
+/// Concurrent control request bodies being read (256 x 256 KiB = 64 MiB max).
+pub const MAX_CONCURRENT_BODY_READS: usize = 256;
 
 impl CoordinatorState {
     pub fn new(control_key: ControlKey) -> Self {
@@ -52,6 +64,9 @@ impl CoordinatorState {
             federation_broker: Arc::new(BrokerService::new(fed_store, fed_config)),
             federation_callbacks: None,
             federation_enabled: true,
+            noise_conns: Arc::new(Semaphore::new(DEFAULT_MAX_NOISE_CONNECTIONS)),
+            max_noise_conns: DEFAULT_MAX_NOISE_CONNECTIONS,
+            noise_body_reads: Arc::new(Semaphore::new(MAX_CONCURRENT_BODY_READS)),
         }
     }
 
@@ -74,6 +89,13 @@ impl CoordinatorState {
     pub fn with_derp_map(mut self, derp_map: DerpMap) -> Self {
         self.derp = Arc::new(DerpRegistry::new(derp_map));
         self.netmap = NetmapService::new(self.store.clone(), self.acl.clone(), self.derp.clone());
+        self
+    }
+
+    /// Override the instance-wide concurrent Noise connection cap.
+    pub fn with_max_noise_connections(mut self, max: usize) -> Self {
+        self.noise_conns = Arc::new(Semaphore::new(max));
+        self.max_noise_conns = max;
         self
     }
 

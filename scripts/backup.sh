@@ -4,7 +4,8 @@
 #
 # Dumps PostgreSQL and tars the Headscale data directory into a timestamped
 # archive. Works with both local dev (docker compose) and production
-# (docker-compose.production.yml) stacks.
+# (docker-compose.production.yml) and coordinator
+# (COMPOSE_FILE=docker-compose.coordinator.yml) stacks.
 #
 # Usage:
 #   ./scripts/backup.sh                       # default: ./backups/
@@ -46,6 +47,17 @@ elif [ -d "${HEADSCALE_DATA}" ]; then
   echo "    Headscale data archived from local dir"
 else
   echo "    WARNING: no Headscale data found, skipping"
+fi
+
+echo "==> Backing up coordinator data (Noise control key)..."
+if docker compose -f "${COMPOSE_FILE}" ps coordinator --status running -q 2>/dev/null | grep -q .; then
+  docker compose -f "${COMPOSE_FILE}" exec -T coordinator \
+    tar czf - -C /var/lib/coordinator . \
+    > "${WORK_DIR}/coordinator-data.tar.gz"
+  chmod 600 "${WORK_DIR}/coordinator-data.tar.gz"
+  echo "    Coordinator data archived (contains the control private key — store it securely)"
+else
+  echo "    Coordinator not running in this stack, skipping"
 fi
 
 echo "==> Backing up Caddy data..."

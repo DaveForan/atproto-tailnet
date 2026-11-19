@@ -4,7 +4,7 @@
  * hashed tokens. {@link DbOAuthStore} is the Postgres implementation; tests use
  * `MemoryOAuthStore` (oauth/memory-store.ts) through the same interface.
  */
-import { and, desc, eq, isNull, lt, notExists, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lt, notExists, sql } from "drizzle-orm";
 import type { OAuthClientInformationFull } from "@modelcontextprotocol/sdk/shared/auth.js";
 import { db } from "../db/index.js";
 import {
@@ -24,6 +24,8 @@ export interface GrantRow {
   clientId: string;
   resource: string;
   scopes: string[];
+  /** Instance-operator scope granted at consent. */
+  operator: boolean;
   createdAt: Date;
   lastUsedAt: Date | null;
   revokedAt: Date | null;
@@ -50,6 +52,7 @@ export interface ConnectionView {
   id: string;
   clientId: string;
   clientName: string;
+  operator: boolean;
   createdAt: Date;
   lastUsedAt: Date | null;
 }
@@ -60,11 +63,19 @@ export interface OAuthStore {
   /** Delete registered clients older than `before` that never got a grant. */
   pruneUnusedClients(before: Date): Promise<void>;
 
-  createGrant(g: { userId: string; clientId: string; resource: string; scopes: string[] }): Promise<GrantRow>;
+  createGrant(g: {
+    userId: string;
+    clientId: string;
+    resource: string;
+    scopes: string[];
+    operator?: boolean;
+  }): Promise<GrantRow>;
   /** Revoke the user's other active grants for this client (one connection per client). */
   revokeOtherGrants(userId: string, clientId: string, keepGrantId: string): Promise<string[]>;
   /** Revoke a grant and all its tokens. Returns false if it was already revoked / missing. */
   revokeGrant(grantId: string): Promise<boolean>;
+  /** Revoke every active grant of a user (and their tokens). Returns the revoked grant ids. */
+  revokeAllGrantsForUser(userId: string): Promise<string[]>;
   touchGrant(grantId: string): Promise<void>;
   listActiveGrants(userId: string): Promise<ConnectionView[]>;
   getGrant(grantId: string): Promise<GrantRow | undefined>;
@@ -91,7 +102,7 @@ function disabledAtOf(row: object): Date | null {
 }
 
 function toGrant(r: typeof mcpOauthGrants.$inferSelect): GrantRow {
-  return { ...r, scopes: (r.scopes ?? []) as string[] };
+  return { ...r, scopes: (r.scopes ?? []) as string[], operator: r.operator === true };
 }
 
 function toToken(r: typeof mcpOauthTokens.$inferSelect): TokenRow {
@@ -133,9 +144,29 @@ export class DbOAuthStore implements OAuthStore {
       );
   }
 
-  async createGrant(g: { userId: string; clientId: string; resource: string; scopes: string[] }) {
-    const [row] = await db.insert(mcpOauthGrants).values(g).returning();
+  async createGrant(g: { userId: string; clientId: string; resource: string; scopes: string[]; operator?: boolean }) {
+    const [row] = await db
+      .insert(mcpOauthGrants)
+      .values({ ...g, operator: g.operator === true })
+      .returning();
     return toGrant(row);
+  }
+
+  async revokeAllGrantsForUser(userId: string) {
+    const now = new Date();
+    const revoked = await db
+      .update(mcpOauthGrants)
+      .set({ revokedAt: now })
+      .where(and(eq(mcpOauthGrants.userId, userId), isNull(mcpOauthGrants.revokedAt)))
+      .returning({ id: mcpOauthGrants.id });
+    const ids = revoked.map((r) => r.id);
+    if (ids.length > 0) {
+      await db
+        .update(mcpOauthTokens)
+        .set({ revokedAt: now })
+        .where(and(inArray(mcpOauthTokens.grantId, ids), isNull(mcpOauthTokens.revokedAt)));
+    }
+    return ids;
   }
 
   async revokeOtherGrants(userId: string, clientId: string, keepGrantId: string) {
@@ -183,6 +214,7 @@ export class DbOAuthStore implements OAuthStore {
         id: mcpOauthGrants.id,
         clientId: mcpOauthGrants.clientId,
         clientName: mcpOauthClients.clientName,
+        operator: mcpOauthGrants.operator,
         createdAt: mcpOauthGrants.createdAt,
         lastUsedAt: mcpOauthGrants.lastUsedAt,
       })

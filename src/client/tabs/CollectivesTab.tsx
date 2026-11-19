@@ -23,6 +23,10 @@ export function CollectivesTab() {
   const [newSlug, setNewSlug] = useState("");
   const [creating, setCreating] = useState(false);
   const [singleTailnet, setSingleTailnet] = useState(!!user?.isOperator && user.canCreateTailnet === false);
+  // Sub-collectives are tailnets: only operators and designated tailnet creators may create them
+  const [cannotCreate, setCannotCreate] = useState(
+    !!user && !user.isOperator && user.canCreateTailnet === false,
+  );
 
   const loadData = useCallback(async () => {
     if (!currentTenant) return;
@@ -54,7 +58,9 @@ export function CollectivesTab() {
       setNewSlug("");
       await loadData();
     } catch (err) {
-      if (errorCode(err) === "single_tailnet") setSingleTailnet(true);
+      const code = errorCode(err);
+      if (code === "single_tailnet") setSingleTailnet(true);
+      if (code === "cannot_create_tailnet") setCannotCreate(true);
       toastError(errorMessage(err, "Failed to create sub-collective"));
     } finally {
       setCreating(false);
@@ -146,7 +152,13 @@ export function CollectivesTab() {
             An instance operator can turn that off on the Instance page.
           </p>
         )}
-        {hasPerm("manage_sub_collectives") && !singleTailnet && (
+        {hasPerm("manage_sub_collectives") && !singleTailnet && cannotCreate && (
+          <p className="help-text mt-12" role="status">
+            A sub-collective is its own tailnet, so only instance operators and people an operator
+            has designated as tailnet creators can create one. Ask an instance operator if you need one.
+          </p>
+        )}
+        {hasPerm("manage_sub_collectives") && !singleTailnet && !cannotCreate && (
           <form className="inline-form" onSubmit={createCollective}>
             <input
               type="text"

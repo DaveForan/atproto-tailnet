@@ -12,6 +12,9 @@ use serde_json::Value as Json;
 use crate::memory::PeerEvent;
 use crate::{generate_auth_key, generate_random_id};
 
+/// pg_advisory_xact_lock key serializing node registration / IPv4 allocation.
+const IPV4_ALLOC_LOCK_KEY: i64 = 0x636f_6f72_6449_5034; // "coordIP4"
+
 fn db(e: sqlx::Error) -> StorageError {
     StorageError::new(e)
 }
@@ -371,15 +374,25 @@ impl PgStore {
     ) -> Result<(NodeId, Ipv4Addr, u64), CoordError> {
         let endpoints_json = serde_json::to_value(&info.endpoints).unwrap();
 
-        let existing = sqlx::query_as::<_, (i64, uuid::Uuid, String, i64)>(
-            "SELECT id, tenant_id, ipv4, session_generation FROM coord_nodes WHERE machine_key = $1"
-        )
-            .bind(&machine_key[..])
-            .fetch_optional(&self.pool)
+        // All registrations serialize on one transaction-scoped advisory lock so
+        // the lowest-free-address scan and the INSERT are atomic with respect
+        // to each other (and a machine key can't be inserted twice).
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(IPV4_ALLOC_LOCK_KEY)
+            .execute(&mut *tx)
             .await
             .map_err(db)?;
 
-        if let Some((id, existing_tenant_uuid, ip_str, old_generation)) = existing {
+        let existing = sqlx::query_as::<_, (i64, uuid::Uuid, String, i64, Option<String>, Json)>(
+            "SELECT id, tenant_id, ipv4, session_generation, owner, tags FROM coord_nodes WHERE machine_key = $1"
+        )
+            .bind(&machine_key[..])
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db)?;
+
+        if let Some((id, existing_tenant_uuid, ip_str, old_generation, old_owner, old_tags)) = existing {
             let existing_tenant = TenantId::new(existing_tenant_uuid);
             if existing_tenant != tenant_id {
                 return Err(CoordError::Protocol(
@@ -387,9 +400,14 @@ impl PgStore {
                 ));
             }
             let new_gen = old_generation + 1;
+            // A new identity (owner/tags) must not inherit approvals granted to the old one.
+            let identity_changed = old_owner != reg.owner || from_json(old_tags) != reg.tags;
             sqlx::query(
                 "UPDATE coord_nodes SET node_key = $1, disco_key = $2, hostname = $3, os = $4, \
-                 endpoints = $5, online = TRUE, last_seen = NOW(), session_generation = $6 WHERE id = $7"
+                 endpoints = $5, online = TRUE, last_seen = NOW(), session_generation = $6, \
+                 owner = $7, tags = $8, ephemeral = $9, \
+                 approved_routes = CASE WHEN $10 THEN '[]'::jsonb ELSE approved_routes END \
+                 WHERE id = $11"
             )
                 .bind(&info.node_key)
                 .bind(&info.disco_key)
@@ -397,8 +415,12 @@ impl PgStore {
                 .bind(&info.os)
                 .bind(&endpoints_json)
                 .bind(new_gen)
+                .bind(&reg.owner)
+                .bind(to_json(&reg.tags))
+                .bind(reg.ephemeral)
+                .bind(identity_changed)
                 .bind(id)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await
                 .map_err(db)?;
 
@@ -406,10 +428,11 @@ impl PgStore {
                 sqlx::query("UPDATE coord_nodes SET advertised_routes = $1 WHERE id = $2")
                     .bind(to_json(&routes))
                     .bind(id)
-                    .execute(&self.pool)
+                    .execute(&mut *tx)
                     .await
                     .map_err(db)?;
             }
+            tx.commit().await.map_err(db)?;
 
             let ipv4: Ipv4Addr = ip_str.parse().map_err(|_| CoordError::Protocol("invalid stored IPv4".into()))?;
             let node_id = NodeId::new(id);
@@ -420,22 +443,11 @@ impl PgStore {
             return Ok((node_id, ipv4, new_gen as u64));
         }
 
-        let ip_offset: i64 = sqlx::query_scalar("SELECT nextval('coord_ipv4_seq')")
-            .fetch_one(&self.pool)
+        let used: Vec<String> = sqlx::query_scalar("SELECT ipv4 FROM coord_nodes")
+            .fetch_all(&mut *tx)
             .await
             .map_err(db)?;
-
-        let base_ip = u32::from(Ipv4Addr::new(100, 64, 0, 0));
-        let ip_offset_u32 = u32::try_from(ip_offset).map_err(|_| {
-            CoordError::Protocol(format!("IP offset {} exceeds u32 range", ip_offset))
-        })?;
-        let new_ipv4 = Ipv4Addr::from(base_ip.checked_add(ip_offset_u32).ok_or_else(|| {
-            CoordError::AddressSpaceExhausted
-        })?);
-        let max_cgnat = u32::from(Ipv4Addr::new(100, 127, 255, 255));
-        if u32::from(new_ipv4) > max_cgnat {
-            return Err(CoordError::AddressSpaceExhausted);
-        }
+        let new_ipv4 = crate::lowest_free_ipv4(used.iter().filter_map(|s| s.parse::<Ipv4Addr>().ok()))?;
         let new_ip_str = new_ipv4.to_string();
 
         let row = sqlx::query_as::<_, (i64, i64)>(
@@ -457,9 +469,10 @@ impl PgStore {
             .bind(to_json(&reg.tags))
             .bind(reg.ephemeral)
             .bind(to_json(&reg.advertised_routes.unwrap_or_default()))
-            .fetch_one(&self.pool)
+            .fetch_one(&mut *tx)
             .await
             .map_err(db)?;
+        tx.commit().await.map_err(db)?;
 
         let (id, generation) = row;
         let node_id = NodeId::new(id);

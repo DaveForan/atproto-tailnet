@@ -5,9 +5,9 @@
  * creators. Every tailnet-creation path goes through {@link canCreateTailnet}.
  */
 
-import { and, eq, isNull, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { instanceSettings, tailnetCreators, tenants } from "../db/schema.js";
+import { instanceSettings, memberships, tailnetCreators, tenants } from "../db/schema.js";
 import { config } from "../config.js";
 
 /** Operator-managed instance settings. */
@@ -69,10 +69,14 @@ async function countTopLevelTenants(): Promise<number> {
 
 /** True when an operator designated `did` as a tailnet creator. */
 export async function isTailnetCreator(did: string): Promise<boolean> {
+  // did:web host case must not matter (creators are stored normalized).
+  // Dynamic import: routes/invitations → helpers → oauth → policy would cycle.
+  const { normalizeAccountDid } = await import("../routes/invitations.js");
+  const normalized = normalizeAccountDid(did);
   const rows = await db
     .select({ id: tailnetCreators.id })
     .from(tailnetCreators)
-    .where(eq(tailnetCreators.did, did))
+    .where(inArray(tailnetCreators.did, [...new Set([normalized, did])]))
     .limit(1);
   return rows.length > 0;
 }
@@ -145,4 +149,26 @@ export async function clearDefaultTailnetIf(tenantId: string): Promise<void> {
     .update(instanceSettings)
     .set({ defaultTailnetId: null, updatedAt: new Date() })
     .where(and(eq(instanceSettings.id, 1), eq(instanceSettings.defaultTailnetId, tenantId)));
+}
+
+/**
+ * `/api/me` `access`: "member" only when the user belongs to at least one
+ * live tailnet that is not suspended; memberships solely in suspended
+ * tailnets count as "no_access" (operators still get the Instance tab via
+ * `isOperator`, which is independent of this).
+ */
+export async function memberAccess(userId: string): Promise<"member" | "no_access"> {
+  const [row] = await db
+    .select({ id: memberships.id })
+    .from(memberships)
+    .innerJoin(tenants, eq(memberships.tenantId, tenants.id))
+    .where(
+      and(
+        eq(memberships.userId, userId),
+        ne(tenants.status, "deleted"),
+        eq(tenants.suspended, false),
+      ),
+    )
+    .limit(1);
+  return row ? "member" : "no_access";
 }

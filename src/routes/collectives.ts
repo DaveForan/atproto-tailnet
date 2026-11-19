@@ -15,6 +15,7 @@ import {
   getTenantForUser,
   hasPermission,
   authUserId,
+  authUserDid,
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
 import { logger } from "../logger.js";
@@ -22,7 +23,12 @@ import { allocateTenantPort } from "../orchestrator/ports.js";
 import { useCoordinator } from "../orchestrator/control-client.js";
 import { provisionTenantInstance } from "./auth.js";
 import { MAX_LIMIT, checkChildLimit } from "./limits.js";
-import { getInstanceSettings, listTopLevelTenants } from "../operator/policy.js";
+import {
+  canCreateTailnet,
+  getInstanceSettings,
+  isOperatorDid,
+  listTopLevelTenants,
+} from "../operator/policy.js";
 
 export const collectivesRouter = Router();
 
@@ -152,12 +158,28 @@ collectivesRouter.post(
 
     const { tenant } = result;
 
+    if (tenant.suspended) {
+      res.status(409).json({ error: "This tailnet is suspended", code: "tenant_suspended" });
+      return;
+    }
+
     // Single-tailnet mode: the instance holds exactly one tailnet, no children
     if ((await getInstanceSettings()).singleTailnet) {
       res.status(409).json({
         error: "This instance is in single-tailnet mode — sub-collectives cannot be created",
         code: "single_tailnet",
         tenants: await listTopLevelTenants(),
+      });
+      return;
+    }
+
+    // A sub-collective is a tailnet: only operators and designated tailnet
+    // creators may make one (agent tokens never carry instance powers).
+    const did = req.agentToken ? null : await authUserDid(req);
+    if (!did || !(isOperatorDid(did) || (await canCreateTailnet({ did })))) {
+      res.status(403).json({
+        error: "Only instance operators and designated tailnet creators can create sub-collectives",
+        code: "cannot_create_tailnet",
       });
       return;
     }

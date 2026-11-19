@@ -49,6 +49,30 @@ function errorMessage(status: number, body: unknown): string {
   return `Request failed [HTTP ${status}]`;
 }
 
+/**
+ * Defense in depth against path traversal through tool arguments: the URL the
+ * request will actually hit must have exactly the path that was constructed
+ * (no dot segments — WHATWG also normalizes `%2e` — no backslashes, no query
+ * or fragment smuggled in), and no segment may carry an encoded slash,
+ * backslash or dot segment that Express would decode later.
+ */
+export function assertSamePath(path: string, url: URL): void {
+  if (url.pathname !== path || url.search !== "" || url.hash !== "") {
+    throw new Error(`Refusing request: path changed on normalization (${path})`);
+  }
+  for (const segment of path.split("/").slice(1)) {
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(segment);
+    } catch {
+      throw new Error(`Refusing request: malformed path segment (${path})`);
+    }
+    if (decoded === "." || decoded === ".." || /[/\\?#]/.test(decoded)) {
+      throw new Error(`Refusing request: unsafe path segment (${path})`);
+    }
+  }
+}
+
 export class HttpApiClient implements ApiClient {
   private readonly fetchImpl: typeof fetch;
   constructor(private readonly opts: HttpApiClientOptions) {
@@ -57,13 +81,15 @@ export class HttpApiClient implements ApiClient {
 
   async call<T = unknown>(method: HttpMethod, path: string, body?: unknown): Promise<T> {
     if (!path.startsWith("/api/")) throw new Error(`Refusing non-API path: ${path}`);
+    const url = new URL(path, this.opts.baseUrl);
+    assertSamePath(path, url);
     const headers: Record<string, string> = {
       Authorization: `Bearer ${this.opts.token}`,
       Accept: "application/json",
       [INTERNAL_MCP_HEADER]: INTERNAL_MCP_SECRET,
     };
     if (body !== undefined) headers["Content-Type"] = "application/json";
-    const res = await this.fetchImpl(new URL(path, this.opts.baseUrl), {
+    const res = await this.fetchImpl(url, {
       method,
       headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,

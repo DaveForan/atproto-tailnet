@@ -7,10 +7,10 @@
 
 import { Router } from "express";
 import { config } from "../config.js";
-import { eq, and, desc, ne, isNull } from "drizzle-orm";
+import { eq, and, desc, ne, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/index.js";
-import { users, tenants, memberships, roles, joinRequests } from "../db/schema.js";
+import { users, tenants, memberships, roles, joinRequests, invitations } from "../db/schema.js";
 import {
   destroyInstance,
   startInstance,
@@ -27,6 +27,7 @@ import { logger } from "../logger.js";
 import { notify } from "../notifications/service.js";
 import {
   canCreateTailnet,
+  memberAccess,
   withTailnetCreationLock,
   clearDefaultTailnetIf,
   getInstanceSettings,
@@ -78,7 +79,7 @@ apiRouter.get("/api/me", requireAuth, async (req, res) => {
     avatarUrl: user.avatarUrl,
     isOperator: !viaAgentToken && isOperatorDid(user.did),
     canCreateTailnet: !viaAgentToken && (await canCreateTailnet(user)),
-    access: membership ? "member" : "no_access",
+    access: membership ? await memberAccess(user.id) : "no_access",
     instance: { singleTailnet: (await getInstanceSettings()).singleTailnet },
     features: { federation: config.federationEnabled },
   });
@@ -206,7 +207,12 @@ apiRouter.get("/api/tenants/:id", requireAuth, async (req, res) => {
   });
 });
 
-/** Public tenant info — no auth required. Only returns data if join requests are enabled. */
+/**
+ * Public tenant info — no auth required. Only answers for tailnets that are
+ * accepting join requests (and are not suspended, deleted or locked down);
+ * everything else is 404 so the endpoint can't be used to probe which slugs
+ * exist.
+ */
 apiRouter.get("/api/tenants/by-slug/:slug/public", async (req, res) => {
   const slug = param(req, "slug");
 
@@ -223,7 +229,13 @@ apiRouter.get("/api/tenants/by-slug/:slug/public", async (req, res) => {
     .from(tenants)
     .where(eq(tenants.slug, slug));
 
-  if (!tenant || tenant.lockdownMode || tenant.suspended || tenant.status === "deleted") {
+  if (
+    !tenant ||
+    !tenant.allowJoinRequests ||
+    tenant.lockdownMode ||
+    tenant.suspended ||
+    tenant.status === "deleted"
+  ) {
     res.status(404).json({ error: "Tailnet not found" });
     return;
   }
@@ -232,9 +244,30 @@ apiRouter.get("/api/tenants/by-slug/:slug/public", async (req, res) => {
     id: tenant.id,
     slug: tenant.slug,
     name: tenant.name,
-    joinOpen: tenant.allowJoinRequests && !tenant.lockdownMode,
+    joinOpen: true,
   });
 });
+
+/** Max pending join requests a tailnet queues before refusing new ones. */
+export const MAX_PENDING_JOIN_REQUESTS = 50;
+/** How long a rejected requester must wait before asking again. */
+export const JOIN_REJECT_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+/** One notification per requester per tailnet within this window. */
+export const JOIN_NOTIFY_DEDUPE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Whether the TLS on-demand ask endpoint (`/internal/tls-check`) may issue a
+ * certificate for `<slug>.<BASE_DOMAIN>`: only live tenants — never deleted
+ * or suspended ones.
+ */
+export async function tlsCertAllowedForSlug(slug: string): Promise<boolean> {
+  const [tenant] = await db
+    .select({ id: tenants.id })
+    .from(tenants)
+    .where(and(eq(tenants.slug, slug), ne(tenants.status, "deleted"), eq(tenants.suspended, false)))
+    .limit(1);
+  return Boolean(tenant);
+}
 
 /** Submit a join request. Requires auth but NOT membership. */
 apiRouter.post(
@@ -276,33 +309,76 @@ apiRouter.post(
       return;
     }
 
-    // Already pending?
-    const [pendingReq] = await db
-      .select()
+    // Latest earlier request by this requester: already pending (409),
+    // rejection cooldown (429), and notification dedupe.
+    const [previous] = await db
+      .select({
+        status: joinRequests.status,
+        requestedAt: joinRequests.requestedAt,
+        reviewedAt: joinRequests.reviewedAt,
+      })
       .from(joinRequests)
-      .where(
-        and(
-          eq(joinRequests.tenantId, tenantId),
-          eq(joinRequests.requesterId, userId),
-          eq(joinRequests.status, "pending"),
-        ),
-      );
+      .where(and(eq(joinRequests.tenantId, tenantId), eq(joinRequests.requesterId, userId)))
+      .orderBy(desc(joinRequests.requestedAt))
+      .limit(1);
 
-    if (pendingReq) {
-      res.status(409).json({ error: "You already have a pending request" });
+    if (previous?.status === "pending") {
+      res.status(409).json({ error: "You already have a pending request", code: "join_request_pending" });
       return;
     }
 
-    const safeMessage = message ? message.slice(0, 500) : null;
+    const now = Date.now();
+    if (previous?.status === "rejected") {
+      const rejectedAt = (previous.reviewedAt ?? previous.requestedAt).getTime();
+      const retryAfter = Math.ceil((rejectedAt + JOIN_REJECT_COOLDOWN_MS - now) / 1000);
+      if (retryAfter > 0) {
+        res.setHeader("Retry-After", String(retryAfter));
+        res.status(429).json({
+          error: "Your previous request was declined. Please wait before asking again.",
+          code: "join_cooldown",
+          retryAfter,
+        });
+        return;
+      }
+    }
 
-    const [created] = await db
-      .insert(joinRequests)
-      .values({
-        tenantId,
-        requesterId: userId,
-        message: safeMessage,
-      })
-      .returning();
+    const [{ pending }] = await db
+      .select({ pending: sql<number>`count(*)::int` })
+      .from(joinRequests)
+      .where(and(eq(joinRequests.tenantId, tenantId), eq(joinRequests.status, "pending")));
+
+    if (pending >= MAX_PENDING_JOIN_REQUESTS) {
+      res.status(429).json({
+        error: "This tailnet has too many pending join requests. Try again later.",
+        code: "join_queue_full",
+      });
+      return;
+    }
+
+    const safeMessage = typeof message === "string" && message ? message.slice(0, 500) : null;
+
+    let created: typeof joinRequests.$inferSelect | undefined;
+    try {
+      [created] = await db
+        .insert(joinRequests)
+        .values({
+          tenantId,
+          requesterId: userId,
+          message: safeMessage,
+        })
+        .returning();
+    } catch (err: unknown) {
+      // join_requests_pending_uq: a concurrent request won the race
+      if ((err as { code?: string }).code === "23505") {
+        res.status(409).json({ error: "You already have a pending request", code: "join_request_pending" });
+        return;
+      }
+      throw err;
+    }
+    if (!created) {
+      res.status(500).json({ error: "Failed to create join request" });
+      return;
+    }
 
     logAudit({
       tenantId,
@@ -312,15 +388,21 @@ apiRouter.post(
       targetId: created.id,
     });
 
-    const [requester] = await db
-      .select({ handle: users.handle })
-      .from(users)
-      .where(eq(users.id, userId));
-    notify(tenantId, "join_request", {
-      title: "New join request",
-      body: `@${requester?.handle ?? "someone"} asked to join ${tenant.name}.`,
-      link: "/#security",
-    });
+    // Dedupe: a requester who already asked within the window (e.g. rejected
+    // then re-requested) doesn't raise another notification / webhook.
+    const recentlyNotified =
+      previous !== undefined && now - previous.requestedAt.getTime() < JOIN_NOTIFY_DEDUPE_MS;
+    if (!recentlyNotified) {
+      const [requester] = await db
+        .select({ handle: users.handle })
+        .from(users)
+        .where(eq(users.id, userId));
+      notify(tenantId, "join_request", {
+        title: "New join request",
+        body: `@${requester?.handle ?? "someone"} asked to join ${tenant.name}.`,
+        link: "/#security",
+      });
+    }
 
     res.status(201).json({ id: created.id, status: "pending" });
   },
@@ -379,6 +461,13 @@ export async function deleteTenantInstance(tenant: typeof tenants.$inferSelect):
     .update(tenants)
     .set({ status: "deleted", containerId: null, updatedAt: new Date() })
     .where(eq(tenants.id, tenantId));
+
+  // A deleted tailnet's outstanding invitations can no longer be accepted
+  await db
+    .update(invitations)
+    .set({ status: "revoked", updatedAt: new Date() })
+    .where(and(eq(invitations.tenantId, tenantId), eq(invitations.status, "pending")))
+    .catch((err: unknown) => logger.warn({ tenantId, err }, "failed to revoke pending invitations"));
 
   // Give the real Headscale port back (tenants.port is UNIQUE across all rows)
   await releaseTenantPort(tenantId).catch((err) =>

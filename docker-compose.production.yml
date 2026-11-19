@@ -12,6 +12,8 @@
 services:
   # ---------- Application -------------------------------------------------
   app:
+    # Headscale mode drives Docker through the socket, which is root-equivalent anyway.
+    user: "0:0"
     build:
       context: .
       dockerfile: Dockerfile

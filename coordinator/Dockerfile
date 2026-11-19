@@ -43,12 +43,16 @@ RUN find crates -name "*.rs" -exec touch {} + && \
 FROM alpine:3.21
 
 RUN apk add --no-cache tini ca-certificates \
-    && mkdir -p /var/lib/coordinator
+    && mkdir -p /var/lib/coordinator \
+    && addgroup -S coord && adduser -S -G coord -H coord \
+    && chown coord:coord /var/lib/coordinator
 
 # The bin target is named "coordinator" (crates/coord-server/Cargo.toml [[bin]])
 COPY --from=build /build/target/release/coordinator /usr/local/bin/coord-server
 
 EXPOSE 9443
+
+USER coord
 
 ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["coord-server"]

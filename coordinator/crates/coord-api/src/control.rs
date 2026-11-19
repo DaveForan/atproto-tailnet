@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use tracing::{info, warn};
 
-use coord_core::{NodeId, NodeInfo, NodeRegistration};
+use coord_core::{sanitize, NodeId, NodeInfo, NodeRegistration};
 use coord_proto::register::{RegisterRequest, RegisterResponse, User, Login};
 use coord_proto::map::MapRequest;
 use coord_store::PeerEvent;
@@ -25,8 +25,10 @@ pub async fn handle_register(
 
     // A known machine re-registering with its current (or rotated-from) node key
     // is already authorized; tailscaled does this on every restart without an auth key.
+    let mut known_tenant = None;
     if let Some(existing) = state.store.get_node_by_machine_key(machine_key).await {
         if let Some(detail) = state.store.get_node_info(existing).await {
+            known_tenant = Some(detail.tenant_id);
             let old_key = req
                 .old_node_key
                 .as_deref()
@@ -40,11 +42,20 @@ pub async fn handle_register(
             }
             let suspended = state.store.is_tenant_suspended(detail.tenant_id).await;
             let current = detail.info.node_key.as_slice();
+            // Same node key: nothing to re-authorize. An auth key sent alongside
+            // (tailscaled re-sends its configured --authkey / TS_AUTHKEY on restart)
+            // is deliberately ignored and NOT consumed — burning a single-use key
+            // here would change nothing and break the key's next legitimate use.
+            // A real re-auth (`tailscale up --force-reauth`) generates a new node
+            // key and takes the key path below.
             if !suspended && current == node_key_bytes.as_slice() {
                 sync_node_routes(state, existing, advertised).await;
                 return Ok((serde_json::to_string(&authorized_response())?, None));
             }
-            if let Some(old) = old_key.filter(|k| !suspended && current == k.as_slice()) {
+            // Key rotation without an auth key keeps the node's identity. With an
+            // auth key the machine is re-authenticating: fall through so the new
+            // key's owner/tags/ephemeral replace the old ones.
+            if let Some(old) = old_key.filter(|k| auth_key.is_none() && !suspended && current == k.as_slice()) {
                 state.store.rotate_node_key(machine_key, &old, &node_key_bytes).await?;
                 info!(node_id = existing.as_i64(), "node key rotated on re-register");
                 sync_node_routes(state, existing, advertised).await;
@@ -53,12 +64,17 @@ pub async fn handle_register(
         }
     }
 
-    // Check suspension before validating so a single-use key isn't consumed.
+    // Check suspension (and tenant mismatch) before validating so a single-use
+    // key isn't consumed by a registration that is going to be refused.
     if let Some(key) = auth_key {
         if let Some(tid) = state.store.preauth_key_tenant(key).await {
             if state.store.is_tenant_suspended(tid).await {
                 info!(tenant = %tid, "register refused: tenant suspended");
                 return Ok((serde_json::to_string(&error_response(TENANT_SUSPENDED_MSG))?, None));
+            }
+            if known_tenant.is_some_and(|known| known != tid) {
+                info!(tenant = %tid, "register refused: machine belongs to another tailnet");
+                return Ok((serde_json::to_string(&error_response("this machine is registered to a different tailnet"))?, None));
             }
         }
     }
@@ -100,21 +116,20 @@ pub async fn handle_register(
         }
     }
 
+    // Client-supplied hostname, reduced to one DNS label (never a dotted name
+    // that could spoof another node's FQDN). Unusable names become node-<id>.
+    let hostname = req
+        .hostinfo
+        .as_ref()
+        .and_then(|h| h.hostname.as_deref())
+        .and_then(sanitize::dns_label);
     let node_info = NodeInfo {
         node_key: node_key_bytes.to_vec(),
         machine_key: machine_key.to_vec(),
         disco_key: None,
         endpoints: vec![],
-        hostname: req
-            .hostinfo
-            .as_ref()
-            .and_then(|h| h.hostname.clone())
-            .unwrap_or_else(|| "unknown".into()),
-        os: req
-            .hostinfo
-            .as_ref()
-            .and_then(|h| h.os.clone())
-            .unwrap_or_else(|| "unknown".into()),
+        hostname: hostname.clone().unwrap_or_else(|| HOSTNAME_PLACEHOLDER.into()),
+        os: sanitize::os(req.hostinfo.as_ref().and_then(|h| h.os.as_deref())),
         ipv4: None,
         ipv6: None,
     };
@@ -130,18 +145,35 @@ pub async fn handle_register(
         .store
         .register_node_with(tenant_id, *machine_key, node_info, registration)
         .await?;
-    // Advertised routes were stored with the node; apply auto-approvers now.
+    if hostname.is_none() {
+        let fallback = sanitize::node_dns_label("", node_id.as_i64());
+        if let Err(e) = state.store.rename_node(node_id, fallback).await {
+            warn!(error = %e, node_id = node_id.as_i64(), "fallback hostname failed");
+        }
+    }
+    // Advertised routes were stored with the node; apply auto-approvers now
+    // (re-evaluated against the new key's tags on re-auth; the store already
+    // dropped approvals if owner/tags changed).
     sync_node_routes(state, node_id, None).await;
+    if known_tenant.is_some() {
+        // Re-auth may have changed tags/owner, which feed ACLs and auto-approval;
+        // the node's own stream ignores its own events, so push fresh snapshots.
+        state.notify_tenant_changed(tenant_id);
+    }
 
     info!(
         node_id = node_id.as_i64(),
         ipv4 = %ipv4,
-        hostname = req.hostinfo.as_ref().and_then(|h| h.hostname.as_deref()).unwrap_or("unknown"),
+        hostname = hostname.as_deref().unwrap_or(HOSTNAME_PLACEHOLDER),
+        reauth = known_tenant.is_some(),
         "node registered"
     );
 
     Ok((serde_json::to_string(&authorized_response())?, Some(generation)))
 }
+
+/// Stored briefly when a client sends no usable hostname; replaced by node-<id>.
+const HOSTNAME_PLACEHOLDER: &str = "node";
 
 pub(crate) const TENANT_SUSPENDED_MSG: &str = "this tailnet is suspended by the instance operator";
 
@@ -188,12 +220,11 @@ pub async fn handle_map(
         if req.hostinfo.is_some() {
             sync_node_routes(state, node_id, advertised_routes_from(req.hostinfo.as_ref())).await;
         }
-        if req.endpoints.is_some() || req.disco_key.is_some() {
-            if let Err(e) = state.store.update_endpoints(
-                node_id,
-                req.endpoints.clone().unwrap_or_default(),
-                req.disco_key.clone(),
-            ).await {
+        // Endpoints and disco key are relayed verbatim to every peer: bound them.
+        let endpoints = sanitize::endpoints(req.endpoints.as_deref().unwrap_or_default());
+        let disco_key = req.disco_key.as_deref().and_then(sanitize::disco_key);
+        if !endpoints.is_empty() || disco_key.is_some() {
+            if let Err(e) = state.store.update_endpoints(node_id, endpoints, disco_key).await {
                 tracing::warn!(error = %e, "update_endpoints failed");
             }
         }

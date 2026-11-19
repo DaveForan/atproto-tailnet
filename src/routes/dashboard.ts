@@ -42,18 +42,16 @@ const INVITE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 
 /**
  * Invitation link (`inviteUrl`). Serves the dashboard shell, which shows the
- * invitation to the signed-in invitee. Anonymous visitors get the login view;
- * the destination is remembered in the session (and the client passes
- * `redirect=/invite/:id` to /auth/login) so sign-in comes back here.
+ * invitation to the signed-in invitee. Anonymous visitors get the login view,
+ * whose form passes `redirect=/invite/:id` to /auth/login (validated there as
+ * a local path) so sign-in comes back here. Nothing is written to the session
+ * for anonymous visitors — the link alone must not create a session row.
  */
 dashboardRouter.get("/invite/:id", (req, res) => {
   const id = req.params.id;
   if (typeof id !== "string" || !INVITE_ID_RE.test(id)) {
     res.redirect("/");
     return;
-  }
-  if (!req.session.userId) {
-    req.session.postLoginRedirect = `/invite/${id.toLowerCase()}`;
   }
   res.type("html").send(DASHBOARD_HTML);
 });

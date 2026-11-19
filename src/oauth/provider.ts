@@ -50,6 +50,8 @@ const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "[::1]"]);
 const MAX_REDIRECT_URIS = 10;
 const MAX_URI_LENGTH = 2048;
 const MAX_CLIENT_NAME = 100;
+/** Cap on the stored client metadata (whole registration document, JSON). */
+export const MAX_CLIENT_METADATA_BYTES = 8 * 1024;
 const MAX_PENDING_CONSENTS = 5;
 /** Unused DCR registrations are pruned after this long. */
 const UNUSED_CLIENT_TTL_MS = 24 * 60 * 60 * 1000;
@@ -62,7 +64,46 @@ interface PendingCode {
   codeChallenge: string;
   resource: string;
   scopes: string[];
+  /** The user ticked "Also allow instance operator actions" (operators only). */
+  operator: boolean;
   expiresAt: number;
+}
+
+/** A consumed code; `replayed` is set when it is presented again before its grant exists. */
+interface UsedCode {
+  grantId: string | null;
+  replayed: boolean;
+  expiresAt: number;
+}
+
+/** Hosts whose clients may use a Claude/Anthropic-looking client_name. */
+const TRUSTED_NAME_HOSTS = new Set(["claude.ai", "claude.com"]);
+
+// Common confusables folded onto ASCII before the brand-name check.
+const CONFUSABLES: Record<string, string> = {
+  "\u0430": "a", "\u0435": "e", "\u043e": "o", "\u0441": "c", "\u0440": "p", "\u0445": "x",
+  "\u0443": "y", "\u0456": "i", "\u04cf": "l", "\u04bb": "h", "\u0501": "d", "\u0578": "n",
+  "\u03b1": "a", "\u03bf": "o", "\u03b9": "i", "\u03bd": "v", "\u0274": "n", "\u029c": "h",
+  "0": "o", "1": "l", "3": "e", "4": "a", "@": "a", "$": "s", "|": "l", "!": "l", "i": "l",
+};
+
+function foldName(s: string): string {
+  return [...s.normalize("NFKD").toLowerCase()]
+    .map((ch) => CONFUSABLES[ch] ?? ch)
+    .join("")
+    .replace(/[^a-z]/g, "");
+}
+
+const BRAND_TOKENS = ["claude", "anthropic"].map(foldName);
+
+/** True when `name` reads as "Claude"/"Anthropic" (case, spacing, punctuation and lookalikes ignored). */
+export function looksLikeTrustedBrand(name: string): boolean {
+  const folded = foldName(name);
+  return BRAND_TOKENS.some((t) => folded.includes(t));
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  return LOOPBACK_HOSTS.has(hostname);
 }
 
 /** Throws InvalidClientMetadataError unless `uri` is https, or http on a loopback host. */
@@ -106,6 +147,8 @@ function cleanClientName(name: unknown): string | undefined {
 
 export interface ProviderOptions {
   store: OAuthStore;
+  /** Instance-operator check (OPERATOR_DIDS); enables the operator-scope checkbox. */
+  isOperatorDid?: (did: string) => boolean;
   /** Absolute URL of the MCP endpoint, e.g. https://example.com/mcp — the token audience. */
   resourceUrl: string;
   now?: () => number;
@@ -117,14 +160,18 @@ export class TailnetOAuthProvider implements OAuthServerProvider {
   private readonly now: () => number;
   private readonly codes = new Map<string, PendingCode>();
   /** Recently consumed codes → grant they produced (replay detection). */
-  private readonly usedCodes = new Map<string, { grantId: string | null; expiresAt: number }>();
+  private readonly usedCodes = new Map<string, UsedCode>();
   private readonly lastTouch = new Map<string, number>();
 
   constructor(opts: ProviderOptions) {
     this.store = opts.store;
     this.resourceUrl = opts.resourceUrl;
     this.now = opts.now ?? (() => Date.now());
+    this.isOperatorDid = opts.isOperatorDid ?? (() => false);
   }
+
+  /** Whether `did` may grant the instance-operator scope. */
+  readonly isOperatorDid: (did: string) => boolean;
 
   // ── Clients (dynamic registration) ──────────────────────────────────
 
@@ -140,6 +187,25 @@ export class TailnetOAuthProvider implements OAuthServerProvider {
           throw new InvalidClientMetadataError(`At most ${MAX_REDIRECT_URIS} redirect_uris are allowed`);
         }
         for (const uri of full.redirect_uris) validateRedirectUri(uri);
+        if (typeof full.client_name === "string" && full.client_name.length > MAX_CLIENT_NAME) {
+          throw new InvalidClientMetadataError(`client_name must be at most ${MAX_CLIENT_NAME} characters`);
+        }
+        if (JSON.stringify(full).length > MAX_CLIENT_METADATA_BYTES) {
+          throw new InvalidClientMetadataError(`Client metadata must be at most ${MAX_CLIENT_METADATA_BYTES} bytes`);
+        }
+        // Consent phishing: only Claude's own redirect hosts (or loopback, for
+        // local CLI clients such as Claude Code) may call themselves Claude/Anthropic.
+        if (typeof full.client_name === "string" && looksLikeTrustedBrand(full.client_name)) {
+          const trusted = full.redirect_uris.every((uri) => {
+            const host = new URL(uri).hostname.toLowerCase();
+            return TRUSTED_NAME_HOSTS.has(host) || isLoopbackHost(host);
+          });
+          if (!trusted) {
+            throw new InvalidClientMetadataError(
+              "client_name may only reference Claude or Anthropic when every redirect_uri is on claude.ai or claude.com",
+            );
+          }
+        }
         const grantTypes = full.grant_types ?? ["authorization_code", "refresh_token"];
         if (grantTypes.some((g) => g !== "authorization_code" && g !== "refresh_token")) {
           throw new InvalidClientMetadataError("Only authorization_code and refresh_token grants are supported");
@@ -223,6 +289,7 @@ export class TailnetOAuthProvider implements OAuthServerProvider {
       state: params.state,
       scopes: params.scopes ?? [],
       resource,
+      operatorEligible: this.isOperatorDid(user.did),
       expiresAt: now + CONSENT_TTL_MS,
     };
     req.session.mcpPendingAuthz = pending;
@@ -241,6 +308,8 @@ export class TailnetOAuthProvider implements OAuthServerProvider {
         redirectHost,
         requestId,
         csrfToken: req.session.csrfToken,
+        verified: false, // every client here comes from dynamic registration
+        offerOperatorScope: pending[requestId].operatorEligible === true,
       }),
     );
   }
@@ -261,6 +330,9 @@ export class TailnetOAuthProvider implements OAuthServerProvider {
 
   private async rejectReplayedCode(code: string): Promise<never> {
     const used = this.usedCodes.get(code);
+    // Replay while the first exchange is still creating its grant: mark it so
+    // that exchange revokes the grant as soon as it exists.
+    if (used && !used.grantId) used.replayed = true;
     if (used?.grantId) {
       const grant = await this.store.getGrant(used.grantId);
       if (await this.store.revokeGrant(used.grantId)) {
@@ -306,7 +378,7 @@ export class TailnetOAuthProvider implements OAuthServerProvider {
     if (!c) return this.rejectReplayedCode(authorizationCode);
     // Single use: consume synchronously before any await.
     this.codes.delete(authorizationCode);
-    const used = { grantId: null as string | null, expiresAt: this.now() + 10 * AUTH_CODE_TTL_MS };
+    const used: UsedCode = { grantId: null, replayed: false, expiresAt: this.now() + 10 * AUTH_CODE_TTL_MS };
     this.usedCodes.set(authorizationCode, used);
 
     if (redirectUri !== undefined && redirectUri !== c.redirectUri) {
@@ -323,14 +395,21 @@ export class TailnetOAuthProvider implements OAuthServerProvider {
       clientId: c.clientId,
       resource: c.resource,
       scopes: c.scopes,
+      operator: c.operator,
     });
     used.grantId = grant.id;
     this.store.audit({
       actorUserId: c.userId,
       action: "mcp_grant_created",
       grantId: grant.id,
-      metadata: { clientId: c.clientId, clientName: client.client_name ?? null },
+      metadata: { clientId: c.clientId, clientName: client.client_name ?? null, operator: c.operator },
     });
+    if (used.replayed) {
+      // The code was replayed while this grant was being created (OAuth 2.1 §4.1.3).
+      await this.revokeGrantAudited(grant.id, c.userId, c.clientId, "authorization_code_replay");
+      logger.warn({ grantId: grant.id }, "MCP authorization code replayed during exchange; grant revoked");
+      throw new InvalidGrantError("Authorization code is invalid, expired or already used");
+    }
     // One connection per client: a fresh consent replaces the previous one.
     const replaced = await this.store.revokeOtherGrants(c.userId, c.clientId, grant.id);
     for (const id of replaced) {
@@ -427,7 +506,7 @@ export class TailnetOAuthProvider implements OAuthServerProvider {
       scopes: grant.scopes,
       expiresAt: Math.floor(row.expiresAt.getTime() / 1000),
       resource: new URL(grant.resource),
-      extra: { userId: user.id, grantId: grant.id, did: user.did, handle: user.handle },
+      extra: { userId: user.id, grantId: grant.id, did: user.did, handle: user.handle, operator: grant.operator },
     };
   }
 

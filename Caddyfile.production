@@ -22,6 +22,10 @@
 
 # Main app — dashboard, auth, API
 {$APP_DOMAIN:tailnets.example.com} {
+	header Strict-Transport-Security "max-age=31536000"
+	# Internal endpoints (on-demand TLS ask) are reached on the private network only.
+	@internal path /internal/*
+	respond @internal 404
 	reverse_proxy app:3000
 }
 

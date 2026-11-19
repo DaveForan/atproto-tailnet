@@ -7,7 +7,7 @@
 
 import { Router } from "express";
 import { resolveTxt } from "node:dns/promises";
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, ne } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { config } from "../config.js";
 import {
@@ -28,6 +28,7 @@ import {
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
 import { enforceMemberLimit } from "./limits.js";
+import { resolvesToPublicAddresses } from "../identity/resolver.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -75,6 +76,22 @@ const HANDLE_RE =
 /** AT Proto account DIDs we accept for invitations / tailnet creators. */
 export const ACCOUNT_DID_RE = /^did:(plc:[a-z2-7]{24}|web:[a-zA-Z0-9._%:-]{1,253})$/;
 
+/**
+ * Canonical form of an account DID so an invitation matches the DID the
+ * invitee signs in with: the did:web host part is case-insensitive (lowercased,
+ * percent-escapes uppercased); path segments and did:plc ids are left as-is
+ * (did:plc is lowercase by construction).
+ */
+export function normalizeAccountDid(did: string): string {
+  if (!did.startsWith("did:web:")) return did;
+  const [host, ...path] = did.slice("did:web:".length).split(":");
+  const normHost = host.toLowerCase().replace(/%[0-9a-f]{2}/g, (m) => m.toUpperCase());
+  return ["did:web:" + normHost, ...path].join(":");
+}
+
+/** Timeout for every outbound identity lookup made while inviting. */
+const RESOLVE_TIMEOUT_MS = 5000;
+
 /** Copyable link the inviter sends to the invitee. */
 export function inviteUrl(invitationId: string): string {
   return `${config.publicUrl.replace(/\/+$/, "")}/invite/${invitationId}`;
@@ -94,7 +111,7 @@ export async function resolveDidToHandle(did: string): Promise<string | null> {
   try {
     if (did.startsWith("did:plc:")) {
       const res = await fetch(`https://plc.directory/${encodeURIComponent(did)}`, {
-        signal: AbortSignal.timeout(5000),
+        signal: AbortSignal.timeout(RESOLVE_TIMEOUT_MS),
         redirect: "error",
       });
       if (res.ok) {
@@ -106,7 +123,7 @@ export async function resolveDidToHandle(did: string): Promise<string | null> {
     if (!candidate) {
       const res = await fetch(
         `https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile?actor=${encodeURIComponent(did)}`,
-        { signal: AbortSignal.timeout(5000) },
+        { signal: AbortSignal.timeout(RESOLVE_TIMEOUT_MS), redirect: "error" },
       );
       if (res.ok) {
         const data = (await res.json()) as { handle?: string };
@@ -117,7 +134,8 @@ export async function resolveDidToHandle(did: string): Promise<string | null> {
     // fall through — display falls back to the DID
   }
   if (!candidate || !HANDLE_RE.test(candidate)) return null;
-  return (await resolveHandleToDid(candidate)) === did ? candidate : null;
+  const back = await resolveHandleToDid(candidate);
+  return back && normalizeAccountDid(back) === normalizeAccountDid(did) ? candidate : null;
 }
 
 /**
@@ -142,13 +160,19 @@ export async function resolveHandleToDid(handle: string): Promise<string | null>
     // DNS resolution failed, try HTTP
   }
 
+  // The handle is user input: only fetch its .well-known when every address
+  // it resolves to is public (no probing of internal services), with a
+  // timeout and no redirects.
   try {
-    const res = await fetch(
-      `https://${cleanHandle}/.well-known/atproto-did`,
-    );
-    if (res.ok) {
-      const did = (await res.text()).trim();
-      if (did.startsWith("did:")) return did;
+    if (await resolvesToPublicAddresses(cleanHandle)) {
+      const res = await fetch(`https://${cleanHandle}/.well-known/atproto-did`, {
+        signal: AbortSignal.timeout(RESOLVE_TIMEOUT_MS),
+        redirect: "error",
+      });
+      if (res.ok) {
+        const did = (await res.text()).slice(0, 2048).trim();
+        if (did.startsWith("did:")) return did;
+      }
     }
   } catch {
     // fall through
@@ -157,10 +181,11 @@ export async function resolveHandleToDid(handle: string): Promise<string | null>
   try {
     const res = await fetch(
       `https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle?handle=${encodeURIComponent(cleanHandle)}`,
+      { signal: AbortSignal.timeout(RESOLVE_TIMEOUT_MS), redirect: "error" },
     );
     if (res.ok) {
-      const data = (await res.json()) as { did: string };
-      return data.did;
+      const data = (await res.json()) as { did?: unknown };
+      if (typeof data.did === "string" && data.did.startsWith("did:")) return data.did;
     }
   } catch {
     // fall through
@@ -206,12 +231,13 @@ invitationsRouter.post(
         res.status(400).json({ error: "did must be a did:plc or did:web identifier" });
         return;
       }
-      did = didInput;
+      did = normalizeAccountDid(didInput);
       // Display handle from the DID document when it verifies; else the DID itself
       cleanHandle = (await resolveDidToHandle(did)) ?? did;
     } else {
       cleanHandle = handle.replace(/^@/, "");
-      did = await resolveHandleToDid(cleanHandle);
+      const resolved = await resolveHandleToDid(cleanHandle);
+      did = resolved ? normalizeAccountDid(resolved) : null;
       if (!did) {
         res
           .status(404)
@@ -303,7 +329,12 @@ invitationsRouter.get("/api/invitations", requireAuth, async (req, res) => {
     .innerJoin(tenants, eq(invitations.tenantId, tenants.id))
     .innerJoin(users, eq(invitations.inviterUserId, users.id))
     .where(
-      and(eq(invitations.inviteeDid, did), eq(invitations.status, "pending")),
+      and(
+        eq(invitations.inviteeDid, normalizeAccountDid(did)),
+        eq(invitations.status, "pending"),
+        ne(tenants.status, "deleted"),
+        eq(tenants.suspended, false),
+      ),
     )
     .limit(100);
 
@@ -333,14 +364,15 @@ invitationsRouter.get(
         tenantName: tenants.name,
         tenantSlug: tenants.slug,
         tenantStatus: tenants.status,
+        tenantSuspended: tenants.suspended,
         inviterHandle: users.handle,
       })
       .from(invitations)
       .innerJoin(tenants, eq(invitations.tenantId, tenants.id))
       .innerJoin(users, eq(invitations.inviterUserId, users.id))
-      .where(and(eq(invitations.id, invitationId), eq(invitations.inviteeDid, did)));
+      .where(and(eq(invitations.id, invitationId), eq(invitations.inviteeDid, normalizeAccountDid(did))));
 
-    if (!row || row.tenantStatus === "deleted") {
+    if (!row || row.tenantStatus === "deleted" || row.tenantSuspended) {
       res.status(404).json({ error: "Invitation not found" });
       return;
     }
@@ -371,7 +403,7 @@ invitationsRouter.post(
       .where(
         and(
           eq(invitations.id, invitationId),
-          eq(invitations.inviteeDid, did),
+          eq(invitations.inviteeDid, normalizeAccountDid(did)),
           eq(invitations.status, "pending"),
         ),
       );
@@ -386,7 +418,14 @@ invitationsRouter.post(
       .from(tenants)
       .where(eq(tenants.id, invitation.tenantId));
 
-    if (!tenant || !tenant.apiKey) {
+    // A deleted or suspended tailnet can't be joined — same answer as an
+    // unknown invitation.
+    if (!tenant || tenant.status === "deleted" || tenant.suspended) {
+      res.status(404).json({ error: "Invitation not found" });
+      return;
+    }
+
+    if (!tenant.apiKey) {
       res.status(500).json({ error: "Tenant instance not available" });
       return;
     }
@@ -462,7 +501,7 @@ invitationsRouter.post(
       .where(
         and(
           eq(invitations.id, invitationId),
-          eq(invitations.inviteeDid, did),
+          eq(invitations.inviteeDid, normalizeAccountDid(did)),
           eq(invitations.status, "pending"),
         ),
       );

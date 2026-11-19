@@ -3,7 +3,9 @@
  * Operator request guard. An operator request is authenticated as a user
  * (dashboard session or MCP OAuth token — whatever `authUserId` resolves),
  * the user's DID is in OPERATOR_DIDS, and it is NOT an agent token (agent
- * tokens are tenant-scoped and never carry instance powers).
+ * tokens are tenant-scoped and never carry instance powers). An MCP token
+ * only carries operator powers when its grant includes the operator scope
+ * (explicit opt-in checkbox on the consent page).
  */
 
 import type { Request, Response, NextFunction } from "express";
@@ -22,6 +24,7 @@ export function currentUserId(req: Request): string | null {
 /** True when the request is an operator acting as themselves (not via an agent token). */
 export async function isOperatorRequest(req: Request): Promise<boolean> {
   if (req.agentToken) return false;
+  if (req.mcpAuth && !req.mcpAuth.operator) return false;
   if (!currentUserId(req)) return false;
   return isOperatorDid(await authUserDid(req));
 }
@@ -38,6 +41,13 @@ export async function requireOperator(
   }
   if (req.agentToken) {
     res.status(403).json({ error: "Agent tokens cannot use operator endpoints" });
+    return;
+  }
+  if (req.mcpAuth && !req.mcpAuth.operator) {
+    res.status(403).json({
+      error: "This MCP connection was not granted instance operator access",
+      code: "operator_scope_required",
+    });
     return;
   }
   if (!isOperatorDid(await authUserDid(req))) {

@@ -139,6 +139,16 @@ if (
   );
 }
 
+if (
+  !isLoopbackDeployment &&
+  config.coordinatorApiKey &&
+  (config.coordinatorApiKey.length < 32 || PLACEHOLDER_SECRET_RE.test(config.coordinatorApiKey))
+) {
+  throw new Error(
+    "COORDINATOR_API_KEY must be a strong, non-placeholder value (>= 32 chars) in production",
+  );
+}
+
 // Without operators nobody can create a tailnet (or administer the instance).
 // Loud, but not fatal: the first deploy may set OPERATOR_DIDS afterwards.
 if (!isLoopbackDeployment && config.operatorDids.length === 0) {

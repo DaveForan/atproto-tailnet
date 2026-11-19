@@ -247,6 +247,12 @@ export const tenants = pgTable("tenants", {
    * coordinator rejects the tenant's nodes (Headscale mode: container stopped).
    */
   suspended: boolean("suspended").notNull().default(false),
+  /**
+   * Set when this tenant was suspended only because an ancestor was (cascade):
+   * the id of the ancestor whose suspension cascaded. Unsuspending that
+   * ancestor restores exactly these tenants (0028).
+   */
+  suspendedByParentId: uuid("suspended_by_parent_id"),
   requireDeviceApproval: boolean("require_device_approval")
     .notNull()
     .default(false),
@@ -430,7 +436,14 @@ export const joinRequests = pgTable(
     requestedAt: timestamp("requested_at").defaultNow().notNull(),
     reviewedAt: timestamp("reviewed_at"),
   },
-  (t) => [index("join_requests_tenant_idx").on(t.tenantId)],
+  (t) => [
+    index("join_requests_tenant_idx").on(t.tenantId),
+    // One pending request per (tenant, requester) — migration 0028
+    uniqueIndex("join_requests_pending_uq")
+      .on(t.tenantId, t.requesterId)
+      .where(sql`status = 'pending'`),
+    index("join_requests_tenant_requester_idx").on(t.tenantId, t.requesterId, t.requestedAt),
+  ],
 );
 
 export const deviceLocks = pgTable(
@@ -887,6 +900,8 @@ export const mcpOauthGrants = pgTable(
     /** RFC 8707 resource (audience) the grant's tokens are bound to — the /mcp URL. */
     resource: text("resource").notNull(),
     scopes: jsonb("scopes").notNull().$type<string[]>().default([]),
+    /** Instance-operator scope: opt-in checkbox at consent, operators only (0028). */
+    operator: boolean("operator").notNull().default(false),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     lastUsedAt: timestamp("last_used_at"),
     revokedAt: timestamp("revoked_at"),

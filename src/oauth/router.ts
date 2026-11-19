@@ -23,7 +23,7 @@ import { tokenHandler } from "@modelcontextprotocol/sdk/server/auth/handlers/tok
 import { clientRegistrationHandler } from "@modelcontextprotocol/sdk/server/auth/handlers/register.js";
 import { revocationHandler } from "@modelcontextprotocol/sdk/server/auth/handlers/revoke.js";
 import { metadataHandler } from "@modelcontextprotocol/sdk/server/auth/handlers/metadata.js";
-import type { TailnetOAuthProvider } from "./provider.js";
+import { MAX_CLIENT_METADATA_BYTES, type TailnetOAuthProvider } from "./provider.js";
 import { errorPage } from "./pages.js";
 import "./types.js";
 
@@ -104,6 +104,25 @@ export function createOAuthRouter(opts: OAuthRouterOptions): Router {
     "/oauth/token",
     tokenHandler({ provider, rateLimit: rl({ windowMs: 60 * 1000, max: 60 }) }),
   );
+  // Registration bodies are capped at 8 KiB (the app-wide JSON parser allows
+  // more): checked on the declared length and on the parsed body.
+  router.use("/oauth/register", (req: Request, res: Response, next) => {
+    const declared = Number(req.headers["content-length"] ?? 0);
+    let parsedSize = 0;
+    try {
+      parsedSize = req.body && typeof req.body === "object" ? JSON.stringify(req.body).length : 0;
+    } catch {
+      parsedSize = Infinity;
+    }
+    if (declared > MAX_CLIENT_METADATA_BYTES || parsedSize > MAX_CLIENT_METADATA_BYTES) {
+      res.status(413).json({
+        error: "invalid_client_metadata",
+        error_description: `Registration body must be at most ${MAX_CLIENT_METADATA_BYTES} bytes`,
+      });
+      return;
+    }
+    next();
+  });
   router.use(
     "/oauth/register",
     clientRegistrationHandler({
@@ -171,6 +190,9 @@ export function createOAuthRouter(opts: OAuthRouterOptions): Router {
         return;
       }
 
+      // Operator scope: explicit opt-in, offered only to operators, re-checked now.
+      const operator =
+        body.operator === "1" && pending.operatorEligible === true && provider.isOperatorDid(user.did);
       const code = provider.issueAuthorizationCode({
         clientId: pending.clientId,
         userId,
@@ -178,6 +200,7 @@ export function createOAuthRouter(opts: OAuthRouterOptions): Router {
         codeChallenge: pending.codeChallenge,
         resource: pending.resource,
         scopes: pending.scopes,
+        operator,
       });
       target.searchParams.set("code", code);
       res.redirect(302, target.href);

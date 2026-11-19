@@ -25,7 +25,7 @@ import { randomBytes } from "node:crypto";
 import { config } from "./config.js";
 import { db, pool } from "./db/index.js";
 import { tenants } from "./db/schema.js";
-import { eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import { authRouter } from "./routes/auth.js";
 import { apiRouter } from "./routes/api.js";
 import { invitationsRouter } from "./routes/invitations.js";
@@ -78,7 +78,7 @@ app.get("/internal/tls-check", async (req: Request, res: Response) => {
     const [tenant] = await db
       .select({ slug: tenants.slug })
       .from(tenants)
-      .where(eq(tenants.slug, slug))
+      .where(and(eq(tenants.slug, slug), ne(tenants.status, "deleted"), eq(tenants.suspended, false)))
       .limit(1);
     if (tenant) {
       res.status(200).end();

@@ -66,7 +66,10 @@ export function ConnectClaude() {
             {connections.map((c) => (
               <li key={c.id} className="item-row">
                 <div className="item-info">
-                  <span className="item-name">{c.clientName}</span>
+                  <span className="item-name">
+                    {c.clientName}
+                    {c.operator && <span className="badge badge-role ml-8">operator access</span>}
+                  </span>
                   <span className="item-detail">
                     Connected {relativeTime(c.createdAt)}
                     {c.lastUsedAt ? ` · last used ${relativeTime(c.lastUsedAt)}` : " · never used"}

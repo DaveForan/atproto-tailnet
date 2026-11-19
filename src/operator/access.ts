@@ -17,8 +17,29 @@ import { memberships, tenants, users } from "../db/schema.js";
 import { currentUserId } from "./auth.js";
 import { isOperatorDid } from "./policy.js";
 
-const TENANT_PATH_RE =
-  /^\/api\/tenants\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?:\/|$)/i;
+/** First segment after /api/tenants/ (raw, still percent-encoded). Case-insensitive like Express routing. */
+const TENANT_SEGMENT_RE = /^\/api\/tenants\/([^/]+)/i;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The tenant id a `/api/tenants/<id>/...` request addresses, decoded exactly
+ * as Express decodes `:tenantId` (so `%30000…` cannot slip past the check).
+ * Returns `null` for paths that address no tenant UUID, and `"invalid"` for
+ * malformed percent-encoding or encoded slashes/backslashes in the segment.
+ */
+export function tenantIdFromPath(path: string): string | null | "invalid" {
+  const m = TENANT_SEGMENT_RE.exec(path);
+  if (!m) return null;
+  const raw = m[1];
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    return "invalid";
+  }
+  if (/[/\\]/.test(decoded)) return "invalid";
+  return UUID_RE.test(decoded) ? decoded.toLowerCase() : null;
+}
 
 /** Body of the 403 a member gets for a suspended tenant. */
 export const TENANT_SUSPENDED = {
@@ -60,8 +81,12 @@ export async function enforceOperatorState(
     return;
   }
 
-  const m = req.path.match(TENANT_PATH_RE);
-  if (m) {
+  const tenantId = tenantIdFromPath(req.path);
+  if (tenantId === "invalid") {
+    res.status(400).json({ error: "Malformed tenant id in path" });
+    return;
+  }
+  if (tenantId) {
     const [row] = await db
       .select({ suspended: tenants.suspended, membershipId: memberships.id })
       .from(tenants)
@@ -69,8 +94,11 @@ export async function enforceOperatorState(
         memberships,
         and(eq(memberships.tenantId, tenants.id), eq(memberships.userId, userId)),
       )
-      .where(eq(tenants.id, m[1]));
-    const operatorBypass = !req.agentToken && isOperatorDid(user?.did);
+      .where(eq(tenants.id, tenantId));
+    // Operators acting as themselves bypass; agent tokens and MCP tokens
+    // without the operator scope never do.
+    const operatorBypass =
+      !req.agentToken && (!req.mcpAuth || req.mcpAuth.operator) && isOperatorDid(user?.did);
     if (row?.suspended && row.membershipId && !operatorBypass) {
       res.status(403).json(TENANT_SUSPENDED);
       return;

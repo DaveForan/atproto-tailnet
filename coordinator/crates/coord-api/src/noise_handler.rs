@@ -17,6 +17,22 @@ use crate::state::CoordinatorState;
 const UPGRADE_HEADER_VALUE: &str = "tailscale-control-protocol";
 const HANDSHAKE_HEADER_NAME: &str = "X-Tailscale-Handshake";
 
+/// Everything below happens before the client has authenticated (any machine
+/// key completes the Noise handshake), so every resource is bounded.
+///
+/// Max concurrent HTTP/2 streams per Noise connection. tailscaled's
+/// controlclient keeps one streaming /machine/map open and issues short
+/// register / lite-map / set-dns / health requests alongside it — a handful at
+/// most. hyper's default (~200) let one connection buffer 200 bodies at once.
+pub const MAX_CONCURRENT_STREAMS: u32 = 8;
+/// Max request body for /machine/register and /machine/map. Real requests
+/// (Hostinfo + endpoints) are a few KiB; 256 KiB leaves ample headroom.
+pub const MAX_CONTROL_BODY: usize = 256 * 1024;
+/// Max HTTP/2 header list size (hyper defaults to 16 MiB).
+const MAX_HEADER_LIST_SIZE: u32 = 16 * 1024;
+/// A request body must arrive within this window (slowloris bound).
+const BODY_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 pub async fn ts2021_handler(
     State(state): State<Arc<CoordinatorState>>,
     req: Request<Body>,
@@ -48,6 +64,23 @@ pub async fn ts2021_handler(
             return Response::builder()
                 .status(StatusCode::BAD_REQUEST)
                 .body(Body::from("missing X-Tailscale-Handshake header"))
+                .unwrap();
+        }
+    };
+
+    // Instance-wide connection cap, taken before any crypto work. Held for the
+    // lifetime of the Noise session.
+    let permit = match state.noise_conns.clone().try_acquire_owned() {
+        Ok(p) => p,
+        Err(_) => {
+            warn!(
+                limit = state.max_noise_conns,
+                "noise connection limit reached; refusing ts2021 upgrade"
+            );
+            return Response::builder()
+                .status(StatusCode::SERVICE_UNAVAILABLE)
+                .header("Retry-After", "30")
+                .body(Body::from("too many control connections"))
                 .unwrap();
         }
     };
@@ -84,6 +117,7 @@ pub async fn ts2021_handler(
     let on_upgrade = hyper::upgrade::on(req);
 
     tokio::spawn(async move {
+        let _permit = permit;
         match on_upgrade.await {
             Ok(upgraded) => {
                 if let Err(e) = run_noise_session(state, upgraded, split_keys, response_msg, machine_key).await {
@@ -120,7 +154,20 @@ async fn run_noise_session(
     );
     let cleartext_stream = coord_noise::spawn_noise_bridge(io, transport);
 
-    let h2_io = hyper_util::rt::TokioIo::new(cleartext_stream);
+    serve_control_h2(state, cleartext_stream, machine_key).await
+}
+
+/// Serve the control protocol's HTTP/2 over an already-authenticated-by-Noise
+/// cleartext stream, then mark the node offline if this session registered it.
+pub(crate) async fn serve_control_h2<IO>(
+    state: Arc<CoordinatorState>,
+    io: IO,
+    machine_key: [u8; 32],
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+where
+    IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    let h2_io = hyper_util::rt::TokioIo::new(io);
 
     // Session generation is set during /machine/register inside the H2 service.
     // Shared via atomic so the disconnect handler can read it.
@@ -144,6 +191,8 @@ async fn run_noise_session(
         .timer(hyper_util::rt::TokioTimer::new())
         .keep_alive_interval(Some(std::time::Duration::from_secs(30)))
         .keep_alive_timeout(std::time::Duration::from_secs(90))
+        .max_concurrent_streams(MAX_CONCURRENT_STREAMS)
+        .max_header_list_size(MAX_HEADER_LIST_SIZE)
         .serve_connection(h2_io, service)
         .await;
 
@@ -184,16 +233,26 @@ async fn handle_control_request(
     req: Request<hyper::body::Incoming>,
 ) -> Result<Response<BoxBody>, std::io::Error> {
     let path = req.uri().path().to_string();
-    const MAX_CONTROL_BODY: usize = 4 * 1024 * 1024; // 4 MiB
-    let body_bytes = match http_body_util::BodyExt::collect(
-        http_body_util::Limited::new(req.into_body(), MAX_CONTROL_BODY),
-    )
-    .await
-    {
-        Ok(collected) => collected.to_bytes(),
-        Err(e) => {
-            warn!(error = %e, "failed to read request body");
-            return Ok(json_error(StatusCode::BAD_REQUEST, "request body too large or unreadable"));
+    if path != "/machine/register" && path != "/machine/map" {
+        return Ok(json_error(StatusCode::NOT_FOUND, "not found"));
+    }
+    let body_bytes = {
+        let read = async {
+            // Bound total buffered bodies across all connections.
+            let _permit = state.noise_body_reads.acquire().await.ok()?;
+            http_body_util::BodyExt::collect(
+                http_body_util::Limited::new(req.into_body(), MAX_CONTROL_BODY),
+            )
+            .await
+            .ok()
+            .map(|c| c.to_bytes())
+        };
+        match tokio::time::timeout(BODY_READ_TIMEOUT, read).await {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) | Err(_) => {
+                warn!(path = %path, "control request body too large, unreadable or too slow");
+                return Ok(json_error(StatusCode::BAD_REQUEST, "request body too large or unreadable"));
+            }
         }
     };
 
@@ -364,6 +423,7 @@ async fn handle_streaming_map(
                     if state_clone.store.get_node_tenant(node_id).await != Some(tenant_id)
                         || state_clone.store.is_tenant_suspended(tenant_id).await
                     {
+                        send_cutoff(&state_clone, &tx, tenant_id, node_id).await;
                         break;
                     }
                     child_tenant_ids = state_clone.store.get_child_tenants(tenant_id).await
@@ -445,6 +505,7 @@ async fn handle_streaming_map(
                     if state_clone.store.get_node_tenant(node_id).await != Some(tenant_id)
                         || state_clone.store.is_tenant_suspended(tenant_id).await
                     {
+                        send_cutoff(&state_clone, &tx, tenant_id, node_id).await;
                         break;
                     }
                     let keepalive_msg = serde_json::json!({"KeepAlive": true});
@@ -501,5 +562,28 @@ mod base64 {
             }
         }
         Ok(out)
+    }
+}
+
+/// Before ending a stream for a suspended tenant or a removed node, tell the
+/// client to drop every peer and deny all traffic. Otherwise peers that are
+/// already connected keep talking over their existing WireGuard sessions.
+async fn send_cutoff(
+    state: &Arc<CoordinatorState>,
+    tx: &tokio::sync::mpsc::Sender<Result<hyper::body::Frame<Bytes>, std::io::Error>>,
+    tenant_id: coord_core::TenantId,
+    node_id: coord_core::NodeId,
+) {
+    let peers = state.store.get_peers_with_children(tenant_id, node_id).await;
+    let cutoff = coord_proto::map::MapResponse {
+        peers_removed: Some(peers.iter().map(|p| p.node_id.as_i64()).collect()),
+        packet_filter: Some(vec![]),
+        control_time: Some(chrono::Utc::now().to_rfc3339()),
+        ..Default::default()
+    };
+    if let Ok(json) = serde_json::to_string(&cutoff) {
+        if let Ok(framed) = frame_map_response(json.as_bytes()) {
+            let _ = tx.send(Ok(hyper::body::Frame::data(Bytes::from(framed)))).await;
+        }
     }
 }

@@ -10,7 +10,7 @@
 
 import { Router } from "express";
 import { z } from "zod";
-import { eq, or, and, desc } from "drizzle-orm";
+import { eq, or, and, desc, ne } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { tenants, federationLinks } from "../db/schema.js";
 import {
@@ -938,7 +938,7 @@ federationRouter.get(
         federationScopePolicies: tenants.federationScopePolicies,
       })
       .from(tenants)
-      .where(eq(tenants.slug, tenantSlug))
+      .where(and(eq(tenants.slug, tenantSlug), ne(tenants.status, "deleted"), eq(tenants.suspended, false)))
       .limit(1);
 
     if (tenantRows.length === 0) {
@@ -999,7 +999,8 @@ async function collectiveDidDocument(slug: string): Promise<object | null> {
     })
     .from(collectiveDids)
     .innerJoin(tenants, eq(tenants.id, collectiveDids.tenantId))
-    .where(eq(tenants.slug, slug))
+    // Deleted or suspended collectives don't publish a DID document
+    .where(and(eq(tenants.slug, slug), ne(tenants.status, "deleted"), eq(tenants.suspended, false)))
     .limit(1);
 
   if (rows.length === 0) return null;

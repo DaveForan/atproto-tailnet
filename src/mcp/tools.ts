@@ -23,9 +23,46 @@ export interface ToolDef {
   run(api: ApiClient, args: Record<string, unknown>): Promise<unknown>;
 }
 
-const enc = encodeURIComponent;
-const tailnetId = z.string().uuid().describe("Tailnet id (from list_tailnets)");
-const t = (a: Record<string, unknown>) => `/api/tenants/${enc(String(a.tailnet_id))}`;
+// ── Path-segment arguments ──
+// Every id interpolated into a REST path is validated twice: by the tool's
+// input schema (the SDK rejects bad arguments before the handler runs) and by
+// No format here allows '.', '/', '%' or a backslash, so an argument can never add,
+// No format here allows '.', '/', '%' or '\\', so an argument can never add,
+// remove or climb path segments; api-client.ts additionally refuses any
+// request whose normalized URL path differs from the constructed one.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Opaque control-plane ids: numeric node ids, `cp:<id>` / UUID auth key ids. */
+export const SEGMENT_ID_RE = /^[A-Za-z0-9_:-]{1,128}$/;
+/** Synthesized route id `<nodeId>-<base64url(prefix)>` (orchestrator/headscale-api routeId). */
+const ROUTE_ID_RE = /^\d{1,20}-[A-Za-z0-9_-]{1,96}$/;
+/** Readable route id `<nodeId>:<cidr>`; converted to the synthesized form before use. */
+const READABLE_ROUTE_RE = /^(\d{1,20}):([0-9A-Fa-f.:]{2,45}\/\d{1,3})$/;
+
+type SegKind = "uuid" | "id" | "route";
+
+/** Validates one path-segment argument; throws (no HTTP call) when malformed. */
+export function seg(value: unknown, kind: SegKind, name = "id"): string {
+  if (typeof value !== "string") throw new Error(`Invalid ${name}`);
+  if (kind === "uuid" && UUID_RE.test(value)) return value;
+  if (kind === "id" && SEGMENT_ID_RE.test(value)) return value;
+  if (kind === "route") {
+    if (ROUTE_ID_RE.test(value)) return value;
+    const m = READABLE_ROUTE_RE.exec(value);
+    if (m) return `${m[1]}-${Buffer.from(m[2]).toString("base64url")}`;
+  }
+  throw new Error(`Invalid ${name}: must be ${kind === "uuid" ? "a UUID" : "an id from the matching list tool"}`);
+}
+
+const uuidArg = () => z.string().regex(UUID_RE, "must be a UUID");
+const idArg = () => z.string().regex(SEGMENT_ID_RE, "must be an id from the matching list tool (letters, digits, _ : -)");
+const routeArg = () =>
+  z
+    .string()
+    .max(160)
+    .refine((v) => ROUTE_ID_RE.test(v) || READABLE_ROUTE_RE.test(v), "must be a route id from list_routes");
+
+const tailnetId = uuidArg().describe("Tailnet id (from list_tailnets)");
+const t = (a: Record<string, unknown>) => `/api/tenants/${seg(a.tailnet_id, "uuid", "tailnet_id")}`;
 
 const READ: ToolAnnotations = { readOnlyHint: true, openWorldHint: false };
 const WRITE: ToolAnnotations = { readOnlyHint: false, destructiveHint: false, openWorldHint: false };
@@ -92,9 +129,9 @@ export const TOOL_DEFS: ToolDef[] = [
     name: "remove_device",
     title: "Remove device",
     description: "Remove a device from a tailnet. It must re-register with a new key to rejoin." + DESTRUCTIVE_NOTE,
-    shape: { tailnet_id: tailnetId, device_id: z.string().min(1).describe("Device/node id from list_devices") },
+    shape: { tailnet_id: tailnetId, device_id: idArg().describe("Device/node id from list_devices") },
     annotations: DESTRUCTIVE,
-    run: (api, a) => api.call("DELETE", `${t(a)}/devices/${enc(String(a.device_id))}`),
+    run: (api, a) => api.call("DELETE", `${t(a)}/devices/${seg(a.device_id, "id", "device_id")}`),
   },
 
   // ── Members ──
@@ -111,9 +148,9 @@ export const TOOL_DEFS: ToolDef[] = [
     title: "Remove member",
     description:
       "Remove a member from a tailnet. Their devices are deleted and their keys revoked." + DESTRUCTIVE_NOTE,
-    shape: { tailnet_id: tailnetId, user_id: z.string().uuid().describe("Member user id from list_members") },
+    shape: { tailnet_id: tailnetId, user_id: uuidArg().describe("Member user id from list_members") },
     annotations: DESTRUCTIVE,
-    run: (api, a) => api.call("DELETE", `${t(a)}/members/${enc(String(a.user_id))}`),
+    run: (api, a) => api.call("DELETE", `${t(a)}/members/${seg(a.user_id, "uuid", "user_id")}`),
   },
 
   // ── Invitations ──
@@ -147,9 +184,9 @@ export const TOOL_DEFS: ToolDef[] = [
     name: "revoke_invitation",
     title: "Revoke invitation",
     description: "Revoke a pending invitation so its link stops working." + DESTRUCTIVE_NOTE,
-    shape: { tailnet_id: tailnetId, invitation_id: z.string().uuid() },
+    shape: { tailnet_id: tailnetId, invitation_id: uuidArg() },
     annotations: DESTRUCTIVE,
-    run: (api, a) => api.call("DELETE", `${t(a)}/invitations/${enc(String(a.invitation_id))}`),
+    run: (api, a) => api.call("DELETE", `${t(a)}/invitations/${seg(a.invitation_id, "uuid", "invitation_id")}`),
   },
 
   // ── Join requests ──
@@ -165,17 +202,17 @@ export const TOOL_DEFS: ToolDef[] = [
     name: "approve_join_request",
     title: "Approve join request",
     description: "Approve a join request; the requester becomes a member.",
-    shape: { tailnet_id: tailnetId, request_id: z.string().uuid() },
+    shape: { tailnet_id: tailnetId, request_id: uuidArg() },
     annotations: WRITE,
-    run: (api, a) => api.call("POST", `${t(a)}/join-requests/${enc(String(a.request_id))}/approve`),
+    run: (api, a) => api.call("POST", `${t(a)}/join-requests/${seg(a.request_id, "uuid", "request_id")}/approve`),
   },
   {
     name: "reject_join_request",
     title: "Reject join request",
     description: "Reject a join request.",
-    shape: { tailnet_id: tailnetId, request_id: z.string().uuid() },
+    shape: { tailnet_id: tailnetId, request_id: uuidArg() },
     annotations: WRITE,
-    run: (api, a) => api.call("POST", `${t(a)}/join-requests/${enc(String(a.request_id))}/reject`),
+    run: (api, a) => api.call("POST", `${t(a)}/join-requests/${seg(a.request_id, "uuid", "request_id")}/reject`),
   },
 
   // ── Device approvals ──
@@ -191,17 +228,17 @@ export const TOOL_DEFS: ToolDef[] = [
     name: "approve_device",
     title: "Approve device",
     description: "Approve a device approval request; a key is issued for the requester.",
-    shape: { tailnet_id: tailnetId, approval_id: z.string().uuid() },
+    shape: { tailnet_id: tailnetId, approval_id: uuidArg() },
     annotations: WRITE,
-    run: (api, a) => api.call("POST", `${t(a)}/device-approvals/${enc(String(a.approval_id))}/approve`),
+    run: (api, a) => api.call("POST", `${t(a)}/device-approvals/${seg(a.approval_id, "uuid", "approval_id")}/approve`),
   },
   {
     name: "reject_device",
     title: "Reject device",
     description: "Reject a device approval request.",
-    shape: { tailnet_id: tailnetId, approval_id: z.string().uuid() },
+    shape: { tailnet_id: tailnetId, approval_id: uuidArg() },
     annotations: WRITE,
-    run: (api, a) => api.call("POST", `${t(a)}/device-approvals/${enc(String(a.approval_id))}/reject`),
+    run: (api, a) => api.call("POST", `${t(a)}/device-approvals/${seg(a.approval_id, "uuid", "approval_id")}/reject`),
   },
 
   // ── Auth keys ──
@@ -235,9 +272,9 @@ export const TOOL_DEFS: ToolDef[] = [
     name: "revoke_auth_key",
     title: "Revoke auth key",
     description: "Revoke a pre-auth key so it can no longer register devices." + DESTRUCTIVE_NOTE,
-    shape: { tailnet_id: tailnetId, key_id: z.string().min(1).describe("Key id from list_auth_keys") },
+    shape: { tailnet_id: tailnetId, key_id: idArg().describe("Key id from list_auth_keys") },
     annotations: DESTRUCTIVE,
-    run: (api, a) => api.call("DELETE", `${t(a)}/auth-keys/${enc(String(a.key_id))}`),
+    run: (api, a) => api.call("DELETE", `${t(a)}/auth-keys/${seg(a.key_id, "id", "key_id")}`),
   },
 
   // ── ACL ──
@@ -275,17 +312,17 @@ export const TOOL_DEFS: ToolDef[] = [
     name: "approve_route",
     title: "Approve route",
     description: "Approve (enable) an advertised exit node or subnet route.",
-    shape: { tailnet_id: tailnetId, route_id: z.string().min(1).describe("Route id from list_routes") },
+    shape: { tailnet_id: tailnetId, route_id: routeArg().describe("Route id from list_routes") },
     annotations: { ...WRITE, idempotentHint: true },
-    run: (api, a) => api.call("POST", `${t(a)}/routes/${enc(String(a.route_id))}/enable`),
+    run: (api, a) => api.call("POST", `${t(a)}/routes/${seg(a.route_id, "route", "route_id")}/enable`),
   },
   {
     name: "unapprove_route",
     title: "Unapprove route",
     description: "Withdraw approval of an exit node or subnet route (disable it).",
-    shape: { tailnet_id: tailnetId, route_id: z.string().min(1).describe("Route id from list_routes") },
+    shape: { tailnet_id: tailnetId, route_id: routeArg().describe("Route id from list_routes") },
     annotations: { ...WRITE, idempotentHint: true },
-    run: (api, a) => api.call("POST", `${t(a)}/routes/${enc(String(a.route_id))}/disable`),
+    run: (api, a) => api.call("POST", `${t(a)}/routes/${seg(a.route_id, "route", "route_id")}/disable`),
   },
 
   // ── Settings / limits / notifications ──
@@ -374,7 +411,7 @@ export const TOOL_DEFS: ToolDef[] = [
       "Operator: change instance settings. singleTailnet limits the instance to one top-level tailnet; defaultTailnetId (or null) is offered to users with no access.",
     shape: {
       singleTailnet: z.boolean().optional(),
-      defaultTailnetId: z.string().uuid().nullable().optional(),
+      defaultTailnetId: uuidArg().nullable().optional(),
     },
     annotations: { ...WRITE, idempotentHint: true },
     operator: true,
@@ -416,10 +453,10 @@ export const TOOL_DEFS: ToolDef[] = [
     description:
       "Operator: remove a tailnet creator. Their existing tailnet is kept, but they cannot create a new one." +
       DESTRUCTIVE_NOTE,
-    shape: { creator_id: z.string().uuid().describe("Creator id from list_tailnet_creators") },
+    shape: { creator_id: uuidArg().describe("Creator id from list_tailnet_creators") },
     annotations: DESTRUCTIVE,
     operator: true,
-    run: (api, a) => api.call("DELETE", `/api/operator/tailnet-creators/${enc(String(a.creator_id))}`),
+    run: (api, a) => api.call("DELETE", `/api/operator/tailnet-creators/${seg(a.creator_id, "uuid", "creator_id")}`),
   },
   {
     name: "suspend_tailnet",
@@ -430,7 +467,7 @@ export const TOOL_DEFS: ToolDef[] = [
     shape: { tailnet_id: tailnetId },
     annotations: DESTRUCTIVE,
     operator: true,
-    run: (api, a) => api.call("POST", `/api/operator/tenants/${enc(String(a.tailnet_id))}/suspend`),
+    run: (api, a) => api.call("POST", `/api/operator/tenants/${seg(a.tailnet_id, "uuid", "tailnet_id")}/suspend`),
   },
   {
     name: "unsuspend_tailnet",
@@ -439,7 +476,7 @@ export const TOOL_DEFS: ToolDef[] = [
     shape: { tailnet_id: tailnetId },
     annotations: { ...WRITE, idempotentHint: true },
     operator: true,
-    run: (api, a) => api.call("POST", `/api/operator/tenants/${enc(String(a.tailnet_id))}/unsuspend`),
+    run: (api, a) => api.call("POST", `/api/operator/tenants/${seg(a.tailnet_id, "uuid", "tailnet_id")}/unsuspend`),
   },
   {
     name: "delete_tailnet",
@@ -448,7 +485,7 @@ export const TOOL_DEFS: ToolDef[] = [
     shape: { tailnet_id: tailnetId },
     annotations: DESTRUCTIVE,
     operator: true,
-    run: (api, a) => api.call("DELETE", `/api/operator/tenants/${enc(String(a.tailnet_id))}`),
+    run: (api, a) => api.call("DELETE", `/api/operator/tenants/${seg(a.tailnet_id, "uuid", "tailnet_id")}`),
   },
   {
     name: "disable_user",
@@ -456,19 +493,19 @@ export const TOOL_DEFS: ToolDef[] = [
     description:
       "Operator: disable a user. They cannot sign in or use tokens, and are removed from every tailnet (devices deleted, keys revoked)." +
       DESTRUCTIVE_NOTE,
-    shape: { user_id: z.string().uuid().describe("User id from instance_overview") },
+    shape: { user_id: uuidArg().describe("User id from instance_overview") },
     annotations: DESTRUCTIVE,
     operator: true,
-    run: (api, a) => api.call("POST", `/api/operator/users/${enc(String(a.user_id))}/disable`),
+    run: (api, a) => api.call("POST", `/api/operator/users/${seg(a.user_id, "uuid", "user_id")}/disable`),
   },
   {
     name: "enable_user",
     title: "Enable user",
     description: "Operator: re-enable a disabled user (memberships are not restored).",
-    shape: { user_id: z.string().uuid() },
+    shape: { user_id: uuidArg() },
     annotations: { ...WRITE, idempotentHint: true },
     operator: true,
-    run: (api, a) => api.call("POST", `/api/operator/users/${enc(String(a.user_id))}/enable`),
+    run: (api, a) => api.call("POST", `/api/operator/users/${seg(a.user_id, "uuid", "user_id")}/enable`),
   },
 ];
 

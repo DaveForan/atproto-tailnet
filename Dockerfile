@@ -47,6 +47,11 @@ RUN npm install drizzle-kit@$(node -e "console.log(require('./package.json').dev
 
 EXPOSE 3000
 
+# Express hides stack traces from error responses only in production
+ENV NODE_ENV=production
+
 # tini handles PID 1 reaping
+USER node
+
 ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["./docker-entrypoint.sh"]

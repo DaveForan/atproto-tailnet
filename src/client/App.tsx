@@ -74,7 +74,7 @@ export function App() {
   }
 
   if (!user) {
-    return <LoginPage redirect={inviteId ? path : undefined} />;
+    return <LoginPage redirect={inviteId ? `/invite/${inviteId.toLowerCase()}` : undefined} />;
   }
 
   if (inviteId) {

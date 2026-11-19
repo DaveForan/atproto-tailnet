@@ -48,16 +48,26 @@ fi
 echo "==> Setting up environment"
 if [ ! -f .env ]; then
   cp .env.coordinator.example .env
+  # Generate strong secrets so placeholders never reach production.
+  for var in SESSION_SECRET POSTGRES_PASSWORD COORDINATOR_API_KEY; do
+    sed -i "s|^${var}=.*|${var}=$(openssl rand -hex 32)|" .env
+  done
+  if grep -q '^#\? *FEDERATION_KEY_ENCRYPTION_KEY=' .env; then
+    sed -i "s|^#\? *FEDERATION_KEY_ENCRYPTION_KEY=.*|FEDERATION_KEY_ENCRYPTION_KEY=$(openssl rand -hex 32)|" .env
+  else
+    echo "FEDERATION_KEY_ENCRYPTION_KEY=$(openssl rand -hex 32)" >> .env
+  fi
+  chmod 600 .env
   echo ""
   echo "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
   echo "  IMPORTANT: Edit $APP_DIR/.env before continuing."
   echo "  At minimum, set:"
   echo "    - TLS_STRATEGY=digitalocean"
-  echo "    - DO_AUTH_TOKEN (DigitalOcean API token, read+write scope)"
+  echo "    - DO_AUTH_TOKEN (DigitalOcean API token; scope it to DNS for your domain if your account allows custom scopes)"
   echo "    - CADDY_DNS_PLUGINS=github.com/caddy-dns/digitalocean"
-  echo "    - SESSION_SECRET (>= 32 chars)"
-  echo "    - POSTGRES_PASSWORD"
-  echo "    - COORDINATOR_API_KEY"
+  echo "    - OPERATOR_DIDS (your Bluesky DID, e.g. did:plc:...)"
+  echo "    - ATPROTO_PRIVATE_KEY (ES256 JWK)"
+  echo "  SESSION_SECRET, POSTGRES_PASSWORD and COORDINATOR_API_KEY were generated."
   echo "    - PUBLIC_URL"
   echo "    - BASE_DOMAIN"
   echo "    - APP_DOMAIN"

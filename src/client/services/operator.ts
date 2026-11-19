@@ -1,6 +1,6 @@
 import { api } from "./api";
 import { inviteeBody } from "./invitations";
-import type { OperatorOverview, OperatorSettings, TailnetCreator } from "../lib/types";
+import type { OperatorAuditPage, OperatorOverview, OperatorSettings, TailnetCreator } from "../lib/types";
 
 const json = (method: string, body?: unknown): RequestInit => ({
   method,
@@ -29,6 +29,9 @@ export const operatorService = {
 
   deleteTenant: (tenantId: string) =>
     api(`/api/operator/tenants/${tenantId}`, json("DELETE")),
+
+  audit: (limit = 50, offset = 0) =>
+    api<OperatorAuditPage>(`/api/operator/audit?limit=${limit}&offset=${offset}`),
 
   setUserDisabled: (userId: string, disabled: boolean) =>
     api(`/api/operator/users/${userId}/${disabled ? "disable" : "enable"}`, json("POST")),

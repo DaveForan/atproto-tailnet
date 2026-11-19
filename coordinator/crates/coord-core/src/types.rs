@@ -319,9 +319,11 @@ pub struct NodeDetail {
     pub attrs: NodeAttrs,
 }
 
-/// Attributes applied when a *new* node registers. Re-registration of a known
-/// machine keeps owner/tags/ephemeral; `advertised_routes` (if `Some`) replaces
-/// the advertised set.
+/// Grant-derived attributes applied by `register_node_with`. Re-registering a
+/// known machine (i.e. re-authenticating it with a pre-auth key) replaces
+/// owner/tags/ephemeral with these values, and clears the approved routes when
+/// owner or tags change (approvals belong to the old identity);
+/// `advertised_routes` (if `Some`) replaces the advertised set.
 #[derive(Debug, Clone, Default)]
 pub struct NodeRegistration {
     pub owner: Option<String>,

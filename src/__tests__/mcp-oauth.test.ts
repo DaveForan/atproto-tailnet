@@ -15,7 +15,11 @@ vi.mock("../oauth/index.js", async () => {
   const { TailnetOAuthProvider } = await import("../oauth/provider.js");
   const tokens = await import("../oauth/tokens.js");
   const MCP_RESOURCE_URL = "http://localhost:3000/mcp";
-  const oauthProvider = new TailnetOAuthProvider({ store: new MemoryOAuthStore(), resourceUrl: MCP_RESOURCE_URL });
+  const oauthProvider = new TailnetOAuthProvider({
+    store: new MemoryOAuthStore(),
+    resourceUrl: MCP_RESOURCE_URL,
+    isOperatorDid: (did: string) => did === "did:plc:alice",
+  });
   return { MCP_RESOURCE_URL, oauthProvider, ...tokens };
 });
 
@@ -25,7 +29,8 @@ import { createOAuthRouter, protectedResourceMetadataUrl } from "../oauth/router
 import { validateRedirectUri } from "../oauth/provider.js";
 import { hashToken } from "../oauth/tokens.js";
 import { createMcpRouter } from "../mcp/server.js";
-import { ApiError, HttpApiClient, type ApiClient } from "../mcp/api-client.js";
+import { ApiError, HttpApiClient, assertSamePath, type ApiClient } from "../mcp/api-client.js";
+import { TOOL_DEFS, seg } from "../mcp/tools.js";
 import { INTERNAL_MCP_HEADER, INTERNAL_MCP_SECRET, isInternalMcpCall } from "../mcp/internal.js";
 import { createMcpConnectionsRouter } from "../routes/mcp-connections.js";
 import { resolveAgentToken, enforceAgentScope, requireAuth, authUserId } from "../routes/helpers.js";
@@ -139,11 +144,11 @@ async function getConsent(cookie: string, clientId: string, challenge: string) {
   return { status: res.status, html, requestId, csrf };
 }
 
-async function consent(cookie: string, requestId: string, csrf: string, decision = "allow") {
+async function consent(cookie: string, requestId: string, csrf: string, decision = "allow", extra: Record<string, string> = {}) {
   const res = await fetch(`${base}/oauth/consent`, {
     method: "POST",
     headers: { cookie, "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ request_id: requestId, csrf_token: csrf, decision }),
+    body: new URLSearchParams({ request_id: requestId, csrf_token: csrf, decision, ...extra }),
     redirect: "manual",
   });
   return { status: res.status, location: res.headers.get("location") ?? "" };
@@ -159,19 +164,19 @@ async function tokenRequest(params: Record<string, string>) {
 }
 
 /** Full flow: register → login → consent → code. */
-async function obtainCode(user = "u1") {
+async function obtainCode(user = "u1", opts: { operator?: boolean } = {}) {
   const { json: client } = await register();
   const clientId = String(client.client_id);
   const cookie = await login(user);
   const { verifier, challenge } = pkce();
   const c = await getConsent(cookie, clientId, challenge);
-  const r = await consent(cookie, c.requestId, c.csrf);
+  const r = await consent(cookie, c.requestId, c.csrf, "allow", opts.operator ? { operator: "1" } : {});
   const code = new URL(r.location).searchParams.get("code") ?? "";
   return { clientId, cookie, verifier, code, location: r.location };
 }
 
-async function obtainTokens(user = "u1") {
-  const f = await obtainCode(user);
+async function obtainTokens(user = "u1", opts: { operator?: boolean } = {}) {
+  const f = await obtainCode(user, opts);
   const t = await tokenRequest({
     grant_type: "authorization_code",
     code: f.code,
@@ -184,8 +189,11 @@ async function obtainTokens(user = "u1") {
   return { ...f, tokens: t.json };
 }
 
+/** REST call as an internal /mcp tool call (secret header + MCP bearer). */
 async function me(token: string) {
-  return fetch(`${base}/api/me`, { headers: { Authorization: `Bearer ${token}` } });
+  return fetch(`${base}/api/me`, {
+    headers: { Authorization: `Bearer ${token}`, [INTERNAL_MCP_HEADER]: INTERNAL_MCP_SECRET },
+  });
 }
 
 // ── tests ───────────────────────────────────────────────────────────────
@@ -292,7 +300,7 @@ describe("authorize", () => {
     const { json } = await register();
     const cookie = await login("u1");
     const c = await getConsent(cookie, String(json.client_id), pkce().challenge);
-    expect(c.html).toContain("Allow <strong>Claude</strong> to manage atproto-tailnet as");
+    expect(c.html).toContain("Allow <strong>Claude</strong> at <strong>claude.ai</strong> to manage atproto-tailnet as");
     expect(c.html).toContain("@alice.test");
     const r = await consent(cookie, c.requestId, c.csrf, "deny");
     expect(r.status).toBe(302);
@@ -451,7 +459,7 @@ describe("REST request auth with an MCP token", () => {
   it("is not limited by enforceAgentScope on non-tenant routes", async () => {
     const f = await obtainTokens();
     const res = await fetch(`${base}/api/mcp/connections`, {
-      headers: { Authorization: `Bearer ${f.tokens.access_token}` },
+      headers: { Authorization: `Bearer ${f.tokens.access_token}`, [INTERNAL_MCP_HEADER]: INTERNAL_MCP_SECRET },
     });
     // Reaches the route (session-only → 401), not the agent-scope 403.
     expect(res.status).toBe(401);
@@ -541,7 +549,7 @@ describe("/mcp endpoint", () => {
   it("lists operator tools only for operators", async () => {
     operatorMode = true;
     try {
-      const f = await obtainTokens();
+      const f = await obtainTokens("u1", { operator: true });
       const client = await connect(f.tokens.access_token);
       const names = (await client.listTools()).tools.map((t) => t.name);
       await client.close();
@@ -598,5 +606,271 @@ describe("api client + internal-call marker", () => {
     expect(isInternalMcpCall(mk({ [INTERNAL_MCP_HEADER]: INTERNAL_MCP_SECRET, authorization: "Bearer mcp_x" }))).toBe(true);
     expect(isInternalMcpCall(mk({ [INTERNAL_MCP_HEADER]: "guess", authorization: "Bearer mcp_x" }))).toBe(false);
     expect(isInternalMcpCall(mk({ [INTERNAL_MCP_HEADER]: INTERNAL_MCP_SECRET, authorization: "Bearer at_x" }))).toBe(false);
+  });
+});
+
+// ── Security fixes ──────────────────────────────────────────────────────
+
+describe("MCP tokens are only honoured on internal /mcp tool calls", () => {
+  it("external /api call with a valid MCP token is 401; the internal tool call is accepted", async () => {
+    const f = await obtainTokens();
+    const external = await fetch(`${base}/api/me`, { headers: { Authorization: `Bearer ${f.tokens.access_token}` } });
+    expect(external.status).toBe(401);
+    // Even with a forged marker header.
+    const forged = await fetch(`${base}/api/me`, {
+      headers: { Authorization: `Bearer ${f.tokens.access_token}`, [INTERNAL_MCP_HEADER]: "x".repeat(64) },
+    });
+    expect(forged.status).toBe(401);
+    // The real in-process client (what /mcp tools use) works.
+    const api = new HttpApiClient({ baseUrl: base, token: f.tokens.access_token });
+    const body = await api.call<{ userId: string; mcpAuth: { operator: boolean } }>("GET", "/api/me");
+    expect(body.userId).toBe("u1");
+    expect(body.mcpAuth.operator).toBe(false);
+  });
+});
+
+describe("tool path arguments", () => {
+  const T = "11111111-1111-4111-8111-111111111111";
+  async function connect(token: string) {
+    const client = new Client({ name: "test", version: "1.0.0" });
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(`${base}/mcp`), {
+        requestInit: { headers: { Authorization: `Bearer ${token}` } },
+      }),
+    );
+    return client;
+  }
+
+  it.each(["..", "%2e%2e", "a/b", ".", "1/../../me", "a\\b", "%2F"])(
+    "remove_device rejects %s without any HTTP call",
+    async (deviceId) => {
+      const f = await obtainTokens();
+      const client = await connect(f.tokens.access_token);
+      try {
+        apiCalls.length = 0;
+        const r = await client.callTool({ name: "remove_device", arguments: { tailnet_id: T, device_id: deviceId } });
+        expect(r.isError).toBe(true);
+        expect(apiCalls).toHaveLength(0);
+      } finally {
+        await client.close();
+      }
+      // Direct run() (bypassing the SDK schema) is refused by seg() too.
+      const def = TOOL_DEFS.find((d) => d.name === "remove_device")!;
+      const call = vi.fn();
+      await expect(Promise.resolve().then(() => def.run({ call } as unknown as ApiClient, { tailnet_id: T, device_id: deviceId }))).rejects.toThrow(/Invalid device_id/);
+      expect(call).not.toHaveBeenCalled();
+    },
+  );
+
+  it("revoke_auth_key / approve_route accept real id formats and refuse traversal", async () => {
+    const calls: string[] = [];
+    const api = { call: async (_m: string, p: string) => { calls.push(p); return null; } } as unknown as ApiClient;
+    const revoke = TOOL_DEFS.find((d) => d.name === "revoke_auth_key")!;
+    const route = TOOL_DEFS.find((d) => d.name === "approve_route")!;
+    await revoke.run(api, { tailnet_id: T, key_id: "cp:9f3a" });
+    await revoke.run(api, { tailnet_id: T, key_id: "22222222-2222-4222-8222-222222222222" });
+    await route.run(api, { tailnet_id: T, route_id: "7-MTAuMC4wLjAvOA" });
+    await route.run(api, { tailnet_id: T, route_id: "7:10.0.0.0/8" });
+    expect(calls).toEqual([
+      `/api/tenants/${T}/auth-keys/cp:9f3a`,
+      `/api/tenants/${T}/auth-keys/22222222-2222-4222-8222-222222222222`,
+      `/api/tenants/${T}/routes/7-MTAuMC4wLjAvOA/enable`,
+      `/api/tenants/${T}/routes/7-${Buffer.from("10.0.0.0/8").toString("base64url")}/enable`,
+    ]);
+    expect(() => revoke.run(api, { tailnet_id: T, key_id: "../../x" })).toThrow(/key_id/);
+    expect(() => route.run(api, { tailnet_id: T, route_id: "7:../../8" })).toThrow(/route_id/);
+    expect(() => revoke.run(api, { tailnet_id: "../x", key_id: "cp:1" })).toThrow(/tailnet_id/);
+    expect(calls).toHaveLength(4);
+    expect(seg("abc_1:2-3", "id")).toBe("abc_1:2-3");
+  });
+
+  it("api client refuses any path that changes on normalization", async () => {
+    const fetchImpl = vi.fn();
+    const api = new HttpApiClient({ baseUrl: "http://127.0.0.1:3000", token: "mcp_x", fetchImpl: fetchImpl as unknown as typeof fetch });
+    for (const p of [
+      "/api/tenants/x/devices/..",
+      "/api/tenants/x/devices/%2e%2e",
+      "/api/tenants/x/devices/%2E%2e/y",
+      "/api/tenants/x/devices/a%2Fb",
+      "/api/tenants/x/devices/a%5Cb",
+      "/api/tenants/x/../../oauth",
+      "/api/tenants/x\\..\\y",
+      "/api/tenants/x?y=1",
+    ]) {
+      await expect(api.call("DELETE", p)).rejects.toThrow(/Refusing/);
+    }
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(() => assertSamePath("/api/tenants/a/devices/1", new URL("/api/tenants/a/devices/1", "http://x"))).not.toThrow();
+  });
+});
+
+describe("consent phishing", () => {
+  it("consent page labels the app unverified and shows the redirect host prominently", async () => {
+    const { json } = await register({ client_name: "Totally Legit", redirect_uris: ["https://evil.example/cb"] });
+    const cookie = await login("u2");
+    const q = new URLSearchParams({
+      response_type: "code",
+      client_id: String(json.client_id),
+      redirect_uri: "https://evil.example/cb",
+      code_challenge: pkce().challenge,
+      code_challenge_method: "S256",
+    });
+    const html = await (await fetch(`${base}/oauth/authorize?${q}`, { headers: { cookie } })).text();
+    expect(html).toContain("Unverified app");
+    expect(html).toMatch(/<h1>[^<]*evil\.example[^<]*<\/h1>/);
+    expect(html).not.toContain('class="text-dim">After you decide');
+    expect(html).toContain("you go back to <strong>evil.example</strong>");
+  });
+
+  it.each(["Claude", "claude code", "C l a u d e", "C.L.A.U.D.E", "ANTHROPIC", "Anthr0pic MCP", "Cl4ude", "Сlaude", "C​laude", "Ｃlaude"])(
+    "rejects client_name %j with a non-Claude redirect host",
+    async (name) => {
+      const { status, json } = await register({ client_name: name, redirect_uris: ["https://evil.example/cb"] });
+      expect(status).toBe(400);
+      expect(json.error).toBe("invalid_client_metadata");
+    },
+  );
+
+  it("allows Claude names on claude.ai / claude.com / loopback, and other names anywhere", async () => {
+    expect((await register({ client_name: "Claude", redirect_uris: ["https://claude.com/api/mcp/auth_callback"] })).status).toBe(201);
+    expect((await register({ client_name: "Claude Code", redirect_uris: ["http://localhost:4567/callback"] })).status).toBe(201);
+    expect((await register({ client_name: "Claude", redirect_uris: [REDIRECT, "https://evil.example/cb"] })).status).toBe(400);
+    expect((await register({ client_name: "My Agent", redirect_uris: ["https://evil.example/cb"] })).status).toBe(201);
+  });
+
+  it("loopback Claude Code clients are still labelled unverified", async () => {
+    const { json } = await register({ client_name: "Claude Code", redirect_uris: ["http://127.0.0.1:4567/callback"] });
+    const cookie = await login("u2");
+    const q = new URLSearchParams({
+      response_type: "code",
+      client_id: String(json.client_id),
+      redirect_uri: "http://127.0.0.1:4567/callback",
+      code_challenge: pkce().challenge,
+      code_challenge_method: "S256",
+    });
+    const html = await (await fetch(`${base}/oauth/authorize?${q}`, { headers: { cookie } })).text();
+    expect(html).toContain("Unverified app");
+    expect(html).toContain("127.0.0.1:4567");
+  });
+});
+
+describe("registration metadata caps", () => {
+  it("rejects bodies over 8 KiB, more than 10 redirect URIs and long client names", async () => {
+    let r = await register({ client_name: "Big", logo_uri: "https://x.example/" + "a".repeat(9000) });
+    expect(r.status).toBe(413);
+    r = await register({ redirect_uris: Array.from({ length: 11 }, (_, i) => `https://claude.ai/cb${i}`) });
+    expect(r.status).toBe(400);
+    r = await register({ client_name: "n".repeat(101) });
+    expect(r.status).toBe(400);
+    r = await register({ client_name: "n".repeat(100) });
+    expect(r.status).toBe(201);
+  });
+});
+
+describe("operator scope", () => {
+  async function connect(token: string) {
+    const client = new Client({ name: "test", version: "1.0.0" });
+    await client.connect(
+      new StreamableHTTPClientTransport(new URL(`${base}/mcp`), {
+        requestInit: { headers: { Authorization: `Bearer ${token}` } },
+      }),
+    );
+    return client;
+  }
+
+  it("the unchecked checkbox is shown only to operators", async () => {
+    const { json } = await register();
+    const op = await getConsent(await login("u1"), String(json.client_id), pkce().challenge);
+    expect(op.html).toMatch(/<input type="checkbox" name="operator" value="1" \/>/);
+    expect(op.html).not.toMatch(/checked/);
+    expect(op.html).toContain("Also allow instance operator actions");
+    const other = await getConsent(await login("u2"), String(json.client_id), pkce().challenge);
+    expect(other.html).not.toContain('name="operator"');
+  });
+
+  it("operator tools need the scope; non-operators cannot obtain it by posting the field", async () => {
+    operatorMode = true;
+    try {
+      const plain = await obtainTokens("u1");
+      let client = await connect(plain.tokens.access_token);
+      let names = (await client.listTools()).tools.map((t) => t.name);
+      await client.close();
+      expect(names).not.toContain("disable_user");
+
+      const scoped = await obtainTokens("u1", { operator: true });
+      client = await connect(scoped.tokens.access_token);
+      names = (await client.listTools()).tools.map((t) => t.name);
+      await client.close();
+      expect(names).toContain("disable_user");
+
+      const sneaky = await obtainTokens("u2", { operator: true });
+      const grantId = store.tokens.get(hashToken(sneaky.tokens.access_token))!.grantId;
+      expect(store.grants.get(grantId)!.operator).toBe(false);
+    } finally {
+      operatorMode = false;
+    }
+  });
+
+  it("GET /api/mcp/connections shows the scope", async () => {
+    const plain = await obtainTokens("u1");
+    const scoped = await obtainTokens("u1", { operator: true });
+    const list = (await (await fetch(`${base}/api/mcp/connections`, { headers: { cookie: scoped.cookie } })).json()) as Array<{ id: string; operator: boolean }>;
+    const gid = (t: string) => store.tokens.get(hashToken(t))!.grantId;
+    expect(list.find((c) => c.id === gid(scoped.tokens.access_token))?.operator).toBe(true);
+    // A fresh consent for a new client — the plain grant belongs to another client and is still listed.
+    expect(list.find((c) => c.id === gid(plain.tokens.access_token))?.operator).toBe(false);
+  });
+
+  it("requireOperator rejects MCP requests whose grant lacks the scope", async () => {
+    const { requireOperator } = await import("../operator/auth.js");
+    const res = { code: 0, body: null as unknown, status(c: number) { this.code = c; return this; }, json(b: unknown) { this.body = b; return this; } };
+    const next = vi.fn();
+    await requireOperator(
+      { session: {}, mcpAuth: { userId: "u1", clientId: "c", grantId: "g", operator: false } } as never,
+      res as never,
+      next,
+    );
+    expect(next).not.toHaveBeenCalled();
+    expect(res.code).toBe(403);
+    expect((res.body as { code: string }).code).toBe("operator_scope_required");
+  });
+});
+
+describe("authorization code replay race", () => {
+  it("a replay while the grant is being created still revokes the grant", async () => {
+    const { json } = await register();
+    const client = (await store.getClient(String(json.client_id)))!;
+    const code = oauthProvider.issueAuthorizationCode({
+      clientId: client.client_id,
+      userId: "u1",
+      redirectUri: REDIRECT,
+      codeChallenge: "c",
+      resource: MCP_RESOURCE_URL,
+      scopes: [],
+      operator: false,
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const realCreate = store.createGrant.bind(store);
+    let created: string | undefined;
+    const spy = vi.spyOn(store, "createGrant").mockImplementation(async (g) => {
+      await gate;
+      const row = await realCreate(g);
+      created = row.id;
+      return row;
+    });
+    try {
+      const first = oauthProvider.exchangeAuthorizationCode(client, code);
+      const firstResult = first.then(() => "ok", (e: Error) => e.name);
+      await new Promise((r) => setTimeout(r, 5));
+      await expect(oauthProvider.exchangeAuthorizationCode(client, code)).rejects.toThrow(/already used/);
+      release();
+      expect(await firstResult).not.toBe("ok");
+      expect(created).toBeTruthy();
+      expect(store.grants.get(created!)!.revokedAt).not.toBeNull();
+      expect(store.audits.some((a) => a.grantId === created && a.metadata?.reason === "authorization_code_replay")).toBe(true);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

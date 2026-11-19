@@ -382,24 +382,33 @@ impl SqliteStore {
         let tid_str = tenant_id.as_uuid().to_string();
         let endpoints_json = serde_json::to_string(&info.endpoints).unwrap();
 
-        let existing = sqlx::query_as::<_, (i64, String, String, i64)>(
-            "SELECT id, tenant_id, ipv4, session_generation FROM coord_nodes WHERE machine_key = ?1"
+        // BEGIN IMMEDIATE takes the database write lock up front, so the
+        // lowest-free-address scan and the INSERT are atomic across connections.
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await.map_err(db)?;
+
+        let existing = sqlx::query_as::<_, (i64, String, String, i64, Option<String>, String)>(
+            "SELECT id, tenant_id, ipv4, session_generation, owner, tags FROM coord_nodes WHERE machine_key = ?1"
         )
             .bind(&machine_key[..])
-            .fetch_optional(&self.pool)
+            .fetch_optional(&mut *tx)
             .await
             .map_err(db)?;
 
-        if let Some((id, existing_tenant_str, ip_str, old_generation)) = existing {
+        if let Some((id, existing_tenant_str, ip_str, old_generation, old_owner, old_tags)) = existing {
             if existing_tenant_str != tid_str {
                 return Err(CoordError::Protocol(
                     "machine key already registered to a different tenant".into(),
                 ));
             }
             let new_gen = old_generation + 1;
+            // A new identity (owner/tags) must not inherit approvals granted to the old one.
+            let identity_changed = old_owner != reg.owner || from_json(&old_tags) != reg.tags;
             sqlx::query(
                 "UPDATE coord_nodes SET node_key = ?1, disco_key = ?2, hostname = ?3, os = ?4, \
-                 endpoints = ?5, online = 1, last_seen = datetime('now'), session_generation = ?6 WHERE id = ?7"
+                 endpoints = ?5, online = 1, last_seen = datetime('now'), session_generation = ?6, \
+                 owner = ?7, tags = ?8, ephemeral = ?9, \
+                 approved_routes = CASE WHEN ?10 THEN '[]' ELSE approved_routes END \
+                 WHERE id = ?11"
             )
                 .bind(&info.node_key)
                 .bind(&info.disco_key)
@@ -407,8 +416,12 @@ impl SqliteStore {
                 .bind(&info.os)
                 .bind(&endpoints_json)
                 .bind(new_gen)
+                .bind(&reg.owner)
+                .bind(to_json(&reg.tags))
+                .bind(reg.ephemeral)
+                .bind(identity_changed)
                 .bind(id)
-                .execute(&self.pool)
+                .execute(&mut *tx)
                 .await
                 .map_err(db)?;
 
@@ -416,10 +429,11 @@ impl SqliteStore {
                 sqlx::query("UPDATE coord_nodes SET advertised_routes = ?1 WHERE id = ?2")
                     .bind(to_json(&routes))
                     .bind(id)
-                    .execute(&self.pool)
+                    .execute(&mut *tx)
                     .await
                     .map_err(db)?;
             }
+            tx.commit().await.map_err(db)?;
 
             let ipv4: Ipv4Addr = ip_str.parse().map_err(|_| CoordError::Protocol("invalid stored IPv4".into()))?;
             let node_id = NodeId::new(id);
@@ -430,24 +444,11 @@ impl SqliteStore {
             return Ok((node_id, ipv4, new_gen as u64));
         }
 
-        let ip_offset: i64 = sqlx::query_scalar(
-            "UPDATE coord_ipv4_counter SET next_offset = next_offset + 1 WHERE id = 1 RETURNING next_offset - 1"
-        )
-            .fetch_one(&self.pool)
+        let used: Vec<String> = sqlx::query_scalar("SELECT ipv4 FROM coord_nodes")
+            .fetch_all(&mut *tx)
             .await
             .map_err(db)?;
-
-        let base_ip = u32::from(Ipv4Addr::new(100, 64, 0, 0));
-        let ip_offset_u32 = u32::try_from(ip_offset).map_err(|_| {
-            CoordError::Protocol(format!("IP offset {} exceeds u32 range", ip_offset))
-        })?;
-        let new_ipv4 = Ipv4Addr::from(base_ip.checked_add(ip_offset_u32).ok_or(
-            CoordError::AddressSpaceExhausted
-        )?);
-        let max_cgnat = u32::from(Ipv4Addr::new(100, 127, 255, 255));
-        if u32::from(new_ipv4) > max_cgnat {
-            return Err(CoordError::AddressSpaceExhausted);
-        }
+        let new_ipv4 = crate::lowest_free_ipv4(used.iter().filter_map(|s| s.parse::<Ipv4Addr>().ok()))?;
         let new_ip_str = new_ipv4.to_string();
 
         let row = sqlx::query_as::<_, (i64, i64)>(
@@ -469,9 +470,10 @@ impl SqliteStore {
             .bind(to_json(&reg.tags))
             .bind(reg.ephemeral)
             .bind(to_json(&reg.advertised_routes.unwrap_or_default()))
-            .fetch_one(&self.pool)
+            .fetch_one(&mut *tx)
             .await
             .map_err(db)?;
+        tx.commit().await.map_err(db)?;
 
         let (id, generation) = row;
         let node_id = NodeId::new(id);

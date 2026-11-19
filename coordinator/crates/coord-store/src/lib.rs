@@ -26,3 +26,52 @@ pub(crate) fn generate_random_id() -> String {
     rand::rng().fill_bytes(&mut buf);
     hex::encode(buf)
 }
+
+/// First and last addresses of the node IPv4 range (CGNAT 100.64.0.0/10). The
+/// range is instance-global: tenant `ipv4_prefix` is informational today and
+/// `coord_nodes.ipv4` is UNIQUE across all tenants.
+const IPV4_BASE: u32 = u32::from_be_bytes([100, 64, 0, 0]);
+const IPV4_LAST: u32 = u32::from_be_bytes([100, 127, 255, 255]);
+
+/// Addresses Tailscale clients treat specially and that must never be handed to
+/// a node: 100.100.100.0/24 (quad-100 MagicDNS/peerapi service IPs) and
+/// 100.115.92.0/23 (ChromeOS/ARC).
+fn is_reserved_ipv4(ip: u32) -> bool {
+    (ip & 0xFFFF_FF00) == u32::from_be_bytes([100, 100, 100, 0])
+        || (ip & 0xFFFF_FE00) == u32::from_be_bytes([100, 115, 92, 0])
+}
+
+/// Lowest node address (starting at 100.64.0.1) that no live node holds.
+/// Every backend calls this while holding its allocation lock, so freed
+/// addresses (deleted / swept ephemeral nodes) are reused and all backends
+/// allocate identically.
+pub(crate) fn lowest_free_ipv4<I>(used: I) -> Result<std::net::Ipv4Addr, coord_core::CoordError>
+where
+    I: IntoIterator<Item = std::net::Ipv4Addr>,
+{
+    let used: std::collections::HashSet<u32> = used.into_iter().map(u32::from).collect();
+    let mut candidate = IPV4_BASE + 1;
+    while candidate <= IPV4_LAST {
+        if !used.contains(&candidate) && !is_reserved_ipv4(candidate) {
+            return Ok(std::net::Ipv4Addr::from(candidate));
+        }
+        candidate += 1;
+    }
+    Err(coord_core::CoordError::AddressSpaceExhausted)
+}
+
+#[cfg(test)]
+mod ipv4_alloc_tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    #[test]
+    fn picks_lowest_gap_and_skips_reserved() {
+        assert_eq!(lowest_free_ipv4([]).unwrap(), Ipv4Addr::new(100, 64, 0, 1));
+        let used = [Ipv4Addr::new(100, 64, 0, 1), Ipv4Addr::new(100, 64, 0, 3)];
+        assert_eq!(lowest_free_ipv4(used).unwrap(), Ipv4Addr::new(100, 64, 0, 2));
+        assert!(is_reserved_ipv4(u32::from(Ipv4Addr::new(100, 100, 100, 100))));
+        assert!(is_reserved_ipv4(u32::from(Ipv4Addr::new(100, 115, 93, 7))));
+        assert!(!is_reserved_ipv4(u32::from(Ipv4Addr::new(100, 115, 94, 0))));
+    }
+}

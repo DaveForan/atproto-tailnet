@@ -504,15 +504,17 @@ let defaultResolver: DIDResolver | null = null;
 
 /** Look up a collective DID hosted by this instance in `collective_dids`. */
 async function lookupLocalCollectiveKey(did: string): Promise<jose.JWK | null> {
-  const [{ db }, { collectiveDids }, { eq }] = await Promise.all([
+  const [{ db }, { collectiveDids, tenants }, { and, eq, ne }] = await Promise.all([
     import("../db/index.js"),
     import("../db/schema.js"),
     import("drizzle-orm"),
   ]);
+  // Suspended or deleted collectives must not verify as signers.
   const [row] = await db
     .select({ publicKeyJwk: collectiveDids.publicKeyJwk })
     .from(collectiveDids)
-    .where(eq(collectiveDids.did, did))
+    .innerJoin(tenants, eq(tenants.id, collectiveDids.tenantId))
+    .where(and(eq(collectiveDids.did, did), ne(tenants.status, "deleted"), eq(tenants.suspended, false)))
     .limit(1);
   return (row?.publicKeyJwk as jose.JWK | undefined) ?? null;
 }

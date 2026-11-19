@@ -145,10 +145,13 @@ export function tenantUpstream(
  * 404 for any other name under the base domain so it never falls through to
  * the main app.
  */
+export const COORDINATOR_PUBLIC_PATHS = ["/key", "/ts2021", "/health"];
+
 export function buildTenantRouter(
   routable: RoutableTenant[],
-  opts: { baseDomain?: string; network?: string } = {},
+  opts: { baseDomain?: string; network?: string; coordinator?: boolean } = {},
 ): CaddyRoute {
+  const coordinator = opts.coordinator ?? useCoordinator;
   const baseDomain = opts.baseDomain ?? config.baseDomain;
   const network = "network" in opts ? opts.network : config.headscale.network;
   const sorted = [...routable].sort((a, b) => a.slug.localeCompare(b.slug));
@@ -161,12 +164,18 @@ export function buildTenantRouter(
         handler: "subroute",
         routes: [
           ...sorted.map((t) => ({
-            match: [{ host: [`${t.slug}.${baseDomain}`] }],
+            // The coordinator also serves its admin API (/api/*) on this port;
+            // only the paths Tailscale clients need are exposed publicly.
+            match: [
+              coordinator
+                ? { host: [`${t.slug}.${baseDomain}`], path: COORDINATOR_PUBLIC_PATHS }
+                : { host: [`${t.slug}.${baseDomain}`] },
+            ],
             handle: [
               {
                 handler: "reverse_proxy",
                 upstreams: [{ dial: tenantUpstream(t, network) }],
-                ...(useCoordinator
+                ...(coordinator
                   ? {
                       headers: {
                         request: {
