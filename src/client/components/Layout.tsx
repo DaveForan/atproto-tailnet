@@ -39,7 +39,7 @@ export function SidebarProvider({ children }: { children: ReactNode }) {
   );
 }
 
-export function Header() {
+export function Header({ minimal = false }: { minimal?: boolean }) {
   const { user } = useApp();
   const { toggleSidebar } = useContext(SidebarCtx);
   if (!user) return null;
@@ -47,16 +47,18 @@ export function Header() {
   return (
     <header>
       <div className="header-left">
-        <button className="hamburger-btn" onClick={toggleSidebar}>
-          &#9776;
-        </button>
+        {!minimal && (
+          <button className="hamburger-btn" onClick={toggleSidebar} aria-label="Toggle navigation">
+            &#9776;
+          </button>
+        )}
         <h1>atproto-tailnet</h1>
       </div>
       <div className="user-info">
-        <NotificationBell />
+        {!minimal && <NotificationBell />}
         {avatar && <img src={avatar} alt="" />}
         <span>{user.handle}</span>
-        <form action="/auth/logout" method="post" style={{ display: "inline" }}>
+        <form action="/auth/logout" method="post" className="inline-block">
           <button className="btn-sm btn-ghost" type="submit">
             Sign out
           </button>
@@ -77,7 +79,7 @@ export function Sidebar() {
     closeSidebar();
   };
 
-  const groups = buildVisibleGroups(hasPerm, settings, currentTenant, user?.features);
+  const groups = buildVisibleGroups(hasPerm, settings, currentTenant, user);
   const roleBadge = t.isOriginator ? (
     <Badge variant="originator">originator</Badge>
   ) : (
@@ -147,13 +149,13 @@ function buildVisibleGroups(
   hasPerm: (p: string) => boolean,
   settings: import("../lib/types").Settings | null,
   tenant: import("../lib/types").Tenant | null,
-  features: import("../lib/types").User["features"],
+  user: import("../lib/types").User | null,
 ): VisibleGroup[] {
   const result: VisibleGroup[] = [];
   const groupMap = new Map<string, TabGroup>();
 
   for (const entry of tabRegistry) {
-    if (!tabEnabled(entry, hasPerm, settings, tenant, features)) continue;
+    if (!tabEnabled(entry, hasPerm, settings, tenant, user)) continue;
     if (!groupMap.has(entry.group)) {
       groupMap.set(entry.group, { label: entry.group, tabs: [] });
     }
@@ -196,21 +198,24 @@ export function LockdownBanner() {
   );
 }
 
-export function LoginPage() {
+export function LoginPage({ redirect }: { redirect?: string }) {
   return (
     <div id="login-page">
       <h1>atproto-tailnet</h1>
       <p>
-        Create private mesh networks with your Bluesky identity. Invite anyone
-        by their handle.
+        {redirect
+          ? "Sign in with your Bluesky identity to view your invitation."
+          : "Private mesh networks for your Bluesky identity. Access is by invitation."}
       </p>
       <form action="/auth/login" method="get">
         <input
           type="text"
           name="handle"
           placeholder="yourname.bsky.social"
+          aria-label="Bluesky handle"
           required
         />
+        {redirect && <input type="hidden" name="redirect" value={redirect} />}
         <button type="submit">Sign in</button>
       </form>
     </div>

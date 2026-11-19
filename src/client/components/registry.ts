@@ -12,6 +12,7 @@ export interface TabEntry {
   group: string;
   gate: GateFn;
   feature?: keyof NonNullable<User["features"]>;
+  operatorOnly?: boolean;
 }
 
 export interface TabGroup {
@@ -53,6 +54,12 @@ export const tabRegistry: TabEntry[] = [
   { id: "usage", label: "Usage", group: "Admin", gate: always },
   { id: "security", label: "Security", group: "Admin", gate: perm("manage_settings", "approve_devices", "approve_joins", "approve_services") },
   { id: "audit", label: "Audit Log", group: "Admin", gate: perm("view_audit_log") },
+
+  // Account
+  { id: "claude", label: "Connect Claude", group: "Account", gate: always },
+
+  // Operator
+  { id: "instance", label: "Instance", group: "Operator", gate: always, operatorOnly: true },
 ];
 
 export function tabEnabled(
@@ -60,8 +67,9 @@ export function tabEnabled(
   hasPerm: (p: string) => boolean,
   settings: Settings | null,
   tenant: Tenant | null,
-  features: User["features"],
+  user: User | null,
 ): boolean {
-  if (entry.feature && !features?.[entry.feature]) return false;
+  if (entry.feature && !user?.features?.[entry.feature]) return false;
+  if (entry.operatorOnly && !user?.isOperator) return false;
   return entry.gate(hasPerm, settings, tenant);
 }

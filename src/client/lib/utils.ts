@@ -13,6 +13,15 @@ export function copyToClipboard(text: string): Promise<void> {
   return navigator.clipboard.writeText(text).catch(() => {});
 }
 
+export async function tryCopy(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function relativeTime(dateStr: string): string {
   const now = Date.now();
   const then = new Date(dateStr).getTime();
@@ -30,6 +39,8 @@ export function relativeTime(dateStr: string): string {
 const LIMIT_HINTS: Record<string, string> = {
   device_limit: "Device limit reached for this tailnet. Ask the primary admin to raise the device cap or remove unused devices.",
   member_limit: "This tailnet has reached its member limit. Ask the primary admin to raise the member cap.",
+  tenant_suspended: "This tailnet has been suspended by the instance operator.",
+  single_tailnet: "This instance is in single-tailnet mode, so no additional tailnets or sub-collectives can be created.",
 };
 
 export function errorCode(e: unknown): string | undefined {

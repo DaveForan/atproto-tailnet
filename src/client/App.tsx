@@ -1,9 +1,8 @@
-import { lazy, Suspense } from "react";
-import { errorMessage } from "./lib/utils";
+import { lazy, Suspense, useState } from "react";
 import { useApp } from "./hooks/useAppState";
 import { Header, LockdownBanner, LoginPage, Sidebar, SidebarProvider, StatsSummary } from "./components/Layout";
-import { invitationService } from "./services/invitations";
-import { useToast } from "./components/Toast";
+import { PendingInvitations } from "./components/PendingInvitations";
+import { InvitePage, NoAccessPage, SuspendedPage } from "./components/AccessPages";
 import type { TabId, Tenant } from "./lib/types";
 
 const StatusTab = lazy(() => import("./tabs/StatusTab").then((m) => ({ default: m.StatusTab })));
@@ -26,6 +25,8 @@ const CredentialsTab = lazy(() => import("./tabs/CredentialsTab").then((m) => ({
 const UsageTab = lazy(() => import("./tabs/UsageTab").then((m) => ({ default: m.UsageTab })));
 const SecurityTab = lazy(() => import("./tabs/SecurityTab").then((m) => ({ default: m.SecurityTab })));
 const AuditTab = lazy(() => import("./tabs/AuditTab").then((m) => ({ default: m.AuditTab })));
+const ClaudeTab = lazy(() => import("./tabs/ClaudeTab").then((m) => ({ default: m.ClaudeTab })));
+const InstanceTab = lazy(() => import("./tabs/InstanceTab").then((m) => ({ default: m.InstanceTab })));
 
 const tabComponents: Record<TabId, React.LazyExoticComponent<React.ComponentType>> = {
   status: StatusTab,
@@ -48,10 +49,16 @@ const tabComponents: Record<TabId, React.LazyExoticComponent<React.ComponentType
   usage: UsageTab,
   security: SecurityTab,
   audit: AuditTab,
+  claude: ClaudeTab,
+  instance: InstanceTab,
 };
 
+const INVITE_PATH = /^\/invite\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i;
+
 export function App() {
-  const { user, loading, error, currentTenant, showWizard, reload } = useApp();
+  const { user, loading, error, currentTenant, showWizard, reload, reloadAndSelect } = useApp();
+  const [path, setPath] = useState(window.location.pathname);
+  const inviteId = INVITE_PATH.exec(path)?.[1] ?? null;
 
   if (loading) {
     return <div className="loading-screen">Loading...</div>;
@@ -67,105 +74,69 @@ export function App() {
   }
 
   if (!user) {
-    return <LoginPage />;
+    return <LoginPage redirect={inviteId ? path : undefined} />;
   }
 
-  if (showWizard && currentTenant) {
+  if (inviteId) {
+    const done = (slug?: string) => {
+      history.replaceState(null, "", "/");
+      setPath("/");
+      void (slug ? reloadAndSelect(slug) : reload());
+    };
+    return (
+      <>
+        <Header minimal />
+        <InvitePage id={inviteId} onDone={done} />
+      </>
+    );
+  }
+
+  const suspendedForMe = !!currentTenant?.suspended && !user.isOperator;
+
+  if (showWizard && currentTenant && !suspendedForMe) {
     return <SetupWizard tenant={currentTenant} />;
   }
 
   return (
     <SidebarProvider>
-      <Header />
-      <LockdownBanner />
+      <Header minimal={!currentTenant || suspendedForMe} />
+      {!suspendedForMe && <LockdownBanner />}
       {error && (
         <div className="lockdown-banner">
           <span>{error}</span>
           <button className="btn-sm btn-warning" onClick={() => { void reload(); }}>Retry</button>
         </div>
       )}
-      {currentTenant ? <Dashboard /> : (
-        <main className="centered-main">
-          <div className="empty-state">No tailnets found.</div>
-        </main>
-      )}
+      {!currentTenant ? <NoAccessPage /> : suspendedForMe ? <SuspendedPage /> : <Dashboard />}
     </SidebarProvider>
   );
 }
 
 function Dashboard() {
-  const { tab, invitations, currentTenant, reload } = useApp();
+  const { tab, invitations, currentTenant, reload, setTab } = useApp();
   const TabComponent = tabComponents[tab] ?? StatusTab;
 
   return (
     <div className="dashboard-layout">
       <Sidebar />
       <main>
-        <PendingInvitations invitations={invitations} onAction={reload} />
+        {currentTenant?.suspended && (
+          <div className="suspended-banner" role="status">
+            <span>
+              {currentTenant.name} is suspended. Its members can&apos;t use it and its devices can&apos;t
+              connect until you unsuspend it.
+            </span>
+            {tab !== "instance" && (
+              <button className="btn-sm btn-warning" onClick={() => setTab("instance")}>Manage</button>
+            )}
+          </div>
+        )}
+        <PendingInvitations invitations={invitations} onAction={() => { void reload(); }} />
         <StatsSummary />
         <Suspense key={currentTenant?.id} fallback={<div className="tab-loading">Loading...</div>}>
           <TabComponent />
         </Suspense>
       </main>
-    </div>
-  );
-}
-
-function PendingInvitations({
-  invitations,
-  onAction,
-}: {
-  invitations: Array<{ id: string; tenantName: string; inviterHandle: string; inviterDisplayName?: string }>;
-  onAction: () => void;
-}) {
-  const { toast, toastError } = useToast();
-
-  if (!invitations || invitations.length === 0) return null;
-
-  const accept = async (id: string) => {
-    try {
-      await invitationService.accept(id);
-      toast("Invitation accepted");
-      onAction();
-    } catch (e) {
-      toastError(errorMessage(e, "Failed to accept invitation"));
-    }
-  };
-
-  const decline = async (id: string) => {
-    try {
-      await invitationService.decline(id);
-      toast("Invitation declined");
-      onAction();
-    } catch (e) {
-      toastError(e instanceof Error ? e.message : "Failed to decline invitation");
-    }
-  };
-
-  return (
-    <div className="section">
-      <h2>Pending Invitations</h2>
-      <div className="card">
-        {invitations.map((inv) => (
-          <div key={inv.id} className="invitation-item">
-            <div>
-              <strong>{inv.tenantName}</strong>
-              <br />
-              <span className="text-dim text-sm">
-                from {inv.inviterDisplayName || inv.inviterHandle}
-              </span>
-            </div>
-            <div className="btn-group">
-              <button className="btn-sm" onClick={() => accept(inv.id)}>
-                Accept
-              </button>
-              <button className="btn-sm btn-ghost" onClick={() => decline(inv.id)}>
-                Decline
-              </button>
-            </div>
-          </div>
-        ))}
-      </div>
     </div>
   );
 }

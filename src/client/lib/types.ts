@@ -5,6 +5,9 @@ export interface User {
   displayName?: string;
   avatarUrl?: string;
   features?: { federation?: boolean };
+  isOperator?: boolean;
+  canCreateTailnet?: boolean;
+  access?: "member" | "no_access";
 }
 
 export interface Tenant {
@@ -16,6 +19,7 @@ export interface Tenant {
   roleId?: string;
   roleName?: string;
   coordinatorTenantId?: string;
+  suspended?: boolean;
 }
 
 export interface Role {
@@ -55,9 +59,85 @@ export interface Invitation {
 export interface SentInvitation {
   id: string;
   inviteeHandle: string;
+  inviteeDid?: string;
   inviteeDisplayName?: string;
   status: "pending" | "accepted" | "declined" | "revoked";
   createdAt: string;
+  inviteUrl?: string;
+}
+
+export interface InvitationDetail {
+  id: string;
+  tenant: { name: string; slug: string };
+  inviterHandle: string;
+  status: "pending" | "accepted" | "declined" | "revoked";
+}
+
+export interface InstanceInfo {
+  name?: string;
+  defaultTailnet: { slug: string; name: string; acceptsJoinRequests: boolean } | null;
+  inviteOnly: boolean;
+}
+
+export interface PublicTenant {
+  id: string;
+  name: string;
+  joinOpen: boolean;
+}
+
+export interface MyJoinRequest {
+  status: "pending" | "approved" | "rejected";
+  requestedAt: string;
+}
+
+export interface OperatorTenant {
+  id: string;
+  name: string;
+  slug: string;
+  status: string;
+  suspended: boolean;
+  parentId: string | null;
+  createdAt: string;
+  owner: { userId: string; did: string; handle: string } | null;
+  memberCount: number;
+  deviceCount: number | null;
+}
+
+export interface OperatorUser {
+  id: string;
+  did: string;
+  handle: string;
+  createdAt: string;
+  disabled: boolean;
+  tenantCount: number;
+  isOperator: boolean;
+}
+
+export interface OperatorSettings {
+  singleTailnet: boolean;
+  defaultTailnetId: string | null;
+}
+
+export interface OperatorOverview {
+  tenants: OperatorTenant[];
+  users: OperatorUser[];
+  settings: OperatorSettings;
+}
+
+export interface TailnetCreator {
+  id: string;
+  did: string;
+  handle: string | null;
+  addedBy: string;
+  createdAt: string;
+  hasTailnet: boolean;
+}
+
+export interface McpConnection {
+  id: string;
+  clientName: string;
+  createdAt: string;
+  lastUsedAt: string | null;
 }
 
 export interface Device {
@@ -462,4 +542,6 @@ export type TabId =
   | "credentials"
   | "usage"
   | "security"
-  | "audit";
+  | "audit"
+  | "claude"
+  | "instance";

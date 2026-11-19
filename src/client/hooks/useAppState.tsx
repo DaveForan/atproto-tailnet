@@ -12,6 +12,7 @@ import { deviceService } from "../services/devices";
 import { rolesService } from "../services/roles";
 import { securityService } from "../services/security";
 import { tabEnabled, tabRegistry } from "../components/registry";
+import { errorCode } from "../lib/utils";
 import type {
   Invitation,
   Role,
@@ -45,6 +46,7 @@ interface AppContext extends AppState {
   setWizardStep: (step: number) => void;
   dismissWizard: () => void;
   reload: () => Promise<void>;
+  reloadAndSelect: (slug: string) => Promise<void>;
   reloadRoles: () => Promise<void>;
   reloadSettings: () => Promise<void>;
   isOriginator: () => boolean;
@@ -98,6 +100,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const selectedTenantRef = useRef<string | null>(readStoredTenant());
   const initSeqRef = useRef(0);
+  const preferSlugRef = useRef<string | null>(null);
 
   const loadStats = useCallback(
     async (tenantId: string): Promise<Stats | null> => {
@@ -146,12 +149,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
       let showWizard = false;
 
       if (tenants.length > 0) {
+        const preferred = preferSlugRef.current
+          ? tenants.find((t) => t.slug === preferSlugRef.current)
+          : undefined;
+        preferSlugRef.current = null;
         const selected =
-          tenants.find((t) => t.id === selectedTenantRef.current) ?? tenants[0];
+          preferred ?? tenants.find((t) => t.id === selectedTenantRef.current) ?? tenants[0];
         selectedTenantRef.current = selected.id;
-        const detail = await api<Tenant>(`/api/tenants/${selected.id}`);
-        currentTenant = detail ?? selected;
+        let suspended = !!selected.suspended;
+        let detail: Tenant | null = null;
+        if (!suspended || user.isOperator) {
+          detail = await api<Tenant>(`/api/tenants/${selected.id}`).catch((e: unknown) => {
+            if (errorCode(e) !== "tenant_suspended") throw e;
+            suspended = true;
+            return null;
+          });
+        }
+        currentTenant = { ...selected, ...detail, suspended: detail?.suspended ?? suspended };
+      }
 
+      if (currentTenant && (!currentTenant.suspended || user.isOperator)) {
         const [s, r, st] = await Promise.all([
           securityService.getSettings(currentTenant.id),
           rolesService.getRoles(currentTenant.id).then((r) => r ?? []),
@@ -163,6 +180,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
         if (
           currentTenant.status === "running" &&
+          !currentTenant.suspended &&
           stats &&
           stats.totalDevices === 0
         ) {
@@ -262,6 +280,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     await init();
   }, [init]);
 
+  const reloadAndSelect = useCallback(async (slug: string) => {
+    preferSlugRef.current = slug;
+    await init();
+  }, [init]);
+
   const currentTenantIdRef = useRef(state.currentTenant?.id);
   currentTenantIdRef.current = state.currentTenant?.id;
   const reloadIfCurrent = (tenantId: string) => tenantId === currentTenantIdRef.current;
@@ -299,7 +322,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (state.loading || !state.currentTenant) return;
     const entry = tabRegistry.find((e) => e.id === state.tab);
-    if (!entry || !tabEnabled(entry, hasPerm, state.settings, state.currentTenant, state.user?.features)) {
+    if (!entry || !tabEnabled(entry, hasPerm, state.settings, state.currentTenant, state.user)) {
       setState((s) => ({ ...s, tab: "status" }));
       if (window.location.hash) {
         history.replaceState(null, "", `${location.pathname}${location.search}#status`);
@@ -314,6 +337,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setWizardStep,
     dismissWizard,
     reload,
+    reloadAndSelect,
     reloadRoles,
     reloadSettings,
     isOriginator,

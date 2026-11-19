@@ -16,6 +16,7 @@ export function Toggle({ label, description, checked, onChange, disabled }: Togg
       <label className="toggle">
         <input
           type="checkbox"
+          aria-label={label}
           checked={checked}
           onChange={(e) => onChange(e.target.checked)}
           disabled={disabled}

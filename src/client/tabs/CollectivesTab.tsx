@@ -6,11 +6,12 @@ import { useTenantMutation } from "../hooks/useMutation";
 import { Card } from "../components/Card";
 import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
+import { errorCode, errorMessage } from "../lib/utils";
 import type { Ancestor, SubCollective, ComplianceData } from "../lib/types";
 
 export function CollectivesTab() {
-  const { currentTenant, hasPerm } = useApp();
-  const { toastError } = useToast();
+  const { currentTenant, hasPerm, user } = useApp();
+  const { toast, toastError } = useToast();
   const { mutate, busy } = useTenantMutation();
 
   const [ancestors, setAncestors] = useState<Ancestor[]>([]);
@@ -20,6 +21,8 @@ export function CollectivesTab() {
 
   const [newName, setNewName] = useState("");
   const [newSlug, setNewSlug] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [singleTailnet, setSingleTailnet] = useState(!!user?.isOperator && user.canCreateTailnet === false);
 
   const loadData = useCallback(async () => {
     if (!currentTenant) return;
@@ -42,14 +45,19 @@ export function CollectivesTab() {
 
   const createCollective = async (e: React.FormEvent) => {
     e.preventDefault();
-    const ok = await mutate(
-      "/collectives",
-      { method: "POST", body: JSON.stringify({ name: newName, slug: newSlug }) },
-      { successMsg: "Sub-collective created", reload: loadData },
-    );
-    if (ok) {
+    if (!currentTenant || creating) return;
+    setCreating(true);
+    try {
+      await collectivesService.create(currentTenant.id, newName, newSlug);
+      toast("Sub-collective created");
       setNewName("");
       setNewSlug("");
+      await loadData();
+    } catch (err) {
+      if (errorCode(err) === "single_tailnet") setSingleTailnet(true);
+      toastError(errorMessage(err, "Failed to create sub-collective"));
+    } finally {
+      setCreating(false);
     }
   };
 
@@ -132,11 +140,18 @@ export function CollectivesTab() {
           <EmptyState>No sub-collectives.</EmptyState>
         )}
 
-        {hasPerm("manage_sub_collectives") && (
+        {hasPerm("manage_sub_collectives") && singleTailnet && (
+          <p className="help-text mt-12" role="status">
+            New sub-collectives can&apos;t be created because this instance is in single-tailnet mode.
+            An instance operator can turn that off on the Instance page.
+          </p>
+        )}
+        {hasPerm("manage_sub_collectives") && !singleTailnet && (
           <form className="inline-form" onSubmit={createCollective}>
             <input
               type="text"
               placeholder="Collective name"
+              aria-label="Sub-collective name"
               value={newName}
               onChange={(e) => setNewName(e.target.value)}
               required
@@ -144,11 +159,12 @@ export function CollectivesTab() {
             <input
               type="text"
               placeholder="Slug"
+              aria-label="Sub-collective slug"
               value={newSlug}
               onChange={(e) => setNewSlug(e.target.value)}
               required
             />
-            <button type="submit" className="btn-primary" disabled={busy}>
+            <button type="submit" className="btn-primary" disabled={creating}>
               Create Sub-Collective
             </button>
           </form>

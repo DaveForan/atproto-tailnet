@@ -1,7 +1,12 @@
 let csrfToken = "";
 
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number, readonly code?: string) {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+    readonly body?: Record<string, unknown>,
+  ) {
     super(message);
   }
 }
@@ -31,6 +36,7 @@ export async function api<T = unknown>(
         err.error || "Something went wrong",
         res.status,
         typeof err.code === "string" ? err.code : undefined,
+        err && typeof err === "object" ? err : undefined,
       );
     }
     return res.json();
