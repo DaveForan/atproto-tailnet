@@ -11,6 +11,7 @@ import { api, fetchCsrfToken } from "../services/api";
 import { deviceService } from "../services/devices";
 import { rolesService } from "../services/roles";
 import { securityService } from "../services/security";
+import { tabRegistry } from "../components/registry";
 import type {
   Invitation,
   Role,
@@ -35,10 +36,12 @@ interface AppState {
   wizardStep: number;
   wizardDismissed: boolean;
   loading: boolean;
+  error: string | null;
 }
 
 interface AppContext extends AppState {
   setTab: (tab: TabId) => void;
+  selectTenant: (tenantId: string) => void;
   setWizardStep: (step: number) => void;
   dismissWizard: () => void;
   reload: () => Promise<void>;
@@ -54,13 +57,33 @@ export function useApp() {
   return useContext(Ctx);
 }
 
+const TENANT_KEY = "atproto-tailnet:selectedTenant";
+
+function isTabId(v: string): v is TabId {
+  return tabRegistry.some((e) => e.id === v);
+}
+
+function initialTab(): TabId {
+  const hash = window.location.hash.slice(1);
+  if (!hash) return "devices";
+  return isTabId(hash) ? hash : "status";
+}
+
+function readStoredTenant(): string | null {
+  try {
+    return localStorage.getItem(TENANT_KEY);
+  } catch {
+    return null;
+  }
+}
+
 export function AppProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AppState>({
     user: null,
     tenants: [],
     invitations: [],
     currentTenant: null,
-    tab: "devices",
+    tab: initialTab(),
     settings: null,
     roles: [],
     allPerms: [],
@@ -69,9 +92,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     wizardStep: 1,
     wizardDismissed: false,
     loading: true,
+    error: null,
   });
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const selectedTenantRef = useRef<string | null>(readStoredTenant());
+  const initSeqRef = useRef(0);
 
   const loadStats = useCallback(
     async (tenantId: string): Promise<Stats | null> => {
@@ -95,70 +121,88 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [],
   );
 
-  const init = useCallback(async () => {
-    const user = await api<User>("/api/me");
-    if (!user) {
-      setState((s) => ({ ...s, user: null, loading: false }));
-      return;
-    }
+  const init = useCallback(async (silent = false) => {
+    const seq = ++initSeqRef.current;
+    try {
+      const user = await api<User>("/api/me");
+      if (seq !== initSeqRef.current) return;
+      if (!user) {
+        setState((s) => ({ ...s, user: null, loading: false, error: null }));
+        return;
+      }
 
-    await fetchCsrfToken();
+      await fetchCsrfToken();
 
-    const [tenants, invitations, allPerms] = await Promise.all([
-      api<Tenant[]>("/api/tenants").then((r) => r ?? []),
-      api<Invitation[]>("/api/invitations").then((r) => r ?? []),
-      api<string[]>("/api/permissions").then((r) => r ?? []),
-    ]);
-
-    let currentTenant: Tenant | null = null;
-    let settings: Settings | null = null;
-    let roles: Role[] = [];
-    let stats: Stats | null = null;
-    let showWizard = false;
-
-    if (tenants.length > 0) {
-      const detail = await api<Tenant>(`/api/tenants/${tenants[0].id}`);
-      currentTenant = detail ?? tenants[0];
-
-      const [s, r, st] = await Promise.all([
-        securityService.getSettings(currentTenant.id),
-        rolesService.getRoles(currentTenant.id).then((r) => r ?? []),
-        loadStats(currentTenant.id),
+      const [tenants, invitations, allPerms] = await Promise.all([
+        api<Tenant[]>("/api/tenants").then((r) => r ?? []),
+        api<Invitation[]>("/api/invitations").then((r) => r ?? []),
+        api<string[]>("/api/permissions").then((r) => r ?? []),
       ]);
-      settings = s;
-      roles = r;
-      stats = st;
 
-      if (
-        currentTenant.status === "running" &&
-        stats &&
-        stats.totalDevices === 0
-      ) {
-        showWizard = true;
+      let currentTenant: Tenant | null = null;
+      let settings: Settings | null = null;
+      let roles: Role[] = [];
+      let stats: Stats | null = null;
+      let showWizard = false;
+
+      if (tenants.length > 0) {
+        const selected =
+          tenants.find((t) => t.id === selectedTenantRef.current) ?? tenants[0];
+        selectedTenantRef.current = selected.id;
+        const detail = await api<Tenant>(`/api/tenants/${selected.id}`);
+        currentTenant = detail ?? selected;
+
+        const [s, r, st] = await Promise.all([
+          securityService.getSettings(currentTenant.id),
+          rolesService.getRoles(currentTenant.id).then((r) => r ?? []),
+          loadStats(currentTenant.id),
+        ]);
+        settings = s;
+        roles = r;
+        stats = st;
+
+        if (
+          currentTenant.status === "running" &&
+          stats &&
+          stats.totalDevices === 0
+        ) {
+          showWizard = true;
+        }
       }
-    }
 
-    setState((prev) => ({
-      ...prev,
-      user,
-      tenants,
-      invitations,
-      currentTenant,
-      settings,
-      roles,
-      allPerms,
-      stats,
-      showWizard: showWizard && !prev.wizardDismissed,
-      loading: false,
-    }));
+      if (seq !== initSeqRef.current) return;
 
-    if (tenants.some((t) => t.status === "provisioning")) {
-      if (!pollRef.current) {
-        pollRef.current = setInterval(init, 3000);
+      setState((prev) => ({
+        ...prev,
+        user,
+        tenants,
+        invitations,
+        currentTenant,
+        settings,
+        roles,
+        allPerms,
+        stats,
+        showWizard: showWizard && !prev.wizardDismissed,
+        loading: false,
+        error: null,
+      }));
+
+      if (tenants.some((t) => t.status === "provisioning")) {
+        if (!pollRef.current) {
+          pollRef.current = setInterval(() => { void init(true); }, 3000);
+        }
+      } else if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
       }
-    } else if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
+    } catch (e) {
+      if (seq !== initSeqRef.current) return;
+      const message = e instanceof Error ? e.message : "Failed to load dashboard";
+      setState((s) => ({
+        ...s,
+        loading: false,
+        error: silent && !s.loading ? s.error : message,
+      }));
     }
   }, [loadStats]);
 
@@ -175,9 +219,32 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    const hash = window.location.hash.slice(1) as TabId;
-    if (hash) setState((s) => ({ ...s, tab: hash }));
+    const onHash = () => {
+      const hash = window.location.hash.slice(1);
+      if (!hash) return;
+      setState((s) => ({ ...s, tab: isTabId(hash) ? hash : "status" }));
+    };
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
   }, []);
+
+  const selectTenant = useCallback((tenantId: string) => {
+    if (tenantId === selectedTenantRef.current) return;
+    selectedTenantRef.current = tenantId;
+    try {
+      localStorage.setItem(TENANT_KEY, tenantId);
+    } catch { /* ignore */ }
+    setState((s) => ({
+      ...s,
+      currentTenant: s.tenants.find((t) => t.id === tenantId) ?? s.currentTenant,
+      settings: null,
+      roles: [],
+      stats: null,
+      showWizard: false,
+      loading: true,
+    }));
+    void init();
+  }, [init]);
 
   const setWizardStep = useCallback((step: number) => {
     setState((s) => ({ ...s, wizardStep: step }));
@@ -197,20 +264,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const currentTenantIdRef = useRef(state.currentTenant?.id);
   currentTenantIdRef.current = state.currentTenant?.id;
+  const reloadIfCurrent = (tenantId: string) => tenantId === currentTenantIdRef.current;
 
   const reloadRoles = useCallback(async () => {
     const tenantId = currentTenantIdRef.current;
     if (!tenantId) return;
     const roles =
       (await rolesService.getRoles(tenantId)) ?? [];
-    setState((s) => ({ ...s, roles }));
+    if (reloadIfCurrent(tenantId)) setState((s) => ({ ...s, roles }));
   }, []);
 
   const reloadSettings = useCallback(async () => {
     const tenantId = currentTenantIdRef.current;
     if (!tenantId) return;
     const settings = await securityService.getSettings(tenantId);
-    setState((s) => ({ ...s, settings }));
+    if (reloadIfCurrent(tenantId)) setState((s) => ({ ...s, settings }));
   }, []);
 
   const isOriginator = useCallback(() => {
@@ -228,9 +296,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [state.currentTenant, state.roles],
   );
 
+  useEffect(() => {
+    if (state.loading || !state.currentTenant) return;
+    const entry = tabRegistry.find((e) => e.id === state.tab);
+    if (!entry || !entry.gate(hasPerm, state.settings, state.currentTenant)) {
+      setState((s) => ({ ...s, tab: "status" }));
+      if (window.location.hash) {
+        history.replaceState(null, "", `${location.pathname}${location.search}#status`);
+      }
+    }
+  }, [state.loading, state.tab, state.currentTenant, state.settings, hasPerm]);
+
   const ctx: AppContext = {
     ...state,
     setTab,
+    selectTenant,
     setWizardStep,
     dismissWizard,
     reload,

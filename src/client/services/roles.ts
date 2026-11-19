@@ -13,7 +13,7 @@ export const rolesService = {
 
   updateRole: (tid: string, id: string, permissions: string[]) =>
     tenantApi(tid, `/roles/${id}`, {
-      method: "PUT",
+      method: "PATCH",
       body: JSON.stringify({ permissions }),
     }),
 
@@ -21,8 +21,8 @@ export const rolesService = {
     tenantApi(tid, `/roles/${id}`, { method: "DELETE" }),
 
   setDefaultRole: (tid: string, id: string) =>
-    tenantApi(tid, "/roles/default", {
-      method: "PUT",
+    tenantApi(tid, "/default-role", {
+      method: "PATCH",
       body: JSON.stringify({ roleId: id }),
     }),
 };

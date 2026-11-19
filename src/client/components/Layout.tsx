@@ -65,7 +65,7 @@ export function Header() {
 }
 
 export function Sidebar() {
-  const { currentTenant, tab, setTab, hasPerm, settings } = useApp();
+  const { currentTenant, tenants, selectTenant, tab, setTab, hasPerm, settings } = useApp();
   const { sidebarOpen, closeSidebar } = useContext(SidebarCtx);
   const t = currentTenant;
   if (!t) return null;
@@ -86,7 +86,24 @@ export function Sidebar() {
     <>
       <aside id="sidebar" className={`sidebar${sidebarOpen ? " open" : ""}`}>
         <div className="sidebar-tenant">
-          <h3>{t.name}</h3>
+          {tenants.length > 1 ? (
+            <select
+              aria-label="Select tailnet"
+              value={t.id}
+              onChange={(e) => {
+                selectTenant(e.target.value);
+                closeSidebar();
+              }}
+            >
+              {tenants.map((tn) => (
+                <option key={tn.id} value={tn.id}>
+                  {tn.name}
+                </option>
+              ))}
+            </select>
+          ) : (
+            <h3>{t.name}</h3>
+          )}
           <div className="sidebar-badges">
             <Badge variant={t.status === "running" ? "running" : "stopped"}>
               {t.status}

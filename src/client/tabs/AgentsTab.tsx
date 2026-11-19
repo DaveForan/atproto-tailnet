@@ -56,8 +56,8 @@ export function AgentsTab() {
   const handleRevoke = async (tokenId: string) => {
     if (!confirm("Revoke this agent token? This cannot be undone.")) return;
     await mutate(
-      `/agent-tokens/${tokenId}/revoke`,
-      { method: "POST" },
+      `/agent-tokens/${tokenId}`,
+      { method: "DELETE" },
       { successMsg: "Token revoked", reload },
     );
   };

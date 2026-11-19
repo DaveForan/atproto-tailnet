@@ -53,10 +53,13 @@ export const servicesService = {
   getBoardPosts: (tid: string) =>
     tenantApi<BoardPost[]>(tid, "/board-posts"),
 
-  createBoardPost: (tid: string, content: string, serviceId?: string) =>
+  createBoardPost: (
+    tid: string,
+    body: { title: string; description?: string; serviceId: string },
+  ) =>
     tenantApi(tid, "/board-posts", {
       method: "POST",
-      body: JSON.stringify({ content, serviceId }),
+      body: JSON.stringify(body),
     }),
 
   removeBoardPost: (tid: string, id: string) =>

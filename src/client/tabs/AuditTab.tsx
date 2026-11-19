@@ -27,13 +27,14 @@ export function AuditTab() {
     }
     try {
       const data = await auditService.getAuditLog(currentTenant.id, PAGE_SIZE, currentOffset);
-      const items = data ?? [];
+      const items = data?.entries ?? [];
+      const total = data?.total ?? 0;
       if (append) {
         setEntries((prev) => [...prev, ...items]);
       } else {
         setEntries(items);
       }
-      setHasMore(items.length === PAGE_SIZE);
+      setHasMore(currentOffset + items.length < total);
     } catch (e) {
       toastError(
         e instanceof Error ? e.message : "Failed to load audit log",
@@ -55,7 +56,7 @@ export function AuditTab() {
     loadEntries(nextOffset, true);
   };
 
-  const formatDetail = (detail?: Record<string, unknown>): string => {
+  const formatDetail = (detail?: Record<string, unknown> | null): string => {
     if (!detail) return "";
     const parts: string[] = [];
     for (const [key, value] of Object.entries(detail)) {
@@ -91,8 +92,8 @@ export function AuditTab() {
                           by {entry.actorDisplayName || entry.actorHandle}
                         </span>
                       )}
-                      {entry.detail && (
-                        <span>{formatDetail(entry.detail)}</span>
+                      {entry.metadata && (
+                        <span>{formatDetail(entry.metadata)}</span>
                       )}
                     </div>
                   </div>

@@ -62,8 +62,8 @@ export function MembersTab() {
 
   const handleToggleLock = async (memberId: string, currentlyLocked: boolean) => {
     await mutate(
-      `/device-locks/${memberId}`,
-      { method: currentlyLocked ? "DELETE" : "POST" },
+      "/device-locks",
+      { method: currentlyLocked ? "DELETE" : "POST", body: JSON.stringify({ userId: memberId }) },
       { successMsg: currentlyLocked ? "Devices unlocked" : "Devices locked", reload: () => loadMembers(false) },
     );
   };

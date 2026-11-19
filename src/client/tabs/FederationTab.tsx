@@ -7,7 +7,16 @@ import { Card } from "../components/Card";
 import { Badge, StatusBadge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
 import { relativeTime } from "../lib/utils";
-import type { FederationLink, PostureData, ScopeData, DidData, BrokerData } from "../lib/types";
+import type {
+  FederationLink,
+  BrokerData,
+  FederationScope,
+  ScopePolicyConfig,
+  ScopeUpdate,
+} from "../lib/types";
+
+const ALL_SCOPES: FederationScope[] = ["local", "regional", "global"];
+const DEFAULT_POLICY: ScopePolicyConfig = { autoAccept: false, verification: "standard" };
 
 export function FederationTab() {
   const { currentTenant, hasPerm } = useApp();
@@ -16,7 +25,6 @@ export function FederationTab() {
 
   const [links, setLinks] = useState<FederationLink[]>([]);
   const [posture, setPosture] = useState("selective");
-  const [scope, setScope] = useState<ScopeData>({ allowedCidrs: [], blockedCidrs: [] });
   const [did, setDid] = useState("");
   const [broker, setBroker] = useState<BrokerData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -30,8 +38,11 @@ export function FederationTab() {
   const [acceptCidrs, setAcceptCidrs] = useState<Record<string, string>>({});
 
   // Scope edit state
-  const [allowedCidrsText, setAllowedCidrsText] = useState("");
-  const [blockedCidrsText, setBlockedCidrsText] = useState("");
+  const [scopes, setScopes] = useState<FederationScope[]>(["regional"]);
+  const [region, setRegion] = useState("");
+  const [lat, setLat] = useState("");
+  const [lon, setLon] = useState("");
+  const [policies, setPolicies] = useState<Partial<Record<FederationScope, ScopePolicyConfig>>>({});
 
   const loadLinks = useCallback(async () => {
     if (!currentTenant) return;
@@ -49,9 +60,11 @@ export function FederationTab() {
     if (!currentTenant) return;
     const data = await federationService.getScope(currentTenant.id);
     if (data) {
-      setScope(data);
-      setAllowedCidrsText(data.allowedCidrs.join("\n"));
-      setBlockedCidrsText(data.blockedCidrs.join("\n"));
+      setScopes(data.scopes);
+      setRegion(data.region ?? "");
+      setLat(data.coordinates ? String(data.coordinates[0]) : "");
+      setLon(data.coordinates ? String(data.coordinates[1]) : "");
+      setPolicies(data.scopePolicies ?? {});
     }
   }, [currentTenant?.id]);
 
@@ -106,7 +119,7 @@ export function FederationTab() {
     const ok = await mutate("/federation", {
       method: "POST",
       body: JSON.stringify({
-        peerSlug: targetSlug,
+        targetSlug: targetSlug.trim(),
         message: requestMessage || undefined,
         cidrs: cidrs.length > 0 ? cidrs : undefined,
       }),
@@ -158,18 +171,40 @@ export function FederationTab() {
     }, { successMsg: "Federation posture updated" });
   };
 
+  const toggleScope = (sc: FederationScope, on: boolean) => {
+    setScopes((prev) =>
+      on ? ALL_SCOPES.filter((x) => x === sc || prev.includes(x)) : prev.filter((x) => x !== sc),
+    );
+  };
+
+  const setPolicy = (sc: FederationScope, patch: Partial<ScopePolicyConfig>) => {
+    setPolicies((prev) => ({ ...prev, [sc]: { ...DEFAULT_POLICY, ...prev[sc], ...patch } }));
+  };
+
   const saveScope = async () => {
-    const allowed = allowedCidrsText
-      .split("\n")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    const blocked = blockedCidrsText
-      .split("\n")
-      .map((s) => s.trim())
-      .filter(Boolean);
+    if (scopes.length === 0) {
+      toastError("Select at least one scope");
+      return;
+    }
+    const body: ScopeUpdate = { scopes };
+    if (region.trim()) body.region = region.trim();
+    if (lat.trim() || lon.trim()) {
+      const la = Number(lat);
+      const lo = Number(lon);
+      if (!lat.trim() || !lon.trim() || Number.isNaN(la) || Number.isNaN(lo)) {
+        toastError("Coordinates need both a numeric latitude and longitude");
+        return;
+      }
+      body.coordinates = [la, lo];
+    }
+    const scopePolicies: Partial<Record<FederationScope, ScopePolicyConfig>> = {};
+    for (const sc of scopes) {
+      if (policies[sc]) scopePolicies[sc] = policies[sc];
+    }
+    if (Object.keys(scopePolicies).length > 0) body.scopePolicies = scopePolicies;
     await mutate("/federation/scope", {
       method: "PUT",
-      body: JSON.stringify({ allowedCidrs: allowed, blockedCidrs: blocked }),
+      body: JSON.stringify(body),
     }, { successMsg: "Federation scope updated", reload: loadScope });
   };
 
@@ -221,7 +256,7 @@ export function FederationTab() {
               <li key={link.id} className="item-row">
                 <div className="item-info">
                   <span className="item-name">
-                    {link.peerName || link.peerSlug}
+                    {link.peerName || link.peerDid}
                   </span>
                   <StatusBadge status={link.status} />
                   {link.localCidrs && link.localCidrs.length > 0 && (
@@ -249,7 +284,7 @@ export function FederationTab() {
               <li key={link.id} className="item-row">
                 <div className="item-info">
                   <span className="item-name">
-                    {link.peerName || link.peerSlug}
+                    {link.peerName || link.peerDid}
                   </span>
                   {link.peerCidrs && link.peerCidrs.length > 0 && (
                     <span className="item-detail">
@@ -308,7 +343,7 @@ export function FederationTab() {
               <li key={link.id} className="item-row">
                 <div className="item-info">
                   <span className="item-name">
-                    {link.peerName || link.peerSlug}
+                    {link.peerName || link.peerDid}
                   </span>
                   <Badge variant="role">{link.direction}</Badge>
                   {link.localCidrs && link.localCidrs.length > 0 && (
@@ -347,7 +382,7 @@ export function FederationTab() {
               <li key={link.id} className="item-row">
                 <div className="item-info">
                   <span className="item-name">
-                    {link.peerName || link.peerSlug}
+                    {link.peerName || link.peerDid}
                   </span>
                   <StatusBadge status={link.status} />
                   <Badge variant="role">{link.direction}</Badge>
@@ -383,18 +418,74 @@ export function FederationTab() {
       {/* Scoping */}
       <Card title="Federation Scope">
         <div className="inline-form">
-          <label className="form-label">Allowed CIDRs (one per line)</label>
-          <textarea
-            value={allowedCidrsText}
-            onChange={(e) => setAllowedCidrsText(e.target.value)}
-            rows={4}
+          <label className="form-label">Scopes</label>
+          {ALL_SCOPES.map((sc) => {
+            const enabled = scopes.includes(sc);
+            const policy = policies[sc] ?? DEFAULT_POLICY;
+            return (
+              <div key={sc} className="form-row">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={enabled}
+                    onChange={(e) => toggleScope(sc, e.target.checked)}
+                  />{" "}
+                  {sc}
+                </label>
+                {enabled && (
+                  <>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={policy.autoAccept}
+                        onChange={(e) => setPolicy(sc, { autoAccept: e.target.checked })}
+                      />{" "}
+                      Auto-accept
+                    </label>
+                    <select
+                      value={policy.verification}
+                      onChange={(e) =>
+                        setPolicy(sc, { verification: e.target.value as ScopePolicyConfig["verification"] })
+                      }
+                    >
+                      <option value="standard">Standard verification</option>
+                      <option value="strict">Strict verification</option>
+                    </select>
+                  </>
+                )}
+              </div>
+            );
+          })}
+          <label className="form-label">Region (UN M49 3-digit code, optional)</label>
+          <input
+            type="text"
+            value={region}
+            onChange={(e) => setRegion(e.target.value)}
+            pattern="\d{3}"
+            maxLength={3}
+            placeholder="e.g. 021"
           />
-          <label className="form-label">Blocked CIDRs (one per line)</label>
-          <textarea
-            value={blockedCidrsText}
-            onChange={(e) => setBlockedCidrsText(e.target.value)}
-            rows={4}
-          />
+          <label className="form-label">Coordinates (optional)</label>
+          <div className="form-row">
+            <input
+              type="number"
+              step="any"
+              min={-90}
+              max={90}
+              value={lat}
+              onChange={(e) => setLat(e.target.value)}
+              placeholder="Latitude"
+            />
+            <input
+              type="number"
+              step="any"
+              min={-180}
+              max={180}
+              value={lon}
+              onChange={(e) => setLon(e.target.value)}
+              placeholder="Longitude"
+            />
+          </div>
           <button className="btn-primary" onClick={saveScope} disabled={busy || !hasPerm("manage_settings")}>
             Save Scope
           </button>

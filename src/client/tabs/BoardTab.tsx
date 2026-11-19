@@ -17,7 +17,8 @@ export function BoardTab() {
   const [services, setServices] = useState<Service[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const [content, setContent] = useState("");
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
   const [serviceId, setServiceId] = useState("");
 
   const loadData = useCallback(async () => {
@@ -39,17 +40,26 @@ export function BoardTab() {
     loadData().finally(() => setLoading(false));
   }, [loadData]);
 
-  const activeServices = services.filter((s) => s.isActive);
+  const activeServices = services.filter((s) => s.status === "active");
 
   const createPost = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!serviceId) return;
     const ok = await mutate(
       "/board-posts",
-      { method: "POST", body: JSON.stringify({ content, serviceId: serviceId || undefined }) },
+      {
+        method: "POST",
+        body: JSON.stringify({
+          title: title.trim(),
+          description: description.trim() || undefined,
+          serviceId,
+        }),
+      },
       { successMsg: "Post created", reload: loadData },
     );
     if (ok) {
-      setContent("");
+      setTitle("");
+      setDescription("");
       setServiceId("");
     }
   };
@@ -85,25 +95,36 @@ export function BoardTab() {
       >
         {hasPerm("create_posts") && (
           <form className="inline-form" onSubmit={createPost}>
-            <textarea
-              placeholder="Write a post..."
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
+            <input
+              type="text"
+              placeholder="Title"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
               required
+              maxLength={200}
+            />
+            <textarea
+              placeholder="Description (optional)"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              maxLength={1000}
               rows={3}
             />
             <select
               value={serviceId}
               onChange={(e) => setServiceId(e.target.value)}
+              required
             >
-              <option value="">No service</option>
+              <option value="">
+                {activeServices.length > 0 ? "Select a service" : "No active services"}
+              </option>
               {activeServices.map((s) => (
                 <option key={s.id} value={s.id}>
                   {s.name}
                 </option>
               ))}
             </select>
-            <button type="submit" className="btn-primary" disabled={busy}>
+            <button type="submit" className="btn-primary" disabled={busy || !serviceId || !title.trim()}>
               Post
             </button>
           </form>
@@ -114,7 +135,10 @@ export function BoardTab() {
             {posts.map((post) => (
               <li key={post.id} className="item-row">
                 <div className="item-info">
-                  <span className="item-detail post-content">{post.content}</span>
+                  <span className="item-name">{post.title}</span>
+                  {post.description && (
+                    <span className="item-detail post-content">{post.description}</span>
+                  )}
                   <span className="item-meta">
                     {post.authorDisplayName || post.authorHandle}
                     {post.serviceName && <> &middot; {post.serviceName}</>}

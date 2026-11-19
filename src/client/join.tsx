@@ -16,6 +16,7 @@ interface JoinRequest {
 
 type JoinState =
   | { kind: "loading" }
+  | { kind: "error"; message: string }
   | { kind: "not-found" }
   | { kind: "closed"; name: string }
   | { kind: "login"; name: string; slug: string }
@@ -33,78 +34,101 @@ function JoinApp() {
   const { toast, toastError } = useToast();
 
   const init = useCallback(async () => {
-    const tenant = await api<JoinTenant>(
-      `/api/tenants/by-slug/${encodeURIComponent(slug)}/public`,
-    );
-    if (!tenant) {
-      setState({ kind: "not-found" });
-      return;
-    }
-    if (!tenant.joinOpen) {
-      setState({ kind: "closed", name: tenant.name });
-      return;
-    }
-
-    const me = await api<{ id: string }>("/api/me");
-    if (!me || !me.id) {
-      setState({ kind: "login", name: tenant.name, slug });
-      return;
-    }
-
-    await fetchCsrfToken();
-
-    const mine = await api<JoinRequest[]>(
-      `/api/tenants/${tenant.id}/join-requests/mine`,
-    );
-
-    if (!mine) {
-      const existing = await api<{ id: string }>(`/api/tenants/${tenant.id}`);
-      if (existing?.id) {
-        setState({ kind: "already-member", name: tenant.name });
+    try {
+      const tenant = await api<JoinTenant>(
+        `/api/tenants/by-slug/${encodeURIComponent(slug)}/public`,
+      ).catch(() => null);
+      if (!tenant) {
+        setState({ kind: "not-found" });
         return;
       }
-    }
 
-    if (mine && mine.length > 0) {
-      const latest = mine[0];
-      if (latest.status === "pending") {
-        setState({ kind: "pending", name: tenant.name, requestedAt: latest.requestedAt });
-        return;
-      }
-      if (latest.status === "approved") {
-        setState({ kind: "approved", name: tenant.name });
-        return;
-      }
-      if (latest.status === "rejected") {
-        setState({ kind: "rejected", name: tenant.name, tenantId: tenant.id });
-        return;
-      }
-    }
+      const me = await api<{ id: string }>("/api/me");
+      const loggedIn = !!me?.id;
 
-    setState({ kind: "open", name: tenant.name, tenantId: tenant.id });
+      if (loggedIn) {
+        // GET /api/tenants/:id is 200 for members, 404 otherwise
+        const existing = await api<{ id: string }>(`/api/tenants/${tenant.id}`).catch(() => null);
+        if (existing?.id) {
+          setState({ kind: "already-member", name: tenant.name });
+          return;
+        }
+      }
+
+      if (!tenant.joinOpen) {
+        setState({ kind: "closed", name: tenant.name });
+        return;
+      }
+
+      if (!loggedIn) {
+        setState({ kind: "login", name: tenant.name, slug });
+        return;
+      }
+
+      await fetchCsrfToken();
+
+      const mine = await api<JoinRequest[]>(
+        `/api/tenants/${tenant.id}/join-requests/mine`,
+      );
+
+      if (mine && mine.length > 0) {
+        const latest = mine.reduce((a, b) =>
+          new Date(b.requestedAt).getTime() > new Date(a.requestedAt).getTime() ? b : a,
+        );
+        if (latest.status === "pending") {
+          setState({ kind: "pending", name: tenant.name, requestedAt: latest.requestedAt });
+          return;
+        }
+        if (latest.status === "approved") {
+          setState({ kind: "approved", name: tenant.name });
+          return;
+        }
+        if (latest.status === "rejected") {
+          setState({ kind: "rejected", name: tenant.name, tenantId: tenant.id });
+          return;
+        }
+      }
+
+      setState({ kind: "open", name: tenant.name, tenantId: tenant.id });
+    } catch (e) {
+      setState({
+        kind: "error",
+        message: e instanceof Error ? e.message : "Something went wrong",
+      });
+    }
   }, [slug]);
 
   useEffect(() => { init(); }, [init]);
 
   const submitRequest = async (tenantId: string) => {
+    if (submitting) return;
     setSubmitting(true);
-    const result = await api(`/api/tenants/${tenantId}/join-requests`, {
-      method: "POST",
-      body: JSON.stringify({ message: message.trim() || undefined }),
-    });
-    setSubmitting(false);
-    if (!result) {
-      toastError("Failed to submit request");
-      return;
+    try {
+      await api(`/api/tenants/${tenantId}/join-requests`, {
+        method: "POST",
+        body: JSON.stringify({ message: message.trim() || undefined }),
+      });
+      toast("Request submitted!");
+      await init();
+    } catch (e) {
+      toastError(e instanceof Error ? e.message : "Failed to submit request");
+    } finally {
+      setSubmitting(false);
     }
-    toast("Request submitted!");
-    init();
   };
 
   return (
     <div className="join-container">
       <div className="card join-card">
         {state.kind === "loading" && <p>Loading...</p>}
+
+        {state.kind === "error" && (
+          <>
+            <h1>Something went wrong</h1>
+            <p className="text-dim">{state.message}</p>
+            <a href="/">Go to dashboard</a>
+          </>
+        )}
 
         {state.kind === "not-found" && (
           <>

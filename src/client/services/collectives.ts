@@ -20,5 +20,5 @@ export const collectivesService = {
     }),
 
   eject: (tid: string, id: string) =>
-    tenantApi(tid, `/collectives/${id}`, { method: "DELETE" }),
+    tenantApi(tid, `/collectives/${id}/eject`, { method: "POST" }),
 };

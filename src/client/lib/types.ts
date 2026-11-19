@@ -90,13 +90,14 @@ export interface Member {
 
 export interface FederationLink {
   id: string;
-  peerName?: string;
-  peerSlug: string;
+  peerDid: string;
+  peerName?: string | null;
+  peerBrokerUrl?: string | null;
   direction: "incoming" | "outgoing";
   status: "pending" | "active" | "rejected" | "revoked";
-  localCidrs?: string[];
-  peerCidrs?: string[];
-  message?: string;
+  localCidrs?: string[] | null;
+  peerCidrs?: string[] | null;
+  message?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -159,18 +160,31 @@ export interface RouteEntry {
 }
 
 export interface UsageData {
-  currentDevices: number;
-  currentMembers: number;
-  maxDevices: number;
-  maxMembers: number;
-  planName: string;
-  snapshots: UsageSnapshot[];
+  current: {
+    deviceCount: number;
+    onlineDevices: number;
+    memberCount: number;
+    routeCount: number;
+  };
+  plan: {
+    name: string;
+    maxDevices: number;
+    maxMembers: number;
+  };
+  limits: {
+    devicesExceeded: boolean;
+    membersExceeded: boolean;
+  };
+  history: UsageSnapshot[];
 }
 
 export interface UsageSnapshot {
-  timestamp: string;
-  devices: number;
-  members: number;
+  id: string;
+  deviceCount: number;
+  memberCount: number;
+  routeCount: number;
+  onlineDevices: number;
+  recordedAt: string;
 }
 
 export interface ServiceDevice {
@@ -185,29 +199,44 @@ export interface Service {
   id: string;
   name: string;
   url: string;
-  description?: string;
+  description?: string | null;
   serviceDeviceId: string;
-  status: "pending" | "approved" | "rejected";
-  isActive: boolean;
+  status: "pending" | "active" | "disabled";
+  ownerId?: string;
+  ownerHandle?: string;
+  ownerDisplayName?: string | null;
+  deviceName?: string;
   createdAt: string;
 }
 
 export interface BoardPost {
   id: string;
-  content: string;
+  title: string;
+  description?: string | null;
+  status: "active" | "removed";
+  serviceId: string;
   serviceName?: string;
-  createdAt: string;
+  serviceUrl?: string;
+  authorId: string;
   authorHandle: string;
-  authorDisplayName?: string;
+  authorDisplayName?: string | null;
+  createdAt: string;
 }
 
 export interface AuditEntry {
   id: string;
   action: string;
   actorHandle?: string;
-  actorDisplayName?: string;
-  detail?: Record<string, unknown>;
+  actorDisplayName?: string | null;
+  targetType?: string | null;
+  targetId?: string | null;
+  metadata?: Record<string, unknown> | null;
   createdAt: string;
+}
+
+export interface AuditLogPage {
+  entries: AuditEntry[];
+  total: number;
 }
 
 export interface DeviceApproval {
@@ -246,9 +275,25 @@ export interface PostureData {
   posture: string;
 }
 
+export type FederationScope = "local" | "regional" | "global";
+
+export interface ScopePolicyConfig {
+  autoAccept: boolean;
+  verification: "standard" | "strict";
+}
+
 export interface ScopeData {
-  allowedCidrs: string[];
-  blockedCidrs: string[];
+  scopes: FederationScope[];
+  region: string | null;
+  coordinates: [number, number] | null;
+  scopePolicies: Partial<Record<FederationScope, ScopePolicyConfig>> | null;
+}
+
+export interface ScopeUpdate {
+  scopes: FederationScope[];
+  region?: string;
+  coordinates?: [number, number];
+  scopePolicies?: Partial<Record<FederationScope, ScopePolicyConfig>>;
 }
 
 export interface DidData {
@@ -340,7 +385,7 @@ export interface VerifyResult {
 }
 
 export interface ChallengeResult {
-  challenge: string;
+  challenge: { nonce: string; issuedAt: string; expiresAt: string };
 }
 
 export type TabId =

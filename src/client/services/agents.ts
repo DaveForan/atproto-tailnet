@@ -15,5 +15,5 @@ export const agentsService = {
     }),
 
   revokeAgentToken: (tid: string, id: string) =>
-    tenantApi(tid, `/agent-tokens/${id}/revoke`, { method: "POST" }),
+    tenantApi(tid, `/agent-tokens/${id}`, { method: "DELETE" }),
 };

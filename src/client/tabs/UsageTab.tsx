@@ -8,13 +8,13 @@ import { PLANS } from "../lib/constants";
 import type { UsageData } from "../lib/types";
 
 const USAGE_FALLBACK: UsageData = {
-  currentDevices: 0,
-  currentMembers: 0,
-  maxDevices: 0,
-  maxMembers: 0,
-  planName: "",
-  snapshots: [],
+  current: { deviceCount: 0, onlineDevices: 0, memberCount: 0, routeCount: 0 },
+  plan: { name: "", maxDevices: 0, maxMembers: 0 },
+  limits: { devicesExceeded: false, membersExceeded: false },
+  history: [],
 };
+
+const fmtLimit = (n: number) => (n > 0 ? String(n) : "∞");
 
 export function UsageTab() {
   const { hasPerm } = useApp();
@@ -29,23 +29,19 @@ export function UsageTab() {
   const [selectedPlan, setSelectedPlan] = useState("");
 
   useEffect(() => {
-    if (usage.planName) setSelectedPlan(usage.planName);
-  }, [usage.planName]);
+    if (usage.plan.name) setSelectedPlan(usage.plan.name);
+  }, [usage.plan.name]);
 
   const handleSavePlan = async () => {
-    if (!usage.planName || !selectedPlan) return;
+    if (!usage.plan.name || !selectedPlan) return;
     await mutate("/plan", {
       method: "PUT",
-      body: JSON.stringify({
-        planName: selectedPlan,
-        maxDevices: usage.maxDevices,
-        maxMembers: usage.maxMembers,
-      }),
+      body: JSON.stringify({ planName: selectedPlan }),
     });
   };
 
   if (loading) return <div className="loading">Loading...</div>;
-  if (!usage.planName)
+  if (!usage.plan.name)
     return <div className="loading">No usage data available.</div>;
 
   const canManage = hasPerm("manage_settings");
@@ -56,15 +52,24 @@ export function UsageTab() {
         <div className="stats-row">
           <div className="stat-card">
             <div className="stat-value">
-              {usage.currentDevices} / {usage.maxDevices}
+              {usage.current.deviceCount} / {fmtLimit(usage.plan.maxDevices)}
             </div>
-            <div className="stat-label">Devices</div>
+            <div className="stat-label">
+              Devices ({usage.current.onlineDevices} online)
+              {usage.limits.devicesExceeded && " · over limit"}
+            </div>
           </div>
           <div className="stat-card">
             <div className="stat-value">
-              {usage.currentMembers} / {usage.maxMembers}
+              {usage.current.memberCount} / {fmtLimit(usage.plan.maxMembers)}
             </div>
-            <div className="stat-label">Members</div>
+            <div className="stat-label">
+              Members{usage.limits.membersExceeded && " · over limit"}
+            </div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-value">{usage.current.routeCount}</div>
+            <div className="stat-label">Routes</div>
           </div>
         </div>
       </Card>
@@ -94,7 +99,7 @@ export function UsageTab() {
         </div>
       </Card>
 
-      {usage.snapshots && usage.snapshots.length > 0 && (
+      {usage.history.length > 0 && (
         <Card title="Snapshot History">
           <table className="data-table">
             <thead>
@@ -102,14 +107,16 @@ export function UsageTab() {
                 <th>Time</th>
                 <th>Devices</th>
                 <th>Members</th>
+                <th>Routes</th>
               </tr>
             </thead>
             <tbody>
-              {usage.snapshots.map((snap, i) => (
-                <tr key={i}>
-                  <td>{relativeTime(snap.timestamp)}</td>
-                  <td>{snap.devices}</td>
-                  <td>{snap.members}</td>
+              {[...usage.history].reverse().map((snap) => (
+                <tr key={snap.id}>
+                  <td>{relativeTime(snap.recordedAt)}</td>
+                  <td>{snap.deviceCount} ({snap.onlineDevices} online)</td>
+                  <td>{snap.memberCount}</td>
+                  <td>{snap.routeCount}</td>
                 </tr>
               ))}
             </tbody>

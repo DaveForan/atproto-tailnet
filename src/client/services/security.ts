@@ -28,7 +28,7 @@ export const securityService = {
 
   updateSetting: (tid: string, key: string, value: boolean | number) =>
     tenantApi(tid, "/settings", {
-      method: "PUT",
+      method: "PATCH",
       body: JSON.stringify({ [key]: value }),
     }),
 

@@ -136,7 +136,7 @@ export function CredentialsTab() {
       const result = await credentialsService.generateChallenge(
         currentTenant.id,
       );
-      setChallenge(result?.challenge ?? null);
+      setChallenge(result?.challenge ? JSON.stringify(result.challenge, null, 2) : null);
       toast("Challenge generated");
     } catch (e) {
       toastError(e instanceof Error ? e.message : "Failed to generate challenge");

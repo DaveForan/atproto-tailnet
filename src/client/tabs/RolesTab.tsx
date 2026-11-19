@@ -30,7 +30,7 @@ export function RolesTab() {
       : [...role.permissions, perm];
     await mutate(
       `/roles/${roleId}`,
-      { method: "PUT", body: JSON.stringify({ permissions }) },
+      { method: "PATCH", body: JSON.stringify({ permissions }) },
       { successMsg: "Role updated" },
     );
   };
@@ -58,8 +58,8 @@ export function RolesTab() {
   const handleSetDefault = async () => {
     if (!currentTenant || !defaultRoleId) return;
     await mutate(
-      "/roles/default",
-      { method: "PUT", body: JSON.stringify({ roleId: defaultRoleId }) },
+      "/default-role",
+      { method: "PATCH", body: JSON.stringify({ roleId: defaultRoleId }) },
       { successMsg: "Default role updated" },
     );
   };

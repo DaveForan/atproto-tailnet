@@ -50,10 +50,19 @@ const tabComponents: Record<TabId, React.LazyExoticComponent<React.ComponentType
 };
 
 export function App() {
-  const { user, loading, currentTenant, showWizard } = useApp();
+  const { user, loading, error, currentTenant, showWizard, reload } = useApp();
 
   if (loading) {
     return <div className="loading-screen">Loading...</div>;
+  }
+
+  if (error && !user) {
+    return (
+      <div className="loading-screen">
+        <p>Failed to load the dashboard: {error}</p>
+        <button onClick={() => { void reload(); }}>Retry</button>
+      </div>
+    );
   }
 
   if (!user) {
@@ -68,6 +77,12 @@ export function App() {
     <SidebarProvider>
       <Header />
       <LockdownBanner />
+      {error && (
+        <div className="lockdown-banner">
+          <span>{error}</span>
+          <button className="btn-sm btn-warning" onClick={() => { void reload(); }}>Retry</button>
+        </div>
+      )}
       {currentTenant ? <Dashboard /> : (
         <main className="centered-main">
           <div className="empty-state">No tailnets found.</div>
@@ -79,7 +94,7 @@ export function App() {
 
 function Dashboard() {
   const { tab, invitations, currentTenant, reload } = useApp();
-  const TabComponent = tabComponents[tab];
+  const TabComponent = tabComponents[tab] ?? StatusTab;
 
   return (
     <div className="dashboard-layout">
@@ -87,7 +102,7 @@ function Dashboard() {
       <main>
         <PendingInvitations invitations={invitations} onAction={reload} />
         <StatsSummary />
-        <Suspense fallback={<div className="tab-loading">Loading...</div>}>
+        <Suspense key={currentTenant?.id} fallback={<div className="tab-loading">Loading...</div>}>
           <TabComponent />
         </Suspense>
       </main>

@@ -56,8 +56,8 @@ export function CollectivesTab() {
   const ejectCollective = async (id: string) => {
     if (!confirm("Eject this sub-collective? This cannot be undone.")) return;
     await mutate(
-      `/collectives/${id}`,
-      { method: "DELETE" },
+      `/collectives/${id}/eject`,
+      { method: "POST" },
       { successMsg: "Sub-collective ejected", reload: loadData },
     );
   };

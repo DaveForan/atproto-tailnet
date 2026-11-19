@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { tenantApi } from "../services/api";
 import { useApp } from "./useAppState";
 
@@ -15,15 +15,21 @@ export function useTenantData<T>(
   const { currentTenant } = useApp();
   const [data, setData] = useState<T>(fallback);
   const [loading, setLoading] = useState(true);
+  const tenantIdRef = useRef(currentTenant?.id);
+  tenantIdRef.current = currentTenant?.id;
+  const seqRef = useRef(0);
 
   const load = useCallback(async () => {
     if (!currentTenant) return;
+    const tid = currentTenant.id;
+    const seq = ++seqRef.current;
+    const isCurrent = () => seq === seqRef.current && tid === tenantIdRef.current;
     setLoading(true);
     try {
-      const result = await tenantApi<T>(currentTenant.id, path);
-      if (result !== null) setData(result);
+      const result = await tenantApi<T>(tid, path);
+      if (isCurrent() && result !== null) setData(result);
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   }, [currentTenant?.id, path]);
 
@@ -44,21 +50,28 @@ export function useTenantParallel<T extends object>(
   const { currentTenant } = useApp();
   const [data, setData] = useState<T>(fallback);
   const [loading, setLoading] = useState(true);
+  const tenantIdRef = useRef(currentTenant?.id);
+  tenantIdRef.current = currentTenant?.id;
+  const seqRef = useRef(0);
 
   const load = useCallback(async () => {
     if (!currentTenant) return;
+    const tid = currentTenant.id;
+    const seq = ++seqRef.current;
+    const isCurrent = () => seq === seqRef.current && tid === tenantIdRef.current;
     setLoading(true);
     try {
       const results = await Promise.all(
-        specs.map((s) => tenantApi(currentTenant.id, s.path)),
+        specs.map((s) => tenantApi(tid, s.path)),
       );
+      if (!isCurrent()) return;
       const merged = { ...fallback } as Record<string, unknown>;
       specs.forEach((s, i) => {
         if (results[i] !== null) merged[s.key] = results[i];
       });
       setData(merged as T);
     } finally {
-      setLoading(false);
+      if (isCurrent()) setLoading(false);
     }
   }, [currentTenant?.id]);
 

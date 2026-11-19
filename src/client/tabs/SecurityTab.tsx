@@ -71,7 +71,7 @@ export function SecurityTab() {
   const handleToggle = async (key: BoolSettingKey, value: boolean) => {
     await mutate(
       "/settings",
-      { method: "PUT", body: JSON.stringify({ [key]: value }) },
+      { method: "PATCH", body: JSON.stringify({ [key]: value }) },
       { successMsg: `${key} ${value ? "enabled" : "disabled"}`, reload: reloadSettings },
     );
   };
@@ -79,7 +79,7 @@ export function SecurityTab() {
   const handleSaveHibernation = async () => {
     await mutate(
       "/settings",
-      { method: "PUT", body: JSON.stringify({ hibernateAfterDays: hibernateDays }) },
+      { method: "PATCH", body: JSON.stringify({ hibernateAfterDays: hibernateDays }) },
       { successMsg: "Hibernation setting saved", reload: reloadSettings },
     );
   };

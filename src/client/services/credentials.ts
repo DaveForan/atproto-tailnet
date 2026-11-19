@@ -27,7 +27,5 @@ export const credentialsService = {
     }),
 
   generateChallenge: (tid: string) =>
-    tenantApi<ChallengeResult>(tid, "/credentials/challenge", {
-      method: "POST",
-    }),
+    tenantApi<ChallengeResult>(tid, "/credentials/challenge"),
 };

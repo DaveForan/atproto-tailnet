@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { tenantApi } from "../services/api";
 import { useApp } from "./useAppState";
 import { useToast } from "../components/Toast";
@@ -23,10 +23,12 @@ export function useTenantMutation(options?: MutationOptions): MutationResult {
   const { currentTenant } = useApp();
   const { toast, toastError } = useToast();
   const [busy, setBusy] = useState(false);
+  const inFlightRef = useRef(false);
 
   const mutate = useCallback(
     async (path: string, opts?: RequestInit, callOpts?: MutateCallOptions): Promise<boolean> => {
-      if (!currentTenant) return false;
+      if (!currentTenant || inFlightRef.current) return false;
+      inFlightRef.current = true;
       setBusy(true);
       try {
         await tenantApi(currentTenant.id, path, opts);
@@ -43,6 +45,7 @@ export function useTenantMutation(options?: MutationOptions): MutationResult {
         );
         return false;
       } finally {
+        inFlightRef.current = false;
         setBusy(false);
       }
     },

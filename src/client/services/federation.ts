@@ -3,6 +3,7 @@ import type {
   FederationLink,
   PostureData,
   ScopeData,
+  ScopeUpdate,
   DidData,
   BrokerData,
 } from "../lib/types";
@@ -11,7 +12,7 @@ export const federationService = {
   getLinks: (tid: string) =>
     tenantApi<{ links: FederationLink[] }>(tid, "/federation"),
 
-  requestLink: (tid: string, body: { peerSlug: string; message?: string; cidrs?: string[] }) =>
+  requestLink: (tid: string, body: { targetSlug: string; message?: string; cidrs?: string[] }) =>
     tenantApi(tid, "/federation", {
       method: "POST",
       body: JSON.stringify(body),
@@ -41,10 +42,10 @@ export const federationService = {
   getScope: (tid: string) =>
     tenantApi<ScopeData>(tid, "/federation/scope"),
 
-  setScope: (tid: string, allowedCidrs: string[], blockedCidrs: string[]) =>
+  setScope: (tid: string, scope: ScopeUpdate) =>
     tenantApi(tid, "/federation/scope", {
       method: "PUT",
-      body: JSON.stringify({ allowedCidrs, blockedCidrs }),
+      body: JSON.stringify(scope),
     }),
 
   getDid: (tid: string) =>
