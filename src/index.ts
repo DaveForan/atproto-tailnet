@@ -201,6 +201,14 @@ app.use(authRouter);
 // Broker-to-broker CFP messages (ADR-0016): authenticated by DID signature,
 // not sessions or agent tokens. Keepalives for every session arrive from the
 // peer broker's single address, so they get their own, higher limit.
+if (!config.federationEnabled) {
+  app.use(
+    ["/api/federation", "/api/tenants/:tenantId/federation", "/api/tenants/:tenantId/traversal-policy"],
+    (_req: Request, res: Response) => {
+      res.status(404).json({ error: "Federation is not enabled on this instance" });
+    },
+  );
+}
 app.use("/api/federation/messages", federationLimiter);
 app.use(federationMessagesRouter);
 
@@ -228,7 +236,7 @@ app.use(credentialsRouter);
 app.listen(config.port, () => {
   logger.info({ port: config.port, url: config.publicUrl }, "atproto-tailnet running");
   startHealthMonitor();
-  startBroker();
+  if (config.federationEnabled) startBroker();
   startAbuseSweep();
   void reconcileTenantRouting();
 });

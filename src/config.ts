@@ -43,6 +43,8 @@ const configSchema = z.object({
    * service POST to internal hosts.
    */
   webhookAllowPrivate: z.boolean().default(false),
+  /** Federation (links between tailnets) is off until its data plane works without Docker. */
+  federationEnabled: z.boolean().default(false),
   headscale: z.object({
     image: z.string().default("headscale/headscale:0.29.1"),
     portRangeStart: z.coerce.number().default(10001),
@@ -70,6 +72,7 @@ export const config = configSchema.parse({
   coordinatorApiKey: process.env.COORDINATOR_API_KEY || undefined,
   atprotoPrivateKey: process.env.ATPROTO_PRIVATE_KEY,
   webhookAllowPrivate: process.env.WEBHOOK_ALLOW_PRIVATE === "true",
+  federationEnabled: process.env.FEDERATION_ENABLED === "true",
   federationKeyEncryptionKey: process.env.FEDERATION_KEY_ENCRYPTION_KEY || undefined,
   headscale: {
     image: process.env.HEADSCALE_IMAGE,

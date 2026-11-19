@@ -4,7 +4,7 @@ import { securityService } from "../services/security";
 import { useToast } from "./Toast";
 import { Badge } from "./Badge";
 import { NotificationBell } from "./NotificationBell";
-import { tabRegistry, type TabGroup } from "./registry";
+import { tabEnabled, tabRegistry, type TabGroup } from "./registry";
 
 function safeUrl(url?: string): string {
   if (!url) return "";
@@ -67,7 +67,7 @@ export function Header() {
 }
 
 export function Sidebar() {
-  const { currentTenant, tenants, selectTenant, tab, setTab, hasPerm, settings } = useApp();
+  const { currentTenant, tenants, selectTenant, tab, setTab, hasPerm, settings, user } = useApp();
   const { sidebarOpen, closeSidebar } = useContext(SidebarCtx);
   const t = currentTenant;
   if (!t) return null;
@@ -77,7 +77,7 @@ export function Sidebar() {
     closeSidebar();
   };
 
-  const groups = buildVisibleGroups(hasPerm, settings, currentTenant);
+  const groups = buildVisibleGroups(hasPerm, settings, currentTenant, user?.features);
   const roleBadge = t.isOriginator ? (
     <Badge variant="originator">originator</Badge>
   ) : (
@@ -147,12 +147,13 @@ function buildVisibleGroups(
   hasPerm: (p: string) => boolean,
   settings: import("../lib/types").Settings | null,
   tenant: import("../lib/types").Tenant | null,
+  features: import("../lib/types").User["features"],
 ): VisibleGroup[] {
   const result: VisibleGroup[] = [];
   const groupMap = new Map<string, TabGroup>();
 
   for (const entry of tabRegistry) {
-    if (!entry.gate(hasPerm, settings, tenant)) continue;
+    if (!tabEnabled(entry, hasPerm, settings, tenant, features)) continue;
     if (!groupMap.has(entry.group)) {
       groupMap.set(entry.group, { label: entry.group, tabs: [] });
     }

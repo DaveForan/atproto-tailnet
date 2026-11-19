@@ -11,7 +11,7 @@ import { api, fetchCsrfToken } from "../services/api";
 import { deviceService } from "../services/devices";
 import { rolesService } from "../services/roles";
 import { securityService } from "../services/security";
-import { tabRegistry } from "../components/registry";
+import { tabEnabled, tabRegistry } from "../components/registry";
 import type {
   Invitation,
   Role,
@@ -299,13 +299,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (state.loading || !state.currentTenant) return;
     const entry = tabRegistry.find((e) => e.id === state.tab);
-    if (!entry || !entry.gate(hasPerm, state.settings, state.currentTenant)) {
+    if (!entry || !tabEnabled(entry, hasPerm, state.settings, state.currentTenant, state.user?.features)) {
       setState((s) => ({ ...s, tab: "status" }));
       if (window.location.hash) {
         history.replaceState(null, "", `${location.pathname}${location.search}#status`);
       }
     }
-  }, [state.loading, state.tab, state.currentTenant, state.settings, hasPerm]);
+  }, [state.loading, state.tab, state.currentTenant, state.settings, state.user, hasPerm]);
 
   const ctx: AppContext = {
     ...state,

@@ -6,6 +6,7 @@
  */
 
 import { Router } from "express";
+import { config } from "../config.js";
 import { eq, and, desc } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { users, tenants, memberships, roles, joinRequests } from "../db/schema.js";
@@ -56,6 +57,7 @@ apiRouter.get("/api/me", requireAuth, async (req, res) => {
     handle: user.handle,
     displayName: user.displayName,
     avatarUrl: user.avatarUrl,
+    features: { federation: config.federationEnabled },
   });
 });
 

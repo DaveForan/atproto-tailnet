@@ -4,6 +4,7 @@ export interface User {
   handle: string;
   displayName?: string;
   avatarUrl?: string;
+  features?: { federation?: boolean };
 }
 
 export interface Tenant {
