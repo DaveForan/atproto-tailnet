@@ -103,7 +103,7 @@ echo "==> Waiting for services to start..."
 sleep 15
 
 # Check health
-if docker compose -f "$COMPOSE_FILE" exec -T app curl -sf http://localhost:3000/health > /dev/null 2>&1; then
+if docker compose -f "$COMPOSE_FILE" exec -T app wget -qO- http://localhost:3000/health > /dev/null 2>&1; then
   echo "==> atproto-tailnet is running!"
 elif docker compose -f "$COMPOSE_FILE" ps | grep -q "running"; then
   echo "==> Containers are up. App may still be starting."

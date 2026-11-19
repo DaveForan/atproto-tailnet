@@ -9,7 +9,7 @@ use coord_core::{
     TenantId,
 };
 
-use crate::generate_random_id;
+use crate::{generate_auth_key, generate_random_id};
 
 #[derive(Debug, Clone, Copy)]
 pub enum PeerEvent {
@@ -224,7 +224,7 @@ impl MemoryStore {
         }
         drop(tenants);
 
-        let key = format!("tskey-auth-{}", generate_random_id());
+        let key = generate_auth_key();
         let id = uuid::Uuid::new_v4();
         let mut keys = self.preauth_keys.lock().unwrap_or_else(|e| e.into_inner());
         keys.insert(

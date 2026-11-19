@@ -26,7 +26,7 @@ WORKDIR /app
 
 # Production dependencies only
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev --ignore-scripts
 
 # Compiled application + client assets
 COPY --from=build /app/dist/ dist/

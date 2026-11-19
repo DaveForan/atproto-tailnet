@@ -117,7 +117,7 @@ docker compose -f "$COMPOSE_FILE" up -d
 
 echo "==> Waiting for health check..."
 sleep 15
-if docker compose -f "$COMPOSE_FILE" exec -T app curl -sf http://localhost:3000/health > /dev/null 2>&1; then
+if docker compose -f "$COMPOSE_FILE" exec -T app wget -qO- http://localhost:3000/health > /dev/null 2>&1; then
   echo "==> atproto-tailnet is running!"
 else
   echo "==> App may still be starting. Check logs with:"

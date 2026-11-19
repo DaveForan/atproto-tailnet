@@ -3,7 +3,7 @@
 # ---------------------------------------------------------------------------
 
 # ---- build stage ---------------------------------------------------------
-FROM rust:1.85-alpine AS build
+FROM rust:1.89-alpine AS build
 
 RUN apk add --no-cache musl-dev pkgconfig openssl-dev openssl-libs-static
 
@@ -34,7 +34,10 @@ COPY migrations/ migrations/
 COPY migrations_sqlite/ migrations_sqlite/
 
 # Build the real binary
-RUN cargo build --release --package coord-server
+# Touch real sources so cargo does not reuse the stub-lib artifacts above
+# (COPY preserves older mtimes, which cargo would treat as up to date).
+RUN find crates -name "*.rs" -exec touch {} + && \
+    cargo build --release --package coord-server
 
 # ---- runtime stage -------------------------------------------------------
 FROM alpine:3.21
@@ -42,7 +45,8 @@ FROM alpine:3.21
 RUN apk add --no-cache tini ca-certificates \
     && mkdir -p /var/lib/coordinator
 
-COPY --from=build /build/target/release/coord-server /usr/local/bin/coord-server
+# The bin target is named "coordinator" (crates/coord-server/Cargo.toml [[bin]])
+COPY --from=build /build/target/release/coordinator /usr/local/bin/coord-server
 
 EXPOSE 9443
 

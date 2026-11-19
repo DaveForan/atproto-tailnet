@@ -39,6 +39,7 @@ services:
       FEDERATION_KEY_ENCRYPTION_KEY: ${FEDERATION_KEY_ENCRYPTION_KEY:-}
       # Single-organisation self-hosting only: allow webhooks to private hosts
       WEBHOOK_ALLOW_PRIVATE: ${WEBHOOK_ALLOW_PRIVATE:-false}
+      FEDERATION_ENABLED: ${FEDERATION_ENABLED:-false}
     volumes:
       # Docker socket -- required to manage per-tenant Headscale containers
       - /var/run/docker.sock:/var/run/docker.sock
@@ -80,7 +81,8 @@ services:
     #     dockerfile: Dockerfile.caddy
     #     args:
     #       CADDY_DNS_PLUGINS: "github.com/caddy-dns/route53"
-    image: ${CADDY_IMAGE:-caddy:2-alpine}
+    image: ${CADDY_IMAGE:-atproto-tailnet-caddy:local}
+    pull_policy: build
     build:
       context: .
       dockerfile: Dockerfile.caddy
@@ -114,6 +116,8 @@ services:
     volumes:
       - ./Caddyfile.production:/etc/caddy/Caddyfile
       - ./caddy/tls-strategies/${TLS_STRATEGY:-on-demand}:/etc/caddy/tls-strategy:ro
+      # Only used by TLS_STRATEGY=manual (wildcard.pem + wildcard.key)
+      - ${CADDY_CERTS_DIR:-./caddy/certs}:/etc/caddy/certs:ro
       - caddy_data:/data
       - caddy_config:/config
     networks:

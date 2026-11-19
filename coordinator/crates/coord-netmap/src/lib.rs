@@ -177,7 +177,7 @@ impl NetmapService {
         let self_node = MapNode {
             id: node_id.as_i64(),
             stable_id: detail.stable_id,
-            name: format!("node-{}.mesh.local.", node_id.as_i64()),
+            name: format!("{}.mesh.local.", detail.info.hostname),
             user: 1,
             key: node_key_str,
             machine: format_machine_key(&MachineKey(*machine_key)),
@@ -188,7 +188,7 @@ impl NetmapService {
             endpoints: vec![],
             derp: Some(format!("127.3.3.40:{}", home_region)),
             home_derp: Some(home_region),
-            hostinfo: None,
+            hostinfo: minimal_hostinfo(&detail.info.hostname),
             online: Some(true),
             last_seen: None,
             machine_authorized: Some(true),
@@ -265,7 +265,7 @@ impl NetmapService {
                     endpoints: detail.info.endpoints.clone(),
                     derp: Some(format!("127.3.3.40:{}", home_region)),
                     home_derp: Some(home_region),
-                    hostinfo: None,
+                    hostinfo: minimal_hostinfo(&detail.info.hostname),
                     online: Some(detail.online),
                     last_seen: None,
                     machine_authorized: Some(true),
@@ -285,6 +285,20 @@ impl NetmapService {
             }),
         }
     }
+}
+
+/// Tailscale clients dereference `Node.Hostinfo` unconditionally (e.g. in
+/// `tailscale status`), so every node we send must carry one — a nil Hostinfo
+/// panics the client's LocalAPI.
+fn minimal_hostinfo(hostname: &str) -> Option<coord_proto::register::Hostinfo> {
+    Some(coord_proto::register::Hostinfo {
+        hostname: Some(hostname.to_string()),
+        os: None,
+        ipn_version: None,
+        backend_log_id: None,
+        request_tags: None,
+        routable_ips: None,
+    })
 }
 
 fn format_key_bytes(key: &[u8]) -> String {
@@ -321,7 +335,7 @@ fn peer_info_to_map_node(p: &coord_core::PeerInfo, home_region: i32) -> MapNode 
         endpoints: p.endpoints.clone(),
         derp: Some(format!("127.3.3.40:{}", derp_region)),
         home_derp: Some(derp_region),
-        hostinfo: None,
+        hostinfo: minimal_hostinfo(&p.hostname),
         online: Some(p.online),
         last_seen: p.last_seen.map(|t| t.to_rfc3339()),
         machine_authorized: Some(true),

@@ -10,7 +10,7 @@ use coord_core::{
 use chrono::{DateTime, Utc};
 use serde_json::Value as Json;
 use crate::memory::PeerEvent;
-use crate::generate_random_id;
+use crate::{generate_auth_key, generate_random_id};
 
 fn db(e: sqlx::Error) -> StorageError {
     StorageError::new(e)
@@ -263,7 +263,7 @@ impl PgStore {
         tenant_id: TenantId,
         opts: PreAuthKeyOptions,
     ) -> Result<CreatedPreAuthKey, CoordError> {
-        let key = format!("tskey-auth-{}", generate_random_id());
+        let key = generate_auth_key();
         let id = uuid::Uuid::new_v4();
         sqlx::query(
             "INSERT INTO coord_preauth_keys (key, id, tenant_id, reusable, ephemeral, expires_at, owner, tags) \

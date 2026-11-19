@@ -73,6 +73,11 @@ does not start in production if `SESSION_SECRET` is weak.
 | `TLS_STRATEGY` | No | `on-demand` | TLS certificate strategy (see `caddy/tls-strategies/`) |
 | `COORDINATOR_URL` | Coord | -- | URL of the Rust coordinator (e.g. `http://coordinator:9443`) |
 | `COORDINATOR_API_KEY` | Coord | -- | Bearer token for the coordinator admin API (required when you set `COORDINATOR_URL`) |
+| `APP_DOMAIN` | Yes | -- | Domain of the dashboard. Caddy uses it. The app does not derive it from `PUBLIC_URL` |
+| `CADDY_DNS_PLUGINS` | DNS-01 | -- | Caddy DNS module for your `TLS_STRATEGY`, for example `github.com/caddy-dns/digitalocean` |
+| `CADDY_CERTS_DIR` | Manual | `./caddy/certs` | Folder with `wildcard.pem` and `wildcard.key` for `TLS_STRATEGY=manual` |
+| `WEBHOOK_ALLOW_PRIVATE` | No | `false` | Set `true` only for single-organisation self-hosting. It lets notification webhooks reach private addresses |
+| `FEDERATION_ENABLED` | No | `false` | Shows federation (links between tailnets). Keep it off. Federation links carry no traffic in the coordinator stack yet |
 
 #### Coordinator-side env vars (Rust binary)
 
@@ -119,6 +124,20 @@ LOG_LEVEL=info
 TLS_STRATEGY=on-demand
 ATPROTO_PRIVATE_KEY={"kty":"EC","crv":"P-256",...}
 ```
+
+---
+
+## Pre-deployment checklist (DigitalOcean, coordinator mode)
+
+1. Add DNS records for `APP_DOMAIN` and the wildcard `*.BASE_DOMAIN`. Point both at the Droplet.
+2. Create a DigitalOcean API token with read and write scope. Set `TLS_STRATEGY=digitalocean`, `DO_AUTH_TOKEN` and `CADDY_DNS_PLUGINS=github.com/caddy-dns/digitalocean`.
+3. Generate strong values for `SESSION_SECRET` (`openssl rand -hex 32`), `POSTGRES_PASSWORD` and `COORDINATOR_API_KEY`. The stack does not start without them.
+4. Generate an ES256 JWK for `ATPROTO_PRIVATE_KEY`. Bluesky sign-in needs it in production.
+5. Set `PUBLIC_URL=https://APP_DOMAIN`.
+6. Keep `FEDERATION_ENABLED` unset.
+7. Run `deploy/digitalocean/droplet-setup.sh`. Then open `https://APP_DOMAIN` and sign in.
+
+The coordinator stores its Noise control key on the `coord_data` volume. Keep that volume. If you lose it, every device must reconnect.
 
 ---
 

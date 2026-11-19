@@ -138,7 +138,10 @@ async fn run_noise_session(
         }
     });
 
+    // keep_alive_* need a timer; without one hyper panics on the first
+    // connection ("You must supply a timer").
     let result = hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+        .timer(hyper_util::rt::TokioTimer::new())
         .keep_alive_interval(Some(std::time::Duration::from_secs(30)))
         .keep_alive_timeout(std::time::Duration::from_secs(90))
         .serve_connection(h2_io, service)
