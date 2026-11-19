@@ -77,6 +77,7 @@ does not start in production if `SESSION_SECRET` is weak.
 | `CADDY_DNS_PLUGINS` | DNS-01 | -- | Caddy DNS module for your `TLS_STRATEGY`, for example `github.com/caddy-dns/digitalocean` |
 | `CADDY_CERTS_DIR` | Manual | `./caddy/certs` | Folder with `wildcard.pem` and `wildcard.key` for `TLS_STRATEGY=manual` |
 | `WEBHOOK_ALLOW_PRIVATE` | No | `false` | Set `true` only for single-organisation self-hosting. It lets notification webhooks reach private addresses |
+| `OPERATOR_DIDS` | Yes (production) | -- | Comma-separated DIDs of the instance operators, for example `did:plc:abc123`. Only operators (and the "tailnet creators" they designate) get a tailnet; everyone else who signs in sees invitations or can request to join the default tailnet. Operators get the operator API (`/api/operator/*`). If it is empty the app logs a loud warning and nobody can create a tailnet |
 | `FEDERATION_ENABLED` | No | `false` | Shows federation (links between tailnets). Keep it off. Federation links carry no traffic in the coordinator stack yet |
 
 #### Coordinator-side env vars (Rust binary)
@@ -105,6 +106,7 @@ CADDY_ADMIN_URL=http://caddy:2019
 LOG_LEVEL=info
 TLS_STRATEGY=on-demand
 ATPROTO_PRIVATE_KEY={"kty":"EC","crv":"P-256",...}
+OPERATOR_DIDS=did:plc:your-own-did
 ```
 
 ### Production `.env` example (legacy Headscale mode)
@@ -123,6 +125,7 @@ CADDY_ADMIN_URL=http://caddy:2019
 LOG_LEVEL=info
 TLS_STRATEGY=on-demand
 ATPROTO_PRIVATE_KEY={"kty":"EC","crv":"P-256",...}
+OPERATOR_DIDS=did:plc:your-own-did
 ```
 
 ---
@@ -135,7 +138,8 @@ ATPROTO_PRIVATE_KEY={"kty":"EC","crv":"P-256",...}
 4. Generate an ES256 JWK for `ATPROTO_PRIVATE_KEY`. Bluesky sign-in needs it in production.
 5. Set `PUBLIC_URL=https://APP_DOMAIN`.
 6. Keep `FEDERATION_ENABLED` unset.
-7. Run `deploy/digitalocean/droplet-setup.sh`. Then open `https://APP_DOMAIN` and sign in.
+7. Set `OPERATOR_DIDS` to your own DID (find it with `curl "https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle?handle=you.bsky.social"`). Without it the instance has no operator and nobody gets a tailnet. Strangers who sign in get no tailnet: they only see their invitations, or can request to join your default tailnet.
+8. Run `deploy/digitalocean/droplet-setup.sh`. Then open `https://APP_DOMAIN` and sign in as the operator. Your first tailnet becomes the instance's default tailnet and accepts join requests. You can change both in the operator settings, turn on single-tailnet mode, or designate other tailnet creators.
 
 The coordinator stores its Noise control key on the `coord_data` volume. Keep that volume. If you lose it, every device must reconnect.
 

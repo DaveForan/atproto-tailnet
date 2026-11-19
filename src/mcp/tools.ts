@@ -1,0 +1,513 @@
+/**
+ * @module mcp/tools
+ * MCP tool catalogue. Every tool is a thin wrapper over an existing REST
+ * endpoint called with the user's own bearer token (see mcp/api-client.ts):
+ * permissions, validation and business rules all stay in the route handlers,
+ * and API error messages are surfaced as tool errors.
+ */
+import { z } from "zod";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
+import type { ApiClient } from "./api-client.js";
+
+type Shape = Record<string, z.ZodTypeAny>;
+
+export interface ToolDef {
+  name: string;
+  title: string;
+  description: string;
+  shape?: Shape;
+  annotations: ToolAnnotations;
+  /** Listed only for instance operators (the API enforces it regardless). */
+  operator?: boolean;
+  run(api: ApiClient, args: Record<string, unknown>): Promise<unknown>;
+}
+
+const enc = encodeURIComponent;
+const tailnetId = z.string().uuid().describe("Tailnet id (from list_tailnets)");
+const t = (a: Record<string, unknown>) => `/api/tenants/${enc(String(a.tailnet_id))}`;
+
+const READ: ToolAnnotations = { readOnlyHint: true, openWorldHint: false };
+const WRITE: ToolAnnotations = { readOnlyHint: false, destructiveHint: false, openWorldHint: false };
+const DESTRUCTIVE: ToolAnnotations = { readOnlyHint: false, destructiveHint: true, openWorldHint: false };
+
+const DESTRUCTIVE_NOTE = " DESTRUCTIVE: this cannot be undone from here — confirm with the user first.";
+
+export const TOOL_DEFS: ToolDef[] = [
+  // ── Identity ──
+  {
+    name: "whoami",
+    title: "Who am I",
+    description:
+      "Show the signed-in user this connection acts as: id, DID, handle, isOperator, canCreateTailnet, access.",
+    annotations: READ,
+    run: (api) => api.call("GET", "/api/me"),
+  },
+
+  // ── Tailnets ──
+  {
+    name: "list_tailnets",
+    title: "List tailnets",
+    description: "List the tailnets you are a member of, with your role in each. Use the returned id as tailnet_id.",
+    annotations: READ,
+    run: (api) => api.call("GET", "/api/tenants"),
+  },
+  {
+    name: "create_tailnet",
+    title: "Create my tailnet",
+    description:
+      "Create your own top-level tailnet. Only works when whoami shows canCreateTailnet (operators and designated creators).",
+    shape: { name: z.string().trim().min(1).max(100).optional().describe("Display name") },
+    annotations: WRITE,
+    run: (api, a) => api.call("POST", "/api/tenants/mine", a.name ? { name: a.name } : {}),
+  },
+  {
+    name: "get_tailnet",
+    title: "Get tailnet",
+    description: "Get one tailnet's status, settings, and usage against its limits.",
+    shape: { tailnet_id: tailnetId },
+    annotations: READ,
+    run: async (api, a) => {
+      const tailnet = await api.call("GET", t(a));
+      const [settings, usage] = await Promise.allSettled([
+        api.call("GET", `${t(a)}/settings`),
+        api.call("GET", `${t(a)}/usage`),
+      ]);
+      const val = (r: PromiseSettledResult<unknown>) =>
+        r.status === "fulfilled" ? r.value : { error: (r.reason as Error).message };
+      return { tailnet, settings: val(settings), usage: val(usage) };
+    },
+  },
+
+  // ── Devices ──
+  {
+    name: "list_devices",
+    title: "List devices",
+    description: "List the devices (nodes) in a tailnet.",
+    shape: { tailnet_id: tailnetId },
+    annotations: READ,
+    run: (api, a) => api.call("GET", `${t(a)}/devices`),
+  },
+  {
+    name: "remove_device",
+    title: "Remove device",
+    description: "Remove a device from a tailnet. It must re-register with a new key to rejoin." + DESTRUCTIVE_NOTE,
+    shape: { tailnet_id: tailnetId, device_id: z.string().min(1).describe("Device/node id from list_devices") },
+    annotations: DESTRUCTIVE,
+    run: (api, a) => api.call("DELETE", `${t(a)}/devices/${enc(String(a.device_id))}`),
+  },
+
+  // ── Members ──
+  {
+    name: "list_members",
+    title: "List members",
+    description: "List the members of a tailnet with their roles.",
+    shape: { tailnet_id: tailnetId },
+    annotations: READ,
+    run: (api, a) => api.call("GET", `${t(a)}/members`),
+  },
+  {
+    name: "remove_member",
+    title: "Remove member",
+    description:
+      "Remove a member from a tailnet. Their devices are deleted and their keys revoked." + DESTRUCTIVE_NOTE,
+    shape: { tailnet_id: tailnetId, user_id: z.string().uuid().describe("Member user id from list_members") },
+    annotations: DESTRUCTIVE,
+    run: (api, a) => api.call("DELETE", `${t(a)}/members/${enc(String(a.user_id))}`),
+  },
+
+  // ── Invitations ──
+  {
+    name: "invite",
+    title: "Invite",
+    description:
+      "Invite someone to a tailnet by Bluesky handle or DID (give exactly one). Returns the invitation with an inviteUrl to send them.",
+    shape: {
+      tailnet_id: tailnetId,
+      handle: z.string().min(1).max(253).optional().describe("Handle, e.g. alice.bsky.social"),
+      did: z.string().startsWith("did:").max(2048).optional().describe("DID, e.g. did:plc:…"),
+    },
+    annotations: WRITE,
+    run: (api, a) => {
+      const hasHandle = typeof a.handle === "string" && a.handle.length > 0;
+      const hasDid = typeof a.did === "string" && a.did.length > 0;
+      if (hasHandle === hasDid) throw new Error("Give exactly one of handle or did");
+      return api.call("POST", `${t(a)}/invitations`, hasHandle ? { handle: a.handle } : { did: a.did });
+    },
+  },
+  {
+    name: "list_invitations",
+    title: "List invitations",
+    description: "List a tailnet's invitations and their status (with inviteUrl).",
+    shape: { tailnet_id: tailnetId },
+    annotations: READ,
+    run: (api, a) => api.call("GET", `${t(a)}/invitations`),
+  },
+  {
+    name: "revoke_invitation",
+    title: "Revoke invitation",
+    description: "Revoke a pending invitation so its link stops working." + DESTRUCTIVE_NOTE,
+    shape: { tailnet_id: tailnetId, invitation_id: z.string().uuid() },
+    annotations: DESTRUCTIVE,
+    run: (api, a) => api.call("DELETE", `${t(a)}/invitations/${enc(String(a.invitation_id))}`),
+  },
+
+  // ── Join requests ──
+  {
+    name: "list_join_requests",
+    title: "List join requests",
+    description: "List requests from people asking to join a tailnet.",
+    shape: { tailnet_id: tailnetId },
+    annotations: READ,
+    run: (api, a) => api.call("GET", `${t(a)}/join-requests`),
+  },
+  {
+    name: "approve_join_request",
+    title: "Approve join request",
+    description: "Approve a join request; the requester becomes a member.",
+    shape: { tailnet_id: tailnetId, request_id: z.string().uuid() },
+    annotations: WRITE,
+    run: (api, a) => api.call("POST", `${t(a)}/join-requests/${enc(String(a.request_id))}/approve`),
+  },
+  {
+    name: "reject_join_request",
+    title: "Reject join request",
+    description: "Reject a join request.",
+    shape: { tailnet_id: tailnetId, request_id: z.string().uuid() },
+    annotations: WRITE,
+    run: (api, a) => api.call("POST", `${t(a)}/join-requests/${enc(String(a.request_id))}/reject`),
+  },
+
+  // ── Device approvals ──
+  {
+    name: "list_device_approvals",
+    title: "List device approvals",
+    description: "List pending device approval requests (used when the tailnet requires device approval).",
+    shape: { tailnet_id: tailnetId },
+    annotations: READ,
+    run: (api, a) => api.call("GET", `${t(a)}/device-approvals`),
+  },
+  {
+    name: "approve_device",
+    title: "Approve device",
+    description: "Approve a device approval request; a key is issued for the requester.",
+    shape: { tailnet_id: tailnetId, approval_id: z.string().uuid() },
+    annotations: WRITE,
+    run: (api, a) => api.call("POST", `${t(a)}/device-approvals/${enc(String(a.approval_id))}/approve`),
+  },
+  {
+    name: "reject_device",
+    title: "Reject device",
+    description: "Reject a device approval request.",
+    shape: { tailnet_id: tailnetId, approval_id: z.string().uuid() },
+    annotations: WRITE,
+    run: (api, a) => api.call("POST", `${t(a)}/device-approvals/${enc(String(a.approval_id))}/reject`),
+  },
+
+  // ── Auth keys ──
+  {
+    name: "list_auth_keys",
+    title: "List auth keys",
+    description: "List issued pre-auth keys (all keys if you manage devices, otherwise your own).",
+    shape: { tailnet_id: tailnetId },
+    annotations: READ,
+    run: (api, a) => api.call("GET", `${t(a)}/auth-keys`),
+  },
+  {
+    name: "create_auth_key",
+    title: "Create auth key",
+    description:
+      "Create a pre-auth key for adding a device to the tailnet (tailscale up --auth-key=…). The key is shown once.",
+    shape: {
+      tailnet_id: tailnetId,
+      reusable: z.boolean().optional().describe("Allow the key to register several devices"),
+      expires_in_hours: z.number().int().min(1).max(720).optional().describe("Default 24"),
+    },
+    annotations: WRITE,
+    run: (api, a) => {
+      const body: Record<string, unknown> = {};
+      if (a.reusable !== undefined) body.reusable = a.reusable;
+      if (a.expires_in_hours !== undefined) body.expiresInHours = a.expires_in_hours;
+      return api.call("POST", `${t(a)}/devices/auth-key`, body);
+    },
+  },
+  {
+    name: "revoke_auth_key",
+    title: "Revoke auth key",
+    description: "Revoke a pre-auth key so it can no longer register devices." + DESTRUCTIVE_NOTE,
+    shape: { tailnet_id: tailnetId, key_id: z.string().min(1).describe("Key id from list_auth_keys") },
+    annotations: DESTRUCTIVE,
+    run: (api, a) => api.call("DELETE", `${t(a)}/auth-keys/${enc(String(a.key_id))}`),
+  },
+
+  // ── ACL ──
+  {
+    name: "get_acl",
+    title: "Get ACL policy",
+    description: "Get the tailnet's ACL policy (acls, groups, hosts, tagOwners, autoApprovers).",
+    shape: { tailnet_id: tailnetId },
+    annotations: READ,
+    run: (api, a) => api.call("GET", `${t(a)}/acl`),
+  },
+  {
+    name: "set_acl",
+    title: "Set ACL policy",
+    description:
+      "Replace the tailnet's whole ACL policy. Pass the full policy object, e.g. {\"acls\":[{\"action\":\"accept\",\"src\":[\"*\"],\"dst\":[\"*:*\"]}],\"groups\":{},\"hosts\":{},\"tagOwners\":{}}. A wrong policy can cut devices off — read get_acl first.",
+    shape: {
+      tailnet_id: tailnetId,
+      policy: z.record(z.unknown()).describe("Full ACL policy object"),
+    },
+    annotations: { ...WRITE, idempotentHint: true },
+    run: (api, a) => api.call("PUT", `${t(a)}/acl`, a.policy),
+  },
+
+  // ── Routes ──
+  {
+    name: "list_routes",
+    title: "List routes",
+    description: "List exit nodes and subnet routes advertised in the tailnet, with approval state.",
+    shape: { tailnet_id: tailnetId },
+    annotations: READ,
+    run: (api, a) => api.call("GET", `${t(a)}/routes`),
+  },
+  {
+    name: "approve_route",
+    title: "Approve route",
+    description: "Approve (enable) an advertised exit node or subnet route.",
+    shape: { tailnet_id: tailnetId, route_id: z.string().min(1).describe("Route id from list_routes") },
+    annotations: { ...WRITE, idempotentHint: true },
+    run: (api, a) => api.call("POST", `${t(a)}/routes/${enc(String(a.route_id))}/enable`),
+  },
+  {
+    name: "unapprove_route",
+    title: "Unapprove route",
+    description: "Withdraw approval of an exit node or subnet route (disable it).",
+    shape: { tailnet_id: tailnetId, route_id: z.string().min(1).describe("Route id from list_routes") },
+    annotations: { ...WRITE, idempotentHint: true },
+    run: (api, a) => api.call("POST", `${t(a)}/routes/${enc(String(a.route_id))}/disable`),
+  },
+
+  // ── Settings / limits / notifications ──
+  {
+    name: "get_settings",
+    title: "Get settings",
+    description: "Get the tailnet's settings (device approval, lockdown, join requests, agent tokens, …).",
+    shape: { tailnet_id: tailnetId },
+    annotations: READ,
+    run: (api, a) => api.call("GET", `${t(a)}/settings`),
+  },
+  {
+    name: "update_settings",
+    title: "Update settings",
+    description: "Change one or more tailnet settings. Only the fields you pass change.",
+    shape: {
+      tailnet_id: tailnetId,
+      requireDeviceApproval: z.boolean().optional(),
+      lockdownMode: z.boolean().optional().describe("Blocks invitations, joins and new keys while on"),
+      allowJoinRequests: z.boolean().optional(),
+      boardEnabled: z.boolean().optional(),
+      maxBoardPosts: z.number().int().min(1).max(200).optional(),
+      maxBoardPostsDisplayed: z.number().int().min(1).max(200).optional(),
+      requireServiceApproval: z.boolean().optional(),
+      requireServiceDeviceApproval: z.boolean().optional(),
+      allowAgentTokens: z.boolean().optional(),
+      allowMemberAgentTokens: z.boolean().optional(),
+      hibernateAfterDays: z.number().int().min(0).max(365).optional(),
+      notificationWebhookUrl: z.string().max(2048).nullable().optional(),
+    },
+    annotations: { ...WRITE, idempotentHint: true },
+    run: (api, a) => {
+      const { tailnet_id: _id, ...rest } = a;
+      const body = Object.fromEntries(Object.entries(rest).filter(([, v]) => v !== undefined));
+      if (Object.keys(body).length === 0) throw new Error("Pass at least one setting to change");
+      return api.call("PATCH", `${t(a)}/settings`, body);
+    },
+  },
+  {
+    name: "set_limits",
+    title: "Set limits",
+    description: "Set the tailnet's device and member caps (0 = unlimited). Originator only.",
+    shape: {
+      tailnet_id: tailnetId,
+      maxDevices: z.number().int().min(0).optional(),
+      maxMembers: z.number().int().min(0).optional(),
+    },
+    annotations: { ...WRITE, idempotentHint: true },
+    run: (api, a) => {
+      const body: Record<string, unknown> = {};
+      if (a.maxDevices !== undefined) body.maxDevices = a.maxDevices;
+      if (a.maxMembers !== undefined) body.maxMembers = a.maxMembers;
+      return api.call("PUT", `${t(a)}/limits`, body);
+    },
+  },
+  {
+    name: "list_notifications",
+    title: "List notifications",
+    description: "List your notifications for a tailnet (approval requests, limit hits).",
+    shape: { tailnet_id: tailnetId },
+    annotations: READ,
+    run: (api, a) => api.call("GET", `${t(a)}/notifications`),
+  },
+
+  // ── Instance operator ──
+  {
+    name: "instance_overview",
+    title: "Instance overview",
+    description: "Operator: all tailnets and users on this instance, plus instance settings.",
+    annotations: READ,
+    operator: true,
+    run: (api) => api.call("GET", "/api/operator/overview"),
+  },
+  {
+    name: "get_instance_settings",
+    title: "Get instance settings",
+    description: "Operator: get instance settings (singleTailnet, defaultTailnetId).",
+    annotations: READ,
+    operator: true,
+    run: (api) => api.call("GET", "/api/operator/settings"),
+  },
+  {
+    name: "update_instance_settings",
+    title: "Update instance settings",
+    description:
+      "Operator: change instance settings. singleTailnet limits the instance to one top-level tailnet; defaultTailnetId (or null) is offered to users with no access.",
+    shape: {
+      singleTailnet: z.boolean().optional(),
+      defaultTailnetId: z.string().uuid().nullable().optional(),
+    },
+    annotations: { ...WRITE, idempotentHint: true },
+    operator: true,
+    run: (api, a) => {
+      const body: Record<string, unknown> = {};
+      if (a.singleTailnet !== undefined) body.singleTailnet = a.singleTailnet;
+      if (a.defaultTailnetId !== undefined) body.defaultTailnetId = a.defaultTailnetId;
+      return api.call("PUT", "/api/operator/settings", body);
+    },
+  },
+  {
+    name: "list_tailnet_creators",
+    title: "List tailnet creators",
+    description: "Operator: list DIDs allowed to create their own tailnet.",
+    annotations: READ,
+    operator: true,
+    run: (api) => api.call("GET", "/api/operator/tailnet-creators"),
+  },
+  {
+    name: "add_tailnet_creator",
+    title: "Add tailnet creator",
+    description: "Operator: allow a DID or handle (give exactly one) to create their own tailnet.",
+    shape: {
+      did: z.string().startsWith("did:").max(2048).optional(),
+      handle: z.string().min(1).max(253).optional(),
+    },
+    annotations: WRITE,
+    operator: true,
+    run: (api, a) => {
+      const hasHandle = typeof a.handle === "string" && a.handle.length > 0;
+      const hasDid = typeof a.did === "string" && a.did.length > 0;
+      if (hasHandle === hasDid) throw new Error("Give exactly one of handle or did");
+      return api.call("POST", "/api/operator/tailnet-creators", hasHandle ? { handle: a.handle } : { did: a.did });
+    },
+  },
+  {
+    name: "remove_tailnet_creator",
+    title: "Remove tailnet creator",
+    description:
+      "Operator: remove a tailnet creator. Their existing tailnet is kept, but they cannot create a new one." +
+      DESTRUCTIVE_NOTE,
+    shape: { creator_id: z.string().uuid().describe("Creator id from list_tailnet_creators") },
+    annotations: DESTRUCTIVE,
+    operator: true,
+    run: (api, a) => api.call("DELETE", `/api/operator/tailnet-creators/${enc(String(a.creator_id))}`),
+  },
+  {
+    name: "suspend_tailnet",
+    title: "Suspend tailnet",
+    description:
+      "Operator: suspend a tailnet. Its devices lose the control plane and members lose dashboard access." +
+      DESTRUCTIVE_NOTE,
+    shape: { tailnet_id: tailnetId },
+    annotations: DESTRUCTIVE,
+    operator: true,
+    run: (api, a) => api.call("POST", `/api/operator/tenants/${enc(String(a.tailnet_id))}/suspend`),
+  },
+  {
+    name: "unsuspend_tailnet",
+    title: "Unsuspend tailnet",
+    description: "Operator: lift a tailnet's suspension.",
+    shape: { tailnet_id: tailnetId },
+    annotations: { ...WRITE, idempotentHint: true },
+    operator: true,
+    run: (api, a) => api.call("POST", `/api/operator/tenants/${enc(String(a.tailnet_id))}/unsuspend`),
+  },
+  {
+    name: "delete_tailnet",
+    title: "Delete tailnet",
+    description: "Operator: permanently delete a tailnet and its control plane." + DESTRUCTIVE_NOTE,
+    shape: { tailnet_id: tailnetId },
+    annotations: DESTRUCTIVE,
+    operator: true,
+    run: (api, a) => api.call("DELETE", `/api/operator/tenants/${enc(String(a.tailnet_id))}`),
+  },
+  {
+    name: "disable_user",
+    title: "Disable user",
+    description:
+      "Operator: disable a user. They cannot sign in or use tokens, and are removed from every tailnet (devices deleted, keys revoked)." +
+      DESTRUCTIVE_NOTE,
+    shape: { user_id: z.string().uuid().describe("User id from instance_overview") },
+    annotations: DESTRUCTIVE,
+    operator: true,
+    run: (api, a) => api.call("POST", `/api/operator/users/${enc(String(a.user_id))}/disable`),
+  },
+  {
+    name: "enable_user",
+    title: "Enable user",
+    description: "Operator: re-enable a disabled user (memberships are not restored).",
+    shape: { user_id: z.string().uuid() },
+    annotations: { ...WRITE, idempotentHint: true },
+    operator: true,
+    run: (api, a) => api.call("POST", `/api/operator/users/${enc(String(a.user_id))}/enable`),
+  },
+];
+
+function textResult(data: unknown): CallToolResult {
+  const text =
+    data === null || data === undefined
+      ? "OK"
+      : typeof data === "string"
+        ? data
+        : JSON.stringify(data, null, 2);
+  return { content: [{ type: "text", text }] };
+}
+
+function errorResult(err: unknown): CallToolResult {
+  const message = err instanceof Error ? err.message : String(err);
+  return { isError: true, content: [{ type: "text", text: message }] };
+}
+
+/** Registers the tools on `server`; operator tools only when `isOperator`. */
+export function registerTools(server: McpServer, api: ApiClient, opts: { isOperator: boolean }): void {
+  for (const def of TOOL_DEFS) {
+    if (def.operator && !opts.isOperator) continue;
+    const handler = async (args: Record<string, unknown>): Promise<CallToolResult> => {
+      try {
+        return textResult(await def.run(api, args ?? {}));
+      } catch (err) {
+        return errorResult(err);
+      }
+    };
+    server.registerTool(
+      def.name,
+      {
+        title: def.title,
+        description: def.description,
+        inputSchema: def.shape ?? {},
+        annotations: { title: def.title, ...def.annotations },
+      },
+      // Shapes vary per tool; arguments are validated by the SDK against inputSchema.
+      handler as never,
+    );
+  }
+}

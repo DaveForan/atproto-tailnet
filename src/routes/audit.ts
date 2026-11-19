@@ -16,7 +16,8 @@ type AuditAction = (typeof auditActionEnum.enumValues)[number];
  * Fire-and-forget — never blocks the caller on failure.
  */
 export function logAudit(params: {
-  tenantId: string;
+  /** NULL for instance-level operator actions not tied to one tenant. */
+  tenantId: string | null;
   actorUserId: string;
   action: AuditAction;
   targetType?: string;

@@ -22,6 +22,7 @@ import { allocateTenantPort } from "../orchestrator/ports.js";
 import { useCoordinator } from "../orchestrator/control-client.js";
 import { provisionTenantInstance } from "./auth.js";
 import { MAX_LIMIT, checkChildLimit } from "./limits.js";
+import { getInstanceSettings, listTopLevelTenants } from "../operator/policy.js";
 
 export const collectivesRouter = Router();
 
@@ -150,6 +151,16 @@ collectivesRouter.post(
     }
 
     const { tenant } = result;
+
+    // Single-tailnet mode: the instance holds exactly one tailnet, no children
+    if ((await getInstanceSettings()).singleTailnet) {
+      res.status(409).json({
+        error: "This instance is in single-tailnet mode — sub-collectives cannot be created",
+        code: "single_tailnet",
+        tenants: await listTopLevelTenants(),
+      });
+      return;
+    }
 
     if (tenant.depth >= MAX_DEPTH) {
       res.status(400).json({ error: `Maximum nesting depth (${MAX_DEPTH}) reached` });

@@ -85,12 +85,13 @@ impl PgStore {
             ipv4_prefix: coord_core::DEFAULT_IPV4_PREFIX.into(),
             ipv6_prefix: coord_core::DEFAULT_IPV6_PREFIX.into(),
             created_at: chrono::Utc::now(),
+            suspended: false,
         })
     }
 
     pub async fn get_tenant(&self, tenant_id: TenantId) -> Option<Tenant> {
-        let row = sqlx::query_as::<_, (uuid::Uuid, String, Option<uuid::Uuid>, String, String, String, chrono::DateTime<chrono::Utc>)>(
-            "SELECT id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix, created_at \
+        let row = sqlx::query_as::<_, TenantRow>(
+            "SELECT id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix, created_at, suspended \
              FROM coord_tenants WHERE id = $1"
         )
             .bind(tenant_id.as_uuid())
@@ -98,21 +99,12 @@ impl PgStore {
             .await
             .ok()??;
 
-        let (id, slug, parent_uuid, posture_str, ipv4_prefix, ipv6_prefix, created_at) = row;
-        Some(Tenant {
-            id: TenantId::new(id),
-            slug,
-            parent_id: parent_uuid.map(TenantId::new),
-            federation_posture: parse_posture(&posture_str),
-            ipv4_prefix,
-            ipv6_prefix,
-            created_at,
-        })
+        Some(tenant_from_row(row))
     }
 
     pub async fn list_tenants(&self) -> Vec<Tenant> {
-        let rows = sqlx::query_as::<_, (uuid::Uuid, String, Option<uuid::Uuid>, String, String, String, chrono::DateTime<chrono::Utc>)>(
-            "SELECT id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix, created_at \
+        let rows = sqlx::query_as::<_, TenantRow>(
+            "SELECT id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix, created_at, suspended \
              FROM coord_tenants ORDER BY created_at"
         )
             .fetch_all(&self.pool)
@@ -120,17 +112,7 @@ impl PgStore {
             .unwrap_or_default();
 
         rows.into_iter()
-            .map(|(id, slug, parent_uuid, posture_str, ipv4_prefix, ipv6_prefix, created_at)| {
-                Tenant {
-                    id: TenantId::new(id),
-                    slug,
-                    parent_id: parent_uuid.map(TenantId::new),
-                    federation_posture: parse_posture(&posture_str),
-                    ipv4_prefix,
-                    ipv6_prefix,
-                    created_at,
-                }
-            })
+            .map(tenant_from_row)
             .collect()
     }
 
@@ -194,8 +176,8 @@ impl PgStore {
     }
 
     pub async fn get_child_tenants(&self, parent_id: TenantId) -> Vec<Tenant> {
-        let rows = sqlx::query_as::<_, (uuid::Uuid, String, Option<uuid::Uuid>, String, String, String, chrono::DateTime<chrono::Utc>)>(
-            "SELECT id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix, created_at \
+        let rows = sqlx::query_as::<_, TenantRow>(
+            "SELECT id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix, created_at, suspended \
              FROM coord_tenants WHERE parent_id = $1 ORDER BY created_at"
         )
             .bind(parent_id.as_uuid())
@@ -204,17 +186,7 @@ impl PgStore {
             .unwrap_or_default();
 
         rows.into_iter()
-            .map(|(id, slug, parent_uuid, posture_str, ipv4_prefix, ipv6_prefix, created_at)| {
-                Tenant {
-                    id: TenantId::new(id),
-                    slug,
-                    parent_id: parent_uuid.map(TenantId::new),
-                    federation_posture: parse_posture(&posture_str),
-                    ipv4_prefix,
-                    ipv6_prefix,
-                    created_at,
-                }
-            })
+            .map(tenant_from_row)
             .collect()
     }
 
@@ -228,9 +200,9 @@ impl PgStore {
             FederationPosture::Selective => "selective",
             FederationPosture::Closed => "closed",
         };
-        let row = sqlx::query_as::<_, (uuid::Uuid, String, Option<uuid::Uuid>, String, String, String, chrono::DateTime<chrono::Utc>)>(
+        let row = sqlx::query_as::<_, TenantRow>(
             "UPDATE coord_tenants SET federation_posture = $1 WHERE id = $2 \
-             RETURNING id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix, created_at"
+             RETURNING id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix, created_at, suspended"
         )
             .bind(posture_str)
             .bind(tenant_id.as_uuid())
@@ -239,17 +211,26 @@ impl PgStore {
             .map_err(db)?;
 
         match row {
-            Some((id, slug, parent_uuid, ps, ipv4_prefix, ipv6_prefix, created_at)) => Ok(Tenant {
-                id: TenantId::new(id),
-                slug,
-                parent_id: parent_uuid.map(TenantId::new),
-                federation_posture: parse_posture(&ps),
-                ipv4_prefix,
-                ipv6_prefix,
-                created_at,
-            }),
+            Some(r) => Ok(tenant_from_row(r)),
             None => Err(CoordError::TenantNotFound(tenant_id)),
         }
+    }
+
+    pub async fn set_tenant_suspended(
+        &self,
+        tenant_id: TenantId,
+        suspended: bool,
+    ) -> Result<Tenant, CoordError> {
+        let row = sqlx::query_as::<_, TenantRow>(
+            "UPDATE coord_tenants SET suspended = $1 WHERE id = $2 \
+             RETURNING id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix, created_at, suspended"
+        )
+            .bind(suspended)
+            .bind(tenant_id.as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db)?;
+        row.map(tenant_from_row).ok_or(CoordError::TenantNotFound(tenant_id))
     }
 
     pub async fn create_preauth_key(&self, tenant_id: TenantId, reusable: bool) -> Result<String, CoordError> {
@@ -339,6 +320,16 @@ impl PgStore {
 
     /// Atomically consume a key: the conditional UPDATE (row-locked by Postgres)
     /// means two registrations racing on a single-use key cannot both succeed.
+    /// Tenant a pre-auth key belongs to, without validating or consuming it.
+    pub async fn preauth_key_tenant(&self, key: &str) -> Option<TenantId> {
+        sqlx::query_scalar::<_, uuid::Uuid>("SELECT tenant_id FROM coord_preauth_keys WHERE key = $1")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await
+            .ok()?
+            .map(TenantId::new)
+    }
+
     pub async fn validate_preauth_key(&self, key: &str) -> Option<PreAuthGrant> {
         let row: Option<(uuid::Uuid, Option<String>, Json, bool)> = sqlx::query_as(
             "UPDATE coord_preauth_keys SET used = TRUE \
@@ -588,7 +579,7 @@ impl PgStore {
                  n.tenant_id = $1 \
                  OR n.tenant_id IN ( \
                      SELECT id FROM coord_tenants \
-                     WHERE parent_id = $1 AND federation_posture != 'closed' \
+                     WHERE parent_id = $1 AND federation_posture != 'closed' AND NOT suspended \
                  ) \
              )"
         )
@@ -885,8 +876,8 @@ impl PgStore {
             return Err(CoordError::TenantNotFound(tenant_id));
         }
 
-        let child_rows = sqlx::query_as::<_, (uuid::Uuid, String, Option<uuid::Uuid>, String, String, String, chrono::DateTime<chrono::Utc>)>(
-            "SELECT id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix, created_at \
+        let child_rows = sqlx::query_as::<_, TenantRow>(
+            "SELECT id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix, created_at, suspended \
              FROM coord_tenants WHERE parent_id = $1 ORDER BY created_at"
         )
             .bind(tenant_id.as_uuid())
@@ -895,24 +886,14 @@ impl PgStore {
             .unwrap_or_default();
 
         let children: Vec<Tenant> = child_rows.into_iter()
-            .map(|(id, slug, parent_uuid, posture_str, ipv4_prefix, ipv6_prefix, created_at)| {
-                Tenant {
-                    id: TenantId::new(id),
-                    slug,
-                    parent_id: parent_uuid.map(TenantId::new),
-                    federation_posture: parse_posture(&posture_str),
-                    ipv4_prefix,
-                    ipv6_prefix,
-                    created_at,
-                }
-            })
+            .map(tenant_from_row)
             .collect();
 
         let own_nodes = Self::list_nodes_in_tx(&mut tx, tenant_id).await;
 
         let mut visible_child_nodes = Vec::new();
         for child in &children {
-            if child.federation_posture != coord_core::FederationPosture::Closed {
+            if child.visible_to_parent() {
                 let child_nodes = Self::list_nodes_in_tx(&mut tx, child.id).await;
                 visible_child_nodes.push((child.id, child.slug.clone(), child_nodes));
             }
@@ -1006,6 +987,23 @@ fn summary_row_to_summary(
         hostname,
         attrs: attrs_from_parts((owner, tags, ephemeral, advertised, approved)),
     })
+}
+
+type TenantRow = (uuid::Uuid, String, Option<uuid::Uuid>, String, String, String, DateTime<Utc>, bool);
+
+fn tenant_from_row(
+    (id, slug, parent_uuid, posture_str, ipv4_prefix, ipv6_prefix, created_at, suspended): TenantRow,
+) -> Tenant {
+    Tenant {
+        id: TenantId::new(id),
+        slug,
+        parent_id: parent_uuid.map(TenantId::new),
+        federation_posture: parse_posture(&posture_str),
+        ipv4_prefix,
+        ipv6_prefix,
+        created_at,
+        suspended,
+    }
 }
 
 fn parse_posture(s: &str) -> FederationPosture {

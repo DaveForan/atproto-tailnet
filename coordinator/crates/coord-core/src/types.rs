@@ -149,6 +149,17 @@ pub struct Tenant {
     pub ipv4_prefix: String,
     pub ipv6_prefix: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
+    /// Instance-operator suspension: while true, the tenant's nodes may not
+    /// register, poll the map, or receive new pre-auth keys.
+    #[serde(default)]
+    pub suspended: bool,
+}
+
+impl Tenant {
+    /// Whether a parent tenant's nodes may see this (child) tenant's nodes.
+    pub fn visible_to_parent(&self) -> bool {
+        self.federation_posture != FederationPosture::Closed && !self.suspended
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

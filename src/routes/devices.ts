@@ -11,6 +11,7 @@ import { z } from "zod";
 import { eq, and, desc } from "drizzle-orm";
 import { db } from "../db/index.js";
 import {
+  tenants,
   memberships,
   roles,
   users,
@@ -511,6 +512,98 @@ devicesRouter.get(
   },
 );
 
+/**
+ * The kick cascade: revoke the member's keys and delete their devices (both
+ * control-plane modes), reject their pending device approvals, remove their
+ * board posts, services and service devices, then delete the membership.
+ * Callers do the permission/originator checks and the audit entry. Shared by
+ * the kick route and the operator "disable user" action.
+ */
+export async function removeMemberCascade(
+  tenant: typeof tenants.$inferSelect,
+  removedUserId: string,
+): Promise<{
+  removedUser: typeof users.$inferSelect | undefined;
+  access: Awaited<ReturnType<typeof revokeMemberAccess>> | null;
+}> {
+  const tenantId = tenant.id;
+  const [removedUser] = await db
+    .select()
+    .from(users)
+    .where(eq(users.id, removedUserId));
+
+  // Remove their devices and revoke their keys (both control-plane modes)
+  let access: Awaited<ReturnType<typeof revokeMemberAccess>> | null = null;
+  if (removedUser) {
+    let client: ReturnType<typeof getControlClient> | null = null;
+    if (tenant.apiKey || useCoordinator) {
+      try {
+        client = getControlClient(tenant);
+      } catch (err) {
+        logger.error({ tenantId, err }, "no control client for kick cleanup");
+      }
+    }
+    access = await revokeMemberAccess({
+      tenantId,
+      client,
+      userId: removedUserId,
+      hsUsername: toHsUsername(removedUser.handle),
+    });
+  }
+
+  await db
+    .update(deviceApprovals)
+    .set({ status: "rejected", reviewedAt: new Date() })
+    .where(
+      and(
+        eq(deviceApprovals.tenantId, tenantId),
+        eq(deviceApprovals.requesterId, removedUserId),
+        eq(deviceApprovals.status, "pending"),
+      ),
+    );
+
+  // Soft-delete board posts by this user
+  await db
+    .update(boardPosts)
+    .set({ status: "removed", updatedAt: new Date() })
+    .where(
+      and(
+        eq(boardPosts.tenantId, tenantId),
+        eq(boardPosts.authorId, removedUserId),
+        eq(boardPosts.status, "active"),
+      ),
+    );
+
+  // Remove services owned by this user (board posts already cleaned above)
+  const userServices = await db
+    .select({ id: services.id })
+    .from(services)
+    .where(and(eq(services.tenantId, tenantId), eq(services.ownerId, removedUserId)));
+  for (const svc of userServices) {
+    await db
+      .update(boardPosts)
+      .set({ status: "removed", updatedAt: new Date() })
+      .where(and(eq(boardPosts.serviceId, svc.id), eq(boardPosts.status, "active")));
+    await db.delete(services).where(eq(services.id, svc.id));
+  }
+
+  // Remove service devices owned by this user
+  await db
+    .delete(serviceDevices)
+    .where(and(eq(serviceDevices.tenantId, tenantId), eq(serviceDevices.ownerId, removedUserId)));
+
+  await db
+    .delete(memberships)
+    .where(
+      and(
+        eq(memberships.tenantId, tenantId),
+        eq(memberships.userId, removedUserId),
+      ),
+    );
+
+  return { removedUser, access };
+}
+
 devicesRouter.delete(
   "/api/tenants/:tenantId/members/:userId",
   requireAuth,
@@ -554,79 +647,7 @@ devicesRouter.delete(
       return;
     }
 
-    const [removedUser] = await db
-      .select()
-      .from(users)
-      .where(eq(users.id, removedUserId));
-
-    // Remove their devices and revoke their keys (both control-plane modes)
-    let access: Awaited<ReturnType<typeof revokeMemberAccess>> | null = null;
-    if (removedUser) {
-      let client: ReturnType<typeof getControlClient> | null = null;
-      if (result.tenant.apiKey || useCoordinator) {
-        try {
-          client = getControlClient(result.tenant);
-        } catch (err) {
-          logger.error({ tenantId, err }, "no control client for kick cleanup");
-        }
-      }
-      access = await revokeMemberAccess({
-        tenantId,
-        client,
-        userId: removedUserId,
-        hsUsername: toHsUsername(removedUser.handle),
-      });
-    }
-
-    await db
-      .update(deviceApprovals)
-      .set({ status: "rejected", reviewedAt: new Date() })
-      .where(
-        and(
-          eq(deviceApprovals.tenantId, tenantId),
-          eq(deviceApprovals.requesterId, removedUserId),
-          eq(deviceApprovals.status, "pending"),
-        ),
-      );
-
-    // Soft-delete board posts by this user
-    await db
-      .update(boardPosts)
-      .set({ status: "removed", updatedAt: new Date() })
-      .where(
-        and(
-          eq(boardPosts.tenantId, tenantId),
-          eq(boardPosts.authorId, removedUserId),
-          eq(boardPosts.status, "active"),
-        ),
-      );
-
-    // Remove services owned by this user (board posts already cleaned above)
-    const userServices = await db
-      .select({ id: services.id })
-      .from(services)
-      .where(and(eq(services.tenantId, tenantId), eq(services.ownerId, removedUserId)));
-    for (const svc of userServices) {
-      await db
-        .update(boardPosts)
-        .set({ status: "removed", updatedAt: new Date() })
-        .where(and(eq(boardPosts.serviceId, svc.id), eq(boardPosts.status, "active")));
-      await db.delete(services).where(eq(services.id, svc.id));
-    }
-
-    // Remove service devices owned by this user
-    await db
-      .delete(serviceDevices)
-      .where(and(eq(serviceDevices.tenantId, tenantId), eq(serviceDevices.ownerId, removedUserId)));
-
-    await db
-      .delete(memberships)
-      .where(
-        and(
-          eq(memberships.tenantId, tenantId),
-          eq(memberships.userId, removedUserId),
-        ),
-      );
+    const { removedUser, access } = await removeMemberCascade(result.tenant, removedUserId);
 
     logAudit({
       tenantId,

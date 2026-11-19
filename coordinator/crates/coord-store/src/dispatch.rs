@@ -81,11 +81,37 @@ impl Store {
         }
     }
 
+    pub async fn set_tenant_suspended(
+        &self,
+        tenant_id: TenantId,
+        suspended: bool,
+    ) -> Result<Tenant, CoordError> {
+        match self {
+            Store::Memory(m) => m.set_tenant_suspended(tenant_id, suspended),
+            Store::Pg(p) => p.set_tenant_suspended(tenant_id, suspended).await,
+            Store::Sqlite(s) => s.set_tenant_suspended(tenant_id, suspended).await,
+        }
+    }
+
+    /// True when the tenant exists and is suspended by the instance operator.
+    pub async fn is_tenant_suspended(&self, tenant_id: TenantId) -> bool {
+        self.get_tenant(tenant_id).await.is_some_and(|t| t.suspended)
+    }
+
     pub async fn create_preauth_key(&self, tenant_id: TenantId, reusable: bool) -> Result<String, CoordError> {
         match self {
             Store::Memory(m) => m.create_preauth_key(tenant_id, reusable),
             Store::Pg(p) => p.create_preauth_key(tenant_id, reusable).await,
             Store::Sqlite(s) => s.create_preauth_key(tenant_id, reusable).await,
+        }
+    }
+
+    /// Tenant a pre-auth key belongs to, without validating or consuming it.
+    pub async fn preauth_key_tenant(&self, key: &str) -> Option<TenantId> {
+        match self {
+            Store::Memory(m) => m.preauth_key_tenant(key),
+            Store::Pg(p) => p.preauth_key_tenant(key).await,
+            Store::Sqlite(s) => s.preauth_key_tenant(key).await,
         }
     }
 

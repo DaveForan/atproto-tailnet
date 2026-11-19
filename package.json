@@ -18,6 +18,7 @@
     "@atproto/api": "^0.13.0",
     "@atproto/crypto": "^0.5.7",
     "@atproto/oauth-client-node": "^0.3.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@types/connect-pg-simple": "^7.0.3",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",

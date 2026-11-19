@@ -333,3 +333,60 @@ async fn ephemeral_sweep() {
         assert!(s.get_node_tenant(durable).await.is_some(), "{}", b.name);
     }
 }
+
+#[tokio::test]
+async fn tenant_suspension_round_trip() {
+    for b in backends().await {
+        let s = &b.store;
+        let t = tenant(s, "susp").await;
+        let other = tenant(s, "susp-other").await;
+        let key = s.create_preauth_key(t, false).await.unwrap();
+
+        assert!(!s.get_tenant(t).await.unwrap().suspended, "{}: default unsuspended", b.name);
+        assert!(!s.is_tenant_suspended(t).await, "{}", b.name);
+
+        let updated = s.set_tenant_suspended(t, true).await.unwrap();
+        assert!(updated.suspended, "{}", b.name);
+        assert_eq!(updated.id, t, "{}", b.name);
+        assert!(s.get_tenant(t).await.unwrap().suspended, "{}", b.name);
+        assert!(s.is_tenant_suspended(t).await, "{}", b.name);
+        assert!(!s.is_tenant_suspended(other).await, "{}: other tenant untouched", b.name);
+        let listed = s.list_tenants().await;
+        assert!(listed.iter().find(|x| x.id == t).unwrap().suspended, "{}", b.name);
+        assert!(!listed.iter().find(|x| x.id == other).unwrap().suspended, "{}", b.name);
+
+        // Non-consuming key lookup used to refuse registration before validation.
+        assert_eq!(s.preauth_key_tenant(&key).await, Some(t), "{}", b.name);
+        assert_eq!(s.preauth_key_tenant("tskey-auth-nope").await, None, "{}", b.name);
+        assert!(s.validate_preauth_key(&key).await.is_some(), "{}: lookup must not consume", b.name);
+
+        let restored = s.set_tenant_suspended(t, false).await.unwrap();
+        assert!(!restored.suspended, "{}", b.name);
+        assert!(!s.is_tenant_suspended(t).await, "{}", b.name);
+
+        let missing = TenantId::generate();
+        assert!(
+            matches!(s.set_tenant_suspended(missing, true).await, Err(coord_core::CoordError::TenantNotFound(_))),
+            "{}: unknown tenant",
+            b.name
+        );
+        assert!(!s.is_tenant_suspended(missing).await, "{}", b.name);
+    }
+}
+
+#[tokio::test]
+async fn sqlite_tenant_suspension_persists_across_reopen() {
+    let path = std::env::temp_dir().join(format!("coord-susp-{}.db", hex::encode(rand_bytes::<8>())));
+    let _cleanup = TempDb(path.clone());
+    let t = {
+        let pool = coord_store::create_sqlite_pool(path.to_str().unwrap()).await.unwrap();
+        let s = Store::Sqlite(coord_store::SqliteStore::new(pool.clone()).await.unwrap());
+        let t = tenant(&s, "susp-persist").await;
+        s.set_tenant_suspended(t, true).await.unwrap();
+        pool.close().await;
+        t
+    };
+    let pool = coord_store::create_sqlite_pool(path.to_str().unwrap()).await.unwrap();
+    let s = Store::Sqlite(coord_store::SqliteStore::new(pool).await.unwrap());
+    assert!(s.get_tenant(t).await.unwrap().suspended);
+}

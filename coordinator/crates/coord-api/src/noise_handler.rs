@@ -254,6 +254,18 @@ pub(crate) async fn handle_map_request(
         Err(e) => return json_error(StatusCode::BAD_REQUEST, &format!("invalid map request: {e}")),
     };
 
+    // Unknown machines (e.g. a deleted node still polling) get 401 rather than a
+    // 500, and suspended tenants get 403; tailscaled treats both as a failed
+    // poll and backs off instead of hammering us.
+    let Some(node_id) = state.store.get_node_by_machine_key(&machine_key).await else {
+        return json_error(StatusCode::UNAUTHORIZED, "node not registered");
+    };
+    if let Some(tenant_id) = state.store.get_node_tenant(node_id).await {
+        if state.store.is_tenant_suspended(tenant_id).await {
+            return json_error(StatusCode::FORBIDDEN, control::TENANT_SUSPENDED_MSG);
+        }
+    }
+
     let is_streaming = req.stream.unwrap_or(false);
 
     if !is_streaming {
@@ -301,7 +313,7 @@ async fn handle_streaming_map(
 
     let node_id = match state.store.get_node_by_machine_key(&machine_key).await {
         Some(id) => id,
-        None => return json_error(StatusCode::NOT_FOUND, "node not registered"),
+        None => return json_error(StatusCode::UNAUTHORIZED, "node not registered"),
     };
 
     let tenant_id = match state.store.get_node_tenant(node_id).await {
@@ -323,7 +335,7 @@ async fn handle_streaming_map(
         .get_child_tenants(tenant_id)
         .await
         .into_iter()
-        .filter(|t| t.federation_posture != coord_core::FederationPosture::Closed)
+        .filter(|t| t.visible_to_parent())
         .map(|t| t.id)
         .collect();
 
@@ -349,12 +361,14 @@ async fn handle_streaming_map(
                     if !affected {
                         continue;
                     }
-                    if state_clone.store.get_node_tenant(node_id).await != Some(tenant_id) {
+                    if state_clone.store.get_node_tenant(node_id).await != Some(tenant_id)
+                        || state_clone.store.is_tenant_suspended(tenant_id).await
+                    {
                         break;
                     }
                     child_tenant_ids = state_clone.store.get_child_tenants(tenant_id).await
                         .into_iter()
-                        .filter(|t| t.federation_posture != coord_core::FederationPosture::Closed)
+                        .filter(|t| t.visible_to_parent())
                         .map(|t| t.id)
                         .collect();
                     if let Ok(json) = control::build_map_snapshot(&state_clone, &machine_key).await {
@@ -380,7 +394,7 @@ async fn handle_streaming_map(
                             // Refresh child tenant IDs after lag recovery
                             child_tenant_ids = state_clone.store.get_child_tenants(tenant_id).await
                                 .into_iter()
-                                .filter(|t| t.federation_posture != coord_core::FederationPosture::Closed)
+                                .filter(|t| t.visible_to_parent())
                                 .map(|t| t.id)
                                 .collect();
                             continue;
@@ -428,7 +442,9 @@ async fn handle_streaming_map(
                     }
                 }
                 _ = keepalive.tick() => {
-                    if state_clone.store.get_node_tenant(node_id).await != Some(tenant_id) {
+                    if state_clone.store.get_node_tenant(node_id).await != Some(tenant_id)
+                        || state_clone.store.is_tenant_suspended(tenant_id).await
+                    {
                         break;
                     }
                     let keepalive_msg = serde_json::json!({"KeepAlive": true});
@@ -440,7 +456,7 @@ async fn handle_streaming_map(
                     // Refresh child tenant IDs alongside keepalive
                     child_tenant_ids = state_clone.store.get_child_tenants(tenant_id).await
                         .into_iter()
-                        .filter(|t| t.federation_posture != coord_core::FederationPosture::Closed)
+                        .filter(|t| t.visible_to_parent())
                         .map(|t| t.id)
                         .collect();
                 }

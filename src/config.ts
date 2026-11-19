@@ -5,6 +5,7 @@
  * Throws at startup if production invariants are violated (e.g. weak session secret).
  */
 import { z } from "zod";
+import { logger } from "./logger.js";
 
 /** Zod schema defining every config knob and its default. */
 const configSchema = z.object({
@@ -45,6 +46,16 @@ const configSchema = z.object({
   webhookAllowPrivate: z.boolean().default(false),
   /** Federation (links between tailnets) is off until its data plane works without Docker. */
   federationEnabled: z.boolean().default(false),
+  /** Reverse-proxy hops to trust for X-Forwarded-* (1 behind Caddy). 0 = direct exposure. */
+  trustProxy: z.coerce.number().int().min(0).max(5).default(0),
+  /**
+   * Instance operators (OPERATOR_DIDS, comma-separated `did:` values). Only
+   * operators (and the tailnet creators they designate) may create tailnets,
+   * and only operators can reach /api/operator/*. Empty is allowed (dev).
+   */
+  operatorDids: z
+    .array(z.string().regex(/^did:[a-z0-9]+:\S+$/, 'each OPERATOR_DIDS entry must be a DID ("did:…")'))
+    .default([]),
   headscale: z.object({
     image: z.string().default("headscale/headscale:0.29.1"),
     portRangeStart: z.coerce.number().default(10001),
@@ -58,6 +69,12 @@ const configSchema = z.object({
     network: z.string().min(1).optional(),
   }),
 });
+
+/** Splits a comma-separated DID list (OPERATOR_DIDS), trimming blanks. */
+export function parseDidList(raw: string | undefined): string[] {
+  if (!raw) return [];
+  return [...new Set(raw.split(",").map((d) => d.trim()).filter(Boolean))];
+}
 
 /** Parsed and validated application config. Importing this triggers validation at module load. */
 export const config = configSchema.parse({
@@ -73,7 +90,9 @@ export const config = configSchema.parse({
   atprotoPrivateKey: process.env.ATPROTO_PRIVATE_KEY,
   webhookAllowPrivate: process.env.WEBHOOK_ALLOW_PRIVATE === "true",
   federationEnabled: process.env.FEDERATION_ENABLED === "true",
+  trustProxy: process.env.TRUST_PROXY || undefined,
   federationKeyEncryptionKey: process.env.FEDERATION_KEY_ENCRYPTION_KEY || undefined,
+  operatorDids: parseDidList(process.env.OPERATOR_DIDS),
   headscale: {
     image: process.env.HEADSCALE_IMAGE,
     portRangeStart: process.env.HEADSCALE_PORT_RANGE_START,
@@ -117,6 +136,15 @@ if (
 ) {
   throw new Error(
     "SESSION_SECRET must be a strong, non-placeholder value (>= 32 chars) in production",
+  );
+}
+
+// Without operators nobody can create a tailnet (or administer the instance).
+// Loud, but not fatal: the first deploy may set OPERATOR_DIDS afterwards.
+if (!isLoopbackDeployment && config.operatorDids.length === 0) {
+  logger.warn(
+    "*** OPERATOR_DIDS IS EMPTY — this instance has no operator: nobody can create a tailnet " +
+      "or use /api/operator. Set OPERATOR_DIDS=did:plc:… (comma-separated) and restart. ***",
   );
 }
 

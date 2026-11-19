@@ -99,12 +99,13 @@ impl SqliteStore {
             ipv4_prefix: coord_core::DEFAULT_IPV4_PREFIX.into(),
             ipv6_prefix: coord_core::DEFAULT_IPV6_PREFIX.into(),
             created_at: chrono::Utc::now(),
+            suspended: false,
         })
     }
 
     pub async fn get_tenant(&self, tenant_id: TenantId) -> Option<Tenant> {
-        let row = sqlx::query_as::<_, (String, String, Option<String>, String, String, String, String)>(
-            "SELECT id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix, created_at \
+        let row = sqlx::query_as::<_, TenantRow>(
+            "SELECT id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix, created_at, suspended \
              FROM coord_tenants WHERE id = ?1"
         )
             .bind(tenant_id.as_uuid().to_string())
@@ -112,21 +113,12 @@ impl SqliteStore {
             .await
             .ok()??;
 
-        let (id_str, slug, parent_str, posture_str, ipv4_prefix, ipv6_prefix, created_at_str) = row;
-        Some(Tenant {
-            id: TenantId::new(uuid::Uuid::parse_str(&id_str).ok()?),
-            slug,
-            parent_id: parent_str.and_then(|s| uuid::Uuid::parse_str(&s).ok()).map(TenantId::new),
-            federation_posture: parse_posture(&posture_str),
-            ipv4_prefix,
-            ipv6_prefix,
-            created_at: parse_datetime(&created_at_str),
-        })
+        tenant_from_row(row)
     }
 
     pub async fn list_tenants(&self) -> Vec<Tenant> {
-        let rows = sqlx::query_as::<_, (String, String, Option<String>, String, String, String, String)>(
-            "SELECT id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix, created_at \
+        let rows = sqlx::query_as::<_, TenantRow>(
+            "SELECT id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix, created_at, suspended \
              FROM coord_tenants ORDER BY created_at"
         )
             .fetch_all(&self.pool)
@@ -134,17 +126,7 @@ impl SqliteStore {
             .unwrap_or_default();
 
         rows.into_iter()
-            .filter_map(|(id_str, slug, parent_str, posture_str, ipv4_prefix, ipv6_prefix, created_at_str)| {
-                Some(Tenant {
-                    id: TenantId::new(uuid::Uuid::parse_str(&id_str).ok()?),
-                    slug,
-                    parent_id: parent_str.and_then(|s| uuid::Uuid::parse_str(&s).ok()).map(TenantId::new),
-                    federation_posture: parse_posture(&posture_str),
-                    ipv4_prefix,
-                    ipv6_prefix,
-                    created_at: parse_datetime(&created_at_str),
-                })
-            })
+            .filter_map(tenant_from_row)
             .collect()
     }
 
@@ -209,8 +191,8 @@ impl SqliteStore {
     }
 
     pub async fn get_child_tenants(&self, parent_id: TenantId) -> Vec<Tenant> {
-        let rows = sqlx::query_as::<_, (String, String, Option<String>, String, String, String, String)>(
-            "SELECT id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix, created_at \
+        let rows = sqlx::query_as::<_, TenantRow>(
+            "SELECT id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix, created_at, suspended \
              FROM coord_tenants WHERE parent_id = ?1 ORDER BY created_at"
         )
             .bind(parent_id.as_uuid().to_string())
@@ -219,17 +201,7 @@ impl SqliteStore {
             .unwrap_or_default();
 
         rows.into_iter()
-            .filter_map(|(id_str, slug, parent_str, posture_str, ipv4_prefix, ipv6_prefix, created_at_str)| {
-                Some(Tenant {
-                    id: TenantId::new(uuid::Uuid::parse_str(&id_str).ok()?),
-                    slug,
-                    parent_id: parent_str.and_then(|s| uuid::Uuid::parse_str(&s).ok()).map(TenantId::new),
-                    federation_posture: parse_posture(&posture_str),
-                    ipv4_prefix,
-                    ipv6_prefix,
-                    created_at: parse_datetime(&created_at_str),
-                })
-            })
+            .filter_map(tenant_from_row)
             .collect()
     }
 
@@ -247,6 +219,24 @@ impl SqliteStore {
             .await
             .map_err(db)?;
 
+        self.get_tenant(tenant_id).await
+            .ok_or(CoordError::TenantNotFound(tenant_id))
+    }
+
+    pub async fn set_tenant_suspended(
+        &self,
+        tenant_id: TenantId,
+        suspended: bool,
+    ) -> Result<Tenant, CoordError> {
+        let result = sqlx::query("UPDATE coord_tenants SET suspended = ?1 WHERE id = ?2")
+            .bind(suspended)
+            .bind(tenant_id.as_uuid().to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        if result.rows_affected() == 0 {
+            return Err(CoordError::TenantNotFound(tenant_id));
+        }
         self.get_tenant(tenant_id).await
             .ok_or(CoordError::TenantNotFound(tenant_id))
     }
@@ -340,6 +330,16 @@ impl SqliteStore {
 
     /// Atomically consume a key: the conditional UPDATE means two registrations
     /// racing on a single-use key cannot both succeed.
+    /// Tenant a pre-auth key belongs to, without validating or consuming it.
+    pub async fn preauth_key_tenant(&self, key: &str) -> Option<TenantId> {
+        let tid: String = sqlx::query_scalar("SELECT tenant_id FROM coord_preauth_keys WHERE key = ?1")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await
+            .ok()??;
+        uuid::Uuid::parse_str(&tid).ok().map(TenantId::new)
+    }
+
     pub async fn validate_preauth_key(&self, key: &str) -> Option<PreAuthGrant> {
         let row: Option<(String, Option<String>, String, bool)> = sqlx::query_as(
             "UPDATE coord_preauth_keys SET used = 1 \
@@ -596,7 +596,7 @@ impl SqliteStore {
                  n.tenant_id = ?1 \
                  OR n.tenant_id IN ( \
                      SELECT id FROM coord_tenants \
-                     WHERE parent_id = ?1 AND federation_posture != 'closed' \
+                     WHERE parent_id = ?1 AND federation_posture != 'closed' AND suspended = 0 \
                  ) \
              )"
         )
@@ -921,8 +921,8 @@ impl SqliteStore {
             return Err(CoordError::TenantNotFound(tenant_id));
         }
 
-        let child_rows = sqlx::query_as::<_, (String, String, Option<String>, String, String, String, String)>(
-            "SELECT id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix, created_at \
+        let child_rows = sqlx::query_as::<_, TenantRow>(
+            "SELECT id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix, created_at, suspended \
              FROM coord_tenants WHERE parent_id = ?1 ORDER BY created_at"
         )
             .bind(&tid_str)
@@ -931,24 +931,14 @@ impl SqliteStore {
             .unwrap_or_default();
 
         let children: Vec<Tenant> = child_rows.into_iter()
-            .filter_map(|(id_str, slug, parent_str, posture_str, ipv4_prefix, ipv6_prefix, created_at_str)| {
-                Some(Tenant {
-                    id: TenantId::new(uuid::Uuid::parse_str(&id_str).ok()?),
-                    slug,
-                    parent_id: parent_str.and_then(|s| uuid::Uuid::parse_str(&s).ok()).map(TenantId::new),
-                    federation_posture: parse_posture(&posture_str),
-                    ipv4_prefix,
-                    ipv6_prefix,
-                    created_at: parse_datetime(&created_at_str),
-                })
-            })
+            .filter_map(tenant_from_row)
             .collect();
 
         let own_nodes = Self::list_nodes_in_tx(&mut tx, tenant_id).await;
 
         let mut visible_child_nodes = Vec::new();
         for child in &children {
-            if child.federation_posture != coord_core::FederationPosture::Closed {
+            if child.visible_to_parent() {
                 let child_nodes = Self::list_nodes_in_tx(&mut tx, child.id).await;
                 visible_child_nodes.push((child.id, child.slug.clone(), child_nodes));
             }
@@ -984,6 +974,23 @@ impl std::fmt::Debug for SqliteStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SqliteStore").finish()
     }
+}
+
+type TenantRow = (String, String, Option<String>, String, String, String, String, bool);
+
+fn tenant_from_row(
+    (id_str, slug, parent_str, posture_str, ipv4_prefix, ipv6_prefix, created_at_str, suspended): TenantRow,
+) -> Option<Tenant> {
+    Some(Tenant {
+        id: TenantId::new(uuid::Uuid::parse_str(&id_str).ok()?),
+        slug,
+        parent_id: parent_str.and_then(|s| uuid::Uuid::parse_str(&s).ok()).map(TenantId::new),
+        federation_posture: parse_posture(&posture_str),
+        ipv4_prefix,
+        ipv6_prefix,
+        created_at: parse_datetime(&created_at_str),
+        suspended,
+    })
 }
 
 fn parse_posture(s: &str) -> FederationPosture {

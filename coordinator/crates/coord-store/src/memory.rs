@@ -106,6 +106,7 @@ impl MemoryStore {
             ipv4_prefix: coord_core::DEFAULT_IPV4_PREFIX.into(),
             ipv6_prefix: coord_core::DEFAULT_IPV6_PREFIX.into(),
             created_at: chrono::Utc::now(),
+            suspended: false,
         };
         tenants.insert(tenant.id, tenant.clone());
         Ok(tenant)
@@ -208,6 +209,21 @@ impl MemoryStore {
         }
     }
 
+    pub fn set_tenant_suspended(
+        &self,
+        tenant_id: TenantId,
+        suspended: bool,
+    ) -> Result<Tenant, CoordError> {
+        let mut tenants = self.tenants.lock().unwrap_or_else(|e| e.into_inner());
+        match tenants.get_mut(&tenant_id) {
+            Some(t) => {
+                t.suspended = suspended;
+                Ok(t.clone())
+            }
+            None => Err(CoordError::TenantNotFound(tenant_id)),
+        }
+    }
+
     pub fn create_preauth_key(&self, tenant_id: TenantId, reusable: bool) -> Result<String, CoordError> {
         self.create_preauth_key_with(tenant_id, PreAuthKeyOptions { reusable, ..Default::default() })
             .map(|k| k.key)
@@ -295,6 +311,12 @@ impl MemoryStore {
             }
         }
         Ok(n)
+    }
+
+    /// Tenant a pre-auth key belongs to, without validating or consuming it.
+    pub fn preauth_key_tenant(&self, key: &str) -> Option<TenantId> {
+        let keys = self.preauth_keys.lock().unwrap_or_else(|e| e.into_inner());
+        keys.get(key).map(|k| k.tenant_id)
     }
 
     pub fn validate_preauth_key(&self, key: &str) -> Option<PreAuthGrant> {
@@ -496,8 +518,7 @@ impl MemoryStore {
         let child_ids: Vec<TenantId> = tenants
             .values()
             .filter(|t| {
-                t.parent_id == Some(tenant_id)
-                    && t.federation_posture != FederationPosture::Closed
+                t.parent_id == Some(tenant_id) && t.visible_to_parent()
             })
             .map(|t| t.id)
             .collect();
@@ -750,7 +771,7 @@ impl MemoryStore {
 
         let visible_child_nodes: Vec<(TenantId, String, Vec<PeerInfo>)> = children
             .iter()
-            .filter(|c| c.federation_posture != FederationPosture::Closed)
+            .filter(|c| c.visible_to_parent())
             .map(|c| {
                 let child_nodes: Vec<PeerInfo> = nodes
                     .values()

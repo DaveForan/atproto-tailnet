@@ -32,16 +32,33 @@ pub async fn handle_register(
                 .as_deref()
                 .and_then(|k| parse_key_from_request(k).ok())
                 .filter(|k| *k != [0u8; 32]);
+            // A suspended tenant's machine may not re-authorize itself. With an auth
+            // key it falls through to the key path (which checks that key's tenant).
+            if auth_key.is_none() && state.store.is_tenant_suspended(detail.tenant_id).await {
+                info!(node_id = existing.as_i64(), "re-register refused: tenant suspended");
+                return Ok((serde_json::to_string(&error_response(TENANT_SUSPENDED_MSG))?, None));
+            }
+            let suspended = state.store.is_tenant_suspended(detail.tenant_id).await;
             let current = detail.info.node_key.as_slice();
-            if current == node_key_bytes.as_slice() {
+            if !suspended && current == node_key_bytes.as_slice() {
                 sync_node_routes(state, existing, advertised).await;
                 return Ok((serde_json::to_string(&authorized_response())?, None));
             }
-            if let Some(old) = old_key.filter(|k| current == k.as_slice()) {
+            if let Some(old) = old_key.filter(|k| !suspended && current == k.as_slice()) {
                 state.store.rotate_node_key(machine_key, &old, &node_key_bytes).await?;
                 info!(node_id = existing.as_i64(), "node key rotated on re-register");
                 sync_node_routes(state, existing, advertised).await;
                 return Ok((serde_json::to_string(&authorized_response())?, None));
+            }
+        }
+    }
+
+    // Check suspension before validating so a single-use key isn't consumed.
+    if let Some(key) = auth_key {
+        if let Some(tid) = state.store.preauth_key_tenant(key).await {
+            if state.store.is_tenant_suspended(tid).await {
+                info!(tenant = %tid, "register refused: tenant suspended");
+                return Ok((serde_json::to_string(&error_response(TENANT_SUSPENDED_MSG))?, None));
             }
         }
     }
@@ -52,15 +69,7 @@ pub async fn handle_register(
             None => {
                 let prefix: String = key.chars().take(12).collect();
                 warn!(auth_key_prefix = %prefix, "invalid pre-auth key");
-                let resp = RegisterResponse {
-                    user: User::default(),
-                    login: Login::default(),
-                    node_key_expired: false,
-                    machine_authorized: false,
-                    auth_url: String::new(),
-                    error: "invalid or expired pre-auth key".into(),
-                };
-                return Ok((serde_json::to_string(&resp)?, None));
+                return Ok((serde_json::to_string(&error_response("invalid or expired pre-auth key"))?, None));
             }
         },
         None => {
@@ -132,6 +141,21 @@ pub async fn handle_register(
     );
 
     Ok((serde_json::to_string(&authorized_response())?, Some(generation)))
+}
+
+pub(crate) const TENANT_SUSPENDED_MSG: &str = "this tailnet is suspended by the instance operator";
+
+/// Unauthorized RegisterResponse carrying a user-visible error (tailscaled
+/// surfaces `Error` to the user and stops the login attempt).
+fn error_response(msg: &str) -> RegisterResponse {
+    RegisterResponse {
+        user: User::default(),
+        login: Login::default(),
+        node_key_expired: false,
+        machine_authorized: false,
+        auth_url: String::new(),
+        error: msg.into(),
+    }
 }
 
 fn authorized_response() -> RegisterResponse {

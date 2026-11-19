@@ -9,7 +9,7 @@
  * - {@link hasPermission} — checks a permission against role (+ agent token scope)
  * - {@link isLockedDown} — returns true when the tenant is in lockdown
  * - {@link toHsUsername} / {@link tenantLoginServer} — Headscale naming helpers
- * - {@link resolveAgentToken} — Bearer token → agent context middleware
+ * - {@link resolveAgentToken} — Bearer token → agent context (or MCP user) middleware
  */
 
 import { createHash } from "node:crypto";
@@ -19,6 +19,9 @@ import { db } from "../db/index.js";
 import { tenants, memberships, roles, agentTokens, users, deviceLocks } from "../db/schema.js";
 import { tenantPublicUrl } from "../config.js";
 import type { Permission } from "./permissions.js";
+import { oauthProvider, isMcpToken, MCP_RESOURCE_URL } from "../oauth/index.js";
+import { sameResource } from "../oauth/provider.js";
+import { InvalidTokenError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
 
 /**
  * Express middleware that resolves a Bearer token from the `Authorization`
@@ -43,6 +46,26 @@ export async function resolveAgentToken(
   }
 
   const raw = authHeader.slice(7);
+
+  // MCP OAuth access tokens (`mcp_…`) authenticate the request AS THE USER:
+  // req.mcpAuth is set, req.agentToken stays unset, so agent-token scope and
+  // restrictions never apply. Invalid/expired/revoked tokens (or a disabled
+  // user) leave the request unauthenticated.
+  if (isMcpToken(raw)) {
+    try {
+      const info = await oauthProvider.verifyAccessToken(raw);
+      const extra = info.extra as { userId: string; grantId: string };
+      // Audience check: only tokens issued for this server's /mcp resource.
+      if (info.resource && sameResource(info.resource.href, MCP_RESOURCE_URL)) {
+        req.mcpAuth = { userId: extra.userId, clientId: info.clientId, grantId: extra.grantId };
+      }
+    } catch (err) {
+      if (!(err instanceof InvalidTokenError)) throw err;
+    }
+    next();
+    return;
+  }
+
   const hash = createHash("sha256").update(raw).digest("hex");
 
   const [token] = await db
@@ -156,7 +179,7 @@ export function enforceAgentScope(
  * (Bearer header resolved by {@link resolveAgentToken}).
  */
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
-  if (!req.session.userId && !req.agentToken) {
+  if (!req.session.userId && !req.agentToken && !req.mcpAuth) {
     res.status(401).json({ error: "Not authenticated" });
     return;
   }
@@ -164,19 +187,32 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
 }
 
 /**
- * Returns the authenticated user's ID from either the session or agent token.
+ * Rejects anything but an interactive browser session (no agent token, no MCP
+ * token) with 401. For endpoints that manage credentials themselves.
+ */
+export function requireSession(req: Request, res: Response, next: NextFunction) {
+  if (!req.session.userId || req.agentToken || req.mcpAuth) {
+    res.status(401).json({ error: "Requires a signed-in dashboard session" });
+    return;
+  }
+  next();
+}
+
+/**
+ * Returns the authenticated user's ID from the agent token, the MCP OAuth
+ * token or the session (a Bearer credential wins over a cookie).
  * Must be called after {@link requireAuth}.
  */
 export function authUserId(req: Request): string {
-  return req.agentToken?.userId ?? req.session.userId!;
+  return req.agentToken?.userId ?? req.mcpAuth?.userId ?? req.session.userId!;
 }
 
 /**
  * Returns the authenticated user's DID. For session-based auth, reads from
- * the session. For agent tokens, looks up the DID from the users table.
+ * the session. For agent/MCP tokens, looks up the DID from the users table.
  */
 export async function authUserDid(req: Request): Promise<string | null> {
-  if (req.session.did) return req.session.did;
+  if (req.session.did && !req.agentToken && !req.mcpAuth) return req.session.did;
   const userId = authUserId(req);
   const [user] = await db
     .select({ did: users.did })

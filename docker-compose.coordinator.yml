@@ -67,6 +67,9 @@ services:
       # Single-organisation self-hosting only: allow webhooks to private hosts
       WEBHOOK_ALLOW_PRIVATE: ${WEBHOOK_ALLOW_PRIVATE:-false}
       FEDERATION_ENABLED: ${FEDERATION_ENABLED:-false}
+      # Caddy is the single proxy in front of the app
+      TRUST_PROXY: "1"
+      OPERATOR_DIDS: ${OPERATOR_DIDS:-}
       # Coordinator mode — no Docker socket, no Headscale containers
       COORDINATOR_URL: http://coordinator:9443
       COORDINATOR_API_KEY: ${COORDINATOR_API_KEY:?COORDINATOR_API_KEY must be set}

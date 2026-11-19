@@ -131,6 +131,18 @@ export const auditActionEnum = pgEnum("audit_action", [
   "auth_key_revoked",
   "limits_updated",
   "notification_settings_updated",
+  // Instance-operator actions (0026)
+  "operator_settings_updated",
+  "tailnet_creator_added",
+  "tailnet_creator_removed",
+  "tenant_suspended",
+  "tenant_unsuspended",
+  "tenant_deleted_by_operator",
+  "user_disabled",
+  "user_enabled",
+  // MCP OAuth grants (0027) — instance-level rows (tenant_id NULL)
+  "mcp_grant_created",
+  "mcp_grant_revoked",
 ]);
 
 export const deviceApprovalStatusEnum = pgEnum("device_approval_status", [
@@ -193,6 +205,8 @@ export const users = pgTable("users", {
   handle: text("handle").notNull(),
   displayName: text("display_name"),
   avatarUrl: text("avatar_url"),
+  /** Set by an instance operator: the user cannot sign in or use any credential. */
+  disabledAt: timestamp("disabled_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -227,6 +241,12 @@ export const tenants = pgTable("tenants", {
   apiKey: text("api_key").notNull(),
   containerId: text("container_id"),
   status: tenantStatusEnum("status").notNull().default("provisioning"),
+  /**
+   * Operator suspension — orthogonal to `status` (the runtime state the
+   * monitor/hibernation manage). Members get 403 `tenant_suspended`; the
+   * coordinator rejects the tenant's nodes (Headscale mode: container stopped).
+   */
+  suspended: boolean("suspended").notNull().default(false),
   requireDeviceApproval: boolean("require_device_approval")
     .notNull()
     .default(false),
@@ -539,9 +559,8 @@ export const auditLogs = pgTable(
   "audit_logs",
   {
     id: uuid("id").defaultRandom().primaryKey(),
-    tenantId: uuid("tenant_id")
-      .notNull()
-      .references(() => tenants.id),
+    /** NULL for instance-level operator actions (settings, creators, user disable). */
+    tenantId: uuid("tenant_id").references(() => tenants.id),
     actorUserId: uuid("actor_user_id")
       .notNull()
       .references(() => users.id),
@@ -814,4 +833,83 @@ export const notifications = pgTable(
   (t) => [
     index("notifications_user_tenant_created_idx").on(t.userId, t.tenantId, t.createdAt),
   ],
+);
+
+/**
+ * Instance-wide settings, a singleton row (id = 1) managed by operators.
+ * `defaultTailnetId` is the tailnet offered to signed-in users with no access.
+ */
+export const instanceSettings = pgTable("instance_settings", {
+  id: integer("id").primaryKey().default(1),
+  /** At most one top-level tailnet; sub-collective creation refused too. */
+  singleTailnet: boolean("single_tailnet").notNull().default(false),
+  defaultTailnetId: uuid("default_tailnet_id").references(() => tenants.id, {
+    onDelete: "set null",
+  }),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
+/** DIDs an operator has allowed to create their own tailnet. */
+export const tailnetCreators = pgTable("tailnet_creators", {
+  id: uuid("id").defaultRandom().primaryKey(),
+  did: text("did").notNull().unique(),
+  handle: text("handle"),
+  addedByUserId: uuid("added_by_user_id")
+    .notNull()
+    .references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+// ── MCP OAuth (remote MCP server at /mcp, see src/oauth/) ──────────────
+
+/** OAuth clients registered via dynamic client registration (public clients, PKCE only). */
+export const mcpOauthClients = pgTable("mcp_oauth_clients", {
+  /** Generated client_id (UUID string). */
+  id: text("id").primaryKey(),
+  clientName: text("client_name"),
+  redirectUris: jsonb("redirect_uris").notNull().$type<string[]>(),
+  /** Full registered client metadata as returned to the client (never a secret). */
+  metadata: jsonb("metadata").notNull().$type<Record<string, unknown>>(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+/** One row per user consent ("connection"): user + client + resource. */
+export const mcpOauthGrants = pgTable(
+  "mcp_oauth_grants",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id),
+    clientId: text("client_id")
+      .notNull()
+      .references(() => mcpOauthClients.id, { onDelete: "cascade" }),
+    /** RFC 8707 resource (audience) the grant's tokens are bound to — the /mcp URL. */
+    resource: text("resource").notNull(),
+    scopes: jsonb("scopes").notNull().$type<string[]>().default([]),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    lastUsedAt: timestamp("last_used_at"),
+    revokedAt: timestamp("revoked_at"),
+  },
+  (t) => [index("mcp_oauth_grants_user_idx").on(t.userId, t.createdAt)],
+);
+
+/** Access + refresh tokens. Raw tokens (`mcp_…`) are never stored — only SHA-256 hex. */
+export const mcpOauthTokens = pgTable(
+  "mcp_oauth_tokens",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    grantId: uuid("grant_id")
+      .notNull()
+      .references(() => mcpOauthGrants.id, { onDelete: "cascade" }),
+    /** "access" | "refresh" */
+    kind: text("kind").notNull(),
+    tokenHash: text("token_hash").notNull().unique(),
+    expiresAt: timestamp("expires_at").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    /** Set when a refresh token is exchanged (rotation); reuse revokes the grant. */
+    rotatedAt: timestamp("rotated_at"),
+    revokedAt: timestamp("revoked_at"),
+  },
+  (t) => [index("mcp_oauth_tokens_grant_idx").on(t.grantId)],
 );

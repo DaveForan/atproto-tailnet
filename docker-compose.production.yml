@@ -40,6 +40,9 @@ services:
       # Single-organisation self-hosting only: allow webhooks to private hosts
       WEBHOOK_ALLOW_PRIVATE: ${WEBHOOK_ALLOW_PRIVATE:-false}
       FEDERATION_ENABLED: ${FEDERATION_ENABLED:-false}
+      # Caddy is the single proxy in front of the app
+      TRUST_PROXY: "1"
+      OPERATOR_DIDS: ${OPERATOR_DIDS:-}
     volumes:
       # Docker socket -- required to manage per-tenant Headscale containers
       - /var/run/docker.sock:/var/run/docker.sock

@@ -45,7 +45,11 @@ import { traversalRouter } from "./routes/traversal.js";
 import { credentialsRouter } from "./routes/credentials.js";
 import { federationMessagesRouter } from "./routes/federation-messages.js";
 import { dashboardRouter } from "./routes/dashboard.js";
+import { operatorRouter, instanceRouter } from "./routes/operator.js";
+import { enforceOperatorState } from "./operator/access.js";
 import { resolveAgentToken, enforceAgentScope } from "./routes/helpers.js";
+import { oauthRouter, mcpRouter, isInternalMcpCall } from "./mcp/index.js";
+import { mcpConnectionsRouter } from "./routes/mcp-connections.js";
 import { startHealthMonitor } from "./orchestrator/monitor.js";
 import { startBroker } from "./orchestrator/federation-broker.js";
 import { startAbuseSweep } from "./federation/abuse.js";
@@ -87,6 +91,10 @@ app.get("/internal/tls-check", async (req: Request, res: Response) => {
 });
 
 // ── Security headers ──────────────────────────────────────────────────
+// Behind Caddy, req.secure / req.ip come from X-Forwarded-*; without this the
+// secure session cookie is never sent and per-IP rate limits see one client.
+app.set("trust proxy", config.trustProxy);
+
 app.use((_req: Request, res: Response, next: NextFunction) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
@@ -139,6 +147,8 @@ const apiLimiter = rateLimit({
   standardHeaders: "draft-7",
   legacyHeaders: false,
   message: { error: "Too many requests, try again later" },
+  // MCP tool calls arrive on loopback (one shared IP); /mcp has its own per-user limit
+  skip: isInternalMcpCall,
 });
 
 const federationLimiter = rateLimit({
@@ -194,6 +204,10 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 import path from "node:path";
 app.use(express.static(path.join(import.meta.dirname, "..", "public")));
 app.use(dashboardRouter);
+// Remote MCP server + its OAuth endpoints (own rate limits; before the
+// /.well-known auth limiter so connector discovery is not throttled at 10/min)
+app.use(oauthRouter);
+app.use(mcpRouter);
 app.use("/auth", authLimiter);
 app.use("/.well-known", authLimiter);
 app.use(authRouter);
@@ -214,8 +228,14 @@ app.use(federationMessagesRouter);
 
 app.use("/collective", apiLimiter);
 app.use("/api", apiLimiter);
+app.use(instanceRouter); // public GET /api/instance — before Bearer resolution
 app.use(resolveAgentToken);
 app.use(enforceAgentScope);
+// Disabled users (any credential) and suspended tenants (members) — keep
+// after every credential resolver so it sees the authenticated user
+app.use(enforceOperatorState);
+app.use(operatorRouter);
+app.use(mcpConnectionsRouter);
 app.use(apiRouter);
 app.use(invitationsRouter);
 app.use(devicesRouter);

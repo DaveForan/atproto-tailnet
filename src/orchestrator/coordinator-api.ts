@@ -117,6 +117,15 @@ export class CoordinatorApiClient {
     await this.request("DELETE", `/api/tenants/${this.tenantId}`);
   }
 
+  /**
+   * Operator suspension (persisted by the coordinator): a suspended tenant's
+   * nodes cannot register or map, live map streams end, new pre-auth keys are
+   * refused.
+   */
+  async setSuspended(suspended: boolean): Promise<void> {
+    await this.request("PUT", `/api/tenants/${this.tenantId}/suspended`, { suspended });
+  }
+
   // ── User operations (no-op in coordinator — tenants replace users) ──
 
   async createUser(name: string): Promise<HeadscaleUser> {

@@ -33,6 +33,7 @@ pub struct TenantResponse {
     pub ipv4_prefix: String,
     pub ipv6_prefix: String,
     pub created_at: String,
+    pub suspended: bool,
 }
 
 impl From<coord_core::Tenant> for TenantResponse {
@@ -45,6 +46,7 @@ impl From<coord_core::Tenant> for TenantResponse {
             ipv4_prefix: t.ipv4_prefix,
             ipv6_prefix: t.ipv6_prefix,
             created_at: t.created_at.to_rfc3339(),
+            suspended: t.suspended,
         }
     }
 }
@@ -231,6 +233,36 @@ pub async fn update_tenant_posture(
     }
 }
 
+#[derive(Deserialize)]
+pub struct SetSuspendedRequest {
+    pub suspended: bool,
+}
+
+/// PUT /api/tenants/{id}/suspended — instance-operator suspension. While
+/// suspended the tenant's nodes cannot register or poll the map, and live map
+/// streams end (via the config_changed broadcast, which re-checks suspension).
+pub async fn set_tenant_suspended(
+    State(state): State<Arc<CoordinatorState>>,
+    Path(id): Path<String>,
+    Json(body): Json<SetSuspendedRequest>,
+) -> impl IntoResponse {
+    let Some(tenant_id) = parse_tenant_id(&id) else {
+        return bad_request("invalid tenant_id");
+    };
+    match state.store.set_tenant_suspended(tenant_id, body.suspended).await {
+        Ok(tenant) => {
+            tracing::info!(tenant = %tenant_id, suspended = body.suspended, "tenant suspension changed");
+            state.notify_tenant_changed(tenant_id);
+            if let Some(parent) = tenant.parent_id {
+                state.notify_tenant_changed(parent);
+            }
+            Json(serde_json::json!(TenantResponse::from(tenant))).into_response()
+        }
+        Err(coord_core::CoordError::TenantNotFound(_)) => not_found("tenant not found"),
+        Err(e) => internal_error(e).into_response(),
+    }
+}
+
 // ── Preauth key management ──
 
 /// Upper bound for `expiration_seconds` (one year).
@@ -281,11 +313,20 @@ pub async fn create_preauth_key(
     let tenant_id = match body.tenant_id.parse::<uuid::Uuid>() {
         Ok(uuid) => {
             let tid = TenantId::new(uuid);
-            if state.store.get_tenant(tid).await.is_none() {
-                return (
-                    StatusCode::NOT_FOUND,
-                    Json(serde_json::json!({"error": "tenant not found — create it first via POST /api/tenants"})),
-                ).into_response();
+            match state.store.get_tenant(tid).await {
+                None => {
+                    return (
+                        StatusCode::NOT_FOUND,
+                        Json(serde_json::json!({"error": "tenant not found — create it first via POST /api/tenants"})),
+                    ).into_response();
+                }
+                Some(t) if t.suspended => {
+                    return (
+                        StatusCode::CONFLICT,
+                        Json(serde_json::json!({"error": "tenant is suspended", "code": "tenant_suspended"})),
+                    ).into_response();
+                }
+                Some(_) => {}
             }
             tid
         }
@@ -731,7 +772,7 @@ pub async fn get_tenant_routes(
             "id": c.id.to_string(),
             "slug": &c.slug,
             "federation_posture": c.federation_posture.as_str(),
-            "visible": c.federation_posture != coord_core::FederationPosture::Closed,
+            "visible": c.visible_to_parent(),
         });
         // FIX R15: Document that Selective == Open for now
         if c.federation_posture == coord_core::FederationPosture::Selective {

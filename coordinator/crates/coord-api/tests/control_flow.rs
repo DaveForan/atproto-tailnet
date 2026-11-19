@@ -2512,3 +2512,190 @@ async fn federation_routes_absent_when_disabled() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
+
+// ── Tenant suspension ──
+
+async fn set_suspended(app: &axum::Router, t: coord_core::TenantId, suspended: bool) -> serde_json::Value {
+    let (status, body) = api_call(
+        app,
+        "PUT",
+        format!("/api/tenants/{t}/suspended"),
+        Some(serde_json::json!({ "suspended": suspended })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["suspended"], suspended);
+    body
+}
+
+/// Re-register a known machine with its current node key and no auth key
+/// (what tailscaled does on restart).
+async fn reregister_known(state: &Arc<CoordinatorState>, mkey: u8) -> serde_json::Value {
+    let body = serde_json::json!({
+        "Version": 2,
+        "NodeKey": format!("nodekey:{}", hex::encode([mkey.wrapping_add(1); 32])),
+        "Hostinfo": { "Hostname": "known", "OS": "linux" },
+    });
+    let out = coord_api::__test_handle_register(state, &[mkey; 32], &body.to_string()).await.unwrap();
+    serde_json::from_str(&out).unwrap()
+}
+
+async fn map_status(state: &Arc<CoordinatorState>, mkey: u8, stream: bool) -> StatusCode {
+    let body = serde_json::json!({
+        "Version": 2,
+        "NodeKey": format!("nodekey:{}", hex::encode([mkey.wrapping_add(1); 32])),
+        "Stream": stream,
+    });
+    coord_api::__test_map_request(state.clone(), [mkey; 32], &body.to_string()).await.status()
+}
+
+#[tokio::test]
+async fn suspended_tenant_is_cut_off_and_unsuspend_restores() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "suspend-me").await;
+    let other = create_test_tenant(&state, "suspend-other").await;
+    let key = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "reusable": true })).await;
+    let key = key["key"].as_str().unwrap().to_string();
+    let other_key = api_key(&app, serde_json::json!({ "tenant_id": other.to_string() })).await;
+
+    assert_eq!(register_routes(&state, 230, &key, "s-1", None).await["MachineAuthorized"], true);
+    assert_eq!(register_routes(&state, 240, other_key["key"].as_str().unwrap(), "o-1", None).await["MachineAuthorized"], true);
+    let mut stream = open_stream(&state, 230).await;
+    let _other_stream = open_stream(&state, 240).await;
+
+    // Summaries start unsuspended.
+    let (_, body) = api_call(&app, "GET", format!("/api/tenants/{t}"), None).await;
+    assert_eq!(body["tenant"]["suspended"], false);
+
+    set_suspended(&app, t, true).await;
+
+    // The live stream ends promptly.
+    let mut ended = false;
+    for _ in 0..5 {
+        if next_map_frame(&mut stream).await.is_none() {
+            ended = true;
+            break;
+        }
+    }
+    assert!(ended, "suspended tenant's map stream must end");
+
+    // Summaries report it.
+    let (_, body) = api_call(&app, "GET", format!("/api/tenants/{t}"), None).await;
+    assert_eq!(body["tenant"]["suspended"], true);
+    let (_, body) = api_call(&app, "GET", "/api/tenants".into(), None).await;
+    let listed = body["tenants"].as_array().unwrap().iter().find(|x| x["id"] == t.to_string()).unwrap().clone();
+    assert_eq!(listed["suspended"], true);
+
+    // Register (new machine with key, and known-machine re-register) is refused cleanly.
+    let resp = register_routes(&state, 232, &key, "s-2", None).await;
+    assert_eq!(resp["MachineAuthorized"], false);
+    assert!(resp["Error"].as_str().unwrap().contains("suspended"));
+    assert!(state.store().get_node_by_machine_key(&[232u8; 32]).await.is_none());
+    let resp = reregister_known(&state, 230).await;
+    assert_eq!(resp["MachineAuthorized"], false);
+    assert!(resp["Error"].as_str().unwrap().contains("suspended"));
+
+    // Map requests are refused without a 500.
+    assert_eq!(map_status(&state, 230, false).await, StatusCode::FORBIDDEN);
+    assert_eq!(map_status(&state, 230, true).await, StatusCode::FORBIDDEN);
+
+    // New pre-auth keys are refused.
+    let (status, body) = api_call(&app, "POST", "/api/preauth-keys".into(), Some(serde_json::json!({ "tenant_id": t.to_string() }))).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(body["code"], "tenant_suspended");
+
+    // Other tenants are unaffected: their stream is still live and they can poll.
+    assert_eq!(map_status(&state, 240, false).await, StatusCode::OK);
+    let (_, body) = api_call(&app, "GET", format!("/api/tenants/{other}"), None).await;
+    assert_eq!(body["tenant"]["suspended"], false);
+
+    // Unsuspend restores normal operation.
+    set_suspended(&app, t, false).await;
+    assert_eq!(reregister_known(&state, 230).await["MachineAuthorized"], true);
+    let _restored = open_stream(&state, 230).await;
+    assert_eq!(register_routes(&state, 232, &key, "s-2", None).await["MachineAuthorized"], true);
+    api_key(&app, serde_json::json!({ "tenant_id": t.to_string() })).await;
+}
+
+#[tokio::test]
+async fn suspension_does_not_consume_single_use_key() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "suspend-key").await;
+    let k = api_key(&app, serde_json::json!({ "tenant_id": t.to_string() })).await;
+    let key = k["key"].as_str().unwrap();
+
+    set_suspended(&app, t, true).await;
+    assert_eq!(register_routes(&state, 234, key, "later", None).await["MachineAuthorized"], false);
+    set_suspended(&app, t, false).await;
+    assert_eq!(register_routes(&state, 234, key, "later", None).await["MachineAuthorized"], true);
+}
+
+#[tokio::test]
+async fn set_suspended_unknown_or_invalid_tenant() {
+    let (app, _state) = setup();
+    let body = Some(serde_json::json!({ "suspended": true }));
+    let (status, _) = api_call(&app, "PUT", format!("/api/tenants/{}/suspended", uuid::Uuid::new_v4()), body.clone()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = api_call(&app, "PUT", "/api/tenants/not-a-uuid/suspended".into(), body).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn set_suspended_requires_admin_auth() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "suspend-auth").await;
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/tenants/{t}/suspended"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"suspended":true}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    assert!(!state.store().get_tenant(t).await.unwrap().suspended);
+}
+
+#[tokio::test]
+async fn deleted_node_map_is_401_not_500() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "deleted-map").await;
+    let k = api_key(&app, serde_json::json!({ "tenant_id": t.to_string() })).await;
+    register_routes(&state, 236, k["key"].as_str().unwrap(), "gone", None).await;
+    let id = node_id_of(&state, 236).await;
+    let (status, _) = api_call(&app, "DELETE", format!("/api/nodes/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+
+    assert_eq!(map_status(&state, 236, false).await, StatusCode::UNAUTHORIZED);
+    assert_eq!(map_status(&state, 236, true).await, StatusCode::UNAUTHORIZED);
+    // Never-registered machines too.
+    assert_eq!(map_status(&state, 238, false).await, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn hierarchy_parent_blocked_when_child_suspended() {
+    let (_, state) = setup();
+    let parent = state.store().create_tenant("susp-parent".into(), None, None).await.unwrap();
+    let child = state.store().create_tenant("susp-child".into(), Some(parent.id), None).await.unwrap();
+    if let coord_store::Store::Memory(m) = state.store().as_ref() {
+        m.tenants_for_test().lock().unwrap().get_mut(&child.id).unwrap().federation_posture =
+            coord_core::FederationPosture::Open;
+    }
+    register_node_for(&state, parent.id, [230u8; 32], 231, "susp-parent-node").await;
+    register_node_for(&state, child.id, [240u8; 32], 241, "susp-child-node").await;
+    state.store().set_tenant_suspended(child.id, true).await.unwrap();
+
+    let map_body = serde_json::json!({
+        "Version": 2,
+        "NodeKey": format!("nodekey:{}", hex::encode([231u8; 32])),
+    });
+    let result = coord_api::__test_handle_map(&state, &[230u8; 32], &map_body.to_string())
+        .await
+        .unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&result).unwrap();
+    let peers = resp["Peers"].as_array().map(|p| p.len()).unwrap_or(0);
+    assert_eq!(peers, 0, "parent must not see a suspended child's nodes");
+}

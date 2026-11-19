@@ -9,6 +9,7 @@ import { Router } from "express";
 import { resolveTxt } from "node:dns/promises";
 import { eq, and, desc } from "drizzle-orm";
 import { db } from "../db/index.js";
+import { config } from "../config.js";
 import {
   users,
   tenants,
@@ -27,6 +28,8 @@ import {
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
 import { enforceMemberLimit } from "./limits.js";
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Router for invitation CRUD: create, list, accept, decline, and revoke. */
 export const invitationsRouter = Router();
@@ -62,14 +65,66 @@ invitationsRouter.get(
       .orderBy(desc(invitations.createdAt))
       .limit(200);
 
-    res.json(rows);
+    res.json(rows.map((r) => ({ ...r, inviteUrl: inviteUrl(r.id) })));
   },
 );
 
 const HANDLE_RE =
   /^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
 
-async function resolveHandleToDid(handle: string): Promise<string | null> {
+/** AT Proto account DIDs we accept for invitations / tailnet creators. */
+export const ACCOUNT_DID_RE = /^did:(plc:[a-z2-7]{24}|web:[a-zA-Z0-9._%:-]{1,253})$/;
+
+/** Copyable link the inviter sends to the invitee. */
+export function inviteUrl(invitationId: string): string {
+  return `${config.publicUrl.replace(/\/+$/, "")}/invite/${invitationId}`;
+}
+
+/**
+ * Best-effort DID → handle for display. Uses a known user row, else the
+ * did:plc document's `alsoKnownAs`, else the Bluesky public profile; the
+ * candidate handle is only trusted if it resolves back to the same DID.
+ * Returns null when no verified handle is found.
+ */
+export async function resolveDidToHandle(did: string): Promise<string | null> {
+  const [known] = await db.select({ handle: users.handle }).from(users).where(eq(users.did, did));
+  if (known) return known.handle;
+
+  let candidate: string | null = null;
+  try {
+    if (did.startsWith("did:plc:")) {
+      const res = await fetch(`https://plc.directory/${encodeURIComponent(did)}`, {
+        signal: AbortSignal.timeout(5000),
+        redirect: "error",
+      });
+      if (res.ok) {
+        const doc = (await res.json()) as { alsoKnownAs?: string[] };
+        const aka = doc.alsoKnownAs?.find((a) => a.startsWith("at://"));
+        if (aka) candidate = aka.slice(5);
+      }
+    }
+    if (!candidate) {
+      const res = await fetch(
+        `https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile?actor=${encodeURIComponent(did)}`,
+        { signal: AbortSignal.timeout(5000) },
+      );
+      if (res.ok) {
+        const data = (await res.json()) as { handle?: string };
+        if (data.handle && data.handle !== "handle.invalid") candidate = data.handle;
+      }
+    }
+  } catch {
+    // fall through — display falls back to the DID
+  }
+  if (!candidate || !HANDLE_RE.test(candidate)) return null;
+  return (await resolveHandleToDid(candidate)) === did ? candidate : null;
+}
+
+/**
+ * Resolves an AT Proto handle to its DID (DNS TXT → HTTPS .well-known →
+ * Bluesky public API). Shared by invitations and operator tailnet creators.
+ */
+export async function resolveHandleToDid(handle: string): Promise<string | null> {
   const cleanHandle = handle.replace(/^@/, "");
 
   if (!HANDLE_RE.test(cleanHandle)) {
@@ -119,12 +174,6 @@ invitationsRouter.post(
   requireAuth,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const { handle } = req.body as { handle: string };
-
-    if (!handle) {
-      res.status(400).json({ error: "handle is required" });
-      return;
-    }
 
     const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
@@ -142,14 +191,33 @@ invitationsRouter.post(
       return;
     }
 
-    const cleanHandle = handle.replace(/^@/, "");
-    const did = await resolveHandleToDid(cleanHandle);
-
-    if (!did) {
-      res
-        .status(404)
-        .json({ error: `Could not resolve handle: ${cleanHandle}` });
+    const body = (req.body ?? {}) as { handle?: unknown; did?: unknown };
+    const handle = typeof body.handle === "string" ? body.handle.trim() : "";
+    const didInput = typeof body.did === "string" ? body.did.trim() : "";
+    if ((handle ? 1 : 0) + (didInput ? 1 : 0) !== 1) {
+      res.status(400).json({ error: "Provide exactly one of handle or did" });
       return;
+    }
+
+    let did: string | null;
+    let cleanHandle: string;
+    if (didInput) {
+      if (!ACCOUNT_DID_RE.test(didInput)) {
+        res.status(400).json({ error: "did must be a did:plc or did:web identifier" });
+        return;
+      }
+      did = didInput;
+      // Display handle from the DID document when it verifies; else the DID itself
+      cleanHandle = (await resolveDidToHandle(did)) ?? did;
+    } else {
+      cleanHandle = handle.replace(/^@/, "");
+      did = await resolveHandleToDid(cleanHandle);
+      if (!did) {
+        res
+          .status(404)
+          .json({ error: `Could not resolve handle: ${cleanHandle}` });
+        return;
+      }
     }
 
     const [existingUser] = await db
@@ -209,7 +277,7 @@ invitationsRouter.post(
       metadata: { handle: cleanHandle, did },
     });
 
-    res.status(201).json(invitation);
+    res.status(201).json({ ...invitation, inviteUrl: inviteUrl(invitation.id) });
   },
 );
 
@@ -241,6 +309,50 @@ invitationsRouter.get("/api/invitations", requireAuth, async (req, res) => {
 
   res.json(pendingInvitations);
 });
+
+/**
+ * One invitation, for the invitee only (the /invite/:id page). Anyone else
+ * signed in gets 404 — the id alone reveals nothing.
+ */
+invitationsRouter.get(
+  "/api/invitations/:invitationId",
+  requireAuth,
+  async (req, res) => {
+    const invitationId = param(req, "invitationId");
+    const did = await authUserDid(req);
+    if (!did || !UUID_RE.test(invitationId)) {
+      res.status(404).json({ error: "Invitation not found" });
+      return;
+    }
+
+    const [row] = await db
+      .select({
+        id: invitations.id,
+        status: invitations.status,
+        tenantId: tenants.id,
+        tenantName: tenants.name,
+        tenantSlug: tenants.slug,
+        tenantStatus: tenants.status,
+        inviterHandle: users.handle,
+      })
+      .from(invitations)
+      .innerJoin(tenants, eq(invitations.tenantId, tenants.id))
+      .innerJoin(users, eq(invitations.inviterUserId, users.id))
+      .where(and(eq(invitations.id, invitationId), eq(invitations.inviteeDid, did)));
+
+    if (!row || row.tenantStatus === "deleted") {
+      res.status(404).json({ error: "Invitation not found" });
+      return;
+    }
+
+    res.json({
+      id: row.id,
+      tenant: { id: row.tenantId, name: row.tenantName, slug: row.tenantSlug },
+      inviterHandle: row.inviterHandle,
+      status: row.status,
+    });
+  },
+);
 
 invitationsRouter.post(
   "/api/invitations/:invitationId/accept",

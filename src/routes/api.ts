@@ -7,7 +7,8 @@
 
 import { Router } from "express";
 import { config } from "../config.js";
-import { eq, and, desc } from "drizzle-orm";
+import { eq, and, desc, ne, isNull } from "drizzle-orm";
+import { z } from "zod";
 import { db } from "../db/index.js";
 import { users, tenants, memberships, roles, joinRequests } from "../db/schema.js";
 import {
@@ -24,6 +25,14 @@ import { logAudit } from "./audit.js";
 import { checkTenantHealth } from "../orchestrator/monitor.js";
 import { logger } from "../logger.js";
 import { notify } from "../notifications/service.js";
+import {
+  canCreateTailnet,
+  withTailnetCreationLock,
+  clearDefaultTailnetIf,
+  getInstanceSettings,
+  isOperatorDid,
+} from "../operator/policy.js";
+import { provisionTenant } from "./auth.js";
 
 /**
  * Router for /health, /api/me, /api/tenants (list, detail, delete,
@@ -51,14 +60,103 @@ apiRouter.get("/api/me", requireAuth, async (req, res) => {
     return;
   }
 
+  const [membership] = await db
+    .select({ id: memberships.id })
+    .from(memberships)
+    .innerJoin(tenants, eq(memberships.tenantId, tenants.id))
+    .where(and(eq(memberships.userId, user.id), ne(tenants.status, "deleted")))
+    .limit(1);
+
+  // Instance powers never flow through tenant-scoped agent tokens
+  const viaAgentToken = Boolean(req.agentToken);
+
   res.json({
     id: user.id,
     did: user.did,
     handle: user.handle,
     displayName: user.displayName,
     avatarUrl: user.avatarUrl,
+    isOperator: !viaAgentToken && isOperatorDid(user.did),
+    canCreateTailnet: !viaAgentToken && (await canCreateTailnet(user)),
+    access: membership ? "member" : "no_access",
+    instance: { singleTailnet: (await getInstanceSettings()).singleTailnet },
     features: { federation: config.federationEnabled },
   });
+});
+
+const createTenantBody = z.object({
+  name: z.string().trim().min(1).max(100).optional(),
+});
+
+/**
+ * Create the signed-in user's own top-level tailnet via the normal
+ * provisioning path — for operators / designated creators who weren't given
+ * one at sign-in (e.g. designated after joining another tailnet). Gated by
+ * canCreateTailnet; one originated top-level tailnet per user. Interactive
+ * credentials only — never agent tokens.
+ */
+apiRouter.post("/api/tenants/mine", requireAuth, async (req, res) => {
+  if (req.agentToken) {
+    res.status(403).json({ error: "Agent tokens cannot create a tailnet" });
+    return;
+  }
+  const parsed = createTenantBody.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
+    return;
+  }
+
+  const [user] = await db.select().from(users).where(eq(users.id, authUserId(req)));
+  if (!user) {
+    res.status(404).json({ error: "User not found" });
+    return;
+  }
+
+  type Outcome =
+    | { kind: "owned"; tenantId: string }
+    | { kind: "forbidden" }
+    | { kind: "created"; tenant: { id: string; slug: string; name: string; status: string } };
+  let outcome: Outcome;
+  try {
+    outcome = await withTailnetCreationLock<Outcome>(async () => {
+      const [owned] = await db
+        .select({ id: tenants.id })
+        .from(tenants)
+        .innerJoin(memberships, and(eq(memberships.tenantId, tenants.id), eq(memberships.userId, user.id)))
+        .where(
+          and(
+            eq(memberships.isOriginator, true),
+            isNull(tenants.parentId),
+            ne(tenants.status, "deleted"),
+          ),
+        )
+        .limit(1);
+      if (owned) return { kind: "owned", tenantId: owned.id };
+      if (!(await canCreateTailnet(user))) return { kind: "forbidden" };
+      const tenant = await provisionTenant(user, user.displayName ?? user.handle, user.handle, {
+        name: parsed.data.name,
+      });
+      return { kind: "created", tenant };
+    });
+  } catch (err) {
+    logger.error({ userId: user.id, err }, "failed to create tenant");
+    res.status(500).json({ error: "Failed to create tailnet" });
+    return;
+  }
+
+  if (outcome.kind === "owned") {
+    res.status(409).json({ error: "You already have a tailnet", code: "already_has_tailnet", tenantId: outcome.tenantId });
+    return;
+  }
+  if (outcome.kind === "forbidden") {
+    res.status(403).json({
+      error: "You are not allowed to create a tailnet on this instance",
+      code: "cannot_create_tailnet",
+    });
+    return;
+  }
+  const { tenant } = outcome;
+  res.status(201).json({ id: tenant.id, slug: tenant.slug, name: tenant.name, status: tenant.status });
 });
 
 apiRouter.get("/api/tenants", requireAuth, async (req, res) => {
@@ -68,6 +166,7 @@ apiRouter.get("/api/tenants", requireAuth, async (req, res) => {
       slug: tenants.slug,
       name: tenants.name,
       status: tenants.status,
+      suspended: tenants.suspended,
       isOriginator: memberships.isOriginator,
       roleName: roles.name,
       coordinatorTenantId: tenants.coordinatorTenantId,
@@ -96,6 +195,7 @@ apiRouter.get("/api/tenants/:id", requireAuth, async (req, res) => {
     slug: result.tenant.slug,
     name: result.tenant.name,
     status: result.tenant.status,
+    suspended: result.tenant.suspended,
     isOriginator: result.membership.isOriginator,
     roleName: result.role?.name ?? null,
     roleId: result.membership.roleId,
@@ -117,11 +217,13 @@ apiRouter.get("/api/tenants/by-slug/:slug/public", async (req, res) => {
       name: tenants.name,
       allowJoinRequests: tenants.allowJoinRequests,
       lockdownMode: tenants.lockdownMode,
+      status: tenants.status,
+      suspended: tenants.suspended,
     })
     .from(tenants)
     .where(eq(tenants.slug, slug));
 
-  if (!tenant || tenant.lockdownMode) {
+  if (!tenant || tenant.lockdownMode || tenant.suspended || tenant.status === "deleted") {
     res.status(404).json({ error: "Tailnet not found" });
     return;
   }
@@ -148,7 +250,7 @@ apiRouter.post(
       .from(tenants)
       .where(eq(tenants.id, tenantId));
 
-    if (!tenant) {
+    if (!tenant || tenant.status === "deleted" || tenant.suspended) {
       res.status(404).json({ error: "Tenant not found" });
       return;
     }
@@ -254,6 +356,44 @@ apiRouter.get(
   },
 );
 
+/**
+ * The tenant delete path: tear down the control-plane instance (container or
+ * coordinator tenant), soft-delete the row, release its port, resync Caddy and
+ * drop it as the instance default tailnet. Callers do authorization + audit.
+ * Throws if the control plane refuses (the row is then left untouched).
+ */
+export async function deleteTenantInstance(tenant: typeof tenants.$inferSelect): Promise<void> {
+  const tenantId = tenant.id;
+  if (tenant.containerId) {
+    await destroyInstance(tenant.containerId);
+  }
+
+  if (useCoordinator && tenant.coordinatorTenantId) {
+    const client = getControlClient(tenant);
+    if (client instanceof CoordinatorApiClient) {
+      await client.deleteTenant();
+    }
+  }
+
+  await db
+    .update(tenants)
+    .set({ status: "deleted", containerId: null, updatedAt: new Date() })
+    .where(eq(tenants.id, tenantId));
+
+  // Give the real Headscale port back (tenants.port is UNIQUE across all rows)
+  await releaseTenantPort(tenantId).catch((err) =>
+    logger.warn({ tenantId, err }, "failed to release tenant port"),
+  );
+
+  await syncTenantRoutes().catch((err) =>
+    logger.error({ tenantSlug: tenant.slug, err }, "failed to sync Caddy routes"),
+  );
+
+  await clearDefaultTailnetIf(tenantId).catch((err) =>
+    logger.warn({ tenantId, err }, "failed to clear default tailnet"),
+  );
+}
+
 apiRouter.delete("/api/tenants/:id", requireAuth, async (req, res) => {
   const tenantId = param(req, "id");
   const result = await getTenantForUser(tenantId, authUserId(req));
@@ -273,30 +413,7 @@ apiRouter.delete("/api/tenants/:id", requireAuth, async (req, res) => {
   }
 
   try {
-    if (result.tenant.containerId) {
-      await destroyInstance(result.tenant.containerId);
-    }
-
-    if (useCoordinator && result.tenant.coordinatorTenantId) {
-      const client = getControlClient(result.tenant);
-      if (client instanceof CoordinatorApiClient) {
-        await client.deleteTenant();
-      }
-    }
-
-    await db
-      .update(tenants)
-      .set({ status: "deleted", containerId: null, updatedAt: new Date() })
-      .where(eq(tenants.id, tenantId));
-
-    // Give the real Headscale port back (tenants.port is UNIQUE across all rows)
-    await releaseTenantPort(tenantId).catch((err) =>
-      logger.warn({ tenantId, err }, "failed to release tenant port"),
-    );
-
-    await syncTenantRoutes().catch((err) =>
-      logger.error({ tenantSlug: result.tenant.slug, err }, "failed to sync Caddy routes"),
-    );
+    await deleteTenantInstance(result.tenant);
 
     logAudit({
       tenantId,

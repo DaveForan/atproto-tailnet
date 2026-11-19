@@ -24,6 +24,26 @@ import {
   DEFAULT_CITIZEN_PERMISSIONS,
 } from "./permissions.js";
 import { logger } from "../logger.js";
+import { canCreateTailnet, claimDefaultTailnet, withTailnetCreationLock } from "../operator/policy.js";
+
+/** Static page for a disabled account's sign-in attempt (no scripts — CSP-safe). */
+const ACCOUNT_DISABLED_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Account disabled — atproto-tailnet</title>
+  <link rel="stylesheet" href="/css/dashboard.css" />
+</head>
+<body>
+  <main class="container">
+    <h1>Account disabled</h1>
+    <p>Your account has been disabled by the operator of this instance, so you can't sign in.</p>
+    <p>If you think this is a mistake, contact the instance operator.</p>
+    <p><a href="/">Back to the home page</a></p>
+  </main>
+</body>
+</html>`;
 
 /**
  * Router for authentication routes: login initiation, OAuth callback,
@@ -66,11 +86,18 @@ async function generateUniqueSlug(handle: string): Promise<string> {
   throw new Error("Could not generate unique slug");
 }
 
-async function provisionTenant(
+/**
+ * Creates a top-level tenant owned by `user` (roles, originator membership)
+ * and provisions its control plane asynchronously. Callers must have checked
+ * {@link canCreateTailnet}. The first operator tailnet becomes the instance
+ * default (with join requests on) when no default is set.
+ */
+export async function provisionTenant(
   user: typeof users.$inferSelect,
   displayName: string,
   handle: string,
-): Promise<void> {
+  opts: { name?: string } = {},
+): Promise<typeof tenants.$inferSelect> {
   const { allocateTenantPrefixes } = await import("../orchestrator/prefix-allocator.js");
   const prefixes = await allocateTenantPrefixes();
 
@@ -88,7 +115,7 @@ async function provisionTenant(
         .insert(tenants)
         .values({
           slug,
-          name: `${displayName}'s tailnet`,
+          name: opts.name ?? `${displayName}'s tailnet`,
           ownerUserId: user.id,
           port,
           apiKey: "",
@@ -144,9 +171,16 @@ async function provisionTenant(
     isOriginator: true,
   });
 
+  try {
+    await claimDefaultTailnet(tenant.id, user.did);
+  } catch (err) {
+    logger.error({ tenantId: tenant.id, err }, "failed to claim default tailnet");
+  }
+
   setImmediate(() => {
     void provisionTenantInstance(tenant!.id, slug, port);
   });
+  return tenant;
 }
 
 /**
@@ -334,31 +368,41 @@ authRouter.get("/auth/callback", async (req, res) => {
 
     let [user] = await db.select().from(users).where(eq(users.did, did));
 
+    if (user?.disabledAt) {
+      logger.info({ did }, "sign-in refused: account disabled");
+      req.session.destroy(() => {
+        res.status(403).type("html").send(ACCOUNT_DISABLED_HTML);
+      });
+      return;
+    }
+
     if (!user) {
       [user] = await db
         .insert(users)
         .values({ did, handle, displayName, avatarUrl })
         .returning();
-
-      await provisionTenant(user, displayName, handle);
     } else {
       await db
         .update(users)
         .set({ handle, displayName, avatarUrl, updatedAt: new Date() })
         .where(eq(users.id, user.id));
+    }
 
-      // If first-login provisioning failed after the user row was inserted,
-      // the user has no tenant at all — provision one now. (Users who have
-      // any membership, e.g. joined someone else's tailnet, are left alone.)
+    // A user with no membership gets their own tailnet only if they may create
+    // one (operator / designated creator, single-tailnet rule). Everyone else
+    // lands on the dashboard's no-access view (invitations, join request).
+    // Also covers a first-login provisioning failure after the user row was
+    // inserted. Users with any membership are left alone.
+    await withTailnetCreationLock(async () => {
       const [anyMembership] = await db
         .select({ id: memberships.id })
         .from(memberships)
         .where(eq(memberships.userId, user.id))
         .limit(1);
-      if (!anyMembership) {
+      if (!anyMembership && (await canCreateTailnet(user))) {
         await provisionTenant(user, displayName, handle);
       }
-    }
+    });
 
     const dest = req.session.postLoginRedirect || "/";
     req.session.regenerate((err) => {
