@@ -98,14 +98,28 @@ policy:
 `;
 }
 
+/** Emits a string as a double-quoted YAML scalar (JSON strings are valid YAML). */
+function yamlStr(value: string): string {
+  return JSON.stringify(String(value));
+}
+
+/** Emits a non-negative integer, refusing anything that isn't one. */
+function yamlInt(value: number): string {
+  if (!Number.isInteger(value) || value < 0) {
+    throw new Error(`Invalid DERP numeric field: ${String(value)}`);
+  }
+  return String(value);
+}
+
 function derpRegionToYaml(region: DerpRegion): string {
+  const id = yamlInt(region.regionId);
   const nodesYaml = region.nodes
     .map(
       (n) =>
-        `        - name: ${n.name}\n          regionid: ${region.regionId}\n          hostname: ${n.hostname}\n          stunport: ${n.stunPort ?? 0}\n          derpport: ${n.derpPort ?? 0}`,
+        `        - name: ${yamlStr(n.name)}\n          regionid: ${id}\n          hostname: ${yamlStr(n.hostname)}\n          stunport: ${yamlInt(n.stunPort ?? 0)}\n          derpport: ${yamlInt(n.derpPort ?? 0)}`,
     )
     .join("\n");
-  return `    ${region.regionId}:\n      regionid: ${region.regionId}\n      regioncode: ${region.regionCode}\n      regionname: ${region.regionName}\n      nodes:\n${nodesYaml}`;
+  return `    ${id}:\n      regionid: ${id}\n      regioncode: ${yamlStr(region.regionCode)}\n      regionname: ${yamlStr(region.regionName)}\n      nodes:\n${nodesYaml}`;
 }
 
 export async function writeDerpRegionsFile(
@@ -359,13 +373,30 @@ export async function getInstanceStatus(
 /** Start a previously stopped Headscale container. */
 export async function startInstance(containerId: string): Promise<void> {
   const container = docker.getContainer(containerId);
-  await container.start();
+  try {
+    await container.start();
+  } catch (err) {
+    // Docker answers 304 "container already started" — not a failure
+    if (isNotModified(err)) return;
+    throw err;
+  }
 }
 
 /** Stop a running Headscale container. */
 export async function stopInstance(containerId: string): Promise<void> {
   const container = docker.getContainer(containerId);
-  await container.stop();
+  try {
+    await container.stop();
+  } catch (err) {
+    // Docker answers 304 "container already stopped" — not a failure
+    if (isNotModified(err)) return;
+    throw err;
+  }
+}
+
+/** True for dockerode's 304 Not Modified (already started / already stopped). */
+function isNotModified(err: unknown): boolean {
+  return (err as { statusCode?: number } | null)?.statusCode === 304;
 }
 
 /** Create a Headscale user inside a running container via `headscale users create`. */

@@ -227,6 +227,35 @@ pub struct LinkRevokeMessage {
     pub timestamp: String,
 }
 
+// ── Signed message types ───────────────────────────────────────────────────────
+
+/// A CFP message that carries a detached signature. The wire `type` tag is not
+/// a struct field (it comes from [`CfpMessage`]'s internal tag), so signer and
+/// verifier both re-insert it via [`crate::auth::message_signing_payload`].
+pub trait CfpSigned: Serialize {
+    const MESSAGE_TYPE: &'static str;
+}
+
+macro_rules! cfp_signed {
+    ($($ty:ty => $tag:literal),* $(,)?) => {
+        $(impl CfpSigned for $ty { const MESSAGE_TYPE: &'static str = $tag; })*
+    };
+}
+
+cfp_signed! {
+    HelloMessage => "HELLO",
+    ChallengeMessage => "CHALLENGE",
+    CommitMessage => "COMMIT",
+    EstablishedMessage => "ESTABLISHED",
+    KeepaliveMessage => "KEEPALIVE",
+    RouteUpdate => "ROUTE_UPDATE",
+    RevokeMessage => "REVOKE",
+    LinkRequestMessage => "LINK_REQUEST",
+    LinkAcceptMessage => "LINK_ACCEPT",
+    LinkRejectMessage => "LINK_REJECT",
+    LinkRevokeMessage => "LINK_REVOKE",
+}
+
 // ── Tagged union ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

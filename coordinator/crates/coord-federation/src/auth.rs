@@ -74,6 +74,59 @@ where
     verify_fn(did, &payload, signature).await
 }
 
+/// The exact bytes signed for a CFP message: the message serialized to a JSON
+/// object, its `signature` field removed and its wire `type` tag inserted.
+/// Signers and verifiers MUST both use this function — rebuilding the payload
+/// by hand (e.g. a `json!` literal on one side, the struct on the other) is how
+/// HELLO ended up unverifiable. Keys are emitted in serde_json's map order
+/// (sorted unless `preserve_order` is enabled), the same on both sides of one
+/// build. NOTE: this is not byte-compatible with the TypeScript service, which
+/// signs `JSON.stringify` output in field insertion order.
+pub fn message_signing_payload<T: crate::protocol::CfpSigned>(
+    message: &T,
+) -> Result<String, CoordError> {
+    let mut value = serde_json::to_value(message)
+        .map_err(|e| CoordError::Protocol(format!("cannot serialize {}: {e}", T::MESSAGE_TYPE)))?;
+    let obj = value.as_object_mut().ok_or_else(|| {
+        CoordError::Protocol(format!("{} did not serialize to an object", T::MESSAGE_TYPE))
+    })?;
+    obj.remove("signature");
+    obj.insert(
+        "type".to_string(),
+        serde_json::Value::String(T::MESSAGE_TYPE.to_string()),
+    );
+    Ok(value.to_string())
+}
+
+/// Type tag of the challenge-response signing payload. Never a CFP message
+/// type, so the signature cannot be replayed as any CFP message.
+pub const CHALLENGE_RESPONSE_TYPE: &str = "CFP_CHALLENGE_RESPONSE";
+
+/// What the initiator signs to answer a CHALLENGE: a typed wrapper binding the
+/// nonce to signer and audience — never the peer-chosen nonce verbatim, which
+/// would turn us into a signing oracle for arbitrary payloads.
+pub fn challenge_response_payload(nonce: &str, signer_did: &str, audience_did: &str) -> String {
+    serde_json::json!({
+        "type": CHALLENGE_RESPONSE_TYPE,
+        "iss": signer_did,
+        "aud": audience_did,
+        "nonce": nonce,
+    })
+    .to_string()
+}
+
+/// Challenge nonces are fixed-length random tokens: 32 bytes as 64 lowercase
+/// hex chars (this crate) or 43 base64url chars (TypeScript service). Anything
+/// else is refused before it is signed or looked up.
+pub fn is_valid_challenge_nonce(nonce: &str) -> bool {
+    let hex = nonce.len() == 64 && nonce.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
+    let b64url = nonce.len() == 43
+        && nonce
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    hex || b64url
+}
+
 /// Check whether a timestamp string is within `MAX_MESSAGE_SKEW` of now.
 pub fn is_fresh(timestamp: &str) -> bool {
     let parsed = match timestamp.parse::<chrono::DateTime<Utc>>() {

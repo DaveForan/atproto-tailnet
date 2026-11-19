@@ -9,6 +9,7 @@ import type { PublicKeyResolver } from "../credentials/verifier.js";
 import { verifyDetached } from "../identity/keys.js";
 import type { HandshakeCallbacks } from "./handshake.js";
 import type { FederationType, RouteAnnouncement } from "./protocol.js";
+import { isWithinAgreed, parseCidr } from "./cidr.js";
 
 /** Reject signed messages whose timestamp is further than this from now. */
 export const MAX_MESSAGE_SKEW_MS = 5 * 60 * 1000;
@@ -50,20 +51,25 @@ export function isFresh(timestamp: string, now = Date.now()): boolean {
 }
 
 /**
- * Prefixes we accept from a peer's announcements: only CIDRs the link's
- * operators agreed to share, and only when the peer claims to originate them.
- * Anything else (a wider prefix, a default route, someone else's network) is
- * dropped — a peer must not be able to attract traffic it wasn't granted.
+ * Prefixes we accept from a peer's announcements: only prefixes contained in a
+ * CIDR the link's operators agreed to share (equal or more specific), and only
+ * when the peer claims to originate them. Anything else (a wider prefix, a
+ * default route, someone else's network) is dropped — a peer must not be able
+ * to attract traffic it wasn't granted. An empty agreed list imports nothing.
+ * Returned prefixes are normalised.
  */
 export function filterImportedPrefixes(
   announcements: RouteAnnouncement[] | undefined,
   agreedCidrs: string[],
   peerDid: string,
 ): string[] {
-  const agreed = new Set(agreedCidrs);
+  if (agreedCidrs.length === 0) return [];
   const accepted = new Set<string>();
   for (const a of announcements ?? []) {
-    if (a.originDid === peerDid && agreed.has(a.prefix)) accepted.add(a.prefix);
+    if (a.originDid !== peerDid || typeof a.prefix !== "string") continue;
+    if (!isWithinAgreed(a.prefix, agreedCidrs)) continue;
+    const parsed = parseCidr(a.prefix);
+    if (parsed) accepted.add(parsed.normalized);
   }
   return [...accepted];
 }

@@ -2,12 +2,20 @@
  * @module routes/acl
  * ACL policy management: read the current Headscale policy and push updates.
  * Gated by the "manage_acl" permission. Policies are pushed directly to the
- * Headscale instance via its REST API (policy mode: database).
+ * Headscale instance via its REST API (policy mode: database). In
+ * coordinator mode the policy is translated to the coordinator's
+ * `{default_deny, rules}` model (see orchestrator/coordinator-acl.ts) and
+ * rejected with 400 if it can't be expressed faithfully.
  */
 
 import { Router } from "express";
 import { z } from "zod";
-import { getControlClient } from "../orchestrator/control-client.js";
+import { eq } from "drizzle-orm";
+import { db } from "../db/index.js";
+import { tenants } from "../db/schema.js";
+import { getControlClient, useCoordinator } from "../orchestrator/control-client.js";
+import { CoordinatorApiClient } from "../orchestrator/coordinator-api.js";
+import { AclTranslationError } from "../orchestrator/coordinator-acl.js";
 import {
   requireAuth,
   param,
@@ -17,6 +25,16 @@ import {
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
 import { logger } from "../logger.js";
+
+/** True when the tenant has a reachable control plane to read/write policy on. */
+function instanceAvailable(tenant: {
+  apiKey: string;
+  port: number;
+  coordinatorTenantId: string | null;
+}): boolean {
+  if (useCoordinator) return Boolean(tenant.coordinatorTenantId);
+  return Boolean(tenant.apiKey && tenant.port > 0);
+}
 
 /** Router for ACL policy CRUD: get and update. */
 export const aclRouter = Router();
@@ -62,14 +80,19 @@ aclRouter.get(
       return;
     }
 
-    if (!result.tenant.apiKey || !result.tenant.port) {
+    if (!instanceAvailable(result.tenant)) {
       res.status(503).json({ error: "Tenant instance not available" });
       return;
     }
 
     try {
       const client = getControlClient(result.tenant);
-      const policy = await client.getPolicy();
+      // Coordinator stores {default_deny, rules}; render it in the Headscale
+      // shape the dashboard understands.
+      const policy =
+        client instanceof CoordinatorApiClient
+          ? await client.getHeadscalePolicy()
+          : await client.getPolicy();
 
       const users = await client.listUsers();
       const userNames = users.map((u) => u.name);
@@ -98,7 +121,7 @@ aclRouter.put(
       return;
     }
 
-    if (!result.tenant.apiKey || !result.tenant.port) {
+    if (!instanceAvailable(result.tenant)) {
       res.status(503).json({ error: "Tenant instance not available" });
       return;
     }
@@ -113,7 +136,17 @@ aclRouter.put(
 
     try {
       const client = getControlClient(result.tenant);
-      await client.setPolicy(parsed.data);
+      if (client instanceof CoordinatorApiClient) {
+        // Translate to the coordinator model; constructs it can't express
+        // (groups, tags, autoApprovers, user sources) are rejected below.
+        await client.setHeadscalePolicy(parsed.data);
+        await db
+          .update(tenants)
+          .set({ coordinatorAclPolicy: parsed.data, updatedAt: new Date() })
+          .where(eq(tenants.id, tenantId));
+      } else {
+        await client.setPolicy(parsed.data);
+      }
 
       logAudit({
         tenantId,
@@ -129,6 +162,10 @@ aclRouter.put(
 
       res.json({ status: "updated", policy: parsed.data });
     } catch (err) {
+      if (err instanceof AclTranslationError) {
+        res.status(400).json({ error: err.message });
+        return;
+      }
       logger.error({ tenantId, err }, "failed to update ACL policy");
       res.status(502).json({ error: "Failed to push policy to Headscale" });
     }

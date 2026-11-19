@@ -52,16 +52,26 @@ export class RateLimiter {
  */
 export class ReplayGuard {
   private readonly windowMs: number;
+  private readonly maxEntries: number;
   private readonly seen = new Map<string, number>();
 
-  constructor(windowMs: number) {
+  constructor(windowMs: number, maxEntries = 100_000) {
     this.windowMs = windowMs;
+    this.maxEntries = maxEntries;
   }
 
-  /** Returns true if this is the first time we've seen `id` in the window. */
+  /**
+   * Returns true if this is the first time we've seen `id` in the window.
+   * Entries expire via {@link sweep} (run periodically); when the cache is
+   * full, the oldest entries are dropped first (Map keeps insertion order).
+   */
   check(id: string): boolean {
-    this.sweep();
-    if (this.seen.has(id)) return false;
+    const seenAt = this.seen.get(id);
+    if (seenAt !== undefined && seenAt >= Date.now() - this.windowMs) return false;
+    this.seen.delete(id);
+    while (this.seen.size >= this.maxEntries) {
+      this.seen.delete(this.seen.keys().next().value!);
+    }
     this.seen.set(id, Date.now());
     return true;
   }
@@ -89,8 +99,13 @@ export const linkRequestByIp = new RateLimiter(60_000, 30);
 export const helloByDid = new RateLimiter(60_000, 20);
 export const helloByIp = new RateLimiter(60_000, 60);
 
-/** Replay guard shared by all link negotiation messages (5-minute window matches MAX_MESSAGE_SKEW_MS). */
-export const linkMessageReplay = new ReplayGuard(5 * 60 * 1000);
+/**
+ * Replay guard shared by all link negotiation messages, keyed on sender DID +
+ * message id. A message is fresh for ±MAX_MESSAGE_SKEW_MS (5 min) around its
+ * timestamp — a 10-minute span — so ids are kept for 2× the skew; a shorter
+ * window would let a captured message become replayable while still fresh.
+ */
+export const linkMessageReplay = new ReplayGuard(2 * 5 * 60 * 1000);
 
 /** Max body size for federation messages (64 KiB). */
 export const MAX_FEDERATION_BODY_BYTES = 64 * 1024;

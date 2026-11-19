@@ -159,10 +159,12 @@ impl Default for RouteTable {
 // ── CIDR helpers ───────────────────────────────────────────────────────────────
 
 /// Checks whether a prefix falls within at least one of the allowed CIDRs.
-/// An empty list of allowed CIDRs means "allow all".
+/// An empty list of allowed CIDRs allows nothing (deny by default): a link on
+/// which no CIDRs were agreed must not import anything. Default routes
+/// (`/0`) are never in scope, and unparseable prefixes or scopes never match.
 pub fn prefix_within_scope(prefix: &str, allowed_cidrs: &[String]) -> bool {
     if allowed_cidrs.is_empty() {
-        return true;
+        return false;
     }
     allowed_cidrs
         .iter()
@@ -174,11 +176,16 @@ pub fn prefix_within_scope(prefix: &str, allowed_cidrs: &[String]) -> bool {
 /// must fall within the scope, and the prefix mask must be at least as specific.
 fn cidr_contains_prefix(scope: &str, prefix: &str) -> bool {
     let Ok(scope_net) = scope.parse::<IpNetwork>() else {
-        return scope == prefix;
+        return false;
     };
     let Ok(prefix_net) = prefix.parse::<IpNetwork>() else {
-        return scope == prefix;
+        return false;
     };
+
+    // Default routes are never agreed or imported.
+    if scope_net.prefix() == 0 || prefix_net.prefix() == 0 {
+        return false;
+    }
 
     // The prefix mask must be at least as specific (equal or longer).
     if prefix_net.prefix() < scope_net.prefix() {
@@ -199,6 +206,11 @@ mod tests {
     use super::*;
     use crate::protocol::RouteAnnouncement;
 
+    /// Agreed CIDRs covering every prefix the tests announce.
+    fn scope() -> Vec<String> {
+        vec!["10.0.0.0/8".into()]
+    }
+
     fn ann(prefix: &str, origin: &str, path: &[&str], pref: u32) -> RouteAnnouncement {
         RouteAnnouncement {
             prefix: prefix.into(),
@@ -214,7 +226,7 @@ mod tests {
     fn install_route_basic() {
         let mut table = RouteTable::new();
         let announcements = vec![ann("10.1.0.0/24", "did:web:origin", &["did:web:hop1"], 100)];
-        let installed = table.process_update(&announcements, &[], "sess-1", "did:web:local", &[]);
+        let installed = table.process_update(&announcements, &[], "sess-1", "did:web:local", &scope());
         assert_eq!(installed, vec!["10.1.0.0/24"]);
         assert_eq!(table.len(), 1);
 
@@ -234,7 +246,7 @@ mod tests {
             100,
         )];
         let installed =
-            table.process_update(&announcements, &[], "sess-1", "did:web:local", &[]);
+            table.process_update(&announcements, &[], "sess-1", "did:web:local", &scope());
         assert!(installed.is_empty());
         assert_eq!(table.len(), 0);
     }
@@ -269,7 +281,7 @@ mod tests {
             &[],
             "sess-1",
             "did:web:local",
-            &[],
+            &scope(),
         );
         assert_eq!(table.get_route("10.1.0.0/24").unwrap().preference, 50);
 
@@ -279,7 +291,7 @@ mod tests {
             &[],
             "sess-2",
             "did:web:local",
-            &[],
+            &scope(),
         );
         assert_eq!(table.get_route("10.1.0.0/24").unwrap().preference, 100);
         assert_eq!(table.get_route("10.1.0.0/24").unwrap().received_from, "sess-2");
@@ -290,7 +302,7 @@ mod tests {
             &[],
             "sess-3",
             "did:web:local",
-            &[],
+            &scope(),
         );
         assert_eq!(table.get_route("10.1.0.0/24").unwrap().received_from, "sess-2");
     }
@@ -303,11 +315,11 @@ mod tests {
             &[],
             "sess-1",
             "did:web:local",
-            &[],
+            &scope(),
         );
         assert_eq!(table.len(), 1);
 
-        table.process_update(&[], &["10.1.0.0/24".into()], "sess-1", "did:web:local", &[]);
+        table.process_update(&[], &["10.1.0.0/24".into()], "sess-1", "did:web:local", &scope());
         assert_eq!(table.len(), 0);
     }
 
@@ -322,14 +334,14 @@ mod tests {
             &[],
             "sess-1",
             "did:web:local",
-            &[],
+            &scope(),
         );
         table.process_update(
             &[ann("10.3.0.0/24", "did:web:b", &[], 100)],
             &[],
             "sess-2",
             "did:web:local",
-            &[],
+            &scope(),
         );
         assert_eq!(table.len(), 3);
 
@@ -347,14 +359,14 @@ mod tests {
             &[],
             "sess-1",
             "did:web:local",
-            &[],
+            &scope(),
         );
         table.process_update(
             &[ann("10.2.0.0/24", "did:web:b", &[], 100)],
             &[],
             "sess-2",
             "did:web:local",
-            &[],
+            &scope(),
         );
 
         // Export for sess-1: should only include the route from sess-2.
@@ -363,6 +375,28 @@ mod tests {
         assert_eq!(exported[0].prefix, "10.2.0.0/24");
         // Local DID should be appended to path vector.
         assert!(exported[0].path_vector.contains(&"did:web:local".to_string()));
+    }
+
+    #[test]
+    fn empty_scope_denies_everything() {
+        assert!(!prefix_within_scope("10.1.0.0/24", &[]));
+        let mut table = RouteTable::new();
+        let installed = table.process_update(
+            &[ann("10.1.0.0/24", "did:web:a", &[], 100)],
+            &[],
+            "sess-1",
+            "did:web:local",
+            &[],
+        );
+        assert!(installed.is_empty());
+    }
+
+    #[test]
+    fn default_routes_and_garbage_never_in_scope() {
+        assert!(!prefix_within_scope("0.0.0.0/0", &["0.0.0.0/0".into()]));
+        assert!(!prefix_within_scope("::/0", &["::/0".into()]));
+        assert!(!prefix_within_scope("10.0.0.0/8", &["0.0.0.0/0".into()]));
+        assert!(!prefix_within_scope("garbage", &["garbage".into()]));
     }
 
     #[test]

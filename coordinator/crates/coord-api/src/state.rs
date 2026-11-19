@@ -1,12 +1,12 @@
 use std::sync::Arc;
-use tokio::sync::RwLock;
-use coord_core::ControlKey;
+use tokio::sync::broadcast;
+use coord_core::{ControlKey, TenantId};
 use coord_acl::PolicyEngine;
 use coord_federation::{
     BrokerConfig, BrokerService, FederationMemoryStore, FederationStore,
     HandshakeCallbacks, InboundHandler,
 };
-use coord_netmap::NetmapService;
+use coord_netmap::{DerpRegistry, NetmapService};
 use coord_proto::map::DerpMap;
 use coord_store::{MemoryStore, Store};
 
@@ -14,9 +14,11 @@ pub struct CoordinatorState {
     pub(crate) control_key: ControlKey,
     pub(crate) store: Arc<Store>,
     pub(crate) acl: Arc<PolicyEngine>,
-    pub(crate) derp_map: RwLock<DerpMap>,
+    pub(crate) derp: Arc<DerpRegistry>,
     pub(crate) admin_api_key: Option<String>,
-    pub(crate) netmap: RwLock<NetmapService>,
+    pub(crate) netmap: NetmapService,
+    /// Fires when a tenant's ACL or DERP config changes so live map streams resend a snapshot.
+    pub(crate) config_changed: broadcast::Sender<TenantId>,
     pub(crate) federation_inbound: Arc<InboundHandler<dyn FederationStore>>,
     pub(crate) federation_broker: Arc<BrokerService<dyn FederationStore>>,
     pub(crate) federation_callbacks: Option<Arc<dyn HandshakeCallbacks>>,
@@ -28,15 +30,17 @@ impl CoordinatorState {
         let fed_config = BrokerConfig::default();
         let store = Arc::new(Store::Memory(Box::new(MemoryStore::new())));
         let acl = Arc::new(PolicyEngine::new());
-        let derp_map = default_derp_map();
-        let netmap = NetmapService::new(store.clone(), acl.clone(), derp_map.clone());
+        let derp = Arc::new(DerpRegistry::new(default_derp_map()));
+        let netmap = NetmapService::new(store.clone(), acl.clone(), derp.clone());
+        let (config_changed, _) = broadcast::channel(256);
         Self {
             control_key,
             store,
             acl,
-            derp_map: RwLock::new(derp_map),
+            derp,
             admin_api_key: None,
-            netmap: RwLock::new(netmap),
+            netmap,
+            config_changed,
             federation_inbound: Arc::new(InboundHandler::new(
                 fed_store.clone(),
                 fed_config.clone(),
@@ -56,31 +60,16 @@ impl CoordinatorState {
         self
     }
 
-    pub fn with_store(self, store: Store) -> Self {
-        let store = Arc::new(store);
-        let derp_map = self.derp_map.into_inner();
-        let netmap = NetmapService::new(store.clone(), self.acl.clone(), derp_map.clone());
-        Self {
-            store,
-            derp_map: RwLock::new(derp_map),
-            netmap: RwLock::new(netmap),
-            ..self
-        }
+    pub fn with_store(mut self, store: Store) -> Self {
+        self.store = Arc::new(store);
+        self.netmap = NetmapService::new(self.store.clone(), self.acl.clone(), self.derp.clone());
+        self
     }
 
-    pub fn with_derp_map(self, derp_map: DerpMap) -> Self {
-        let netmap = NetmapService::new(self.store.clone(), self.acl.clone(), derp_map.clone());
-        Self {
-            derp_map: RwLock::new(derp_map),
-            netmap: RwLock::new(netmap),
-            ..self
-        }
-    }
-
-    pub async fn update_derp_map(&self, new_map: DerpMap) {
-        let new_netmap = NetmapService::new(self.store.clone(), self.acl.clone(), new_map.clone());
-        *self.derp_map.write().await = new_map;
-        *self.netmap.write().await = new_netmap;
+    pub fn with_derp_map(mut self, derp_map: DerpMap) -> Self {
+        self.derp = Arc::new(DerpRegistry::new(derp_map));
+        self.netmap = NetmapService::new(self.store.clone(), self.acl.clone(), self.derp.clone());
+        self
     }
 
     pub fn with_admin_api_key(mut self, key: Option<String>) -> Self {
@@ -91,6 +80,10 @@ impl CoordinatorState {
     pub fn with_federation_callbacks(mut self, cb: Arc<dyn HandshakeCallbacks>) -> Self {
         self.federation_callbacks = Some(cb);
         self
+    }
+
+    pub fn notify_tenant_changed(&self, tenant: TenantId) {
+        let _ = self.config_changed.send(tenant);
     }
 
     pub fn control_key(&self) -> &ControlKey {
@@ -105,16 +98,16 @@ impl CoordinatorState {
         &self.acl
     }
 
+    pub fn derp(&self) -> &Arc<DerpRegistry> {
+        &self.derp
+    }
+
     pub fn federation_inbound(&self) -> &Arc<InboundHandler<dyn FederationStore>> {
         &self.federation_inbound
     }
 
-    pub fn netmap(&self) -> &RwLock<NetmapService> {
+    pub fn netmap(&self) -> &NetmapService {
         &self.netmap
-    }
-
-    pub fn derp_map(&self) -> &RwLock<DerpMap> {
-        &self.derp_map
     }
 
     pub fn federation_broker(&self) -> &Arc<BrokerService<dyn FederationStore>> {

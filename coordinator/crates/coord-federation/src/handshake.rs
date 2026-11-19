@@ -10,6 +10,7 @@ use rand::Rng;
 
 use coord_core::CoordError;
 
+use crate::auth::{challenge_response_payload, is_valid_challenge_nonce, message_signing_payload};
 use crate::protocol::{
     Capability, ChallengeMessage, CommitMessage, EstablishedMessage, FederationType,
     HandshakePhase, HelloMessage, RouteAnnouncement, CFP_VERSION,
@@ -82,6 +83,35 @@ fn negotiate_version(remote: &str, local: &str) -> String {
     local.to_string()
 }
 
+/// Mark `state` failed with `error` and return the `Err` pair the state
+/// machine functions use.
+fn fail(mut state: HandshakeState, error: &str) -> (HandshakeState, String) {
+    state.phase = HandshakePhase::Failed;
+    state.error = Some(error.to_string());
+    state.updated_at = Utc::now();
+    (state, error.to_string())
+}
+
+/// Verify `message`'s own detached signature by `did`, over
+/// [`message_signing_payload`] — the same bytes the sender signed.
+async fn verify_signed<T: crate::protocol::CfpSigned>(
+    did: &str,
+    message: &T,
+    signature: &str,
+    callbacks: &dyn HandshakeCallbacks,
+) -> bool {
+    if signature.is_empty() {
+        return false;
+    }
+    let Ok(payload) = message_signing_payload(message) else {
+        return false;
+    };
+    callbacks
+        .verify_signature(did, &payload, signature)
+        .await
+        .unwrap_or(false)
+}
+
 /// Generate `n` random bytes and return them as a hex string.
 fn random_hex(n: usize) -> String {
     let mut buf = vec![0u8; n];
@@ -123,28 +153,18 @@ pub async fn initiate_hello(
 ) -> Result<(HandshakeState, HelloMessage), CoordError> {
     let timestamp = Utc::now().to_rfc3339();
 
-    // Build the signing payload (message without signature).
-    let payload = serde_json::json!({
-        "type": "HELLO",
-        "collectiveDid": state.local_did,
-        "federationType": fed_type,
-        "offeredCidrs": cidrs,
-        "capabilities": capabilities,
-        "protocolVersion": CFP_VERSION,
-        "timestamp": timestamp,
-    });
-    let signature = callbacks.sign(&payload.to_string()).await?;
-
-    let message = HelloMessage {
+    let mut message = HelloMessage {
         collective_did: state.local_did.clone(),
         federation_type: fed_type.clone(),
         offered_cidrs: cidrs,
         capabilities,
         protocol_version: CFP_VERSION.to_string(),
         mesh_id: None,
-        signature,
+        signature: String::new(),
         timestamp,
     };
+    // Sign exactly what the receiver rebuilds (see `message_signing_payload`).
+    message.signature = callbacks.sign(&message_signing_payload(&message)?).await?;
 
     state.phase = HandshakePhase::HelloSent;
     state.remote_did = Some(remote_did.to_string());
@@ -163,29 +183,8 @@ pub async fn handle_hello(
     local_capabilities: &[Capability],
     callbacks: &dyn HandshakeCallbacks,
 ) -> Result<(HandshakeState, ChallengeMessage), (HandshakeState, String)> {
-    // Build the payload that was signed (message minus signature).
-    let mut hello_json = serde_json::to_value(hello).map_err(|e| {
-        state.phase = HandshakePhase::Failed;
-        (state.clone(), format!("Failed to serialize HELLO for verification: {e}"))
-    })?;
-    if let Some(obj) = hello_json.as_object_mut() {
-        obj.remove("signature");
-        // Remove meshId if null (match TS behavior of undefined).
-        if obj.get("meshId").is_some_and(|v| v.is_null()) {
-            obj.remove("meshId");
-        }
-    }
-    let payload = hello_json.to_string();
-
-    let valid = callbacks
-        .verify_signature(&hello.collective_did, &payload, &hello.signature)
-        .await
-        .unwrap_or(false);
-    if !valid {
-        state.phase = HandshakePhase::Failed;
-        state.error = Some("Invalid HELLO signature".to_string());
-        state.updated_at = Utc::now();
-        return Err((state, "Invalid HELLO signature".to_string()));
+    if !verify_signed(&hello.collective_did, hello, &hello.signature, callbacks).await {
+        return Err(fail(state, "Invalid HELLO signature"));
     }
 
     let policy_ok = callbacks
@@ -232,29 +231,7 @@ pub async fn handle_hello(
         .min(*KEEPALIVE_RANGE.end());
 
     let timestamp = Utc::now().to_rfc3339();
-    let challenge_payload = serde_json::json!({
-        "type": "CHALLENGE",
-        "collectiveDid": state.local_did,
-        "nonce": nonce,
-        "expiresAt": expires_at.to_rfc3339(),
-        "acceptedType": hello.federation_type,
-        "acceptedCidrs": accepted_cidrs,
-        "acceptedCapabilities": accepted_capabilities,
-        "negotiatedVersion": negotiated_version,
-        "negotiatedKeepaliveSeconds": keepalive,
-        "timestamp": timestamp,
-    });
-    let signature = callbacks
-        .sign(&challenge_payload.to_string())
-        .await
-        .map_err(|e| {
-            state.phase = HandshakePhase::Failed;
-            state.error = Some(format!("Sign error: {e}"));
-            state.updated_at = Utc::now();
-            (state.clone(), format!("Sign error: {e}"))
-        })?;
-
-    let message = ChallengeMessage {
+    let mut message = ChallengeMessage {
         collective_did: state.local_did.clone(),
         nonce: nonce.clone(),
         expires_at: expires_at.to_rfc3339(),
@@ -263,8 +240,16 @@ pub async fn handle_hello(
         accepted_capabilities: accepted_capabilities.clone(),
         negotiated_version: negotiated_version.clone(),
         negotiated_keepalive_seconds: keepalive,
-        signature,
+        signature: String::new(),
         timestamp,
+    };
+    let signed = match message_signing_payload(&message) {
+        Ok(payload) => callbacks.sign(&payload).await,
+        Err(e) => Err(e),
+    };
+    message.signature = match signed {
+        Ok(sig) => sig,
+        Err(e) => return Err(fail(state, &format!("Sign error: {e}"))),
     };
 
     state.phase = HandshakePhase::ChallengeSent;
@@ -296,51 +281,53 @@ pub async fn handle_challenge(
         return Err((state, err));
     }
 
-    // Check expiry.
-    if let Ok(expires) = challenge.expires_at.parse::<DateTime<Utc>>() {
-        if expires < Utc::now() {
-            state.phase = HandshakePhase::Failed;
-            state.error = Some("Challenge expired".to_string());
-            state.updated_at = Utc::now();
-            return Err((state, "Challenge expired".to_string()));
-        }
+    // The CHALLENGE must come from the collective we said HELLO to, and be
+    // signed by it.
+    let Some(remote_did) = state.remote_did.clone() else {
+        return Err(fail(state, "No remote DID for CHALLENGE"));
+    };
+    if challenge.collective_did != remote_did {
+        return Err(fail(state, "CHALLENGE from unexpected sender"));
+    }
+    if !verify_signed(&remote_did, challenge, &challenge.signature, callbacks).await {
+        return Err(fail(state, "Invalid CHALLENGE signature"));
     }
 
-    // Sign the challenge nonce.
-    let challenge_signature = callbacks.sign(&challenge.nonce).await.map_err(|e| {
-        state.phase = HandshakePhase::Failed;
-        state.error = Some(format!("Sign error: {e}"));
-        state.updated_at = Utc::now();
-        (state.clone(), format!("Sign error: {e}"))
-    })?;
+    // Check expiry; an unparseable expiry is treated as expired.
+    match challenge.expires_at.parse::<DateTime<Utc>>() {
+        Ok(expires) if expires >= Utc::now() => {}
+        _ => return Err(fail(state, "Challenge expired")),
+    }
+
+    if !is_valid_challenge_nonce(&challenge.nonce) {
+        return Err(fail(state, "Malformed challenge nonce"));
+    }
+
+    // Sign a typed, audience-bound wrapper — never the peer-chosen nonce verbatim.
+    let response = challenge_response_payload(&challenge.nonce, &state.local_did, &remote_did);
+    let challenge_signature = match callbacks.sign(&response).await {
+        Ok(sig) => sig,
+        Err(e) => return Err(fail(state, &format!("Sign error: {e}"))),
+    };
 
     let routes = callbacks.get_local_routes();
 
     let timestamp = Utc::now().to_rfc3339();
-    let commit_payload = serde_json::json!({
-        "type": "COMMIT",
-        "collectiveDid": state.local_did,
-        "challengeNonce": challenge.nonce,
-        "initialRoutes": routes,
-        "timestamp": timestamp,
-    });
-    let signature = callbacks
-        .sign(&commit_payload.to_string())
-        .await
-        .map_err(|e| {
-            state.phase = HandshakePhase::Failed;
-            state.error = Some(format!("Sign error: {e}"));
-            state.updated_at = Utc::now();
-            (state.clone(), format!("Sign error: {e}"))
-        })?;
-
-    let message = CommitMessage {
+    let mut message = CommitMessage {
         collective_did: state.local_did.clone(),
         challenge_nonce: challenge.nonce.clone(),
         challenge_signature,
         initial_routes: routes,
-        signature,
+        signature: String::new(),
         timestamp,
+    };
+    let signed = match message_signing_payload(&message) {
+        Ok(payload) => callbacks.sign(&payload).await,
+        Err(e) => Err(e),
+    };
+    message.signature = match signed {
+        Ok(sig) => sig,
+        Err(e) => return Err(fail(state, &format!("Sign error: {e}"))),
     };
 
     state.phase = HandshakePhase::CommitSent;
@@ -379,28 +366,37 @@ pub async fn handle_commit(
         }
     }
 
-    // Nonce must match.
-    if state.challenge_nonce.as_deref() != Some(&commit.challenge_nonce) {
-        state.phase = HandshakePhase::Failed;
-        state.error = Some("Nonce mismatch".to_string());
-        state.updated_at = Utc::now();
-        return Err((state, "Challenge nonce mismatch".to_string()));
+    // Only the collective we challenged may answer.
+    let Some(remote_did) = state.remote_did.clone() else {
+        return Err(fail(state, "No remote DID for COMMIT"));
+    };
+    if commit.collective_did != remote_did {
+        return Err(fail(state, "COMMIT from unexpected sender"));
     }
 
-    // Verify the nonce signature from the remote peer.
-    let nonce_valid = callbacks
-        .verify_signature(
-            &commit.collective_did,
-            &commit.challenge_nonce,
-            &commit.challenge_signature,
-        )
-        .await
-        .unwrap_or(false);
+    // Nonce must be well-formed and match.
+    if !is_valid_challenge_nonce(&commit.challenge_nonce)
+        || state.challenge_nonce.as_deref() != Some(&commit.challenge_nonce)
+    {
+        return Err(fail(state, "Challenge nonce mismatch"));
+    }
+
+    // The COMMIT itself (routes, timestamp, challenge response) must be
+    // signed by the peer.
+    if !verify_signed(&remote_did, commit, &commit.signature, callbacks).await {
+        return Err(fail(state, "Invalid COMMIT signature"));
+    }
+
+    // Verify the challenge response: the typed wrapper, addressed to us.
+    let response =
+        challenge_response_payload(&commit.challenge_nonce, &remote_did, &state.local_did);
+    let nonce_valid = !commit.challenge_signature.is_empty()
+        && callbacks
+            .verify_signature(&remote_did, &response, &commit.challenge_signature)
+            .await
+            .unwrap_or(false);
     if !nonce_valid {
-        state.phase = HandshakePhase::Failed;
-        state.error = Some("Invalid nonce signature".to_string());
-        state.updated_at = Utc::now();
-        return Err((state, "Invalid challenge nonce signature".to_string()));
+        return Err(fail(state, "Invalid challenge nonce signature"));
     }
 
     // Generate session ID (16 random bytes as hex = 32 hex chars).
@@ -410,31 +406,21 @@ pub async fn handle_commit(
     let keepalive = state.keepalive_seconds.unwrap_or(DEFAULT_KEEPALIVE_SECONDS);
 
     let timestamp = Utc::now().to_rfc3339();
-    let est_payload = serde_json::json!({
-        "type": "ESTABLISHED",
-        "sessionId": session_id,
-        "collectiveDid": state.local_did,
-        "initialRoutes": routes,
-        "keepaliveIntervalSeconds": keepalive,
-        "timestamp": timestamp,
-    });
-    let signature = callbacks
-        .sign(&est_payload.to_string())
-        .await
-        .map_err(|e| {
-            state.phase = HandshakePhase::Failed;
-            state.error = Some(format!("Sign error: {e}"));
-            state.updated_at = Utc::now();
-            (state.clone(), format!("Sign error: {e}"))
-        })?;
-
-    let message = EstablishedMessage {
+    let mut message = EstablishedMessage {
         session_id: session_id.clone(),
         collective_did: state.local_did.clone(),
         initial_routes: routes,
         keepalive_interval_seconds: keepalive,
-        signature,
+        signature: String::new(),
         timestamp,
+    };
+    let signed = match message_signing_payload(&message) {
+        Ok(payload) => callbacks.sign(&payload).await,
+        Err(e) => Err(e),
+    };
+    message.signature = match signed {
+        Ok(sig) => sig,
+        Err(e) => return Err(fail(state, &format!("Sign error: {e}"))),
     };
 
     state.phase = HandshakePhase::Established;
@@ -444,18 +430,31 @@ pub async fn handle_commit(
     Ok((state, message))
 }
 
-/// Handle an incoming ESTABLISHED: verify CommitSent phase, transition to Established.
-pub fn handle_established(
-    mut state: HandshakeState,
+/// Handle an incoming ESTABLISHED: verify CommitSent phase, that it comes
+/// from (and is signed by) the collective we committed to, and transition to
+/// Established.
+pub async fn handle_established(
+    state: HandshakeState,
     established: &EstablishedMessage,
+    callbacks: &dyn HandshakeCallbacks,
 ) -> HandshakeState {
     if state.phase != HandshakePhase::CommitSent {
-        state.phase = HandshakePhase::Failed;
-        state.error = Some("Unexpected ESTABLISHED".to_string());
-        state.updated_at = Utc::now();
-        return state;
+        return fail(state, "Unexpected ESTABLISHED").0;
+    }
+    let Some(remote_did) = state.remote_did.clone() else {
+        return fail(state, "No remote DID for ESTABLISHED").0;
+    };
+    if established.collective_did != remote_did {
+        return fail(state, "ESTABLISHED from unexpected sender").0;
+    }
+    if established.session_id.is_empty() {
+        return fail(state, "ESTABLISHED without session id").0;
+    }
+    if !verify_signed(&remote_did, established, &established.signature, callbacks).await {
+        return fail(state, "Invalid ESTABLISHED signature").0;
     }
 
+    let mut state = state;
     state.phase = HandshakePhase::Established;
     state.session_id = Some(established.session_id.clone());
     state.keepalive_seconds = Some(established.keepalive_interval_seconds);
@@ -580,7 +579,7 @@ mod tests {
         assert!(!established.initial_routes.is_empty());
 
         // --- Initiator receives ESTABLISHED ---
-        let initiator_state = handle_established(initiator_state, &established);
+        let initiator_state = handle_established(initiator_state, &established, &cb).await;
         assert_eq!(initiator_state.phase, HandshakePhase::Established);
         assert_eq!(initiator_state.session_id, Some(established.session_id));
     }
@@ -615,13 +614,14 @@ mod tests {
         let cb = MockCallbacks;
         let mut state = create_handshake("did:web:local");
         state.phase = HandshakePhase::ChallengeSent;
-        state.challenge_nonce = Some("correct-nonce".to_string());
+        state.remote_did = Some("did:web:remote".to_string());
+        state.challenge_nonce = Some("a".repeat(64));
         state.challenge_expires_at =
             Some(Utc::now() + chrono::Duration::seconds(120));
 
         let commit = CommitMessage {
             collective_did: "did:web:remote".into(),
-            challenge_nonce: "wrong-nonce".into(),
+            challenge_nonce: "b".repeat(64),
             challenge_signature: "sig".into(),
             initial_routes: vec![],
             signature: "sig".into(),
@@ -634,8 +634,8 @@ mod tests {
         assert!(err_msg.contains("nonce mismatch"));
     }
 
-    #[test]
-    fn handle_established_rejects_wrong_phase() {
+    #[tokio::test]
+    async fn handle_established_rejects_wrong_phase() {
         let state = create_handshake("did:web:local");
         // State is Idle, not CommitSent.
         let established = EstablishedMessage {
@@ -647,7 +647,7 @@ mod tests {
             timestamp: Utc::now().to_rfc3339(),
         };
 
-        let state = handle_established(state, &established);
+        let state = handle_established(state, &established, &MockCallbacks).await;
         assert_eq!(state.phase, HandshakePhase::Failed);
     }
 
@@ -705,5 +705,251 @@ mod tests {
         let (failed_state, err_msg) = result.unwrap_err();
         assert_eq!(failed_state.phase, HandshakePhase::Failed);
         assert!(err_msg.contains("Policy denied"));
+    }
+
+    // ── Real signatures ─────────────────────────────────────────────────────
+    //
+    // The mocks above accept any signature, which is how a HELLO whose signed
+    // bytes differed from the verified bytes went unnoticed. These tests use a
+    // real keyed MAC (HMAC-SHA256, one key per DID): a signature verifies only
+    // over the exact bytes it was made over, so any sign/verify payload
+    // mismatch fails. (The crate has no asymmetric signer of its own; real key
+    // material is injected by the embedding service.)
+
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    use std::collections::HashMap;
+
+    struct RealCallbacks {
+        me: String,
+        keys: HashMap<String, Vec<u8>>,
+        routes: Vec<RouteAnnouncement>,
+    }
+
+    impl RealCallbacks {
+        fn new(me: &str, routes: Vec<RouteAnnouncement>) -> Self {
+            let keys = ["did:web:alpha", "did:web:beta", "did:web:mallory"]
+                .iter()
+                .map(|d| (d.to_string(), format!("key-of-{d}").into_bytes()))
+                .collect();
+            Self { me: me.to_string(), keys, routes }
+        }
+
+        fn mac(&self, did: &str, payload: &str) -> Option<String> {
+            let key = self.keys.get(did)?;
+            let mut mac = Hmac::<Sha256>::new_from_slice(key).ok()?;
+            mac.update(payload.as_bytes());
+            Some(hex::encode(mac.finalize().into_bytes()))
+        }
+    }
+
+    #[async_trait]
+    impl HandshakeCallbacks for RealCallbacks {
+        async fn sign(&self, payload: &str) -> Result<String, CoordError> {
+            self.mac(&self.me, payload)
+                .ok_or_else(|| CoordError::Protocol("no key".into()))
+        }
+        async fn verify_signature(
+            &self,
+            did: &str,
+            payload: &str,
+            signature: &str,
+        ) -> Result<bool, CoordError> {
+            Ok(self.mac(did, payload).as_deref() == Some(signature))
+        }
+        async fn evaluate_policy(&self, _: &str, _: &FederationType) -> Result<bool, CoordError> {
+            Ok(true)
+        }
+        fn get_local_routes(&self) -> Vec<RouteAnnouncement> {
+            self.routes.clone()
+        }
+    }
+
+    fn route(prefix: &str, origin: &str) -> RouteAnnouncement {
+        RouteAnnouncement {
+            prefix: prefix.into(),
+            origin_did: origin.into(),
+            path_vector: vec![origin.into()],
+            community_tags: vec![],
+            preference: 100,
+            origin_signature: "osig".into(),
+        }
+    }
+
+    /// Serialize and parse a message, as an HTTP hop does.
+    fn wire<T: serde::Serialize + serde::de::DeserializeOwned>(m: &T) -> T {
+        serde_json::from_str(&serde_json::to_string(m).unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn real_signatures_full_handshake() {
+        let alpha = RealCallbacks::new("did:web:alpha", vec![route("10.1.0.0/24", "did:web:alpha")]);
+        let beta = RealCallbacks::new("did:web:beta", vec![route("10.2.0.0/24", "did:web:beta")]);
+
+        let (a_state, hello) = initiate_hello(
+            create_handshake("did:web:alpha"),
+            "did:web:beta",
+            FederationType::Peer,
+            vec!["10.1.0.0/24".into()],
+            vec![Capability::RouteExchange],
+            &alpha,
+        )
+        .await
+        .unwrap();
+
+        let (b_state, challenge) = handle_hello(
+            create_handshake("did:web:beta"),
+            &wire(&hello),
+            &["10.2.0.0/24".into()],
+            &[Capability::RouteExchange],
+            &beta,
+        )
+        .await
+        .expect("HELLO signed by the initiator must verify");
+
+        let (a_state, commit) = handle_challenge(a_state, &wire(&challenge), &alpha)
+            .await
+            .expect("CHALLENGE signed by the responder must verify");
+
+        let (b_state, established) = handle_commit(b_state, &wire(&commit), &beta)
+            .await
+            .expect("COMMIT signed by the initiator must verify");
+        assert_eq!(b_state.phase, HandshakePhase::Established);
+
+        let a_state = handle_established(a_state, &wire(&established), &alpha).await;
+        assert_eq!(a_state.phase, HandshakePhase::Established, "{:?}", a_state.error);
+        assert_eq!(a_state.session_id, b_state.session_id);
+    }
+
+    #[tokio::test]
+    async fn real_signatures_reject_tampered_hello() {
+        let alpha = RealCallbacks::new("did:web:alpha", vec![]);
+        let beta = RealCallbacks::new("did:web:beta", vec![]);
+        let (_, mut hello) = initiate_hello(
+            create_handshake("did:web:alpha"),
+            "did:web:beta",
+            FederationType::Peer,
+            vec!["10.1.0.0/24".into()],
+            vec![Capability::RouteExchange],
+            &alpha,
+        )
+        .await
+        .unwrap();
+        hello.offered_cidrs = vec!["0.0.0.0/0".into()];
+        let err = handle_hello(create_handshake("did:web:beta"), &hello, &[], &[], &beta)
+            .await
+            .unwrap_err();
+        assert!(err.1.contains("Invalid HELLO signature"));
+    }
+
+    async fn up_to_commit() -> (HandshakeState, CommitMessage, RealCallbacks) {
+        let alpha = RealCallbacks::new("did:web:alpha", vec![route("10.1.0.0/24", "did:web:alpha")]);
+        let beta = RealCallbacks::new("did:web:beta", vec![]);
+        let (a_state, hello) = initiate_hello(
+            create_handshake("did:web:alpha"),
+            "did:web:beta",
+            FederationType::Peer,
+            vec![],
+            vec![Capability::RouteExchange],
+            &alpha,
+        )
+        .await
+        .unwrap();
+        let (b_state, challenge) =
+            handle_hello(create_handshake("did:web:beta"), &hello, &[], &[], &beta)
+                .await
+                .unwrap();
+        let (_, commit) = handle_challenge(a_state, &challenge, &alpha).await.unwrap();
+        (b_state, commit, beta)
+    }
+
+    #[tokio::test]
+    async fn real_signatures_reject_commit_with_altered_routes() {
+        let (b_state, mut commit, beta) = up_to_commit().await;
+        commit.initial_routes.push(route("0.0.0.0/0", "did:web:alpha"));
+        let err = handle_commit(b_state, &commit, &beta).await.unwrap_err();
+        assert!(err.1.contains("Invalid COMMIT signature"), "{}", err.1);
+    }
+
+    #[tokio::test]
+    async fn real_signatures_reject_commit_from_other_did() {
+        let (b_state, mut commit, beta) = up_to_commit().await;
+        // Mallory re-signs the COMMIT under her own DID.
+        let mallory = RealCallbacks::new("did:web:mallory", vec![]);
+        commit.collective_did = "did:web:mallory".into();
+        commit.signature = mallory
+            .sign(&message_signing_payload(&commit).unwrap())
+            .await
+            .unwrap();
+        let err = handle_commit(b_state, &commit, &beta).await.unwrap_err();
+        assert!(err.1.contains("unexpected sender"), "{}", err.1);
+    }
+
+    #[tokio::test]
+    async fn challenge_response_is_not_a_signature_over_the_bare_nonce() {
+        let (b_state, commit, beta) = up_to_commit().await;
+        let nonce = b_state.challenge_nonce.clone().unwrap();
+        // The response does not verify as a signature over the nonce itself...
+        assert!(!beta
+            .verify_signature("did:web:alpha", &nonce, &commit.challenge_signature)
+            .await
+            .unwrap());
+        // ...and a signature over the bare nonce is not accepted as a response.
+        let alpha = RealCallbacks::new("did:web:alpha", vec![]);
+        let mut forged = commit.clone();
+        forged.challenge_signature = alpha.sign(&nonce).await.unwrap();
+        forged.signature = alpha
+            .sign(&message_signing_payload(&forged).unwrap())
+            .await
+            .unwrap();
+        let err = handle_commit(b_state, &forged, &beta).await.unwrap_err();
+        assert!(err.1.contains("nonce signature"), "{}", err.1);
+    }
+
+    #[tokio::test]
+    async fn refuses_to_sign_malformed_nonce() {
+        let alpha = RealCallbacks::new("did:web:alpha", vec![]);
+        let beta = RealCallbacks::new("did:web:beta", vec![]);
+        let (a_state, hello) = initiate_hello(
+            create_handshake("did:web:alpha"),
+            "did:web:beta",
+            FederationType::Peer,
+            vec![],
+            vec![],
+            &alpha,
+        )
+        .await
+        .unwrap();
+        let (_, mut challenge) =
+            handle_hello(create_handshake("did:web:beta"), &hello, &[], &[], &beta)
+                .await
+                .unwrap();
+        challenge.nonce = r#"{"type":"LINK_REVOKE"}"#.into();
+        challenge.signature = beta
+            .sign(&message_signing_payload(&challenge).unwrap())
+            .await
+            .unwrap();
+        let err = handle_challenge(a_state, &challenge, &alpha).await.unwrap_err();
+        assert!(err.1.contains("Malformed"), "{}", err.1);
+    }
+
+    #[tokio::test]
+    async fn real_signatures_reject_forged_established() {
+        let alpha = RealCallbacks::new("did:web:alpha", vec![]);
+        let mut state = create_handshake("did:web:alpha");
+        state.phase = HandshakePhase::CommitSent;
+        state.remote_did = Some("did:web:beta".into());
+        let mallory = RealCallbacks::new("did:web:mallory", vec![]);
+        let mut est = EstablishedMessage {
+            session_id: "s".into(),
+            collective_did: "did:web:beta".into(),
+            initial_routes: vec![],
+            keepalive_interval_seconds: 60,
+            signature: String::new(),
+            timestamp: Utc::now().to_rfc3339(),
+        };
+        est.signature = mallory.sign(&message_signing_payload(&est).unwrap()).await.unwrap();
+        let state = handle_established(state, &est, &alpha).await;
+        assert_eq!(state.phase, HandshakePhase::Failed);
     }
 }

@@ -25,6 +25,8 @@ import {
   getTenantForUser,
   hasPermission,
   isLockedDown,
+  isDeviceLocked,
+  DEVICE_LOCKED_ERROR,
   toHsUsername,
   tenantLoginServer,
   authUserId,
@@ -104,6 +106,13 @@ servicesRouter.post(
     const parsed = serviceDeviceBody.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
+      return;
+    }
+
+    // Service devices mint pre-auth keys too — honour device locks exactly
+    // like the regular auth-key path.
+    if (await isDeviceLocked(tenantId, userId)) {
+      res.status(403).json({ error: DEVICE_LOCKED_ERROR });
       return;
     }
 
@@ -224,6 +233,12 @@ servicesRouter.post(
 
     if (!device) {
       res.status(404).json({ error: "Pending service device not found" });
+      return;
+    }
+
+    // The owner may have been device-locked after filing the request
+    if (await isDeviceLocked(tenantId, device.ownerId)) {
+      res.status(409).json({ error: "Device owner is locked to specific devices — remove the lock first" });
       return;
     }
 

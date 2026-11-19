@@ -18,11 +18,12 @@ use coord_core::types::{
 };
 
 use crate::abuse::{RateLimiter, ReplayGuard};
-use crate::auth::{filter_imported_prefixes, is_fresh};
+use crate::auth::{filter_imported_prefixes, is_fresh, message_signing_payload};
+use crate::discovery::is_allowed_broker_url;
 use crate::broker::BrokerConfig;
 use crate::handshake::{self, HandshakeCallbacks, HandshakeState};
 use crate::protocol::{
-    ChallengeMessage, CommitMessage, EstablishedMessage, HelloMessage, KeepaliveMessage,
+    CfpSigned, ChallengeMessage, CommitMessage, EstablishedMessage, HelloMessage, KeepaliveMessage,
     LinkAcceptMessage, LinkRejectMessage, LinkRequestMessage, LinkRevokeMessage, RevokeMessage,
     CFP_VERSION,
 };
@@ -120,8 +121,47 @@ fn validate_cidrs(cidrs: &[String]) -> Result<(), InboundError> {
         if cidr.len() > MAX_CIDR_LEN {
             return Err(InboundError::BadRequest("CIDR too long".into()));
         }
-        if cidr.parse::<ipnetwork::IpNetwork>().is_err() {
-            return Err(InboundError::BadRequest(format!("Invalid CIDR: {cidr}")));
+        match cidr.parse::<ipnetwork::IpNetwork>() {
+            Err(_) => return Err(InboundError::BadRequest(format!("Invalid CIDR: {cidr}"))),
+            Ok(net) if net.prefix() == 0 => {
+                return Err(InboundError::BadRequest(format!(
+                    "Default route {cidr} cannot be shared"
+                )))
+            }
+            Ok(_) => {}
+        }
+    }
+    Ok(())
+}
+
+/// Reject peer-offered CIDRs that overlap `local` (what we export on the link —
+/// our own prefixes) or `other_peer` (prefixes imported over other active
+/// links). Inputs must already have passed [`validate_cidrs`].
+fn check_cidr_conflicts(
+    offered: &[String],
+    local: &[String],
+    other_peer: &[String],
+) -> Result<(), InboundError> {
+    let parse = |c: &String| c.parse::<ipnetwork::IpNetwork>().ok();
+    let overlaps = |a: &ipnetwork::IpNetwork, b: &ipnetwork::IpNetwork| match (a, b) {
+        (ipnetwork::IpNetwork::V4(a), ipnetwork::IpNetwork::V4(b)) => {
+            a.contains(b.network()) || b.contains(a.network())
+        }
+        (ipnetwork::IpNetwork::V6(a), ipnetwork::IpNetwork::V6(b)) => {
+            a.contains(b.network()) || b.contains(a.network())
+        }
+        _ => false,
+    };
+    for o in offered.iter().filter_map(parse) {
+        if local.iter().filter_map(parse).any(|l| overlaps(&o, &l)) {
+            return Err(InboundError::BadRequest(format!(
+                "{o} overlaps a prefix this collective shares"
+            )));
+        }
+        if other_peer.iter().filter_map(parse).any(|p| overlaps(&o, &p)) {
+            return Err(InboundError::BadRequest(format!(
+                "{o} overlaps a prefix imported from another peer"
+            )));
         }
     }
     Ok(())
@@ -134,15 +174,33 @@ pub struct InboundHandler<S: FederationStore + ?Sized> {
     config: BrokerConfig,
     /// Pending handshakes keyed by the challenge nonce.
     pending_handshakes: Mutex<HashMap<String, PendingHandshake>>,
-    /// Per-DID rate limiter for inbound federation messages.
+    /// Cheap limit on all inbound messages, applied before any signature
+    /// verification or DID resolution. (The handlers are not given the
+    /// client IP, so a per-IP limit belongs in the HTTP layer.)
+    global_limiter: Mutex<RateLimiter>,
+    /// Per-DID rate limiter, applied only once the sender is authenticated
+    /// (keying on a claimed DID would let anyone exhaust a peer's budget).
     rate_limiter: Mutex<RateLimiter>,
-    /// Replay guard keyed by message nonce/timestamp to prevent replays.
+    /// Replay guard keyed on (authenticated sender, message type, message id
+    /// or signature); recorded only after the signature verifies.
     replay_guard: Mutex<ReplayGuard>,
 }
 
 const RATE_LIMIT_WINDOW_MS: u64 = 60_000;
 const RATE_LIMIT_MAX_HITS: u32 = 60;
-const REPLAY_WINDOW_SECS: u64 = 300;
+/// Global pre-verification budget across all senders.
+const GLOBAL_RATE_LIMIT_MAX_HITS: u32 = 1_200;
+const GLOBAL_RATE_KEY: &str = "*";
+/// Retention for replay keys: twice the ±skew freshness span plus margin, so a
+/// message can never become replayable while its timestamp is still fresh.
+const REPLAY_WINDOW: Duration =
+    Duration::from_secs(2 * crate::auth::MAX_MESSAGE_SKEW.as_secs() + 60);
+/// Max pending handshakes held between HELLO and COMMIT.
+const MAX_PENDING_HANDSHAKES: usize = 1_000;
+
+fn store_err(e: impl std::fmt::Display) -> InboundError {
+    InboundError::Internal(format!("Store error: {e}"))
+}
 
 impl<S: FederationStore + ?Sized> InboundHandler<S> {
     pub fn new(store: Arc<S>, config: BrokerConfig) -> Self {
@@ -150,23 +208,50 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
             store,
             config,
             pending_handshakes: Mutex::new(HashMap::new()),
+            global_limiter: Mutex::new(RateLimiter::new(
+                RATE_LIMIT_WINDOW_MS,
+                GLOBAL_RATE_LIMIT_MAX_HITS,
+            )),
             rate_limiter: Mutex::new(RateLimiter::new(RATE_LIMIT_WINDOW_MS, RATE_LIMIT_MAX_HITS)),
-            replay_guard: Mutex::new(ReplayGuard::new(Duration::from_secs(REPLAY_WINDOW_SECS))),
+            replay_guard: Mutex::new(ReplayGuard::new(REPLAY_WINDOW)),
         }
     }
 
-    async fn check_rate_limit(&self, key: &str) -> Result<(), InboundError> {
-        let mut limiter = self.rate_limiter.lock().await;
-        if !limiter.check(key) {
+    /// Pre-verification limit shared by every inbound message.
+    async fn check_global_limit(&self) -> Result<(), InboundError> {
+        if !self.global_limiter.lock().await.check(GLOBAL_RATE_KEY) {
             return Err(InboundError::RateLimited);
         }
         Ok(())
     }
 
-    async fn check_replay(&self, nonce: &str) -> Result<(), InboundError> {
+    /// Per-sender limit. Call only with a DID whose signature has verified.
+    async fn check_rate_limit(&self, authenticated_did: &str) -> Result<(), InboundError> {
+        let mut limiter = self.rate_limiter.lock().await;
+        if !limiter.check(authenticated_did) {
+            return Err(InboundError::RateLimited);
+        }
+        Ok(())
+    }
+
+    /// Record an authenticated message; fails if it was already seen.
+    async fn check_replay(
+        &self,
+        sender_did: &str,
+        message_type: &str,
+        message_key: &str,
+    ) -> Result<(), InboundError> {
+        let key = format!("{sender_did}\u{1f}{message_type}\u{1f}{message_key}");
         let mut guard = self.replay_guard.lock().await;
-        if !guard.check(nonce) {
-            return Err(InboundError::BadRequest("Duplicate message (replay detected)".into()));
+        if !guard.check(&key) {
+            return Err(InboundError::Conflict("Duplicate message (replay detected)".into()));
+        }
+        Ok(())
+    }
+
+    fn check_fresh(timestamp: &str) -> Result<(), InboundError> {
+        if !is_fresh(timestamp) {
+            return Err(InboundError::BadRequest("Message timestamp too old or too new".into()));
         }
         Ok(())
     }
@@ -175,35 +260,46 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
         &self.store
     }
 
-    async fn verify_msg_signature<T: serde::Serialize>(
+    /// Verify `msg`'s signature by `did` over the canonical signing payload —
+    /// the exact bytes the sender signed (see `message_signing_payload`).
+    /// Signatures are always required.
+    async fn verify_msg_signature<T: CfpSigned>(
         &self,
         did: &str,
         msg: &T,
+        signature: Option<&str>,
         callbacks: &dyn HandshakeCallbacks,
-        require_signature: bool,
     ) -> Result<(), InboundError> {
-        let value = serde_json::to_value(msg)
-            .map_err(|e| InboundError::BadRequest(format!("Serialization error: {e}")))?;
-
-        let signature = value
-            .get("signature")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        if signature.is_empty() {
-            if require_signature {
-                return Err(InboundError::Forbidden("Missing message signature".into()));
-            }
-            return Ok(());
-        }
-
-        let payload = crate::auth::signed_payload(&value);
+        let signature = match signature {
+            Some(s) if !s.is_empty() => s,
+            _ => return Err(InboundError::Forbidden("Missing message signature".into())),
+        };
+        // Never treat a serialization failure as "no signature to check".
+        let payload = message_signing_payload(msg)
+            .map_err(|_| InboundError::Forbidden("Signature verification failed".into()))?;
 
         match callbacks.verify_signature(did, &payload, signature).await {
             Ok(true) => Ok(()),
             Ok(false) => Err(InboundError::Forbidden("Invalid message signature".into())),
             Err(_) => Err(InboundError::Forbidden("Signature verification failed".into())),
         }
+    }
+
+    /// Prefixes imported over the tenant's other active links.
+    async fn other_peer_cidrs(
+        &self,
+        tenant_id: TenantId,
+        exclude: Option<LinkId>,
+    ) -> Result<Vec<String>, InboundError> {
+        Ok(self
+            .store
+            .list_active_links()
+            .await
+            .map_err(store_err)?
+            .into_iter()
+            .filter(|l| l.local_tenant_id == tenant_id && Some(l.id) != exclude)
+            .flat_map(|l| l.peer_cidrs)
+            .collect())
     }
 
     /// Handle an inbound HELLO message.
@@ -217,22 +313,22 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
         hello: HelloMessage,
         callbacks: &dyn HandshakeCallbacks,
     ) -> Result<ChallengeMessage, InboundError> {
+        self.check_global_limit().await?;
         validate_did(&hello.collective_did)?;
         validate_cidrs(&hello.offered_cidrs)?;
+        Self::check_fresh(&hello.timestamp)?;
 
+        self.verify_msg_signature(&hello.collective_did, &hello, Some(&hello.signature), callbacks)
+            .await?;
         self.check_rate_limit(&hello.collective_did).await?;
-        self.check_replay(&hello.timestamp).await?;
-
-        if !is_fresh(&hello.timestamp) {
-            return Err(InboundError::BadRequest("Message timestamp too old or too new".into()));
-        }
+        self.check_replay(&hello.collective_did, "HELLO", &hello.signature).await?;
 
         // The sender must have an active link with us.
         let link = self
             .store
             .find_active_link(recipient_tenant_id, &hello.collective_did)
             .await
-            .map_err(|e| InboundError::Internal(format!("Store error: {e}")))?
+            .map_err(store_err)?
             .ok_or_else(|| {
                 InboundError::Forbidden(format!(
                     "No active federation link with {}",
@@ -268,6 +364,19 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
             // Cleanup expired handshakes while we're here.
             let now = Utc::now();
             handshakes.retain(|_, h| h.expires_at > now);
+            // Bound memory: drop the soonest-expiring entries when full.
+            while handshakes.len() >= MAX_PENDING_HANDSHAKES {
+                let oldest = handshakes
+                    .iter()
+                    .min_by_key(|(_, h)| h.expires_at)
+                    .map(|(k, _)| k.clone());
+                match oldest {
+                    Some(k) => {
+                        handshakes.remove(&k);
+                    }
+                    None => break,
+                }
+            }
             handshakes.insert(nonce, pending);
         }
 
@@ -290,45 +399,58 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
         commit: CommitMessage,
         callbacks: &dyn HandshakeCallbacks,
     ) -> Result<EstablishedMessage, InboundError> {
-        self.check_replay(&commit.timestamp).await?;
+        self.check_global_limit().await?;
+        validate_did(&commit.collective_did)?;
+        Self::check_fresh(&commit.timestamp)?;
 
-        if !is_fresh(&commit.timestamp) {
-            return Err(InboundError::BadRequest("Message timestamp too old or too new".into()));
-        }
-
-        // Look up the pending handshake.
+        // Look up the pending handshake. Only the tenant that issued the
+        // challenge, answered by the collective it challenged, may consume it.
         let pending = {
             let mut handshakes = self.pending_handshakes.lock().await;
-            handshakes.remove(&commit.challenge_nonce)
+            match handshakes.get(&commit.challenge_nonce) {
+                Some(p)
+                    if p.local_tenant_id == recipient_tenant_id
+                        && p.state.remote_did.as_deref() == Some(commit.collective_did.as_str()) =>
+                {
+                    handshakes.remove(&commit.challenge_nonce)
+                }
+                _ => None,
+            }
         };
 
         let pending = pending.ok_or_else(|| {
             InboundError::NotFound("No pending handshake for this challenge nonce".into())
         })?;
 
-        // Verify tenant matches.
-        if pending.local_tenant_id != recipient_tenant_id {
-            return Err(InboundError::Forbidden("Tenant mismatch".into()));
-        }
-
         // Check expiry.
         if pending.expires_at < Utc::now() {
             return Err(InboundError::Gone("Handshake expired".into()));
         }
 
-        // Run the handshake state machine.
+        // Run the handshake state machine: verifies the sender, the COMMIT's
+        // own signature and the challenge response.
         let (state, established) = handshake::handle_commit(pending.state, &commit, callbacks)
             .await
-            .map_err(|(_state, err)| InboundError::BadRequest(err))?;
+            .map_err(|(_state, err)| InboundError::Forbidden(err))?;
 
-        // Filter imported prefixes: only accept what was agreed on the link.
+        self.check_rate_limit(&commit.collective_did).await?;
+        self.check_replay(&commit.collective_did, "COMMIT", &commit.signature).await?;
+
+        // Operators may have revoked the link since the HELLO.
         let link = self
             .store
             .get_link(pending.link_id)
             .await
-            .map_err(|e| InboundError::Internal(format!("Store error: {e}")))?
+            .map_err(store_err)?
             .ok_or_else(|| InboundError::NotFound("Link not found".into()))?;
+        if link.status != LinkStatus::Active
+            || link.local_tenant_id != recipient_tenant_id
+            || link.peer_did != commit.collective_did
+        {
+            return Err(InboundError::Forbidden("Policy denied federation".into()));
+        }
 
+        // Filter imported prefixes: only accept what was agreed on the link.
         let imported_prefixes = filter_imported_prefixes(
             &commit.initial_routes,
             &link.peer_cidrs,
@@ -349,7 +471,7 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
                 imported_prefixes,
             )
             .await
-            .map_err(|e| InboundError::Internal(format!("Store error: {e}")))?;
+            .map_err(store_err)?;
 
         info!(
             recipient_tenant = %recipient_tenant_id,
@@ -363,7 +485,8 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
 
     /// Handle an inbound KEEPALIVE message.
     ///
-    /// Finds the session by CFP session ID, updates the keepalive timestamp,
+    /// Finds the session by CFP session ID, verifies the (mandatory) signature
+    /// of the session's peer, records the keepalive as RECEIVED from the peer,
     /// and returns an ack keepalive.
     pub async fn handle_keepalive(
         &self,
@@ -371,17 +494,14 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
         keepalive: KeepaliveMessage,
         callbacks: &dyn HandshakeCallbacks,
     ) -> Result<KeepaliveMessage, InboundError> {
-        self.check_replay(&keepalive.timestamp).await?;
-
-        if !is_fresh(&keepalive.timestamp) {
-            return Err(InboundError::BadRequest("Message timestamp too old or too new".into()));
-        }
+        self.check_global_limit().await?;
+        Self::check_fresh(&keepalive.timestamp)?;
 
         let session = self
             .store
             .find_session_by_cfp_id(&keepalive.session_id, recipient_tenant_id)
             .await
-            .map_err(|e| InboundError::Internal(format!("Store error: {e}")))?
+            .map_err(store_err)?
             .ok_or_else(|| {
                 InboundError::NotFound(format!(
                     "No session with CFP ID {}",
@@ -389,22 +509,38 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
                 ))
             })?;
 
-        // Verify signature against the session's peer DID (optional for keepalive).
-        self.verify_msg_signature(&session.peer_did, &keepalive, callbacks, false)
-            .await?;
+        // Signed by the session's peer — required.
+        self.verify_msg_signature(
+            &session.peer_did,
+            &keepalive,
+            keepalive.signature.as_deref(),
+            callbacks,
+        )
+        .await?;
+        self.check_rate_limit(&session.peer_did).await?;
+        self.check_replay(
+            &session.peer_did,
+            "KEEPALIVE",
+            keepalive.signature.as_deref().unwrap_or_default(),
+        )
+        .await?;
+
+        if session.status == BrokerSessionStatus::Disconnected {
+            return Err(InboundError::Gone("Session revoked".into()));
+        }
 
         // Update keepalive timestamp.
         self.store
             .update_session_keepalive(session.id)
             .await
-            .map_err(|e| InboundError::Internal(format!("Store error: {e}")))?;
+            .map_err(store_err)?;
 
         // If session was degraded, mark it established again.
         if session.status == BrokerSessionStatus::Degraded {
             self.store
                 .update_session_status(session.id, BrokerSessionStatus::Established, None)
                 .await
-                .map_err(|e| InboundError::Internal(format!("Store error: {e}")))?;
+                .map_err(store_err)?;
         }
 
         // Return an ack keepalive.
@@ -425,17 +561,14 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
         revoke: RevokeMessage,
         callbacks: &dyn HandshakeCallbacks,
     ) -> Result<(), InboundError> {
-        self.check_replay(&revoke.timestamp).await?;
-
-        if !is_fresh(&revoke.timestamp) {
-            return Err(InboundError::BadRequest("Message timestamp too old or too new".into()));
-        }
+        self.check_global_limit().await?;
+        Self::check_fresh(&revoke.timestamp)?;
 
         let session = self
             .store
             .find_session_by_cfp_id(&revoke.session_id, recipient_tenant_id)
             .await
-            .map_err(|e| InboundError::Internal(format!("Store error: {e}")))?
+            .map_err(store_err)?
             .ok_or_else(|| {
                 InboundError::NotFound(format!(
                     "No session with CFP ID {}",
@@ -443,11 +576,11 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
                 ))
             })?;
 
-        self.check_rate_limit(&session.peer_did).await?;
-
         // Verify signature against the session's peer DID.
-        self.verify_msg_signature(&session.peer_did, &revoke, callbacks, true)
+        self.verify_msg_signature(&session.peer_did, &revoke, Some(&revoke.signature), callbacks)
             .await?;
+        self.check_rate_limit(&session.peer_did).await?;
+        self.check_replay(&session.peer_did, "REVOKE", &revoke.signature).await?;
 
         info!(
             session_id = %session.id,
@@ -460,7 +593,7 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
         self.store
             .delete_session(session.id)
             .await
-            .map_err(|e| InboundError::Internal(format!("Store error: {e}")))?;
+            .map_err(store_err)?;
 
         Ok(())
     }
@@ -474,6 +607,7 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
         msg: LinkRequestMessage,
         callbacks: &dyn HandshakeCallbacks,
     ) -> Result<(), InboundError> {
+        self.check_global_limit().await?;
         validate_did(&msg.collective_did)?;
         validate_cidrs(&msg.offered_cidrs)?;
         if msg.broker_url.len() > MAX_URL_LEN {
@@ -482,23 +616,19 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
         if msg.collective_name.len() > MAX_NAME_LEN {
             return Err(InboundError::BadRequest("Collective name too long".into()));
         }
+        Self::check_fresh(&msg.timestamp)?;
 
-        self.check_rate_limit(&msg.collective_did).await?;
-        self.check_replay(&msg.timestamp).await?;
-
-        if !is_fresh(&msg.timestamp) {
-            return Err(InboundError::BadRequest("Message timestamp too old or too new".into()));
-        }
-
-        self.verify_msg_signature(&msg.collective_did, &msg, callbacks, true)
+        self.verify_msg_signature(&msg.collective_did, &msg, Some(&msg.signature), callbacks)
             .await?;
+        self.check_rate_limit(&msg.collective_did).await?;
+        self.check_replay(&msg.collective_did, "LINK_REQUEST", &msg.message_id).await?;
 
         // Check if we already have an active link with this peer.
         let existing = self
             .store
             .find_active_link(recipient_tenant_id, &msg.collective_did)
             .await
-            .map_err(|e| InboundError::Internal(format!("Store error: {e}")))?;
+            .map_err(store_err)?;
         if existing.is_some() {
             return Err(InboundError::Conflict(format!(
                 "Already have an active link with {}",
@@ -506,11 +636,20 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
             )));
         }
 
+        // Resolves the host: rejects private/loopback/CGNAT/ULA/mapped targets.
+        if !is_allowed_broker_url(&msg.broker_url).await {
+            return Err(InboundError::BadRequest("Broker URL not allowed".into()));
+        }
+
+        // Offered prefixes must not collide with what other peers give us.
+        let others = self.other_peer_cidrs(recipient_tenant_id, None).await?;
+        check_cidr_conflicts(&msg.offered_cidrs, &[], &others)?;
+
         // Rate limit: expire oldest pending if over limit.
         self.store
             .expire_oldest_pending(recipient_tenant_id, MAX_PENDING_PER_COLLECTIVE)
             .await
-            .map_err(|e| InboundError::Internal(format!("Store error: {e}")))?;
+            .map_err(store_err)?;
 
         let now = Utc::now();
         let link = FederationLink {
@@ -533,7 +672,7 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
         self.store
             .create_link(link)
             .await
-            .map_err(|e| InboundError::Internal(format!("Store error: {e}")))?;
+            .map_err(store_err)?;
 
         info!(
             recipient_tenant = %recipient_tenant_id,
@@ -546,35 +685,50 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
 
     /// Handle an inbound LINK_ACCEPT message.
     ///
-    /// Finds the corresponding outgoing pending link and activates it.
+    /// Finds the corresponding outgoing pending link and activates it. The
+    /// peer's `accepted_cidrs` become what we import from it, so they are
+    /// validated like an offer: well-formed, no default routes, no overlap
+    /// with what we share on this link or import from other peers.
     pub async fn handle_link_accept(
         &self,
         recipient_tenant_id: TenantId,
         msg: LinkAcceptMessage,
         callbacks: &dyn HandshakeCallbacks,
     ) -> Result<(), InboundError> {
+        self.check_global_limit().await?;
         validate_did(&msg.collective_did)?;
-        self.check_rate_limit(&msg.collective_did).await?;
-        self.check_replay(&msg.timestamp).await?;
-
-        if !is_fresh(&msg.timestamp) {
-            return Err(InboundError::BadRequest("Message timestamp too old or too new".into()));
+        validate_cidrs(&msg.accepted_cidrs)?;
+        if msg.broker_url.len() > MAX_URL_LEN {
+            return Err(InboundError::BadRequest("Broker URL too long".into()));
         }
+        if msg.collective_name.len() > MAX_NAME_LEN {
+            return Err(InboundError::BadRequest("Collective name too long".into()));
+        }
+        Self::check_fresh(&msg.timestamp)?;
 
-        self.verify_msg_signature(&msg.collective_did, &msg, callbacks, true)
+        self.verify_msg_signature(&msg.collective_did, &msg, Some(&msg.signature), callbacks)
             .await?;
+        self.check_rate_limit(&msg.collective_did).await?;
+        self.check_replay(&msg.collective_did, "LINK_ACCEPT", &msg.message_id).await?;
 
         let link = self
             .store
             .find_pending_outgoing_link(recipient_tenant_id, &msg.collective_did)
             .await
-            .map_err(|e| InboundError::Internal(format!("Store error: {e}")))?
+            .map_err(store_err)?
             .ok_or_else(|| {
                 InboundError::NotFound(format!(
                     "No pending outgoing link with {}",
                     msg.collective_did
                 ))
             })?;
+
+        if !is_allowed_broker_url(&msg.broker_url).await {
+            return Err(InboundError::BadRequest("Broker URL not allowed".into()));
+        }
+
+        let others = self.other_peer_cidrs(recipient_tenant_id, Some(link.id)).await?;
+        check_cidr_conflicts(&msg.accepted_cidrs, &link.local_cidrs, &others)?;
 
         self.store
             .update_link_on_accept(
@@ -584,12 +738,12 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
                 msg.collective_name,
             )
             .await
-            .map_err(|e| InboundError::Internal(format!("Store error: {e}")))?;
+            .map_err(store_err)?;
 
         self.store
             .update_link_status(link.id, LinkStatus::Active)
             .await
-            .map_err(|e| InboundError::Internal(format!("Store error: {e}")))?;
+            .map_err(store_err)?;
 
         info!(
             recipient_tenant = %recipient_tenant_id,
@@ -610,22 +764,20 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
         msg: LinkRejectMessage,
         callbacks: &dyn HandshakeCallbacks,
     ) -> Result<(), InboundError> {
+        self.check_global_limit().await?;
         validate_did(&msg.collective_did)?;
-        self.check_rate_limit(&msg.collective_did).await?;
-        self.check_replay(&msg.timestamp).await?;
+        Self::check_fresh(&msg.timestamp)?;
 
-        if !is_fresh(&msg.timestamp) {
-            return Err(InboundError::BadRequest("Message timestamp too old or too new".into()));
-        }
-
-        self.verify_msg_signature(&msg.collective_did, &msg, callbacks, true)
+        self.verify_msg_signature(&msg.collective_did, &msg, Some(&msg.signature), callbacks)
             .await?;
+        self.check_rate_limit(&msg.collective_did).await?;
+        self.check_replay(&msg.collective_did, "LINK_REJECT", &msg.message_id).await?;
 
         let link = self
             .store
             .find_pending_outgoing_link(recipient_tenant_id, &msg.collective_did)
             .await
-            .map_err(|e| InboundError::Internal(format!("Store error: {e}")))?
+            .map_err(store_err)?
             .ok_or_else(|| {
                 InboundError::NotFound(format!(
                     "No pending outgoing link with {}",
@@ -636,7 +788,7 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
         self.store
             .update_link_status(link.id, LinkStatus::Rejected)
             .await
-            .map_err(|e| InboundError::Internal(format!("Store error: {e}")))?;
+            .map_err(store_err)?;
 
         info!(
             recipient_tenant = %recipient_tenant_id,
@@ -658,21 +810,20 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
         msg: LinkRevokeMessage,
         callbacks: &dyn HandshakeCallbacks,
     ) -> Result<(), InboundError> {
-        self.check_rate_limit(&msg.collective_did).await?;
-        self.check_replay(&msg.timestamp).await?;
+        self.check_global_limit().await?;
+        validate_did(&msg.collective_did)?;
+        Self::check_fresh(&msg.timestamp)?;
 
-        if !is_fresh(&msg.timestamp) {
-            return Err(InboundError::BadRequest("Message timestamp too old or too new".into()));
-        }
-
-        self.verify_msg_signature(&msg.collective_did, &msg, callbacks, true)
+        self.verify_msg_signature(&msg.collective_did, &msg, Some(&msg.signature), callbacks)
             .await?;
+        self.check_rate_limit(&msg.collective_did).await?;
+        self.check_replay(&msg.collective_did, "LINK_REVOKE", &msg.message_id).await?;
 
         let link = self
             .store
             .find_active_link(recipient_tenant_id, &msg.collective_did)
             .await
-            .map_err(|e| InboundError::Internal(format!("Store error: {e}")))?
+            .map_err(store_err)?
             .ok_or_else(|| {
                 InboundError::NotFound(format!(
                     "No active link with {}",
@@ -684,19 +835,19 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
         self.store
             .update_link_status(link.id, LinkStatus::Revoked)
             .await
-            .map_err(|e| InboundError::Internal(format!("Store error: {e}")))?;
+            .map_err(store_err)?;
 
         // Tear down any sessions for this link.
         let sessions = self
             .store
             .get_sessions_for_link(link.id)
             .await
-            .map_err(|e| InboundError::Internal(format!("Store error: {e}")))?;
+            .map_err(store_err)?;
         for session in sessions {
             self.store
                 .delete_session(session.id)
                 .await
-                .map_err(|e| InboundError::Internal(format!("Store error: {e}")))?;
+                .map_err(store_err)?;
         }
 
         info!(
@@ -923,7 +1074,7 @@ mod tests {
             session_id: "cfp-test-sess".to_string(),
             sequence_number: 42,
             timestamp: Utc::now().to_rfc3339(),
-            signature: None,
+            signature: Some("sig".to_string()),
         };
 
         let ack = handler
@@ -972,7 +1123,7 @@ mod tests {
         let msg = LinkRequestMessage {
             message_id: "msg-1".to_string(),
             collective_did: "did:web:requester.example.com:collective:test".to_string(),
-            broker_url: "https://requester.example.com".to_string(),
+            broker_url: "https://93.184.216.34".to_string(),
             collective_name: "Requester Collective".to_string(),
             federation_type: FederationType::Peer,
             offered_cidrs: vec!["10.2.0.0/24".to_string()],
@@ -1007,7 +1158,7 @@ mod tests {
         let msg = LinkRequestMessage {
             message_id: "msg-1".to_string(),
             collective_did: peer_did.to_string(),
-            broker_url: "https://requester.example.com".to_string(),
+            broker_url: "https://93.184.216.34".to_string(),
             collective_name: "Requester".to_string(),
             federation_type: FederationType::Peer,
             offered_cidrs: vec![],
@@ -1085,5 +1236,161 @@ mod tests {
             }
             other => panic!("expected BadRequest, got {:?}", other),
         }
+    }
+
+    /// Callbacks whose signature check always fails.
+    struct RejectingCallbacks;
+
+    #[async_trait]
+    impl HandshakeCallbacks for RejectingCallbacks {
+        async fn sign(&self, _payload: &str) -> Result<String, CoordError> {
+            Ok("sig".to_string())
+        }
+        async fn verify_signature(&self, _: &str, _: &str, _: &str) -> Result<bool, CoordError> {
+            Ok(false)
+        }
+        async fn evaluate_policy(&self, _: &str, _: &FederationType) -> Result<bool, CoordError> {
+            Ok(true)
+        }
+        fn get_local_routes(&self) -> Vec<RouteAnnouncement> {
+            vec![]
+        }
+    }
+
+    #[tokio::test]
+    async fn keepalive_without_signature_is_rejected() {
+        let store = Arc::new(FederationMemoryStore::new());
+        let tenant_id = TenantId::generate();
+        let link = make_active_link(tenant_id, "did:web:peer");
+        store.create_link(link.clone()).await.unwrap();
+        store
+            .create_session_if_missing(make_session_for_link(&link))
+            .await
+            .unwrap();
+        let handler = InboundHandler::new(store, test_config());
+
+        let keepalive = KeepaliveMessage {
+            session_id: "cfp-test-sess".to_string(),
+            sequence_number: 1,
+            timestamp: Utc::now().to_rfc3339(),
+            signature: None,
+        };
+        match handler.handle_keepalive(tenant_id, keepalive, &MockCallbacks).await {
+            Err(InboundError::Forbidden(_)) => {}
+            other => panic!("expected Forbidden, got {other:?}"),
+        }
+    }
+
+    fn link_request(id: &str, ts: String) -> LinkRequestMessage {
+        LinkRequestMessage {
+            message_id: id.to_string(),
+            collective_did: "did:web:requester".to_string(),
+            broker_url: "https://93.184.216.34".to_string(),
+            collective_name: "Requester".to_string(),
+            federation_type: FederationType::Peer,
+            offered_cidrs: vec!["10.2.0.0/24".to_string()],
+            capabilities: vec![],
+            message: None,
+            signature: "sig".to_string(),
+            timestamp: ts,
+        }
+    }
+
+    #[tokio::test]
+    async fn forged_messages_do_not_burn_replay_keys_or_rate_budget() {
+        let store = Arc::new(FederationMemoryStore::new());
+        let tenant_id = TenantId::generate();
+        let handler = InboundHandler::new(store.clone(), test_config());
+        let ts = Utc::now().to_rfc3339();
+
+        // More forged copies than the per-DID budget, all with the real id.
+        for _ in 0..(RATE_LIMIT_MAX_HITS + 5) {
+            let r = handler
+                .handle_link_request(tenant_id, link_request("m-1", ts.clone()), &RejectingCallbacks)
+                .await;
+            assert!(matches!(r, Err(InboundError::Forbidden(_))), "{r:?}");
+        }
+        // The genuine message still goes through...
+        handler
+            .handle_link_request(tenant_id, link_request("m-1", ts.clone()), &MockCallbacks)
+            .await
+            .unwrap();
+        // ...exactly once.
+        let r = handler
+            .handle_link_request(tenant_id, link_request("m-1", ts), &MockCallbacks)
+            .await;
+        assert!(matches!(r, Err(InboundError::Conflict(_))), "{r:?}");
+    }
+
+    #[tokio::test]
+    async fn link_request_rejects_default_route_and_private_broker() {
+        let store = Arc::new(FederationMemoryStore::new());
+        let tenant_id = TenantId::generate();
+        let handler = InboundHandler::new(store, test_config());
+
+        let mut msg = link_request("m-2", Utc::now().to_rfc3339());
+        msg.offered_cidrs = vec!["0.0.0.0/0".into()];
+        assert!(matches!(
+            handler.handle_link_request(tenant_id, msg, &MockCallbacks).await,
+            Err(InboundError::BadRequest(_))
+        ));
+
+        let mut msg = link_request("m-3", Utc::now().to_rfc3339());
+        msg.broker_url = "https://169.254.169.254".into();
+        assert!(matches!(
+            handler.handle_link_request(tenant_id, msg, &MockCallbacks).await,
+            Err(InboundError::BadRequest(_))
+        ));
+    }
+
+    fn pending_outgoing(tenant_id: TenantId, peer: &str) -> FederationLink {
+        let mut link = make_active_link(tenant_id, peer);
+        link.direction = LinkDirection::Outgoing;
+        link.status = LinkStatus::Pending;
+        link.peer_cidrs = vec![];
+        link
+    }
+
+    fn link_accept(cidrs: &[&str]) -> LinkAcceptMessage {
+        LinkAcceptMessage {
+            message_id: format!("acc-{}", cidrs.join(",")),
+            in_response_to: "m-1".into(),
+            collective_did: "did:web:acceptor".into(),
+            broker_url: "https://93.184.216.34".into(),
+            collective_name: "Acceptor".into(),
+            accepted_cidrs: cidrs.iter().map(|c| c.to_string()).collect(),
+            signature: "sig".into(),
+            timestamp: Utc::now().to_rfc3339(),
+        }
+    }
+
+    #[tokio::test]
+    async fn link_accept_validates_accepted_cidrs() {
+        let store = Arc::new(FederationMemoryStore::new());
+        let tenant_id = TenantId::generate();
+        let link = pending_outgoing(tenant_id, "did:web:acceptor");
+        store.create_link(link.clone()).await.unwrap();
+        // Another active link already imports 10.9.0.0/16.
+        let mut other = make_active_link(tenant_id, "did:web:other");
+        other.peer_cidrs = vec!["10.9.0.0/16".into()];
+        store.create_link(other).await.unwrap();
+        let handler = InboundHandler::new(store.clone(), test_config());
+
+        for bad in [&["0.0.0.0/0"][..], &["::/0"], &["not-a-cidr"], &["10.0.0.0/16"], &["10.9.1.0/24"]] {
+            let r = handler
+                .handle_link_accept(tenant_id, link_accept(bad), &MockCallbacks)
+                .await;
+            assert!(matches!(r, Err(InboundError::BadRequest(_))), "{bad:?}: {r:?}");
+        }
+        let still = store.get_link(link.id).await.unwrap().unwrap();
+        assert_eq!(still.status, LinkStatus::Pending);
+
+        handler
+            .handle_link_accept(tenant_id, link_accept(&["10.5.0.0/24"]), &MockCallbacks)
+            .await
+            .unwrap();
+        let active = store.get_link(link.id).await.unwrap().unwrap();
+        assert_eq!(active.status, LinkStatus::Active);
+        assert_eq!(active.peer_cidrs, vec!["10.5.0.0/24".to_string()]);
     }
 }

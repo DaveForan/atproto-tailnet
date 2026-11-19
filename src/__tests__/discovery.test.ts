@@ -1,4 +1,23 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
+
+// Broker hosts are resolved via DNS; give the test names fixed answers.
+const DNS: Record<string, string> = {
+  "remote.example.com": "93.184.216.34",
+  "unreachable.example.com": "93.184.216.35",
+  "partial.example.com": "93.184.216.36",
+  "rebind.example.com": "10.0.0.5",
+  "cgnat.example.com": "100.64.3.4",
+  "mapped.example.com": "::ffff:127.0.0.1",
+  "ula.example.com": "fd12::1",
+};
+vi.mock("node:dns/promises", () => ({
+  lookup: vi.fn(async (host: string) => {
+    const address = DNS[host];
+    if (!address) throw Object.assign(new Error(`ENOTFOUND ${host}`), { code: "ENOTFOUND" });
+    return [{ address, family: address.includes(":") ? 6 : 4 }];
+  }),
+}));
+
 import { discoverPeer, isAllowedBrokerUrl } from "../federation/discovery.js";
 
 describe("discoverPeer", () => {
@@ -114,21 +133,38 @@ describe("discoverPeer", () => {
 });
 
 describe("isAllowedBrokerUrl", () => {
-  it("allows HTTPS URLs with public hosts", () => {
-    expect(isAllowedBrokerUrl("https://remote.example.com")).toBe(true);
+  it("allows HTTPS URLs with public hosts", async () => {
+    expect(await isAllowedBrokerUrl("https://remote.example.com")).toBe(true);
   });
 
-  it("rejects HTTP URLs to external hosts", () => {
-    expect(isAllowedBrokerUrl("http://remote.example.com")).toBe(false);
+  it("rejects HTTP URLs to external hosts", async () => {
+    expect(await isAllowedBrokerUrl("http://remote.example.com")).toBe(false);
   });
 
-  it("rejects URLs to private IPs", () => {
-    expect(isAllowedBrokerUrl("https://10.0.0.1")).toBe(false);
-    expect(isAllowedBrokerUrl("https://172.16.0.1")).toBe(false);
-    expect(isAllowedBrokerUrl("https://192.168.1.1")).toBe(false);
+  it("rejects URLs to private IPs", async () => {
+    expect(await isAllowedBrokerUrl("https://10.0.0.1")).toBe(false);
+    expect(await isAllowedBrokerUrl("https://172.16.0.1")).toBe(false);
+    expect(await isAllowedBrokerUrl("https://192.168.1.1")).toBe(false);
   });
 
-  it("rejects non-URL strings", () => {
-    expect(isAllowedBrokerUrl("not a url")).toBe(false);
+  it("rejects CGNAT, unspecified, ULA and IPv4-mapped literals", async () => {
+    expect(await isAllowedBrokerUrl("https://100.64.0.1")).toBe(false);
+    expect(await isAllowedBrokerUrl("https://0.0.0.0")).toBe(false);
+    expect(await isAllowedBrokerUrl("https://[fd00::1]")).toBe(false);
+    expect(await isAllowedBrokerUrl("https://[::ffff:127.0.0.1]")).toBe(false);
+    expect(await isAllowedBrokerUrl("https://[::ffff:a00:1]")).toBe(false);
+  });
+
+  it("rejects names that resolve to non-public addresses, or do not resolve", async () => {
+    expect(await isAllowedBrokerUrl("https://rebind.example.com")).toBe(false);
+    expect(await isAllowedBrokerUrl("https://cgnat.example.com")).toBe(false);
+    expect(await isAllowedBrokerUrl("https://mapped.example.com")).toBe(false);
+    expect(await isAllowedBrokerUrl("https://ula.example.com")).toBe(false);
+    expect(await isAllowedBrokerUrl("https://nxdomain.example.com")).toBe(false);
+  });
+
+  it("rejects non-URL strings and URLs with credentials", async () => {
+    expect(await isAllowedBrokerUrl("not a url")).toBe(false);
+    expect(await isAllowedBrokerUrl("https://user:pw@remote.example.com")).toBe(false);
   });
 });

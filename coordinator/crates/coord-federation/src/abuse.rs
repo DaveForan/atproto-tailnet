@@ -91,37 +91,80 @@ impl RateLimiter {
 
 // ── Replay guard ───────────────────────────────────────────────────────────────
 
-/// Message-ID replay cache. Remembers IDs for the freshness window so a
-/// captured request cannot be replayed within its validity period.
+/// Default cap on remembered message keys.
+pub const DEFAULT_REPLAY_CAPACITY: usize = 100_000;
+
+/// Message replay cache. Callers key entries on the authenticated sender and a
+/// per-message identity (message id or signature) and record them only after
+/// the signature verifies, so forged traffic cannot pre-burn keys.
+///
+/// The window must be at least twice the timestamp freshness skew: a message
+/// stays fresh for ±skew around its timestamp, so a shorter retention lets a
+/// captured message be replayed while it is still fresh.
+///
+/// Expiry is amortised O(1) (entries expire in insertion order from a queue);
+/// memory is bounded by `capacity` — when full, the oldest entries are evicted.
 #[derive(Debug)]
 pub struct ReplayGuard {
     window: Duration,
+    capacity: usize,
     seen: HashMap<String, Instant>,
+    order: VecDeque<(Instant, String)>,
 }
 
 impl ReplayGuard {
     pub fn new(window: Duration) -> Self {
+        Self::with_capacity(window, DEFAULT_REPLAY_CAPACITY)
+    }
+
+    pub fn with_capacity(window: Duration, capacity: usize) -> Self {
         Self {
             window,
+            capacity: capacity.max(1),
             seen: HashMap::new(),
+            order: VecDeque::new(),
         }
     }
 
     /// Returns `true` if this is the first time we've seen `id` in the window
-    /// (i.e., NOT a replay). Returns `false` if it's a duplicate.
+    /// (i.e., NOT a replay) and records it. Returns `false` if it's a duplicate.
     pub fn check(&mut self, id: &str) -> bool {
-        self.sweep();
+        let now = Instant::now();
+        self.expire(now);
         if self.seen.contains_key(id) {
             return false;
         }
-        self.seen.insert(id.to_string(), Instant::now());
+        while self.seen.len() >= self.capacity {
+            match self.order.pop_front() {
+                Some((ts, key)) => self.forget(&key, ts),
+                None => break,
+            }
+        }
+        self.seen.insert(id.to_string(), now);
+        self.order.push_back((now, id.to_string()));
         true
     }
 
     /// Remove expired entries.
     pub fn sweep(&mut self) {
-        let cutoff = Instant::now().checked_sub(self.window).unwrap_or(Instant::now());
-        self.seen.retain(|_, &mut ts| ts > cutoff);
+        self.expire(Instant::now());
+    }
+
+    fn expire(&mut self, now: Instant) {
+        while let Some((ts, _)) = self.order.front() {
+            if now.saturating_duration_since(*ts) < self.window {
+                break;
+            }
+            if let Some((ts, key)) = self.order.pop_front() {
+                self.forget(&key, ts);
+            }
+        }
+    }
+
+    fn forget(&mut self, key: &str, ts: Instant) {
+        if self.seen.get(key) == Some(&ts) {
+            self.seen.remove(key);
+        }
     }
 
     pub fn len(&self) -> usize {
@@ -197,6 +240,17 @@ mod tests {
 
         // After window expires, same ID should be allowed again.
         assert!(guard.check("msg-1"));
+    }
+
+    #[test]
+    fn replay_guard_is_bounded() {
+        let mut guard = ReplayGuard::with_capacity(Duration::from_secs(600), 2);
+        assert!(guard.check("a"));
+        assert!(guard.check("b"));
+        assert!(guard.check("c")); // evicts "a"
+        assert_eq!(guard.len(), 2);
+        assert!(!guard.check("c"));
+        assert!(!guard.check("b"));
     }
 
     #[test]

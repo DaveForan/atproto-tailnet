@@ -33,7 +33,7 @@ impl Default for Config {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env().add_directive("coordinator=info".parse()?))
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .json()
         .init();
 
@@ -51,7 +51,7 @@ async fn main() -> anyhow::Result<()> {
         .unwrap_or(config.listen)
         .parse()?;
 
-    let control_key = coord_noise::generate_control_key();
+    let control_key = load_or_create_control_key(std::env::var("COORD_CONTROL_KEY_PATH").ok())?;
     tracing::info!(
         control_public_key = hex::encode(control_key.public),
         "coordinator starting"
@@ -136,7 +136,7 @@ async fn main() -> anyhow::Result<()> {
     if admin_key.is_some() {
         tracing::info!("admin API key authentication enabled");
     } else {
-        tracing::warn!("COORD_ADMIN_KEY not set — admin API is unauthenticated");
+        tracing::warn!("COORD_ADMIN_KEY not set — admin API is disabled (all admin requests return 503)");
     }
     coordinator = coordinator.with_admin_api_key(admin_key);
 
@@ -163,5 +163,48 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(listen_addr).await?;
     axum::serve(listener, app).await?;
 
+    Ok(())
+}
+
+/// Clients pin the control server's Noise key, so it must survive restarts.
+fn load_or_create_control_key(path: Option<String>) -> anyhow::Result<coord_core::ControlKey> {
+    let Some(path) = path else {
+        tracing::warn!("COORD_CONTROL_KEY_PATH not set; using an ephemeral control key (clients re-handshake after every restart)");
+        return Ok(coord_noise::generate_control_key());
+    };
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => {
+            let bytes = hex::decode(contents.trim())
+                .map_err(|e| anyhow::anyhow!("control key at {path} is not hex: {e}"))?;
+            let secret: [u8; 32] = bytes
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("control key at {path} must be 32 bytes"))?;
+            Ok(coord_noise::control_key_from_secret(secret))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            use rand::RngCore;
+            let mut secret = [0u8; 32];
+            rand::rng().fill_bytes(&mut secret);
+            if let Some(dir) = std::path::Path::new(&path).parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            write_secret_file(&path, &hex::encode(secret))?;
+            tracing::info!(path = %path, "generated new control key");
+            Ok(coord_noise::control_key_from_secret(secret))
+        }
+        Err(e) => Err(anyhow::anyhow!("cannot read control key at {path}: {e}")),
+    }
+}
+
+fn write_secret_file(path: &str, contents: &str) -> anyhow::Result<()> {
+    use std::io::Write;
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    opts.open(path)?.write_all(contents.as_bytes())?;
     Ok(())
 }

@@ -2,20 +2,70 @@ use std::sync::Arc;
 
 use coord_acl::AclEngine;
 use coord_acl::PolicyEngine;
+use std::collections::HashMap;
+use std::sync::RwLock;
+
 use coord_core::keys::{format_machine_key, format_node_key};
-use coord_core::MachineKey;
-use coord_proto::map::{DerpMap, DnsConfig, MapNode, MapResponse, UserProfile};
+use coord_core::{MachineKey, TenantId};
+use coord_proto::map::{DerpMap, DerpRegion, DnsConfig, MapNode, MapResponse, UserProfile};
 use coord_store::{PeerEvent, Store};
+
+#[derive(Debug, Clone)]
+pub struct TenantDerp {
+    pub custom_regions: HashMap<i32, DerpRegion>,
+    pub include_default: bool,
+}
+
+/// Operator-wide default DERP map plus per-tenant overrides.
+pub struct DerpRegistry {
+    default: DerpMap,
+    tenants: RwLock<HashMap<TenantId, TenantDerp>>,
+}
+
+impl DerpRegistry {
+    pub fn new(default: DerpMap) -> Self {
+        Self { default, tenants: RwLock::new(HashMap::new()) }
+    }
+
+    pub fn default_map(&self) -> &DerpMap {
+        &self.default
+    }
+
+    pub fn set_tenant(&self, tenant: TenantId, cfg: TenantDerp) {
+        self.tenants.write().unwrap_or_else(|e| e.into_inner()).insert(tenant, cfg);
+    }
+
+    pub fn get_tenant(&self, tenant: TenantId) -> Option<TenantDerp> {
+        self.tenants.read().unwrap_or_else(|e| e.into_inner()).get(&tenant).cloned()
+    }
+
+    pub fn remove_tenant(&self, tenant: TenantId) {
+        self.tenants.write().unwrap_or_else(|e| e.into_inner()).remove(&tenant);
+    }
+
+    pub fn map_for(&self, tenant: TenantId) -> DerpMap {
+        let Some(cfg) = self.get_tenant(tenant) else {
+            return self.default.clone();
+        };
+        let mut regions = if cfg.include_default {
+            self.default.regions.clone()
+        } else {
+            HashMap::new()
+        };
+        regions.extend(cfg.custom_regions);
+        DerpMap { regions, omit_default_regions: Some(true) }
+    }
+}
 
 pub struct NetmapService {
     store: Arc<Store>,
     acl: Arc<PolicyEngine>,
-    derp_map: DerpMap,
+    derp: Arc<DerpRegistry>,
 }
 
 impl NetmapService {
-    pub fn new(store: Arc<Store>, acl: Arc<PolicyEngine>, derp_map: DerpMap) -> Self {
-        Self { store, acl, derp_map }
+    pub fn new(store: Arc<Store>, acl: Arc<PolicyEngine>, derp: Arc<DerpRegistry>) -> Self {
+        Self { store, acl, derp }
     }
 
     pub async fn build_snapshot(
@@ -45,9 +95,12 @@ impl NetmapService {
         } else {
             self.store.get_peers_with_children(tenant_id, node_id).await
         };
-        let peer_nodes: Vec<MapNode> = peers.iter().map(peer_info_to_map_node).collect();
-
-        let home_region = self.derp_map.regions.keys().min().copied().unwrap_or(1);
+        let derp_map = self.derp.map_for(tenant_id);
+        let home_region = derp_map.regions.keys().min().copied().unwrap_or(1);
+        let peer_nodes: Vec<MapNode> = peers
+            .iter()
+            .map(|p| peer_info_to_map_node(p, home_region))
+            .collect();
 
         let self_node = MapNode {
             id: node_id.as_i64(),
@@ -78,7 +131,7 @@ impl NetmapService {
             },
             peers_changed: None,
             peers_removed: None,
-            derp_map: Some(self.derp_map.clone()),
+            derp_map: Some(derp_map),
             dns_config: Some(DnsConfig {
                 resolvers: Some(vec![]),
                 domains: Some(vec![]),
@@ -112,10 +165,17 @@ impl NetmapService {
                     String::new()
                 };
 
-                let home_region = self.derp_map.regions.keys().min().copied().unwrap_or(1);
+                let home_region = self
+                    .derp
+                    .map_for(detail.tenant_id)
+                    .regions
+                    .keys()
+                    .min()
+                    .copied()
+                    .unwrap_or(1);
                 let peer = MapNode {
                     id: node_id.as_i64(),
-                    stable_id: detail.stable_id,
+                    stable_id: format!("peer-{}", node_id.as_i64()),
                     name: format!("{}.mesh.local.", detail.info.hostname),
                     user: 1,
                     key: node_key,
@@ -127,7 +187,7 @@ impl NetmapService {
                     derp: Some(format!("127.3.3.40:{}", home_region)),
                     home_derp: Some(home_region),
                     hostinfo: None,
-                    online: Some(true),
+                    online: Some(detail.online),
                     last_seen: None,
                     machine_authorized: Some(true),
                     key_expiry: None,
@@ -158,19 +218,20 @@ fn format_key_bytes(key: &[u8]) -> String {
     }
 }
 
-fn peer_info_to_map_node(p: &coord_core::PeerInfo) -> MapNode {
+fn peer_info_to_map_node(p: &coord_core::PeerInfo, home_region: i32) -> MapNode {
     let peer_key = format_key_bytes(&p.node_key);
     let machine_key_str = if p.machine_key.len() == 32 {
         format_machine_key(&MachineKey(p.machine_key.clone().try_into().unwrap()))
     } else {
         String::new()
     };
-    let derp_region = p.derp_region.unwrap_or(1);
+    // Stores don't track a peer's real home DERP yet; use the tenant map's home region.
+    let derp_region = home_region;
 
     MapNode {
         id: p.node_id.as_i64(),
         stable_id: format!("peer-{}", p.node_id.as_i64()),
-        name: p.hostname.clone(),
+        name: format!("{}.mesh.local.", p.hostname),
         user: 1,
         key: peer_key,
         machine: machine_key_str,

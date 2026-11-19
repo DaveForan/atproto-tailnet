@@ -11,6 +11,11 @@ import type {
   HeadscalePreAuthKey,
   HeadscaleRoute,
 } from "./headscale-api.js";
+import {
+  headscaleToCoordinatorPolicy,
+  coordinatorToHeadscalePolicy,
+  type HeadscaleAclPolicy,
+} from "./coordinator-acl.js";
 
 /**
  * Client for a single tenant's operations against the shared coordinator.
@@ -41,6 +46,7 @@ export class CoordinatorApiClient {
         ...(this.apiKey ? { Authorization: `Bearer ${this.apiKey}` } : {}),
       },
       body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(15_000),
     });
 
     if (!res.ok) {
@@ -207,6 +213,85 @@ export class CoordinatorApiClient {
 
   async setPolicy(policy: object): Promise<void> {
     await this.request("POST", `/api/tenants/${this.tenantId}/acl`, policy);
+  }
+
+  /**
+   * Pushes a Headscale-format policy after translating it to the
+   * coordinator's `{default_deny, rules}` model.
+   * @throws {AclTranslationError} if the policy can't be expressed faithfully.
+   */
+  async setHeadscalePolicy(policy: HeadscaleAclPolicy): Promise<void> {
+    const translated = headscaleToCoordinatorPolicy(policy);
+    await this.request("POST", `/api/tenants/${this.tenantId}/acl`, translated);
+  }
+
+  /**
+   * Bounded health probe for the shared coordinator. Returns the coordinator's
+   * per-process boot id (changes on every restart), or null when unhealthy.
+   */
+  async probeBootId(timeoutMs = 10_000): Promise<string | null> {
+    try {
+      const res = await fetch(`${this.baseUrl}/health`, {
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      if (!res.ok) return null;
+      const body = (await res.json().catch(() => ({}))) as { boot_id?: unknown };
+      return typeof body.boot_id === "string" ? body.boot_id : "unknown";
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * True if the coordinator knows this tenant (`GET /api/tenants/{id}`),
+   * false on 404. Other failures throw.
+   */
+  async tenantExists(): Promise<boolean> {
+    try {
+      await this.request("GET", `/api/tenants/${this.tenantId}`);
+      return true;
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("failed (404)")) return false;
+      throw err;
+    }
+  }
+
+  /** Reads the tenant's coordinator policy rendered in Headscale format. */
+  async getHeadscalePolicy(): Promise<ReturnType<typeof coordinatorToHeadscalePolicy>> {
+    const raw = await this.request("GET", `/api/tenants/${this.tenantId}/acl`);
+    return coordinatorToHeadscalePolicy(raw);
+  }
+
+  // ── DERP ──
+
+  async setDerp(
+    regions: Array<{
+      regionId: number;
+      regionCode: string;
+      regionName: string;
+      nodes: Array<{ name: string; hostname: string; stunPort?: number; derpPort?: number }>;
+    }>,
+    includeDefault: boolean,
+  ): Promise<void> {
+    const coordRegions: Record<string, unknown> = {};
+    for (const r of regions) {
+      coordRegions[String(r.regionId)] = {
+        RegionID: r.regionId,
+        RegionCode: r.regionCode,
+        RegionName: r.regionName,
+        Nodes: r.nodes.map((n) => ({
+          Name: n.name,
+          RegionID: r.regionId,
+          HostName: n.hostname,
+          STUNPort: n.stunPort ?? 3478,
+          DERPPort: n.derpPort ?? 443,
+        })),
+      };
+    }
+    await this.request("PUT", `/api/tenants/${this.tenantId}/derp`, {
+      regions: coordRegions,
+      include_default: includeDefault,
+    });
   }
 
   // ── Posture ──

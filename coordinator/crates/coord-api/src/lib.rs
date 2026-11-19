@@ -69,12 +69,12 @@ pub fn router(state: Arc<CoordinatorState>) -> Router {
         .route("/tenants/{id}/acl", get(admin::get_acl).post(admin::set_acl_for_tenant))
         .route("/tenants/{id}/posture", put(admin::update_tenant_posture))
         .route("/tenants/{id}/nodes", get(admin::list_tenant_nodes_handler))
+        .route("/tenants/{id}/derp", get(admin::get_tenant_derp).put(admin::set_tenant_derp))
         .route("/preauth-keys", post(admin::create_preauth_key))
         .route("/nodes", get(admin::list_nodes))
         .route("/nodes/{id}", get(admin::get_node_handler).delete(admin::delete_node_handler))
         .route("/nodes/{id}/name", post(admin::rename_node_handler))
         .route("/acl", post(admin::set_acl))
-        .route("/derp", get(admin::get_derp_map).put(admin::set_derp_map))
         .layer(middleware::from_fn_with_state(state.clone(), require_admin_auth));
 
     let federation_routes = Router::new()
@@ -97,8 +97,12 @@ pub fn router(state: Arc<CoordinatorState>) -> Router {
         .with_state(state)
 }
 
+/// Changes on every process start so the service can detect a restart and resync in-memory state.
+static BOOT_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
 async fn health() -> axum::Json<serde_json::Value> {
-    axum::Json(serde_json::json!({"status": "ok"}))
+    let boot_id = BOOT_ID.get_or_init(|| uuid::Uuid::new_v4().to_string());
+    axum::Json(serde_json::json!({"status": "ok", "boot_id": boot_id}))
 }
 
 #[doc(hidden)]

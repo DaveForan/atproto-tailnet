@@ -21,6 +21,7 @@ export function parseCidr(cidr: string): ParsedCidr | null {
 
   const addrStr = trimmed.slice(0, slashIdx);
   const bitsStr = trimmed.slice(slashIdx + 1);
+  if (!/^\d{1,3}$/.test(bitsStr)) return null;
   const bits = parseInt(bitsStr, 10);
   if (isNaN(bits) || bits < 0) return null;
 
@@ -73,6 +74,7 @@ function parseIpv6Cidr(addrStr: string, bits: number): ParsedCidr | null {
 
   let address = 0n;
   for (const group of groups) {
+    if (!/^[0-9a-fA-F]{1,4}$/.test(group)) return null;
     const n = parseInt(group, 16);
     if (isNaN(n) || n < 0 || n > 0xFFFF) return null;
     address = (address << 16n) | BigInt(n);
@@ -100,6 +102,7 @@ function parseIpv6Cidr(addrStr: string, bits: number): ParsedCidr | null {
 
 function expandIpv6(addr: string): string | null {
   if (addr.includes("::")) {
+    if (addr.split("::").length !== 2) return null;
     const [left, right] = addr.split("::");
     const leftGroups = left ? left.split(":") : [];
     const rightGroups = right ? right.split(":") : [];
@@ -195,7 +198,8 @@ export function checkCidrOverlaps(
   return errors;
 }
 
-function isSubnetOf(subnet: ParsedCidr, parent: ParsedCidr): boolean {
+/** True when `subnet` lies entirely inside `parent` (same family, same or longer prefix). */
+export function isSubnetOf(subnet: ParsedCidr, parent: ParsedCidr): boolean {
   if (subnet.family !== parent.family) return false;
   if (subnet.bits < parent.bits) return false;
 
@@ -210,6 +214,98 @@ function isSubnetOf(subnet: ParsedCidr, parent: ParsedCidr): boolean {
 
 const DEFAULT_ROUTES = ["0.0.0.0/0", "::/0"];
 
+/** A default route in any spelling (`0.0.0.0/0`, `::/0`, `1.2.3.4/0`, …). */
 export function isDefaultRoute(cidr: string): boolean {
-  return DEFAULT_ROUTES.includes(cidr.trim());
+  if (DEFAULT_ROUTES.includes(cidr.trim())) return true;
+  return parseCidr(cidr)?.bits === 0;
+}
+
+function parseAll(cidrs: (string | null | undefined)[]): ParsedCidr[] {
+  const out: ParsedCidr[] = [];
+  for (const c of cidrs) {
+    if (!c) continue;
+    const parsed = parseCidr(c);
+    if (parsed) out.push(parsed);
+  }
+  return out;
+}
+
+/**
+ * Validate CIDRs a local collective offers to share (ADR-0019 §6): each must
+ * parse, must not be a default route, and must lie inside the tenant's own
+ * tailnet range or inside one of its approved subnet routes. Returns the
+ * normalised prefixes, or the reasons they were refused.
+ */
+export function validateLocalOffer(
+  offered: string[],
+  tenantIpv4Prefix: string | null,
+  tenantIpv6Prefix: string | null,
+  approvedSubnets: string[] = [],
+): { cidrs: string[]; errors: string[] } {
+  const ownRanges = parseAll([tenantIpv4Prefix, tenantIpv6Prefix, ...approvedSubnets]);
+  const cidrs: string[] = [];
+  const errors: string[] = [];
+  for (const cidr of offered) {
+    const parsed = parseCidr(cidr);
+    if (!parsed) {
+      errors.push(`Invalid CIDR: ${cidr}`);
+      continue;
+    }
+    if (parsed.bits === 0) {
+      errors.push(`Default route ${parsed.normalized} cannot be shared`);
+      continue;
+    }
+    if (!ownRanges.some((range) => isSubnetOf(parsed, range))) {
+      errors.push(`${parsed.normalized} is not within your tenant's IP range or an approved subnet route`);
+      continue;
+    }
+    if (!cidrs.includes(parsed.normalized)) cidrs.push(parsed.normalized);
+  }
+  return { cidrs, errors };
+}
+
+/**
+ * Validate CIDRs a peer offers to share with a local collective (ADR-0019 §6):
+ * each must parse, must not be a default route, and must not overlap the
+ * local collective's own range or prefixes already imported over its other
+ * active links. Returns the normalised prefixes, or the reasons they were refused.
+ */
+export function validatePeerOffer(
+  offered: string[],
+  localIpv4Prefix: string | null,
+  localIpv6Prefix: string | null,
+  otherPeerCidrs: string[] = [],
+): { cidrs: string[]; errors: string[] } {
+  const localRanges = parseAll([localIpv4Prefix, localIpv6Prefix]);
+  const existing = parseAll(otherPeerCidrs);
+  const cidrs: string[] = [];
+  const errors: string[] = [];
+  const valid: ParsedCidr[] = [];
+  for (const cidr of offered) {
+    const parsed = parseCidr(cidr);
+    if (!parsed) {
+      errors.push(`Invalid CIDR: ${cidr}`);
+      continue;
+    }
+    if (parsed.bits === 0) {
+      errors.push(`Default route ${parsed.normalized} cannot be imported`);
+      continue;
+    }
+    valid.push(parsed);
+  }
+  errors.push(...checkCidrOverlaps(valid, localRanges, existing));
+  if (errors.length === 0) {
+    for (const p of valid) if (!cidrs.includes(p.normalized)) cidrs.push(p.normalized);
+  }
+  return { cidrs, errors };
+}
+
+/**
+ * True when `prefix` is a valid, non-default CIDR contained in (equal to or
+ * more specific than) at least one of `agreed`. An empty agreed list contains nothing.
+ */
+export function isWithinAgreed(prefix: string, agreed: string[]): boolean {
+  const parsed = parseCidr(prefix);
+  if (!parsed || parsed.bits === 0) return false;
+  return parseAll(agreed).some((range) => range.bits > 0 && isSubnetOf(parsed, range));
 }

@@ -67,3 +67,14 @@ describe("ReplayGuard", () => {
     expect(old.size).toBe(0);
   });
 });
+
+describe("ReplayGuard capacity", () => {
+  it("evicts the oldest ids when full instead of growing without bound", () => {
+    const guard = new ReplayGuard(60_000, 2);
+    expect(guard.check("a")).toBe(true);
+    expect(guard.check("b")).toBe(true);
+    expect(guard.check("c")).toBe(true);
+    expect(guard.size).toBe(2);
+    expect(guard.check("c")).toBe(false);
+  });
+});

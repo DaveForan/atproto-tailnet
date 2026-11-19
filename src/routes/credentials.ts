@@ -12,6 +12,7 @@ import {
   roles,
   collectiveDids,
   credentialRevocations,
+  federationLinks,
   holderBindingChallenges,
 } from "../db/schema.js";
 import {
@@ -417,21 +418,58 @@ credentialsRouter.post(
   },
 );
 
-/** Revocation record for a credential id, optionally limited to one issuer. */
-async function findRevocation(credentialId: string, issuerDid?: string) {
+/**
+ * Revocation record for a credential. Credential ids (`jti`) are only unique
+ * per issuer, so a lookup is always scoped to the issuer that signed it.
+ */
+async function findRevocation(credentialId: string, issuerDid: string) {
   const [row] = await db
     .select({ revokedAt: credentialRevocations.revokedAt })
     .from(credentialRevocations)
     .where(
-      issuerDid
-        ? and(
-            eq(credentialRevocations.credentialId, credentialId),
-            eq(credentialRevocations.issuerDid, issuerDid),
-          )
-        : eq(credentialRevocations.credentialId, credentialId),
+      and(
+        eq(credentialRevocations.credentialId, credentialId),
+        eq(credentialRevocations.issuerDid, issuerDid),
+      ),
     )
     .limit(1);
   return row ?? null;
+}
+
+/**
+ * Issuers whose credentials a collective accepts in a presentation: itself,
+ * its parent collective, and the peers of its active federation links.
+ */
+async function trustedIssuerDids(tenantId: string, ownDid: string): Promise<Set<string>> {
+  const trusted = new Set<string>([ownDid]);
+
+  const [tenant] = await db
+    .select({ parentId: tenants.parentId })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId))
+    .limit(1);
+  if (tenant?.parentId) {
+    const [parent] = await db
+      .select({ did: collectiveDids.did })
+      .from(collectiveDids)
+      .where(eq(collectiveDids.tenantId, tenant.parentId))
+      .limit(1);
+    if (parent) trusted.add(parent.did);
+  }
+
+  const peers = await db
+    .select({ peerDid: federationLinks.peerDid })
+    .from(federationLinks)
+    .where(
+      and(
+        eq(federationLinks.localTenantId, tenantId),
+        eq(federationLinks.status, "active"),
+      ),
+    )
+    .limit(200);
+  for (const p of peers) trusted.add(p.peerDid);
+
+  return trusted;
 }
 
 /**
@@ -570,18 +608,40 @@ credentialsRouter.post(
     }
 
     const resolver = getResolver();
+    const trusted = await trustedIssuerDids(tenantId, collectiveDidRow.did);
     const verificationResults = [];
     const errors: string[] = [];
 
     for (const jwt of credentials) {
-      if (typeof jwt !== "string") {
-        errors.push("credential must be a string");
+      if (typeof jwt !== "string" || jwt.length > 16_384) {
+        errors.push("credential must be a string of at most 16384 characters");
+        continue;
+      }
+      // Check the claimed issuer before resolving anything: a self-issued
+      // did:web VC is well-signed but says nothing about membership.
+      let claimed: { iss?: string; jti?: string };
+      try {
+        claimed = jose.decodeJwt(jwt);
+      } catch {
+        errors.push("credential is not a JWT");
+        continue;
+      }
+      if (!claimed.iss || !trusted.has(claimed.iss)) {
+        const rejected = { valid: false, issuer: claimed.iss, error: "Issuer is not a trusted collective" };
+        verificationResults.push(rejected);
+        errors.push(`issuer ${claimed.iss ?? "(none)"} is not a trusted collective`);
         continue;
       }
       const result = await verifyCredential(jwt, resolver);
       verificationResults.push(result);
       if (!result.valid) {
         errors.push(result.error ?? "verification failed");
+        continue;
+      }
+      if (!claimed.jti || (await findRevocation(claimed.jti, result.issuer!))) {
+        result.valid = false;
+        result.error = claimed.jti ? "Credential revoked" : "Credential has no id";
+        errors.push(result.error);
         continue;
       }
       if (result.subject !== authResult.issuerDid) {
@@ -634,10 +694,20 @@ credentialsRouter.post(
   },
 );
 
+/**
+ * Public revocation status. `?issuer=<did>` is required: credential ids are
+ * only unique per issuer, and one collective's revocation must never make
+ * another issuer's credential with the same id read as revoked.
+ */
 credentialsRouter.get(
   "/.well-known/collective-credential-status/:credentialId",
   async (req, res) => {
-    const revocation = await findRevocation(param(req, "credentialId"));
+    const issuer = req.query.issuer;
+    if (typeof issuer !== "string" || !issuer.startsWith("did:") || issuer.length > 512) {
+      res.status(400).json({ error: "issuer query parameter (the issuer DID) is required" });
+      return;
+    }
+    const revocation = await findRevocation(param(req, "credentialId"), issuer);
 
     if (revocation) {
       res.json({

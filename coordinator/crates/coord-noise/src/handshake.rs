@@ -18,7 +18,8 @@ pub const RESPONSE_PAYLOAD_LEN: usize = 48;
 pub const RESPONSE_MESSAGE_LEN: usize = 51;
 
 pub const HEADER_LEN: usize = 3;
-pub const MAX_MESSAGE_SIZE: usize = 65538;
+/// Matches Tailscale controlbase maxMessageSize; clients reject larger frames.
+pub const MAX_MESSAGE_SIZE: usize = 4096;
 pub const AEAD_OVERHEAD: usize = 16;
 pub const MAX_CIPHERTEXT_SIZE: usize = MAX_MESSAGE_SIZE - HEADER_LEN;
 pub const MAX_PLAINTEXT_SIZE: usize = MAX_CIPHERTEXT_SIZE - AEAD_OVERHEAD;

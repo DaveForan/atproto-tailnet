@@ -169,6 +169,7 @@ pub async fn delete_tenant(
         Ok(()) => {
             // Clean up any ACL policy for the deleted tenant
             state.acl.remove_policy(tenant_id);
+            state.derp.remove_tenant(tenant_id);
             (
                 StatusCode::OK,
                 Json(serde_json::json!({"status": "deleted", "tenant_id": id})),
@@ -219,7 +220,12 @@ pub async fn update_tenant_posture(
     };
 
     match state.store.update_tenant_posture(tenant_id, posture).await {
-        Ok(tenant) => Json(serde_json::json!(TenantResponse::from(tenant))).into_response(),
+        Ok(tenant) => {
+            if let Some(parent) = tenant.parent_id {
+                state.notify_tenant_changed(parent);
+            }
+            Json(serde_json::json!(TenantResponse::from(tenant))).into_response()
+        }
         Err(e) => internal_error(e).into_response(),
     }
 }
@@ -333,6 +339,7 @@ pub async fn set_acl(
     }
 
     state.acl.set_policy(tenant_id, body.policy);
+    state.notify_tenant_changed(tenant_id);
 
     (
         StatusCode::OK,
@@ -459,7 +466,7 @@ pub async fn get_acl(
             // No policy set = allow-all default
             Json(serde_json::json!({
                 "default_deny": false,
-                "rules": [{"src": "*", "dst": "*", "ports": [{"range": [0, 65535]}]}]
+                "rules": [{"src": "*", "dst": "*", "ports": ["All"]}]
             })).into_response()
         }
     }
@@ -479,6 +486,7 @@ pub async fn set_acl_for_tenant(
         return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "tenant not found"}))).into_response();
     }
     state.acl.set_policy(tenant_id, body);
+    state.notify_tenant_changed(tenant_id);
     (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response()
 }
 
@@ -569,50 +577,91 @@ pub async fn delete_node_handler(
     }
 }
 
-// ── DERP map management ──
+// ── Per-tenant DERP configuration ──
 
-pub async fn get_derp_map(
-    State(state): State<Arc<CoordinatorState>>,
-) -> impl IntoResponse {
-    let map = state.derp_map().read().await;
-    Json(serde_json::json!(&*map))
+const CUSTOM_DERP_REGION_MIN: i32 = 900;
+const CUSTOM_DERP_REGION_MAX: i32 = 999;
+
+#[derive(Deserialize)]
+pub struct SetTenantDerpRequest {
+    #[serde(default)]
+    pub regions: std::collections::HashMap<String, coord_proto::map::DerpRegion>,
+    pub include_default: bool,
 }
 
-pub async fn set_derp_map(
+fn parse_tenant_id(id: &str) -> Option<TenantId> {
+    id.parse::<uuid::Uuid>().ok().map(TenantId::new)
+}
+
+fn bad_request(msg: impl Into<String>) -> axum::response::Response {
+    (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": msg.into()}))).into_response()
+}
+
+pub async fn get_tenant_derp(
     State(state): State<Arc<CoordinatorState>>,
-    Json(body): Json<coord_proto::map::DerpMap>,
+    Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if body.regions.is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "DERP map must have at least one region"})),
-        ).into_response();
+    let Some(tenant_id) = parse_tenant_id(&id) else {
+        return bad_request("invalid tenant_id");
+    };
+    if state.store.get_tenant(tenant_id).await.is_none() {
+        return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "tenant not found"}))).into_response();
+    }
+    let cfg = state.derp.get_tenant(tenant_id);
+    Json(serde_json::json!({
+        "regions": cfg.as_ref().map(|c| c.custom_regions.clone()).unwrap_or_default(),
+        "include_default": cfg.as_ref().map(|c| c.include_default).unwrap_or(true),
+        "effective": state.derp.map_for(tenant_id),
+    })).into_response()
+}
+
+pub async fn set_tenant_derp(
+    State(state): State<Arc<CoordinatorState>>,
+    Path(id): Path<String>,
+    Json(body): Json<SetTenantDerpRequest>,
+) -> impl IntoResponse {
+    let Some(tenant_id) = parse_tenant_id(&id) else {
+        return bad_request("invalid tenant_id");
+    };
+    if state.store.get_tenant(tenant_id).await.is_none() {
+        return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "tenant not found"}))).into_response();
     }
 
-    for (id, region) in &body.regions {
-        if region.region_id != *id {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": format!("region key {} does not match region_id {}", id, region.region_id)})),
-            ).into_response();
+    let mut custom_regions = std::collections::HashMap::new();
+    for (key, mut region) in body.regions {
+        if key.parse::<i32>().ok() != Some(region.region_id) {
+            return bad_request(format!("region key {key} does not match RegionID {}", region.region_id));
+        }
+        if !(CUSTOM_DERP_REGION_MIN..=CUSTOM_DERP_REGION_MAX).contains(&region.region_id) {
+            return bad_request(format!("custom region IDs must be {CUSTOM_DERP_REGION_MIN}-{CUSTOM_DERP_REGION_MAX}"));
         }
         if region.nodes.is_empty() {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": format!("region {} has no nodes", id)})),
-            ).into_response();
+            return bad_request(format!("region {} has no nodes", region.region_id));
         }
+        for node in &mut region.nodes {
+            if !is_valid_hostname(&node.host_name) {
+                return bad_request(format!("invalid DERP hostname: {}", node.host_name));
+            }
+            node.region_id = region.region_id;
+            // Only meaningful in test harnesses; never let a tenant disable TLS verification.
+            node.insecure_for_tests = None;
+        }
+        custom_regions.insert(region.region_id, region);
     }
 
-    let region_count = body.regions.len();
-    state.update_derp_map(body).await;
+    if custom_regions.is_empty() && !body.include_default {
+        return bad_request("DERP config must include the default regions or at least one custom region");
+    }
 
-    tracing::info!(regions = region_count, "DERP map updated via admin API");
+    let region_count = custom_regions.len();
+    state.derp.set_tenant(
+        tenant_id,
+        coord_netmap::TenantDerp { custom_regions, include_default: body.include_default },
+    );
+    state.notify_tenant_changed(tenant_id);
+    tracing::info!(tenant = %tenant_id, custom_regions = region_count, "tenant DERP config updated");
 
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({"status": "updated", "regions": region_count})),
-    ).into_response()
+    Json(serde_json::json!({"status": "updated", "effective": state.derp.map_for(tenant_id)})).into_response()
 }
 
 pub async fn rename_node_handler(

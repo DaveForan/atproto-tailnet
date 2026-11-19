@@ -95,13 +95,16 @@ export const isLoopbackDeployment = ["localhost", "127.0.0.1", "[::1]"].includes
   new URL(config.publicUrl).hostname,
 );
 
+/** Rejects template/placeholder secrets such as "change-me-at-least-32-chars…". */
+const PLACEHOLDER_SECRET_RE = /change-?me/i;
+
 if (
   !isLoopbackDeployment &&
-  (config.sessionSecret === "dev-secret-change-me" ||
-    config.sessionSecret.length < 32)
+  (config.sessionSecret.length < 32 ||
+    PLACEHOLDER_SECRET_RE.test(config.sessionSecret))
 ) {
   throw new Error(
-    "SESSION_SECRET must be a strong value (>= 32 chars) in production",
+    "SESSION_SECRET must be a strong, non-placeholder value (>= 32 chars) in production",
   );
 }
 

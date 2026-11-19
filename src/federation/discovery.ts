@@ -5,7 +5,7 @@
  */
 
 import { logger } from "../logger.js";
-import { getResolver } from "../identity/resolver.js";
+import { getResolver, resolvesToPublicAddresses } from "../identity/resolver.js";
 import type { FederationDescriptor } from "./protocol.js";
 import { config } from "../config.js";
 
@@ -41,7 +41,13 @@ export async function discoverPeer(
     return { ok: false, error: "Invalid peer address format" };
   }
 
-  if (!isAllowedBrokerHost(host)) {
+  let hostname: string;
+  try {
+    hostname = new URL(`https://${host}`).hostname;
+  } catch {
+    return { ok: false, error: "Invalid peer address format" };
+  }
+  if (!(await isAllowedBrokerHost(hostname))) {
     return { ok: false, error: `Host ${host} is not allowed (private/loopback)` };
   }
 
@@ -85,7 +91,7 @@ export async function discoverPeer(
     }
   }
 
-  if (!isAllowedBrokerUrl(descriptor.brokerUrl)) {
+  if (!(await isAllowedBrokerUrl(descriptor.brokerUrl))) {
     return { ok: false, error: `Peer broker URL ${descriptor.brokerUrl} is not allowed` };
   }
 
@@ -101,48 +107,48 @@ export async function discoverPeer(
   };
 }
 
-function isAllowedBrokerHost(host: string): boolean {
-  const ownUrl = config.publicUrl;
+/** Hostname of this instance's own public URL, or null if it does not parse. */
+function ownHostname(): string | null {
   try {
-    const ownHost = new URL(ownUrl).hostname;
-    if (host === ownHost) return true;
-  } catch {}
-
-  if (isPrivateOrLoopback(host)) {
-    return false;
+    return new URL(config.publicUrl).hostname;
+  } catch {
+    return null;
   }
-
-  return true;
 }
 
-export function isAllowedBrokerUrl(url: string): boolean {
+/**
+ * Whether we may send requests to `host`. This instance's own host is always
+ * allowed (same-instance federation, including loopback dev deployments).
+ * Anything else must be — or resolve only to — public addresses: never
+ * private, loopback, link-local, CGNAT (100.64.0.0/10), unspecified, ULA
+ * (fc00::/7) or IPv4-mapped forms of those.
+ */
+async function isAllowedBrokerHost(host: string): Promise<boolean> {
+  if (!host) return false;
+  if (host === ownHostname()) return true;
+  return resolvesToPublicAddresses(host);
+}
+
+/**
+ * Whether a peer-supplied broker URL may be stored and dialled. HTTPS is
+ * required, except for this instance's own URL (the dev allowance: a local
+ * deployment served over plain http talks to itself). The host must pass
+ * {@link isAllowedBrokerHost}, which resolves it via DNS.
+ *
+ * The check runs at the time a URL is accepted; a name that re-resolves to a
+ * private address later is not caught here.
+ */
+export async function isAllowedBrokerUrl(url: string): Promise<boolean> {
+  let parsed: URL;
   try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== "https:") {
-      const ownUrl = new URL(config.publicUrl);
-      if (parsed.hostname !== ownUrl.hostname) return false;
-    }
-    return isAllowedBrokerHost(parsed.hostname);
+    parsed = new URL(url);
   } catch {
     return false;
   }
-}
-
-function isPrivateOrLoopback(host: string): boolean {
-  if (host === "localhost" || host === "127.0.0.1" || host === "::1") {
-    return true;
+  if (parsed.username || parsed.password) return false;
+  const own = ownHostname();
+  if (parsed.protocol !== "https:") {
+    if (parsed.protocol !== "http:" || parsed.hostname !== own) return false;
   }
-  if (host === "[::1]") return true;
-
-  const parts = host.split(".");
-  if (parts.length === 4 && parts.every((p) => /^\d+$/.test(p))) {
-    const [a, b] = parts.map(Number);
-    if (a === 10) return true;
-    if (a === 172 && b >= 16 && b <= 31) return true;
-    if (a === 192 && b === 168) return true;
-    if (a === 127) return true;
-    if (a === 169 && b === 254) return true;
-  }
-
-  return false;
+  return isAllowedBrokerHost(parsed.hostname);
 }

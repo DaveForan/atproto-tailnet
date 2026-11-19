@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use coord_proto::map::{FilterRule, NetPortRange, PortRange};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AclPolicy {
     #[serde(default)]
     pub default_deny: bool,
@@ -10,6 +11,7 @@ pub struct AclPolicy {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AclRule {
     pub src: String,
     pub dst: String,

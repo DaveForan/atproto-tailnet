@@ -29,3 +29,5 @@ serde_json = { workspace = true }
 chrono = { workspace = true }
 rand = { workspace = true }
 hex = { workspace = true }
+hmac = "0.12"
+sha2 = "0.10"

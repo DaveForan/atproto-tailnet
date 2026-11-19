@@ -44,6 +44,13 @@ import {
   verifyMessage,
 } from "../federation/auth.js";
 import { getResolver } from "../identity/resolver.js";
+import {
+  cidrsOverlap,
+  isDefaultRoute,
+  parseCidr,
+  validateLocalOffer,
+  validatePeerOffer,
+} from "../federation/cidr.js";
 import { encryptPrivateKey, loadPrivateKey, signDetached } from "../identity/keys.js";
 import type {
   Capability,
@@ -167,29 +174,73 @@ async function reconcileActiveSessions(): Promise<void> {
     }
   }
 
-  // Retry handshakes that have not completed (peer was unreachable, the
-  // process restarted mid-handshake, …). The accepting (incoming) side initiates.
+  // (Re-)handshake sessions that are not healthy while their link is still
+  // active: never completed (`connecting`: peer unreachable, restart
+  // mid-handshake), revoked by the peer (`disconnected`), or with stale
+  // keepalives (`degraded`). The accepting (incoming) side initiates, with
+  // per-link exponential backoff so an unreachable peer is not hammered.
+  const now = Date.now();
   for (const link of activeLinks) {
     if (link.direction !== "incoming") continue;
 
-    const [pending] = await db
-      .select({ id: brokerSessions.id })
+    const [session] = await db
+      .select({ id: brokerSessions.id, status: brokerSessions.status })
       .from(brokerSessions)
       .where(
         and(
           eq(brokerSessions.federationLinkId, link.id),
           eq(brokerSessions.localTenantId, link.localTenantId),
-          eq(brokerSessions.status, "connecting"),
+          inArray(brokerSessions.status, RECOVERABLE_SESSION_STATUSES),
         ),
       )
       .limit(1);
 
-    if (pending) {
-      await initiateOutboundHandshake(link.id, link.localTenantId).catch((err) => {
-        logger.warn({ linkId: link.id, err }, "federation handshake attempt failed");
-      });
+    if (!session) {
+      handshakeBackoff.delete(link.id);
+      continue;
+    }
+
+    const backoff = handshakeBackoff.get(link.id);
+    if (backoff && backoff.nextAttemptAt > now) continue;
+    if (handshakesInFlight.has(link.id)) continue;
+
+    const ok = await initiateOutboundHandshake(link.id, link.localTenantId).catch((err) => {
+      logger.warn({ linkId: link.id, err }, "federation handshake attempt failed");
+      return false;
+    });
+
+    if (ok) {
+      handshakeBackoff.delete(link.id);
+    } else {
+      const failures = (backoff?.failures ?? 0) + 1;
+      const delay = handshakeRetryDelayMs(failures);
+      handshakeBackoff.set(link.id, { failures, nextAttemptAt: Date.now() + delay });
+      logger.info(
+        { linkId: link.id, sessionStatus: session.status, failures, retryInMs: delay },
+        "federation handshake will be retried",
+      );
     }
   }
+
+  // Forget backoff state for links that are no longer active.
+  for (const linkId of handshakeBackoff.keys()) {
+    if (!activeIds.has(linkId)) handshakeBackoff.delete(linkId);
+  }
+}
+
+/** Session states the initiator recovers from by handshaking again. */
+const RECOVERABLE_SESSION_STATUSES: BrokerSession["status"][] = ["connecting", "disconnected", "degraded"];
+
+const HANDSHAKE_RETRY_BASE_MS = BROKER_TICK_MS;
+const HANDSHAKE_RETRY_MAX_MS = 30 * 60_000;
+
+/** Per-link handshake retry state (in memory; a restart retries immediately). */
+const handshakeBackoff = new Map<string, { failures: number; nextAttemptAt: number }>();
+
+/** Delay before retry number `failures + 1`: 30s, 60s, 120s, … capped at 30 min, ±20% jitter. */
+export function handshakeRetryDelayMs(failures: number, random: () => number = Math.random): number {
+  const exp = Math.min(HANDSHAKE_RETRY_MAX_MS, HANDSHAKE_RETRY_BASE_MS * 2 ** Math.max(0, failures - 1));
+  return Math.round(exp * (0.8 + 0.4 * random()));
 }
 
 /** Create the session row for an active link if it is missing. */
@@ -785,6 +836,12 @@ async function updateTenantPolicy(
     .limit(1);
 
   if (!tenant?.port || tenant.status !== "running") return false;
+  if (tenant.coordinatorTenantId) {
+    // The coordinator has no route auto-approval (autoApprovers/tagOwners); federated
+    // routes cannot be installed there yet, and its ACL model rejects those fields.
+    logger.warn({ tenantId }, "federated route auto-approval is not supported in coordinator mode; skipping");
+    return false;
+  }
 
   const client = getControlClient(tenant);
   const policy = (await client.getPolicy()) as AclPolicy;
@@ -836,6 +893,93 @@ export async function withdrawFederatedRoutes(
   } catch (err) {
     logger.warn({ tenantId, err }, "failed to withdraw federated routes");
   }
+}
+
+// ── CIDR validation against a tenant (ADR-0019 §6) ──────────────────────
+
+/**
+ * Subnet routes the tenant's devices advertise and that are approved, minus
+ * anything imported over federation (those belong to a peer, not to us).
+ * Best-effort: an unreachable control plane yields no subnets.
+ */
+async function approvedSubnetRoutes(tenantId: string): Promise<string[]> {
+  try {
+    const [tenant] = await db
+      .select({ port: tenants.port, apiKey: tenants.apiKey, status: tenants.status, coordinatorTenantId: tenants.coordinatorTenantId })
+      .from(tenants)
+      .where(eq(tenants.id, tenantId))
+      .limit(1);
+    if (!tenant?.port || !tenant.apiKey || tenant.status !== "running") return [];
+    const { getControlClient } = await import("./control-client.js");
+    const routes = await getControlClient({ ...tenant, port: tenant.port, apiKey: tenant.apiKey }).listRoutes();
+    const imported = (await getRouteTable(tenantId)).imported;
+    return routes
+      .filter((r) => r.enabled && !isDefaultRoute(r.prefix))
+      .map((r) => r.prefix)
+      .filter((prefix) => {
+        const parsed = parseCidr(prefix);
+        return parsed !== null && !imported.some((i) => {
+          const ip = parseCidr(i);
+          return ip !== null && cidrsOverlap(ip, parsed);
+        });
+      });
+  } catch (err) {
+    logger.warn({ tenantId, err }, "could not list approved subnet routes for CIDR validation");
+    return [];
+  }
+}
+
+/**
+ * Validate CIDRs `tenantId` offers to share: inside its own tailnet range or
+ * an approved subnet route, no default routes. Returns normalised prefixes.
+ */
+export async function validateLocalCidrsForTenant(
+  tenantId: string,
+  cidrs: string[],
+): Promise<{ cidrs: string[]; errors: string[] }> {
+  if (cidrs.length === 0) return { cidrs: [], errors: [] };
+  const [tenant] = await db
+    .select({ ipv4Prefix: tenants.ipv4Prefix, ipv6Prefix: tenants.ipv6Prefix })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId))
+    .limit(1);
+  if (!tenant) return { cidrs: [], errors: ["Unknown tenant"] };
+  // Only ask the control plane when the tenant range alone does not cover the offer.
+  const direct = validateLocalOffer(cidrs, tenant.ipv4Prefix, tenant.ipv6Prefix);
+  if (direct.errors.length === 0) return direct;
+  return validateLocalOffer(cidrs, tenant.ipv4Prefix, tenant.ipv6Prefix, await approvedSubnetRoutes(tenantId));
+}
+
+/**
+ * Validate CIDRs a peer offers to `tenantId`: no default routes, no overlap
+ * with the tenant's own range or with what its other active links import.
+ * `excludeLinkId` is the link being negotiated. Returns normalised prefixes.
+ */
+export async function validatePeerCidrsForTenant(
+  tenantId: string,
+  cidrs: string[],
+  excludeLinkId?: string,
+): Promise<{ cidrs: string[]; errors: string[] }> {
+  if (cidrs.length === 0) return { cidrs: [], errors: [] };
+  const [tenant] = await db
+    .select({ ipv4Prefix: tenants.ipv4Prefix, ipv6Prefix: tenants.ipv6Prefix })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId))
+    .limit(1);
+  if (!tenant) return { cidrs: [], errors: ["Unknown tenant"] };
+  const others = await db
+    .select({ id: federationLinks.id, peerCidrs: federationLinks.peerCidrs })
+    .from(federationLinks)
+    .where(
+      and(
+        eq(federationLinks.localTenantId, tenantId),
+        eq(federationLinks.status, "active"),
+      ),
+    );
+  const otherPeerCidrs = others
+    .filter((l) => l.id !== excludeLinkId)
+    .flatMap((l) => l.peerCidrs);
+  return validatePeerOffer(cidrs, tenant.ipv4Prefix, tenant.ipv6Prefix, otherPeerCidrs);
 }
 
 // ── Read models for the API / dashboard ──────────────────────────────────

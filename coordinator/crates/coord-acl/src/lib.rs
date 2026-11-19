@@ -130,3 +130,20 @@ mod tests {
         assert!(rules.is_empty());
     }
 }
+
+#[cfg(test)]
+mod serde_tests {
+    use super::AclPolicy;
+
+    #[test]
+    fn rejects_headscale_shaped_policy() {
+        let hs = r#"{"acls":[{"action":"accept","src":["*"],"dst":["*:*"]}]}"#;
+        assert!(serde_json::from_str::<AclPolicy>(hs).is_err());
+    }
+
+    #[test]
+    fn default_policy_shape_roundtrips() {
+        let body = r#"{"default_deny":false,"rules":[{"src":"*","dst":"*","ports":["All"]}]}"#;
+        assert!(serde_json::from_str::<AclPolicy>(body).is_ok());
+    }
+}

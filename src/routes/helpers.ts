@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 import type { Request, Response, NextFunction } from "express";
 import { eq, and, ne } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { tenants, memberships, roles, agentTokens, users } from "../db/schema.js";
+import { tenants, memberships, roles, agentTokens, users, deviceLocks } from "../db/schema.js";
 import { tenantPublicUrl } from "../config.js";
 import type { Permission } from "./permissions.js";
 
@@ -273,6 +273,41 @@ export function hasPermission(
   const perms = role.permissions as string[];
   return perms.includes(permission);
 }
+
+/**
+ * Returns the subset of `permissions` the caller does NOT effectively hold
+ * (role permissions ∩ agent-token scope, originators = all — same rules as
+ * {@link hasPermission}). Used to stop privilege escalation via role
+ * create/edit/assign: a caller may only grant permissions they hold.
+ */
+export function missingPermissions(
+  membership: typeof memberships.$inferSelect,
+  role: typeof roles.$inferSelect | null,
+  permissions: readonly string[],
+  req: Request,
+): string[] {
+  return permissions.filter(
+    (p) => !hasPermission(membership, role, p as Permission, req),
+  );
+}
+
+/**
+ * True when the given user's membership in the tenant is bound by a device
+ * lock — no new pre-auth keys may be minted for them until it is removed.
+ */
+export async function isDeviceLocked(tenantId: string, userId: string): Promise<boolean> {
+  const rows = await db
+    .select({ id: deviceLocks.id })
+    .from(deviceLocks)
+    .innerJoin(memberships, eq(deviceLocks.membershipId, memberships.id))
+    .where(and(eq(memberships.tenantId, tenantId), eq(memberships.userId, userId)))
+    .limit(1);
+  return rows.length > 0;
+}
+
+/** Message returned when key generation is blocked by a device lock. */
+export const DEVICE_LOCKED_ERROR =
+  "Session is locked to specific devices. Remove lock to add new devices.";
 
 /** Returns true when the tenant is in lockdown mode. */
 export function isLockedDown(

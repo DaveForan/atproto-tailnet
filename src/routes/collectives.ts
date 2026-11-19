@@ -18,6 +18,7 @@ import {
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
 import { logger } from "../logger.js";
+import { allocateSyntheticPort } from "../orchestrator/ports.js";
 
 export const collectivesRouter = Router();
 
@@ -178,25 +179,35 @@ collectivesRouter.post(
     const prefixes = await allocateTenantPrefixes();
 
     try {
-      const [child] = await db
-        .insert(tenants)
-        .values({
-          name,
-          slug,
-          ownerUserId: userId,
-          port: 0,
-          apiKey: "",
-          status: "provisioning",
-          parentId: tenantId,
-          path: childPath,
-          depth: childDepth,
-          maxSubCollectives: 10,
-          ipv4Prefix: prefixes.ipv4Prefix,
-          ipv6Prefix: prefixes.ipv6Prefix,
-          ipAllocation: tenant.ipAllocation,
-          planName: "free",
-        })
-        .returning();
+      // Sub-collectives have no Headscale container: use a unique synthetic
+      // placeholder port (a shared 0 violates tenants.port UNIQUE on the 2nd).
+      let child: typeof tenants.$inferSelect | undefined;
+      for (let attempt = 0; attempt < 3 && !child; attempt++) {
+        try {
+          [child] = await db
+            .insert(tenants)
+            .values({
+              name,
+              slug,
+              ownerUserId: userId,
+              port: await allocateSyntheticPort(),
+              apiKey: "",
+              status: "provisioning",
+              parentId: tenantId,
+              path: childPath,
+              depth: childDepth,
+              maxSubCollectives: 10,
+              ipv4Prefix: prefixes.ipv4Prefix,
+              ipv6Prefix: prefixes.ipv6Prefix,
+              ipAllocation: tenant.ipAllocation,
+              planName: "free",
+            })
+            .returning();
+        } catch (err: unknown) {
+          if ((err as { code?: string }).code !== "23505" || attempt === 2) throw err;
+        }
+      }
+      if (!child) throw new Error("Failed to insert sub-collective");
 
       const [originatorRole] = await db
         .insert(roles)
@@ -255,6 +266,14 @@ collectivesRouter.post(
   },
 );
 
+/**
+ * Escapes LIKE metacharacters (`\`, `%`, `_`) so a value matches literally.
+ * Postgres' default LIKE escape character is backslash.
+ */
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, (c) => `\\${c}`);
+}
+
 /** Detach a sub-collective (child declares independence). */
 collectivesRouter.post(
   "/api/tenants/:tenantId/detach",
@@ -270,6 +289,11 @@ collectivesRouter.post(
 
     if (!result.membership.isOriginator) {
       res.status(403).json({ error: "Only the originator can detach a collective" });
+      return;
+    }
+    // Hierarchy-changing action: interactive session only, never agent tokens
+    if (req.agentToken) {
+      res.status(403).json({ error: "Agent tokens cannot detach a collective" });
       return;
     }
 
@@ -439,7 +463,7 @@ collectivesRouter.get(
       .from(tenants)
       .where(
         and(
-          like(tenants.path, `${pathPrefix}%`),
+          like(tenants.path, `${escapeLike(pathPrefix)}%`),
           ne(tenants.status, "deleted"),
         ),
       )

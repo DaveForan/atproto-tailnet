@@ -22,12 +22,14 @@ import {
   initiateOutboundHandshake,
   markSessionEstablished,
   signAsCollective,
+  validatePeerCidrsForTenant,
   withdrawFederatedRoutes,
 } from "../orchestrator/federation-broker.js";
 import {
   createHandshake,
   handleHello,
   handleCommit,
+  CHALLENGE_NONCE_RE,
   type HandshakeState,
 } from "../federation/handshake.js";
 import {
@@ -92,7 +94,7 @@ export const helloSchema = z.object({
 export const commitSchema = z.object({
   type: z.literal("COMMIT"),
   collectiveDid: did,
-  challengeNonce: z.string().min(1).max(128),
+  challengeNonce: z.string().regex(CHALLENGE_NONCE_RE),
   challengeSignature: signature,
   initialRoutes: z.array(routeAnnouncement).max(64),
   signature,
@@ -558,12 +560,14 @@ async function authenticateLinkMessage(
     res.status(403).json({ error: "Message timestamp outside accepted window" });
     return false;
   }
-  if (!linkMessageReplay.check(messageId)) {
-    res.status(409).json({ error: "Message already processed" });
-    return false;
-  }
   if (!(await verifyMessage(getResolver(), senderDid, req.body))) {
     res.status(403).json({ error: "Invalid signature" });
+    return false;
+  }
+  // Recorded only once the signature checks out, and per sender, so nobody
+  // can burn another collective's message ids with unsigned junk.
+  if (!linkMessageReplay.check(`${senderDid} ${messageId}`)) {
+    res.status(409).json({ error: "Message already processed" });
     return false;
   }
   return true;
@@ -610,8 +614,16 @@ federationMessagesRouter.post(
       return;
     }
 
-    if (!isAllowedBrokerUrl(msg.brokerUrl)) {
+    if (!(await isAllowedBrokerUrl(msg.brokerUrl))) {
       res.status(400).json({ error: "Broker URL not allowed" });
+      return;
+    }
+
+    // ADR-0019 §6: refuse offers we could never import (invalid, default
+    // routes, overlapping our own range or another link's prefixes).
+    const offered = await validatePeerCidrsForTenant(recipient.tenantId, msg.offeredCidrs);
+    if (offered.errors.length > 0) {
+      res.status(400).json({ error: "Offered CIDRs not acceptable", details: offered.errors });
       return;
     }
 
@@ -642,7 +654,7 @@ federationMessagesRouter.post(
       direction: "incoming",
       message: msg.message,
       localCidrs: [],
-      peerCidrs: msg.offeredCidrs,
+      peerCidrs: offered.cidrs,
       signedRequest: JSON.stringify(req.body),
     });
 
@@ -692,11 +704,25 @@ federationMessagesRouter.post(
       return;
     }
 
+    if (!(await isAllowedBrokerUrl(msg.brokerUrl))) {
+      res.status(400).json({ error: "Broker URL not allowed" });
+      return;
+    }
+
+    // The peer's acceptedCidrs are what it shares with us, i.e. what we will
+    // import. They get the same checks as a LINK_REQUEST offer; the import
+    // filter later only admits prefixes inside this agreed set.
+    const accepted = await validatePeerCidrsForTenant(recipient.tenantId, msg.acceptedCidrs, link.id);
+    if (accepted.errors.length > 0) {
+      res.status(400).json({ error: "Accepted CIDRs not acceptable", details: accepted.errors });
+      return;
+    }
+
     await db
       .update(federationLinks)
       .set({
         status: "active",
-        peerCidrs: msg.acceptedCidrs,
+        peerCidrs: accepted.cidrs,
         peerBrokerUrl: msg.brokerUrl,
         peerName: msg.collectiveName,
         updatedAt: new Date(),

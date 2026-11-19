@@ -14,10 +14,11 @@ import {
 } from "../auth/atproto.js";
 import { db } from "../db/index.js";
 import { users, tenants, memberships, roles } from "../db/schema.js";
-import { allocatePort } from "../orchestrator/ports.js";
+import { allocateTenantPort } from "../orchestrator/ports.js";
 import { adoptInstance, createInstance } from "../orchestrator/headscale.js";
 import { syncTenantRoutes } from "../orchestrator/caddy.js";
 import { getControlClient, useCoordinator } from "../orchestrator/control-client.js";
+import { CoordinatorApiClient } from "../orchestrator/coordinator-api.js";
 import {
   ORIGINATOR_PERMISSIONS,
   DEFAULT_CITIZEN_PERMISSIONS,
@@ -30,18 +31,32 @@ import { logger } from "../logger.js";
  */
 export const authRouter = Router();
 
+/** Max length of a DNS label — slugs become `<slug>.<BASE_DOMAIN>`. */
+const MAX_SLUG_LENGTH = 63;
+
+/** Truncates to `max` chars and strips trailing hyphens (valid DNS label). */
+function fitLabel(base: string, max: number): string {
+  return base.slice(0, max).replace(/-+$/, "");
+}
+
 async function generateUniqueSlug(handle: string): Promise<string> {
-  const base = handle
-    .replace(/[^a-z0-9]+/gi, "-")
-    .replace(/^-|-$/g, "")
-    .toLowerCase();
+  const base =
+    fitLabel(
+      handle
+        .replace(/[^a-z0-9]+/gi, "-")
+        .replace(/^-|-$/g, "")
+        .toLowerCase(),
+      MAX_SLUG_LENGTH,
+    ) || "tailnet";
   const [existing] = await db
     .select({ slug: tenants.slug })
     .from(tenants)
     .where(eq(tenants.slug, base));
   if (!existing) return base;
   for (let i = 2; i <= 100; i++) {
-    const candidate = `${base}-${i}`;
+    const suffix = `-${i}`;
+    // Shorten the base so base + suffix still fits in one DNS label
+    const candidate = `${fitLabel(base, MAX_SLUG_LENGTH - suffix.length)}${suffix}`;
     const [check] = await db
       .select({ slug: tenants.slug })
       .from(tenants)
@@ -56,14 +71,18 @@ async function provisionTenant(
   displayName: string,
   handle: string,
 ): Promise<void> {
-  const slug = await generateUniqueSlug(handle);
   const { allocateTenantPrefixes } = await import("../orchestrator/prefix-allocator.js");
   const prefixes = await allocateTenantPrefixes();
 
   let tenant: typeof tenants.$inferSelect | undefined;
+  let slug = "";
   let port = 0;
   for (let attempt = 0; attempt < 3; attempt++) {
-    port = await allocatePort();
+    // Re-derive both unique values on every attempt (either can race)
+    slug = await generateUniqueSlug(handle);
+    // Coordinator-mode tenants have no Headscale container, so they get a
+    // synthetic placeholder instead of consuming a real port from the range.
+    port = await allocateTenantPort(!useCoordinator);
     try {
       const [inserted] = await db
         .insert(tenants)
@@ -215,9 +234,15 @@ async function provisionViaCoordinator(
       coordinatorTenantId: coordTenant.id,
     });
 
-    await client.setPolicy({
+    // Default allow-all, translated to the coordinator's {default_deny, rules} model
+    const defaultPolicy = {
       acls: [{ action: "accept", src: ["*"], dst: ["*:*"] }],
-    });
+    };
+    if (client instanceof CoordinatorApiClient) {
+      await client.setHeadscalePolicy(defaultPolicy);
+    } else {
+      await client.setPolicy(defaultPolicy);
+    }
   } catch (err) {
     // Compensating delete — best effort
     try {
@@ -315,6 +340,18 @@ authRouter.get("/auth/callback", async (req, res) => {
         .update(users)
         .set({ handle, displayName, avatarUrl, updatedAt: new Date() })
         .where(eq(users.id, user.id));
+
+      // If first-login provisioning failed after the user row was inserted,
+      // the user has no tenant at all — provision one now. (Users who have
+      // any membership, e.g. joined someone else's tailnet, are left alone.)
+      const [anyMembership] = await db
+        .select({ id: memberships.id })
+        .from(memberships)
+        .where(eq(memberships.userId, user.id))
+        .limit(1);
+      if (!anyMembership) {
+        await provisionTenant(user, displayName, handle);
+      }
     }
 
     const dest = req.session.postLoginRedirect || "/";

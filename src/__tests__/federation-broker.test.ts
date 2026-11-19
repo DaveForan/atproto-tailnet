@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   FEDERATION_RELAY_TAG,
   addFederatedRoutesToPolicy,
+  handshakeRetryDelayMs,
   removeFederatedRoutesFromPolicy,
 } from "../orchestrator/federation-broker.js";
 
@@ -40,5 +41,17 @@ describe("federated route policy edits", () => {
       "10.2.0.0/24": ["group:ops"],
       "10.9.0.0/24": ["group:ops"],
     });
+  });
+});
+
+describe("handshakeRetryDelayMs", () => {
+  it("backs off exponentially from 30s and caps at 30 minutes", () => {
+    const mid = () => 0.5;
+    expect(handshakeRetryDelayMs(1, mid)).toBe(30_000);
+    expect(handshakeRetryDelayMs(2, mid)).toBe(60_000);
+    expect(handshakeRetryDelayMs(4, mid)).toBe(240_000);
+    expect(handshakeRetryDelayMs(50, mid)).toBe(30 * 60_000);
+    expect(handshakeRetryDelayMs(1, () => 0)).toBe(24_000);
+    expect(handshakeRetryDelayMs(1, () => 1)).toBe(36_000);
   });
 });

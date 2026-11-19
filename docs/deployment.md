@@ -82,8 +82,9 @@ does not start in production if `SESSION_SECRET` is weak.
 | `COORD_ADMIN_KEY` | Yes | -- | Bearer token for the admin API (must match `COORDINATOR_API_KEY` above) |
 | `COORD_STORE_BACKEND` | Yes | -- | Storage backend: `memory`, `postgres`, or `sqlite` |
 | `COORD_SQLITE_PATH` | SQLite | `coordinator.db` | Path to the SQLite database |
-| `COORD_DATABASE_URL` | PG | -- | PostgreSQL connection string (when you use the postgres backend) |
-| `COORD_DERP_MAP` | No | -- | Path to the DERP map JSON file (`PUT /api/derp` overrides it at runtime) |
+| `DATABASE_URL` | PG | -- | PostgreSQL connection string (when you use the postgres backend) |
+| `COORD_CONTROL_KEY_PATH` | Yes | -- | File that holds the Noise control key. The coordinator creates it at first start. Keep it on a persistent volume. If the key changes, all clients must reconnect |
+| `COORD_DERP_MAP` | No | -- | Path to the default DERP map JSON file. Each tenant can override it from the dashboard |
 
 ### Production `.env` example (coordinator mode)
 
@@ -180,9 +181,10 @@ docker compose -f docker-compose.coordinator.yml up -d
 
 This command starts the TS service, the Rust coordinator, PostgreSQL, and
 Caddy. The coordinator manages all tenants and the DERP relay configuration.
-The dashboard sends DERP map changes to the coordinator's `PUT /api/derp`
-endpoint through a proxy. The changes take effect immediately. You do not need
-to restart the stack.
+Each tenant sets its own DERP relays in the dashboard. The service stores the
+settings and sends them to the coordinator for that tenant only. Connected
+devices receive the new relay map immediately. You do not need to restart the
+stack.
 
 ### Updating
 

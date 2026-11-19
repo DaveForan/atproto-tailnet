@@ -145,21 +145,43 @@ impl<S: FederationStore + ?Sized> BrokerService<S> {
         Ok(())
     }
 
-    /// Update keepalive timestamps for established and degraded sessions.
+    /// Report sessions due a keepalive.
     ///
     /// Real HTTP sends are done by the caller's transport layer, which reads
-    /// sessions and calls `transport::send_keepalive`. This method records
-    /// that a keepalive tick occurred so `check_session_health` can detect
-    /// sessions that stop receiving acknowledgments.
+    /// sessions and calls `transport::send_keepalive`. This method must NOT
+    /// touch `last_keepalive`: that field records liveness evidence from the
+    /// PEER — a keepalive received from it (`InboundHandler::handle_keepalive`)
+    /// or its acknowledgment of ours ([`Self::record_keepalive_ack`]). Bumping
+    /// it locally on every tick meant `check_session_health` could never see a
+    /// stale session.
     async fn send_keepalives(&self) -> Result<(), CoordError> {
         let sessions = self.store.list_sessions().await?;
         for session in &sessions {
             match session.status {
                 BrokerSessionStatus::Established | BrokerSessionStatus::Degraded => {
                     debug!(session_id = %session.id, "keepalive due");
-                    self.store.update_session_keepalive(session.id).await?;
                 }
                 _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// Record that the peer acknowledged one of our keepalives (a verified
+    /// response from the peer's broker). Restores a degraded session.
+    pub async fn record_keepalive_ack(&self, session_id: SessionId) -> Result<(), CoordError> {
+        self.store.update_session_keepalive(session_id).await?;
+        if let Some(session) = self
+            .store
+            .list_sessions()
+            .await?
+            .into_iter()
+            .find(|s| s.id == session_id)
+        {
+            if session.status == BrokerSessionStatus::Degraded {
+                self.store
+                    .update_session_status(session_id, BrokerSessionStatus::Established, None)
+                    .await?;
             }
         }
         Ok(())
@@ -547,6 +569,34 @@ mod tests {
         let sessions = store.list_sessions().await.unwrap();
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].status, BrokerSessionStatus::Degraded);
+    }
+
+    #[tokio::test]
+    async fn tick_does_not_refresh_keepalive_of_silent_peer() {
+        let store = Arc::new(FederationMemoryStore::new());
+        let tenant_id = TenantId::generate();
+        let link = make_active_link(tenant_id);
+        store.create_link(link.clone()).await.unwrap();
+
+        let mut session = make_session(&link);
+        session.last_keepalive = Some(Utc::now() - chrono::Duration::seconds(120));
+        store.create_session_if_missing(session.clone()).await.unwrap();
+
+        let config = BrokerConfig {
+            keepalive_stale: Duration::from_secs(5),
+            ..test_config()
+        };
+        let broker = BrokerService::new(store.clone(), config);
+        // A full tick (which "sends" keepalives) must still see the session as stale.
+        broker.tick().await.unwrap();
+
+        let sessions = store.list_sessions().await.unwrap();
+        assert_eq!(sessions[0].status, BrokerSessionStatus::Degraded);
+
+        // An acknowledgment from the peer restores it.
+        broker.record_keepalive_ack(session.id).await.unwrap();
+        let sessions = store.list_sessions().await.unwrap();
+        assert_eq!(sessions[0].status, BrokerSessionStatus::Established);
     }
 
     #[tokio::test]

@@ -55,6 +55,38 @@ export interface HandshakeCallbacks {
   getLocalRoutes(): RouteAnnouncement[];
 }
 
+/**
+ * Challenge nonces are 32 random bytes: base64url without padding (this
+ * service) or 64 lowercase hex chars (the Rust coordinator). Both sides
+ * enforce the format so a peer cannot pass arbitrary data off as a nonce.
+ */
+export const CHALLENGE_NONCE_RE = /^(?:[A-Za-z0-9_-]{43}|[0-9a-f]{64})$/;
+
+export function isValidChallengeNonce(nonce: unknown): nonce is string {
+  return typeof nonce === "string" && CHALLENGE_NONCE_RE.test(nonce);
+}
+
+/** Type tag of the challenge-response signing payload (never a CFP message type). */
+export const CHALLENGE_RESPONSE_TYPE = "CFP_CHALLENGE_RESPONSE";
+
+/**
+ * What the initiator signs to answer a CHALLENGE: a typed, audience-bound
+ * wrapper — never the peer-chosen nonce verbatim, which would make us a
+ * signing oracle for any message (CFP or holder-binding) the peer picks.
+ */
+export function challengeResponsePayload(
+  nonce: string,
+  signerDid: string,
+  audienceDid: string,
+): string {
+  return JSON.stringify({
+    type: CHALLENGE_RESPONSE_TYPE,
+    iss: signerDid,
+    aud: audienceDid,
+    nonce,
+  });
+}
+
 export function createHandshake(localDid: string): HandshakeState {
   return {
     phase: "idle",
@@ -224,29 +256,43 @@ export async function handleChallenge(
     };
   }
 
-  const challengeSignature = await callbacks.sign(challenge.nonce);
+  if (!state.remoteDid || challenge.collectiveDid !== state.remoteDid) {
+    return {
+      ok: false,
+      state: { ...state, phase: "failed", error: "CHALLENGE from unexpected sender", updatedAt: new Date() },
+      error: "CHALLENGE from unexpected sender",
+    };
+  }
+
+  if (!isValidChallengeNonce(challenge.nonce)) {
+    return {
+      ok: false,
+      state: { ...state, phase: "failed", error: "Malformed challenge nonce", updatedAt: new Date() },
+      error: "Malformed challenge nonce",
+    };
+  }
+
+  const challengeSignature = await callbacks.sign(
+    challengeResponsePayload(challenge.nonce, state.localDid, state.remoteDid),
+  );
   const routes = callbacks.getLocalRoutes();
 
   const timestamp = new Date().toISOString();
-  const payload = JSON.stringify({
-    type: "COMMIT",
-    collectiveDid: state.localDid,
-    challengeNonce: challenge.nonce,
-    initialRoutes: routes,
-    timestamp,
-  });
-
-  const signature = await callbacks.sign(payload);
-
-  const message: CommitMessage = {
-    type: "COMMIT",
+  // Signed over every transmitted field except `signature`, in transmitted
+  // order — the same bytes the receiver rebuilds from the wire message.
+  const unsigned = {
+    type: "COMMIT" as const,
     collectiveDid: state.localDid,
     challengeNonce: challenge.nonce,
     challengeSignature,
     initialRoutes: routes,
-    signature,
+    signature: undefined,
     timestamp,
   };
+
+  const signature = await callbacks.sign(JSON.stringify(unsigned));
+
+  const message: CommitMessage = { ...unsigned, signature };
 
   return {
     ok: true,
@@ -288,7 +334,15 @@ export async function handleCommit(
     };
   }
 
-  if (commit.challengeNonce !== state.challengeNonce) {
+  if (!state.remoteDid || commit.collectiveDid !== state.remoteDid) {
+    return {
+      ok: false,
+      state: { ...state, phase: "failed", error: "COMMIT from unexpected sender", updatedAt: new Date() },
+      error: "COMMIT from unexpected sender",
+    };
+  }
+
+  if (!isValidChallengeNonce(commit.challengeNonce) || commit.challengeNonce !== state.challengeNonce) {
     return {
       ok: false,
       state: { ...state, phase: "failed", error: "Nonce mismatch", updatedAt: new Date() },
@@ -296,9 +350,24 @@ export async function handleCommit(
     };
   }
 
+  // The COMMIT itself (its routes, timestamp) must be signed by the peer,
+  // over the message as transmitted.
+  const commitValid = await callbacks.verifySignature(
+    commit.collectiveDid,
+    JSON.stringify({ ...commit, signature: undefined }),
+    commit.signature,
+  );
+  if (!commitValid) {
+    return {
+      ok: false,
+      state: { ...state, phase: "failed", error: "Invalid COMMIT signature", updatedAt: new Date() },
+      error: "Invalid COMMIT signature",
+    };
+  }
+
   const nonceValid = await callbacks.verifySignature(
     commit.collectiveDid,
-    commit.challengeNonce,
+    challengeResponsePayload(commit.challengeNonce, commit.collectiveDid, state.localDid),
     commit.challengeSignature,
   );
 

@@ -101,6 +101,16 @@ devicesRouter.post(
       return;
     }
 
+    // Session users keep self-service key generation; an agent token minting
+    // join keys must be explicitly scoped for device management.
+    if (
+      req.agentToken &&
+      !(req.agentToken.permissions as string[]).includes("manage_devices")
+    ) {
+      res.status(403).json({ error: "Agent token scope does not include manage_devices" });
+      return;
+    }
+
     if (!result.tenant.apiKey) {
       res.status(500).json({ error: "Tenant instance not available" });
       return;

@@ -26,6 +26,8 @@ import {
   param,
   getTenantForUser,
   hasPermission,
+  missingPermissions,
+  isDeviceLocked,
   isLockedDown,
   toHsUsername,
   tenantLoginServer,
@@ -336,6 +338,13 @@ securityRouter.post(
       return;
     }
 
+    // Anti-escalation: a caller may only grant permissions they effectively hold
+    const lacking = missingPermissions(result.membership, result.role, parsed.data.permissions, req);
+    if (lacking.length > 0) {
+      res.status(403).json({ error: "Cannot grant permissions you do not hold", permissions: lacking });
+      return;
+    }
+
     const [existing] = await db
       .select()
       .from(roles)
@@ -412,6 +421,17 @@ securityRouter.patch(
     if (targetRole.isSystem && parsed.data.name && parsed.data.name !== targetRole.name) {
       res.status(403).json({ error: "Cannot rename a system role" });
       return;
+    }
+
+    // Anti-escalation: any permission being added to the role must be held by the caller
+    if (parsed.data.permissions !== undefined) {
+      const existing = new Set(targetRole.permissions as string[]);
+      const added = parsed.data.permissions.filter((p) => !existing.has(p));
+      const lacking = missingPermissions(result.membership, result.role, added, req);
+      if (lacking.length > 0) {
+        res.status(403).json({ error: "Cannot grant permissions you do not hold", permissions: lacking });
+        return;
+      }
     }
 
     if (parsed.data.name && parsed.data.name !== targetRole.name) {
@@ -573,6 +593,18 @@ securityRouter.put(
     // Don't allow assigning the originator role to non-originators
     if (targetRole.isSystem && targetRole.name === "originator") {
       res.status(403).json({ error: "The originator role cannot be assigned" });
+      return;
+    }
+
+    // Anti-escalation: the assigned role's permissions must be a subset of the caller's
+    const lacking = missingPermissions(
+      result.membership,
+      result.role,
+      targetRole.permissions as string[],
+      req,
+    );
+    if (lacking.length > 0) {
+      res.status(403).json({ error: "Cannot assign a role with permissions you do not hold", permissions: lacking });
       return;
     }
 
@@ -790,6 +822,12 @@ securityRouter.post(
         .set({ status: "expired" })
         .where(eq(deviceApprovals.id, approvalId));
       res.status(410).json({ error: "Request has expired" });
+      return;
+    }
+
+    // The requester may have been device-locked after filing the request
+    if (await isDeviceLocked(tenantId, approval.requesterId)) {
+      res.status(409).json({ error: "Requester is locked to specific devices — remove the lock first" });
       return;
     }
 
@@ -1167,11 +1205,6 @@ securityRouter.delete(
   requireAuth,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const parsed = deviceLockBody.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
-      return;
-    }
 
     const result = await getTenantForUser(tenantId, authUserId(req));
     if (!result) {
@@ -1179,12 +1212,19 @@ securityRouter.delete(
       return;
     }
 
-    const targetUserId = parsed.data.userId;
-    const isSelf = targetUserId === authUserId(req);
-    if (!isSelf && !hasPermission(result.membership, result.role, "lock_devices", req)) {
+    // Removing a lock — including your own — requires lock_devices; otherwise
+    // a locked member could simply unlock themselves.
+    if (!hasPermission(result.membership, result.role, "lock_devices", req)) {
       res.status(403).json({ error: "Insufficient permissions" });
       return;
     }
+
+    const parsed = deviceLockBody.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
+      return;
+    }
+    const targetUserId = parsed.data.userId;
 
     if (useCoordinator) {
       res.status(501).json({ error: "Device locks are not supported in coordinator mode — nodes are not user-scoped" });

@@ -109,6 +109,9 @@ export async function verifyBundle(
   };
 }
 
+/** Format of nonces minted by `generateHolderChallenge` (32 bytes, base64url). */
+const HOLDER_NONCE_RE = /^[A-Za-z0-9_-]{43}$/;
+
 export async function verifyHolderBinding(
   proof: HolderBindingProof,
   challenge: HolderBindingChallenge,
@@ -121,6 +124,15 @@ export async function verifyHolderBinding(
   const now = new Date();
   if (now > new Date(challenge.expiresAt)) {
     return { valid: false, error: "Challenge expired" };
+  }
+
+  // Holder-binding proofs are a detached EdDSA JWS over the bare nonce, the
+  // same primitive collective keys use for CFP messages. Accept only nonces in
+  // the exact format generateHolderChallenge() mints (32 random bytes,
+  // base64url) so a signature over any other payload — a CFP message or a
+  // CFP challenge response (typed JSON) — can never pass as a binding proof.
+  if (!HOLDER_NONCE_RE.test(proof.nonce)) {
+    return { valid: false, error: "Malformed nonce" };
   }
 
   const publicKey = await resolver.resolve(proof.did);
@@ -136,19 +148,24 @@ export async function verifyHolderBinding(
       new TextEncoder().encode(proof.nonce),
     );
     const compact = `${headerB64}.${payloadB64}.${proof.signature}`;
-    await jose.compactVerify(compact, publicKey);
+    await jose.compactVerify(compact, publicKey, { algorithms: ["EdDSA"] });
     return { valid: true };
   } catch {
     return { valid: false, error: "Signature verification failed" };
   }
 }
 
+/**
+ * Ask an issuer's status endpoint whether a credential is revoked. Credential
+ * ids are only unique per issuer, so the issuer DID is part of the query.
+ */
 export async function verifyCredentialStatus(
   statusEndpoint: string,
   credentialId: string,
+  issuerDid: string,
 ): Promise<{ valid: boolean; checked: string }> {
   try {
-    const url = `${statusEndpoint}/${credentialId}`;
+    const url = `${statusEndpoint}/${encodeURIComponent(credentialId)}?issuer=${encodeURIComponent(issuerDid)}`;
     const res = await fetch(url, {
       signal: AbortSignal.timeout(5000),
     });

@@ -447,8 +447,15 @@ for (const [addr, prefix] of [
 
 export function isPublicAddress(address: string): boolean {
   // IPv4-mapped IPv6 (::ffff:a.b.c.d) is judged as the IPv4 address it reaches.
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(address);
+  const mapped = /^(?:0{1,4}:){0,4}:?:?ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(address);
   if (mapped) return isPublicAddress(mapped[1]);
+  // Same, in the hex form WHATWG URL serialises it to (`[::ffff:7f00:1]`).
+  const mappedHex = /^(?:0{1,4}:){0,4}:?:?ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(address);
+  if (mappedHex) {
+    const hi = parseInt(mappedHex[1], 16);
+    const lo = parseInt(mappedHex[2], 16);
+    return isPublicAddress(`${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`);
+  }
 
   const family = net.isIP(address);
   if (family === 0) return false;
@@ -471,10 +478,22 @@ export async function isPublicHost(host: string): Promise<boolean> {
     return false;
   }
 
-  if (net.isIP(hostname)) return isPublicAddress(hostname);
+  return resolvesToPublicAddresses(hostname);
+}
+
+/**
+ * True when `hostname` (an IP literal, bracketed or not, or a DNS name) is a
+ * public address, or resolves only to public addresses. Rejects private,
+ * loopback, link-local, CGNAT, unspecified, ULA, multicast and IPv4-mapped
+ * forms of any of those. Unresolvable names are rejected.
+ */
+export async function resolvesToPublicAddresses(hostname: string): Promise<boolean> {
+  const bare = hostname.replace(/^\[|\]$/g, "");
+  if (!bare) return false;
+  if (net.isIP(bare)) return isPublicAddress(bare);
 
   try {
-    const addresses = await lookup(hostname, { all: true });
+    const addresses = await lookup(bare, { all: true });
     return addresses.length > 0 && addresses.every((a) => isPublicAddress(a.address));
   } catch {
     return false;

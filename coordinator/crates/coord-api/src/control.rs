@@ -20,11 +20,35 @@ pub async fn handle_register(
         .as_ref()
         .and_then(|a| a.auth_key.as_deref());
 
+    let node_key_bytes = parse_key_from_request(&req.node_key)?;
+
+    // A known machine re-registering with its current (or rotated-from) node key
+    // is already authorized; tailscaled does this on every restart without an auth key.
+    if let Some(existing) = state.store.get_node_by_machine_key(machine_key).await {
+        if let Some(detail) = state.store.get_node_info(existing).await {
+            let old_key = req
+                .old_node_key
+                .as_deref()
+                .and_then(|k| parse_key_from_request(k).ok())
+                .filter(|k| *k != [0u8; 32]);
+            let current = detail.info.node_key.as_slice();
+            if current == node_key_bytes.as_slice() {
+                return Ok((serde_json::to_string(&authorized_response())?, None));
+            }
+            if let Some(old) = old_key.filter(|k| current == k.as_slice()) {
+                state.store.rotate_node_key(machine_key, &old, &node_key_bytes).await?;
+                info!(node_id = existing.as_i64(), "node key rotated on re-register");
+                return Ok((serde_json::to_string(&authorized_response())?, None));
+            }
+        }
+    }
+
     let tenant_id = match auth_key {
         Some(key) => match state.store.validate_preauth_key(key).await {
             Some(tid) => tid,
             None => {
-                warn!(auth_key_prefix = &key[..key.len().min(12)], "invalid pre-auth key");
+                let prefix: String = key.chars().take(12).collect();
+                warn!(auth_key_prefix = %prefix, "invalid pre-auth key");
                 let resp = RegisterResponse {
                     user: User::default(),
                     login: Login::default(),
@@ -48,8 +72,6 @@ pub async fn handle_register(
             return Ok((serde_json::to_string(&resp)?, None));
         }
     };
-
-    let node_key_bytes = parse_key_from_request(&req.node_key)?;
 
     if let Some(ref old_key_str) = req.old_node_key {
         if let Ok(old_key) = parse_key_from_request(old_key_str) {
@@ -94,7 +116,11 @@ pub async fn handle_register(
         "node registered"
     );
 
-    let resp = RegisterResponse {
+    Ok((serde_json::to_string(&authorized_response())?, Some(generation)))
+}
+
+fn authorized_response() -> RegisterResponse {
+    RegisterResponse {
         user: User {
             id: 1,
             display_name: "Mesh User".into(),
@@ -109,9 +135,7 @@ pub async fn handle_register(
         machine_authorized: true,
         auth_url: String::new(),
         error: String::new(),
-    };
-
-    Ok((serde_json::to_string(&resp)?, Some(generation)))
+    }
 }
 
 pub async fn handle_map(
@@ -140,7 +164,7 @@ pub async fn build_map_snapshot(
     state: &Arc<CoordinatorState>,
     machine_key: &[u8; 32],
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    let resp = state.netmap.read().await.build_snapshot(machine_key).await?;
+    let resp = state.netmap.build_snapshot(machine_key).await?;
     Ok(serde_json::to_string(&resp)?)
 }
 
@@ -149,7 +173,7 @@ pub async fn build_delta_response(
     _machine_key: &[u8; 32],
     event: &PeerEvent,
 ) -> Option<String> {
-    let resp = state.netmap.read().await.build_delta(event).await?;
+    let resp = state.netmap.build_delta(event).await?;
     serde_json::to_string(&resp).ok()
 }
 

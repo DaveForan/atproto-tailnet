@@ -286,6 +286,7 @@ async fn handle_streaming_map(
     // snapshot and subscribe. Duplicate events are harmless (client merges
     // PeersChanged idempotently).
     let mut peer_rx = state.store.subscribe();
+    let mut config_rx = state.config_changed.subscribe();
 
     let initial = match control::handle_map(&state, &machine_key, &body).await {
         Ok(json) => json,
@@ -325,12 +326,41 @@ async fn handle_streaming_map(
 
     tokio::spawn(async move {
         use std::time::Duration;
-        let keepalive_interval = Duration::from_secs(60);
+        let keepalive_period = Duration::from_secs(60);
+        let mut keepalive = tokio::time::interval_at(
+            tokio::time::Instant::now() + keepalive_period,
+            keepalive_period,
+        );
 
         loop {
             tokio::select! {
                 _ = tx.closed() => {
                     break;
+                }
+                changed = config_rx.recv() => {
+                    let affected = match changed {
+                        Ok(t) => t == tenant_id,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => true,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    };
+                    if !affected {
+                        continue;
+                    }
+                    if state_clone.store.get_node_tenant(node_id).await != Some(tenant_id) {
+                        break;
+                    }
+                    child_tenant_ids = state_clone.store.get_child_tenants(tenant_id).await
+                        .into_iter()
+                        .filter(|t| t.federation_posture != coord_core::FederationPosture::Closed)
+                        .map(|t| t.id)
+                        .collect();
+                    if let Ok(json) = control::build_map_snapshot(&state_clone, &machine_key).await {
+                        if let Ok(framed) = frame_map_response(json.as_bytes()) {
+                            if tx.send(Ok(hyper::body::Frame::data(Bytes::from(framed)))).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
                 }
                 event = peer_rx.recv() => {
                     let event = match event {
@@ -371,8 +401,12 @@ async fn handle_streaming_map(
                         coord_store::PeerEvent::NodeOffline { node_id: n, .. } => *n,
                     };
 
-                    // Don't notify a node about its own changes
+                    // Don't notify a node about its own changes, but end the
+                    // session if the node was deleted or moved to another tenant.
                     if event_node_id == node_id {
+                        if state_clone.store.get_node_tenant(node_id).await != Some(tenant_id) {
+                            break;
+                        }
                         continue;
                     }
 
@@ -390,9 +424,12 @@ async fn handle_streaming_map(
                         }
                     }
                 }
-                _ = tokio::time::sleep(keepalive_interval) => {
-                    let keepalive = serde_json::json!({"KeepAlive": true});
-                    if let Ok(framed) = frame_map_response(keepalive.to_string().as_bytes()) {
+                _ = keepalive.tick() => {
+                    if state_clone.store.get_node_tenant(node_id).await != Some(tenant_id) {
+                        break;
+                    }
+                    let keepalive_msg = serde_json::json!({"KeepAlive": true});
+                    if let Ok(framed) = frame_map_response(keepalive_msg.to_string().as_bytes()) {
                         if tx.send(Ok(hyper::body::Frame::data(Bytes::from(framed)))).await.is_err() {
                             break;
                         }

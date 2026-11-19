@@ -31,6 +31,7 @@ RUN cargo build --release --package coord-server 2>/dev/null || true
 # Copy real source and migrations
 COPY crates/ crates/
 COPY migrations/ migrations/
+COPY migrations_sqlite/ migrations_sqlite/
 
 # Build the real binary
 RUN cargo build --release --package coord-server
@@ -38,7 +39,8 @@ RUN cargo build --release --package coord-server
 # ---- runtime stage -------------------------------------------------------
 FROM alpine:3.21
 
-RUN apk add --no-cache tini ca-certificates
+RUN apk add --no-cache tini ca-certificates \
+    && mkdir -p /var/lib/coordinator
 
 COPY --from=build /build/target/release/coord-server /usr/local/bin/coord-server
 

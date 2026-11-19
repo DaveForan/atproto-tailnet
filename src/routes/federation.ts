@@ -31,6 +31,8 @@ import {
   initiateOutboundHandshake,
   publicKeyFingerprint,
   signAsCollective,
+  validateLocalCidrsForTenant,
+  validatePeerCidrsForTenant,
 } from "../orchestrator/federation-broker.js";
 import { collectiveDids } from "../db/schema.js";
 import { config } from "../config.js";
@@ -206,7 +208,19 @@ federationRouter.post(
       return;
     }
 
-    const offeredCidrs = parsed.data.cidrs ?? [];
+    // ADR-0019 §6: we may only offer our own prefixes, and the target must be
+    // able to import them (no overlap with its range or its other links).
+    const localCheck = await validateLocalCidrsForTenant(tenantId, parsed.data.cidrs ?? []);
+    if (localCheck.errors.length > 0) {
+      res.status(400).json({ error: "Invalid CIDRs", details: localCheck.errors });
+      return;
+    }
+    const peerCheck = await validatePeerCidrsForTenant(targetTenantId, localCheck.cidrs);
+    if (peerCheck.errors.length > 0) {
+      res.status(400).json({ error: "CIDRs conflict with the target collective", details: peerCheck.errors });
+      return;
+    }
+    const offeredCidrs = localCheck.cidrs;
 
     // Create the outgoing row for the requester
     const [link] = await db
@@ -278,7 +292,8 @@ federationRouter.post(
       return;
     }
 
-    // Find the local (incoming) link row for this tenant
+    // Find the local (incoming) link row for this tenant. Only the side that
+    // received the request may accept it — never the requester itself.
     const linkRows = await db
       .select()
       .from(federationLinks)
@@ -286,6 +301,7 @@ federationRouter.post(
         and(
           eq(federationLinks.id, linkId),
           eq(federationLinks.localTenantId, tenantId),
+          eq(federationLinks.direction, "incoming"),
           eq(federationLinks.status, "pending"),
         ),
       )
@@ -297,20 +313,22 @@ federationRouter.post(
     }
 
     const link = linkRows[0];
-    const acceptedCidrs = parsed.data.cidrs ?? [];
 
-    // Update local row: active + set what we share
-    await db
-      .update(federationLinks)
-      .set({
-        status: "active",
-        localCidrs: acceptedCidrs,
-        reviewedById: authUserId(req),
-        updatedAt: new Date(),
-      })
-      .where(eq(federationLinks.id, linkId));
+    // What we share must be ours; what the peer offered must still be
+    // importable (ranges and other links may have changed since the request).
+    const localCheck = await validateLocalCidrsForTenant(tenantId, parsed.data.cidrs ?? []);
+    if (localCheck.errors.length > 0) {
+      res.status(400).json({ error: "Invalid CIDRs", details: localCheck.errors });
+      return;
+    }
+    const offeredCheck = await validatePeerCidrsForTenant(tenantId, link.peerCidrs, link.id);
+    if (offeredCheck.errors.length > 0) {
+      res.status(409).json({ error: "The peer's offered CIDRs conflict with this collective", details: offeredCheck.errors });
+      return;
+    }
+    const acceptedCidrs = localCheck.cidrs;
 
-    // Update the mirror row: look up our DID and the peer's tenant UUID
+    // Look up our DID and the peer's tenant UUID (same-instance mirror row).
     const [ourDidRows, peerDidRows] = await Promise.all([
       db
         .select({ did: collectiveDids.did })
@@ -324,6 +342,27 @@ federationRouter.post(
         .limit(1),
     ]);
 
+    // The requester must be able to import what we share.
+    if (peerDidRows.length > 0) {
+      const mirrorCheck = await validatePeerCidrsForTenant(peerDidRows[0].tenantId, acceptedCidrs);
+      if (mirrorCheck.errors.length > 0) {
+        res.status(400).json({ error: "CIDRs conflict with the requesting collective", details: mirrorCheck.errors });
+        return;
+      }
+    }
+
+    // Update local row: active + set what we share
+    await db
+      .update(federationLinks)
+      .set({
+        status: "active",
+        localCidrs: acceptedCidrs,
+        reviewedById: authUserId(req),
+        updatedAt: new Date(),
+      })
+      .where(eq(federationLinks.id, linkId));
+
+    // Update the requester's (outgoing) mirror row.
     if (ourDidRows.length > 0 && peerDidRows.length > 0) {
       await db
         .update(federationLinks)
@@ -336,6 +375,7 @@ federationRouter.post(
           and(
             eq(federationLinks.localTenantId, peerDidRows[0].tenantId),
             eq(federationLinks.peerDid, ourDidRows[0].did),
+            eq(federationLinks.direction, "outgoing"),
             eq(federationLinks.status, "pending"),
           ),
         );
@@ -378,6 +418,7 @@ federationRouter.post(
       return;
     }
 
+    // Only the receiving side rejects; the requester withdraws via revoke.
     const linkRows = await db
       .select()
       .from(federationLinks)
@@ -385,6 +426,7 @@ federationRouter.post(
         and(
           eq(federationLinks.id, linkId),
           eq(federationLinks.localTenantId, tenantId),
+          eq(federationLinks.direction, "incoming"),
           eq(federationLinks.status, "pending"),
         ),
       )
@@ -431,6 +473,7 @@ federationRouter.post(
           and(
             eq(federationLinks.localTenantId, peerDidRows[0].tenantId),
             eq(federationLinks.peerDid, ourDidRows[0].did),
+            eq(federationLinks.direction, "outgoing"),
             eq(federationLinks.status, "pending"),
           ),
         );

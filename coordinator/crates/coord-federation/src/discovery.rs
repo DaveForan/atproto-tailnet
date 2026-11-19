@@ -199,21 +199,39 @@ async fn is_private_or_loopback_host(host: &str) -> bool {
     }
 }
 
-/// Check if an IP address is private, loopback, or link-local.
+/// Check if an IP address is anything but a public unicast address: private,
+/// loopback, link-local, CGNAT (100.64.0.0/10), unspecified, multicast,
+/// broadcast, benchmarking/IETF ranges, ULA (fc00::/7), NAT64, or an
+/// IPv4-mapped/compatible IPv6 address of any of those.
 fn is_private_ip(ip: &IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
+            let o = v4.octets();
             v4.is_loopback()
                 || v4.is_private()
                 || v4.is_link_local()
-                // 169.254.x.x is covered by is_link_local
-                || v4.octets()[0] == 0 // 0.0.0.0/8
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || o[0] == 0 // 0.0.0.0/8
+                || (o[0] == 100 && (o[1] & 0xc0) == 64) // 100.64.0.0/10 CGNAT
+                || (o[0] == 192 && o[1] == 0 && o[2] == 0) // 192.0.0.0/24
+                || (o[0] == 198 && (o[1] & 0xfe) == 18) // 198.18.0.0/15
+                || o[0] >= 240 // 240.0.0.0/4 reserved
         }
         IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_private_ip(&IpAddr::V4(v4));
+            }
+            let seg = v6.segments();
             v6.is_loopback()
-                // Rust stable doesn't have is_unique_local() yet, check manually
-                || (v6.segments()[0] & 0xfe00) == 0xfc00 // fc00::/7
-                || (v6.segments()[0] == 0xfe80) // fe80::/10 link-local
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (seg[0] & 0xfe00) == 0xfc00 // fc00::/7 ULA
+                || (seg[0] & 0xffc0) == 0xfe80 // fe80::/10 link-local
+                || (seg[0] == 0x64 && seg[1] == 0xff9b) // 64:ff9b::/96 NAT64
+                // ::/96 IPv4-compatible (deprecated) — never a real peer
+                || seg[..6].iter().all(|&s| s == 0)
         }
     }
 }
@@ -265,6 +283,27 @@ mod tests {
         assert!(is_private_or_loopback_host("172.16.0.1").await);
         assert!(is_private_or_loopback_host("192.168.0.1").await);
         assert!(!is_private_or_loopback_host("8.8.8.8").await);
+    }
+
+    #[tokio::test]
+    async fn rejects_cgnat_unspecified_ula_and_mapped() {
+        for host in [
+            "100.64.0.1",
+            "100.127.255.254",
+            "0.0.0.0",
+            "::",
+            "fd00::1",
+            "fe80::1",
+            "::ffff:127.0.0.1",
+            "::ffff:10.0.0.1",
+            "[::ffff:7f00:1]",
+            "224.0.0.1",
+        ] {
+            assert!(is_private_or_loopback_host(host).await, "{host} must be rejected");
+        }
+        assert!(!is_private_or_loopback_host("100.128.0.1").await);
+        assert!(!is_private_or_loopback_host("2606:4700::1111").await);
+        assert!(!is_private_or_loopback_host("::ffff:8.8.8.8").await);
     }
 
     #[test]

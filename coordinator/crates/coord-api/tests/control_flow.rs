@@ -233,7 +233,7 @@ async fn map_returns_netmap() {
 
     let peers = resp["Peers"].as_array().unwrap();
     assert_eq!(peers.len(), 1);
-    assert_eq!(peers[0]["Name"], "node-b");
+    assert_eq!(peers[0]["Name"], "node-b.mesh.local.");
 }
 
 #[tokio::test]
@@ -1048,7 +1048,7 @@ async fn hierarchy_parent_sees_child_peers_when_open() {
     let resp: serde_json::Value = serde_json::from_str(&result).unwrap();
     let peers = resp["Peers"].as_array().unwrap();
     assert_eq!(peers.len(), 1, "parent should see child node as peer");
-    assert_eq!(peers[0]["Name"], "child-node");
+    assert_eq!(peers[0]["Name"], "child-node.mesh.local.");
 }
 
 #[tokio::test]
@@ -1138,7 +1138,7 @@ async fn hierarchy_selective_posture_allows_visibility() {
     let resp: serde_json::Value = serde_json::from_str(&result).unwrap();
     let peers = resp["Peers"].as_array().unwrap();
     assert_eq!(peers.len(), 1, "selective posture should allow parent to see child");
-    assert_eq!(peers[0]["Name"], "child-sel");
+    assert_eq!(peers[0]["Name"], "child-sel.mesh.local.");
 }
 
 #[tokio::test]
@@ -1412,7 +1412,7 @@ async fn federation_hello_valid_returns_challenge() {
         id: LinkId::generate(),
         local_tenant_id: tenant_id,
         peer_did: remote_did.to_string(),
-        peer_broker_url: Some("https://remote.mesh/broker".to_string()),
+        peer_broker_url: Some("https://93.184.216.34/broker".to_string()),
         peer_name: Some("Remote Beta".to_string()),
         direction: LinkDirection::Incoming,
         status: LinkStatus::Active,
@@ -1463,7 +1463,7 @@ async fn federation_link_request_creates_pending() {
     let link_req = serde_json::json!({
         "messageId": uuid::Uuid::new_v4().to_string(),
         "collectiveDid": remote_did,
-        "brokerUrl": "https://remote.mesh/broker",
+        "brokerUrl": "https://93.184.216.34/broker",
         "collectiveName": "Remote Source",
         "federationType": "peer",
         "offeredCidrs": ["100.64.2.0/24"],
@@ -1500,7 +1500,7 @@ async fn federation_link_request_rejects_when_active_link_exists() {
         id: LinkId::generate(),
         local_tenant_id: tenant_id,
         peer_did: remote_did.to_string(),
-        peer_broker_url: Some("https://remote.mesh/broker".to_string()),
+        peer_broker_url: Some("https://93.184.216.34/broker".to_string()),
         peer_name: Some("Remote Dup".to_string()),
         direction: LinkDirection::Incoming,
         status: LinkStatus::Active,
@@ -1518,7 +1518,7 @@ async fn federation_link_request_rejects_when_active_link_exists() {
     let link_req = serde_json::json!({
         "messageId": uuid::Uuid::new_v4().to_string(),
         "collectiveDid": remote_did,
-        "brokerUrl": "https://remote.mesh/broker",
+        "brokerUrl": "https://93.184.216.34/broker",
         "collectiveName": "Remote Dup Again",
         "federationType": "peer",
         "offeredCidrs": ["100.64.3.0/24"],
@@ -1879,4 +1879,134 @@ async fn federation_commit_missing_header_returns_400() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+// ── Per-tenant DERP ──
+
+async fn register_and_map(
+    state: &Arc<CoordinatorState>,
+    tenant_id: coord_core::TenantId,
+    seed: u8,
+) -> serde_json::Value {
+    let auth_key = state.store().create_preauth_key(tenant_id, false).await.unwrap();
+    let machine_key = [seed; 32];
+    let node_key = format!("nodekey:{}", hex::encode([seed.wrapping_add(1); 32]));
+    let reg = serde_json::json!({
+        "Version": 2,
+        "NodeKey": &node_key,
+        "Auth": { "AuthKey": &auth_key },
+        "Hostinfo": { "Hostname": format!("n{seed}"), "OS": "linux" }
+    });
+    coord_api::__test_handle_register(state, &machine_key, &reg.to_string()).await.unwrap();
+    let map = serde_json::json!({ "Version": 2, "NodeKey": &node_key });
+    let out = coord_api::__test_handle_map(state, &machine_key, &map.to_string()).await.unwrap();
+    serde_json::from_str(&out).unwrap()
+}
+
+fn put_tenant_derp(tenant_id: coord_core::TenantId, body: serde_json::Value) -> Request<Body> {
+    Request::builder()
+        .method("PUT")
+        .uri(format!("/api/tenants/{tenant_id}/derp"))
+        .header("content-type", "application/json")
+        .header("authorization", format!("Bearer {TEST_ADMIN_KEY}"))
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+#[tokio::test]
+async fn tenant_derp_override_is_isolated() {
+    let (app, state) = setup();
+    let a = create_test_tenant(&state, "derp-a").await;
+    let b = create_test_tenant(&state, "derp-b").await;
+
+    let resp = app
+        .oneshot(put_tenant_derp(a, serde_json::json!({
+            "include_default": false,
+            "regions": { "901": {
+                "RegionID": 901, "RegionCode": "own", "RegionName": "Own",
+                "Nodes": [{ "Name": "901a", "RegionID": 0, "HostName": "derp.a.example",
+                            "STUNPort": 3478, "DERPPort": 443, "InsecureForTests": true }]
+            }}
+        })))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let map_a = register_and_map(&state, a, 160).await;
+    let regions_a = map_a["DERPMap"]["Regions"].as_object().unwrap();
+    assert_eq!(regions_a.keys().collect::<Vec<_>>(), vec!["901"]);
+    assert_eq!(regions_a["901"]["Nodes"][0]["RegionID"], 901);
+    assert!(regions_a["901"]["Nodes"][0].get("InsecureForTests").is_none());
+    assert_eq!(map_a["Node"]["HomeDERP"], 901);
+
+    let map_b = register_and_map(&state, b, 170).await;
+    let regions_b = map_b["DERPMap"]["Regions"].as_object().unwrap();
+    assert!(!regions_b.contains_key("901"), "tenant B must not see tenant A's DERP region");
+    assert!(regions_b.contains_key("1"));
+}
+
+#[tokio::test]
+async fn tenant_derp_include_default_merges() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "derp-merge").await;
+    let resp = app
+        .oneshot(put_tenant_derp(t, serde_json::json!({
+            "include_default": true,
+            "regions": { "950": {
+                "RegionID": 950, "RegionCode": "x", "RegionName": "X",
+                "Nodes": [{ "Name": "950a", "RegionID": 950, "HostName": "derp.x.example",
+                            "STUNPort": 3478, "DERPPort": 443 }]
+            }}
+        })))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let map = register_and_map(&state, t, 180).await;
+    let regions = map["DERPMap"]["Regions"].as_object().unwrap();
+    assert!(regions.contains_key("1") && regions.contains_key("950"));
+}
+
+#[tokio::test]
+async fn tenant_derp_validation() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "derp-bad").await;
+    let region = |id: i32, host: &str| serde_json::json!({
+        "RegionID": id, "RegionCode": "r", "RegionName": "R",
+        "Nodes": [{ "Name": "n", "RegionID": id, "HostName": host, "STUNPort": 3478, "DERPPort": 443 }]
+    });
+    let cases = [
+        serde_json::json!({ "include_default": false, "regions": {} }),
+        serde_json::json!({ "include_default": true, "regions": { "1": region(1, "derp.example") } }),
+        serde_json::json!({ "include_default": true, "regions": { "902": region(903, "derp.example") } }),
+        serde_json::json!({ "include_default": true, "regions": { "904": region(904, "bad host/../x") } }),
+    ];
+    for body in cases {
+        let resp = app.clone().oneshot(put_tenant_derp(t, body.clone())).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "expected 400 for {body}");
+    }
+    let missing = coord_core::TenantId::new(uuid::Uuid::new_v4());
+    let resp = app
+        .oneshot(put_tenant_derp(missing, serde_json::json!({ "include_default": true })))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn known_machine_reregisters_without_auth_key() {
+    let (_, state) = setup();
+    let t = create_test_tenant(&state, "rereg").await;
+    register_and_map(&state, t, 190).await;
+
+    let node_key = format!("nodekey:{}", hex::encode([191u8; 32]));
+    let same = serde_json::json!({ "Version": 2, "NodeKey": &node_key });
+    let out = coord_api::__test_handle_register(&state, &[190u8; 32], &same.to_string()).await.unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(resp["MachineAuthorized"], true, "restart re-register must not need an auth key: {resp}");
+    assert_eq!(resp["AuthURL"], "");
+
+    let stranger = serde_json::json!({ "Version": 2, "NodeKey": format!("nodekey:{}", hex::encode([9u8; 32])) });
+    let out = coord_api::__test_handle_register(&state, &[8u8; 32], &stranger.to_string()).await.unwrap();
+    let resp: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_ne!(resp["MachineAuthorized"], true, "unknown machine without auth key must not be authorized");
 }

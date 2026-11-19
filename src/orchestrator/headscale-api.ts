@@ -122,6 +122,9 @@ export function withRouteApproval(
   return enable ? [...rest, ...affected] : rest;
 }
 
+/** Per-request timeout for Headscale REST calls. */
+const HEADSCALE_REQUEST_TIMEOUT_MS = 10_000;
+
 /**
  * Authenticated REST client for a single Headscale instance.
  * Connects to the container's localhost-bound port using the API key
@@ -149,6 +152,8 @@ export class HeadscaleApiClient {
         "Content-Type": "application/json",
       },
       body: body ? JSON.stringify(body) : undefined,
+      // A hung container must not stall the monitor sweep or a request handler
+      signal: AbortSignal.timeout(HEADSCALE_REQUEST_TIMEOUT_MS),
     });
 
     if (!res.ok) {

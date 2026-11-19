@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import * as crypto from "node:crypto";
 import type { PublicKeyResolver } from "../credentials/verifier.js";
+import { verifyHolderBinding } from "../credentials/verifier.js";
+import { generateHolderChallenge } from "../credentials/issuer.js";
 import { signDetached } from "../identity/keys.js";
 import {
   buildAnnouncements,
@@ -19,6 +21,7 @@ import {
   handleChallenge,
   handleCommit,
   handleEstablished,
+  challengeResponsePayload,
 } from "../federation/handshake.js";
 import type { RouteAnnouncement } from "../federation/protocol.js";
 
@@ -197,5 +200,112 @@ describe("filterImportedPrefixes", () => {
 
   it("imports nothing when nothing was announced", () => {
     expect(filterImportedPrefixes(undefined, ["10.2.0.0/24"], BETA)).toEqual([]);
+  });
+});
+
+describe("CFP challenge response is domain-separated", () => {
+  async function handshakeUpToChallenge() {
+    const aCb = await callbacksFor(alpha, []);
+    const bCb = await callbacksFor(beta, []);
+    const hello = await initiateHello(createHandshake(ALPHA), BETA, "peer", [], ["route-exchange"], aCb);
+    const challenge = await handleHello(createHandshake(BETA), wire(hello.message), [], ["route-exchange"], bCb);
+    if (!challenge.ok) throw new Error(challenge.error);
+    return { aCb, bCb, hello, challenge };
+  }
+
+  it("signs a typed, audience-bound wrapper rather than the bare nonce", async () => {
+    const { aCb, hello, challenge } = await handshakeUpToChallenge();
+    const commit = await handleChallenge(hello.state, wire(challenge.message), aCb);
+    if (!commit.ok) throw new Error(commit.error);
+    const sig = commit.message.challengeSignature;
+    const nonce = challenge.message.nonce;
+    expect(await aCb.verifySignature(ALPHA, nonce, sig)).toBe(false);
+    expect(await aCb.verifySignature(ALPHA, challengeResponsePayload(nonce, ALPHA, BETA), sig)).toBe(true);
+  });
+
+  it("refuses to answer a challenge whose nonce is not a 32-byte base64url value", async () => {
+    const { aCb, hello, challenge } = await handshakeUpToChallenge();
+    for (const nonce of ['{"type":"LINK_REVOKE"}', "short", generateHolderChallenge().nonce + "x"]) {
+      const result = await handleChallenge(hello.state, { ...wire(challenge.message), nonce }, aCb);
+      expect(result.ok).toBe(false);
+    }
+  });
+
+  it("a holder-binding challenge passed off as a CFP nonce yields no usable holder proof", async () => {
+    // Mallory obtains a holder-binding challenge naming ALPHA's DID and relays
+    // its nonce to ALPHA as a CFP challenge.
+    const holderChallenge = generateHolderChallenge(60);
+    const { aCb, hello, challenge } = await handshakeUpToChallenge();
+    const commit = await handleChallenge(
+      hello.state, { ...wire(challenge.message), nonce: holderChallenge.nonce }, aCb,
+    );
+    if (!commit.ok) throw new Error(commit.error);
+    const proof = await verifyHolderBinding(
+      { nonce: holderChallenge.nonce, signature: commit.message.challengeSignature, did: ALPHA },
+      holderChallenge,
+      resolver,
+    );
+    expect(proof.valid).toBe(false);
+  });
+
+  it("a holder-binding proof does not answer a CFP challenge", async () => {
+    const { bCb, hello, challenge } = await handshakeUpToChallenge();
+    const aCb = await callbacksFor(alpha, []);
+    const commit = await handleChallenge(hello.state, wire(challenge.message), aCb);
+    if (!commit.ok) throw new Error(commit.error);
+    // Replace the response with ALPHA's signature over the bare nonce (a holder-binding proof).
+    const bareProof = await alpha.sign(challenge.message.nonce);
+    const unsigned = { ...wire(commit.message), challengeSignature: bareProof, signature: undefined };
+    const forged = { ...unsigned, signature: await alpha.sign(JSON.stringify(unsigned)) };
+    const result = await handleCommit(challenge.state, wire(forged), bCb);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("nonce signature");
+  });
+
+  it("rejects a COMMIT whose routes were altered after signing", async () => {
+    const { bCb, hello, challenge } = await handshakeUpToChallenge();
+    const aCb = await callbacksFor(alpha, ["10.1.0.0/24"]);
+    const commit = await handleChallenge(hello.state, wire(challenge.message), aCb);
+    if (!commit.ok) throw new Error(commit.error);
+    const tampered = { ...wire(commit.message), initialRoutes: [] };
+    const result = await handleCommit(challenge.state, tampered, bCb);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("COMMIT signature");
+  });
+
+  it("rejects a COMMIT from a collective other than the one challenged", async () => {
+    const { bCb, hello, challenge } = await handshakeUpToChallenge();
+    const mCb = await callbacksFor(mallory, []);
+    const commit = await handleChallenge(
+      { ...hello.state, localDid: MALLORY }, wire(challenge.message), mCb,
+    );
+    if (!commit.ok) throw new Error(commit.error);
+    const result = await handleCommit(challenge.state, wire(commit.message), bCb);
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe("filterImportedPrefixes containment", () => {
+  const ann = (prefix: string, originDid = BETA): RouteAnnouncement => ({
+    prefix, originDid, pathVector: [originDid], preference: 100, originSignature: "",
+  });
+
+  it("accepts more-specific prefixes inside an agreed CIDR, never wider ones", () => {
+    expect(
+      filterImportedPrefixes(
+        [ann("10.2.0.128/25"), ann("10.2.0.0/16"), ann("10.2.1.0/24"), ann("10.2.0.5/24")],
+        ["10.2.0.0/24"],
+        BETA,
+      ).sort(),
+    ).toEqual(["10.2.0.0/24", "10.2.0.128/25"]);
+  });
+
+  it("imports nothing with an empty agreed list, and never a default route", () => {
+    expect(filterImportedPrefixes([ann("10.2.0.0/24"), ann("0.0.0.0/0")], [], BETA)).toEqual([]);
+    expect(filterImportedPrefixes([ann("0.0.0.0/0"), ann("::/0")], ["0.0.0.0/0", "::/0"], BETA)).toEqual([]);
+  });
+
+  it("drops unparseable prefixes", () => {
+    expect(filterImportedPrefixes([ann("10.2.0.0/24x"), ann("garbage")], ["10.2.0.0/24"], BETA)).toEqual([]);
   });
 });

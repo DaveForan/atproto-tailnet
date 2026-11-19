@@ -12,6 +12,11 @@ pub fn generate_control_key() -> coord_core::ControlKey {
     coord_core::ControlKey::new(public, secret)
 }
 
+pub fn control_key_from_secret(secret: [u8; 32]) -> coord_core::ControlKey {
+    let public = x25519_public_from_secret(&secret);
+    coord_core::ControlKey::new(public, secret)
+}
+
 fn x25519_public_from_secret(secret: &[u8; 32]) -> [u8; 32] {
     use curve25519_dalek::montgomery::MontgomeryPoint;
     use curve25519_dalek::scalar::Scalar;

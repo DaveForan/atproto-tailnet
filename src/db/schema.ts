@@ -248,6 +248,8 @@ export const tenants = pgTable("tenants", {
   embeddedDerpEnabled: boolean("embedded_derp_enabled").notNull().default(false),
   /** When false, Tailscale's public DERP relays are disabled — only custom regions are used. */
   usePublicDerp: boolean("use_public_derp").notNull().default(true),
+  /** Coordinator mode: last ACL policy accepted (Headscale shape), replayed after a coordinator restart. */
+  coordinatorAclPolicy: jsonb("coordinator_acl_policy"),
   /** IPv4 CIDR prefix for the tailnet (default: 100.64.0.0/10). */
   ipv4Prefix: text("ipv4_prefix").notNull().default("100.64.0.0/10"),
   /** IPv6 CIDR prefix for the tailnet (default: fd7a:115c:a1e0::/48). */
@@ -674,7 +676,8 @@ export const credentialRevocations = pgTable(
   "credential_revocations",
   {
     id: uuid("id").defaultRandom().primaryKey(),
-    credentialId: text("credential_id").notNull().unique(),
+    /** The credential's `jti`; unique only per issuer, never globally. */
+    credentialId: text("credential_id").notNull(),
     tenantId: uuid("tenant_id")
       .notNull()
       .references(() => tenants.id),
@@ -682,7 +685,10 @@ export const credentialRevocations = pgTable(
     reason: text("reason"),
     revokedAt: timestamp("revoked_at").defaultNow().notNull(),
   },
-  (t) => [index("cred_revocations_cred_idx").on(t.credentialId)],
+  (t) => [
+    index("cred_revocations_cred_idx").on(t.credentialId),
+    uniqueIndex("cred_revocations_issuer_cred_idx").on(t.issuerDid, t.credentialId),
+  ],
 );
 
 export const holderBindingChallenges = pgTable(

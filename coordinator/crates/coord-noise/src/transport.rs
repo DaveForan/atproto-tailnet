@@ -330,6 +330,15 @@ mod tests {
         assert!(wrong_rx.decrypt(&ct).is_err());
     }
 
+    #[tokio::test]
+    async fn largest_record_fits_tailscale_frame_limit() {
+        let (mut server, _) = make_test_transport();
+        let ct = server.encrypt(&vec![0u8; MAX_PLAINTEXT_SIZE]).unwrap();
+        let mut wire = Vec::new();
+        write_record_frame(&mut wire, &ct).await.unwrap();
+        assert_eq!(wire.len(), 4096, "Tailscale controlbase rejects frames over 4096 bytes");
+    }
+
     #[test]
     fn plaintext_too_large_rejected() {
         let (_, mut client) = make_test_transport();

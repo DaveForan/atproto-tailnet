@@ -5,6 +5,9 @@ import {
   validateOfferedCidrs,
   checkCidrOverlaps,
   isDefaultRoute,
+  validateLocalOffer,
+  validatePeerOffer,
+  isWithinAgreed,
 } from "../federation/cidr.js";
 
 describe("parseCidr", () => {
@@ -176,5 +179,51 @@ describe("isDefaultRoute", () => {
 
   it("rejects non-default routes", () => {
     expect(isDefaultRoute("10.0.0.0/8")).toBe(false);
+  });
+});
+
+describe("validateLocalOffer", () => {
+  it("accepts prefixes inside the tenant range or an approved subnet route", () => {
+    const r = validateLocalOffer(["100.70.0.0/16", "192.168.10.0/25"], "100.64.0.0/10", null, ["192.168.10.0/24"]);
+    expect(r.errors).toEqual([]);
+    expect(r.cidrs).toEqual(["100.70.0.0/16", "192.168.10.0/25"]);
+  });
+
+  it("rejects default routes, foreign prefixes and garbage", () => {
+    const r = validateLocalOffer(["0.0.0.0/0", "::/0", "8.8.8.0/24", "nope"], "100.64.0.0/10", "fd7a:115c:a1e0::/48");
+    expect(r.errors).toHaveLength(4);
+    expect(r.cidrs).toEqual([]);
+  });
+});
+
+describe("validatePeerOffer", () => {
+  it("accepts a non-overlapping offer and normalises it", () => {
+    const r = validatePeerOffer(["10.9.0.5/24"], "100.64.0.0/10", "fd7a:115c:a1e0::/48", ["10.8.0.0/24"]);
+    expect(r).toEqual({ cidrs: ["10.9.0.0/24"], errors: [] });
+  });
+
+  it("rejects default routes, overlap with the local range and with other links", () => {
+    expect(validatePeerOffer(["0.0.0.0/0"], "100.64.0.0/10", null).errors).toHaveLength(1);
+    expect(validatePeerOffer(["1.2.3.4/0"], "100.64.0.0/10", null).errors).toHaveLength(1);
+    expect(validatePeerOffer(["100.100.0.0/16"], "100.64.0.0/10", null).errors).toHaveLength(1);
+    expect(validatePeerOffer(["10.0.0.0/8"], "100.64.0.0/10", null, ["10.8.0.0/24"]).errors).toHaveLength(1);
+    expect(validatePeerOffer(["fd7a:115c:a1e0:1::/64"], null, "fd7a:115c:a1e0::/48").errors).toHaveLength(1);
+  });
+});
+
+describe("isWithinAgreed", () => {
+  it("is containment, not equality, and empty means nothing", () => {
+    expect(isWithinAgreed("10.0.1.0/24", ["10.0.0.0/16"])).toBe(true);
+    expect(isWithinAgreed("10.0.0.0/8", ["10.0.0.0/16"])).toBe(false);
+    expect(isWithinAgreed("10.0.1.0/24", [])).toBe(false);
+    expect(isWithinAgreed("0.0.0.0/0", ["0.0.0.0/0"])).toBe(false);
+  });
+});
+
+describe("parseCidr strictness", () => {
+  it("rejects trailing junk and malformed IPv6", () => {
+    expect(parseCidr("10.0.0.0/24x")).toBeNull();
+    expect(parseCidr("1::2::3/64")).toBeNull();
+    expect(parseCidr("1g::/64")).toBeNull();
   });
 });
