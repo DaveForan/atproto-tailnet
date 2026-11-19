@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use coord_core::ControlKey;
 use coord_acl::PolicyEngine;
 use coord_federation::{
@@ -13,9 +14,9 @@ pub struct CoordinatorState {
     pub(crate) control_key: ControlKey,
     pub(crate) store: Arc<Store>,
     pub(crate) acl: Arc<PolicyEngine>,
-    pub(crate) derp_map: DerpMap,
+    pub(crate) derp_map: RwLock<DerpMap>,
     pub(crate) admin_api_key: Option<String>,
-    pub(crate) netmap: NetmapService,
+    pub(crate) netmap: RwLock<NetmapService>,
     pub(crate) federation_inbound: Arc<InboundHandler<dyn FederationStore>>,
     pub(crate) federation_broker: Arc<BrokerService<dyn FederationStore>>,
     pub(crate) federation_callbacks: Option<Arc<dyn HandshakeCallbacks>>,
@@ -33,9 +34,9 @@ impl CoordinatorState {
             control_key,
             store,
             acl,
-            derp_map,
+            derp_map: RwLock::new(derp_map),
             admin_api_key: None,
-            netmap,
+            netmap: RwLock::new(netmap),
             federation_inbound: Arc::new(InboundHandler::new(
                 fed_store.clone(),
                 fed_config.clone(),
@@ -55,16 +56,31 @@ impl CoordinatorState {
         self
     }
 
-    pub fn with_store(mut self, store: Store) -> Self {
-        self.store = Arc::new(store);
-        self.netmap = NetmapService::new(self.store.clone(), self.acl.clone(), self.derp_map.clone());
-        self
+    pub fn with_store(self, store: Store) -> Self {
+        let store = Arc::new(store);
+        let derp_map = self.derp_map.into_inner();
+        let netmap = NetmapService::new(store.clone(), self.acl.clone(), derp_map.clone());
+        Self {
+            store,
+            derp_map: RwLock::new(derp_map),
+            netmap: RwLock::new(netmap),
+            ..self
+        }
     }
 
-    pub fn with_derp_map(mut self, derp_map: DerpMap) -> Self {
-        self.derp_map = derp_map;
-        self.netmap = NetmapService::new(self.store.clone(), self.acl.clone(), self.derp_map.clone());
-        self
+    pub fn with_derp_map(self, derp_map: DerpMap) -> Self {
+        let netmap = NetmapService::new(self.store.clone(), self.acl.clone(), derp_map.clone());
+        Self {
+            derp_map: RwLock::new(derp_map),
+            netmap: RwLock::new(netmap),
+            ..self
+        }
+    }
+
+    pub async fn update_derp_map(&self, new_map: DerpMap) {
+        let new_netmap = NetmapService::new(self.store.clone(), self.acl.clone(), new_map.clone());
+        *self.derp_map.write().await = new_map;
+        *self.netmap.write().await = new_netmap;
     }
 
     pub fn with_admin_api_key(mut self, key: Option<String>) -> Self {
@@ -93,8 +109,12 @@ impl CoordinatorState {
         &self.federation_inbound
     }
 
-    pub fn netmap(&self) -> &NetmapService {
+    pub fn netmap(&self) -> &RwLock<NetmapService> {
         &self.netmap
+    }
+
+    pub fn derp_map(&self) -> &RwLock<DerpMap> {
+        &self.derp_map
     }
 
     pub fn federation_broker(&self) -> &Arc<BrokerService<dyn FederationStore>> {

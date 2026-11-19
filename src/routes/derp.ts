@@ -25,6 +25,7 @@ import {
 import { logAudit } from "./audit.js";
 import { logger } from "../logger.js";
 import { useCoordinator } from "../orchestrator/control-client.js";
+import { config } from "../config.js";
 
 export const derpRouter = Router();
 
@@ -64,6 +65,17 @@ derpRouter.get(
       return;
     }
 
+    if (useCoordinator && config.coordinatorUrl) {
+      try {
+        const data = await fetchCoordinatorDerp();
+        res.json(data);
+      } catch (err) {
+        logger.error({ err }, "failed to fetch coordinator DERP map");
+        res.status(502).json({ error: "Failed to fetch DERP configuration from coordinator" });
+      }
+      return;
+    }
+
     res.json({
       regions: result.tenant.customDerpRegions ?? [],
       embeddedDerpEnabled: result.tenant.embeddedDerpEnabled,
@@ -88,8 +100,27 @@ derpRouter.put(
       return;
     }
 
-    if (useCoordinator) {
-      res.status(501).json({ error: "DERP configuration is managed by the coordinator's DERP map, not per-tenant Headscale config" });
+    if (useCoordinator && config.coordinatorUrl) {
+      const parsed = derpConfigBody.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
+        return;
+      }
+      try {
+        const coordResult = await pushCoordinatorDerp(parsed.data);
+        logAudit({
+          tenantId,
+          actorUserId: authUserId(req),
+          action: "derp_updated",
+          targetType: "tenant",
+          targetId: tenantId,
+          metadata: { coordinator: true, regionCount: parsed.data.regions?.length ?? 0 },
+        });
+        res.json(coordResult);
+      } catch (err) {
+        logger.error({ err }, "failed to update coordinator DERP map");
+        res.status(502).json({ error: "Failed to update DERP configuration on coordinator" });
+      }
       return;
     }
 
@@ -170,3 +201,101 @@ derpRouter.put(
     }
   },
 );
+
+// ── Coordinator DERP proxy helpers ──
+
+interface CoordDerpNode {
+  Name: string;
+  RegionID: number;
+  HostName: string;
+  STUNPort: number;
+  DERPPort: number;
+}
+
+interface CoordDerpRegion {
+  RegionID: number;
+  RegionCode: string;
+  RegionName: string;
+  Nodes: CoordDerpNode[];
+}
+
+interface CoordDerpMap {
+  regions: Record<string, CoordDerpRegion>;
+  omit_default_regions?: boolean;
+}
+
+async function coordRequest(method: string, path: string, body?: unknown): Promise<unknown> {
+  const url = `${config.coordinatorUrl!.replace(/\/+$/, "")}${path}`;
+  const res = await fetch(url, {
+    method,
+    headers: {
+      "Content-Type": "application/json",
+      ...(config.coordinatorApiKey ? { Authorization: `Bearer ${config.coordinatorApiKey}` } : {}),
+    },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Coordinator ${method} ${path} failed (${res.status}): ${text.slice(0, 200)}`);
+  }
+  return res.json();
+}
+
+async function fetchCoordinatorDerp(): Promise<{
+  regions: DerpRegion[];
+  embeddedDerpEnabled: boolean;
+  usePublicDerp: boolean;
+}> {
+  const map = (await coordRequest("GET", "/api/derp")) as CoordDerpMap;
+  const regions: DerpRegion[] = Object.values(map.regions).map((r) => ({
+    regionId: r.RegionID,
+    regionCode: r.RegionCode,
+    regionName: r.RegionName,
+    nodes: r.Nodes.map((n) => ({
+      name: n.Name,
+      hostname: n.HostName,
+      stunPort: n.STUNPort,
+      derpPort: n.DERPPort,
+    })),
+  }));
+  return {
+    regions,
+    embeddedDerpEnabled: false,
+    usePublicDerp: !map.omit_default_regions,
+  };
+}
+
+async function pushCoordinatorDerp(data: z.infer<typeof derpConfigBody>): Promise<{
+  status: string;
+  regions: DerpRegion[];
+  embeddedDerpEnabled: boolean;
+  usePublicDerp: boolean;
+}> {
+  const regions = data.regions ?? [];
+  const coordRegions: Record<string, CoordDerpRegion> = {};
+  for (const r of regions) {
+    coordRegions[String(r.regionId)] = {
+      RegionID: r.regionId,
+      RegionCode: r.regionCode,
+      RegionName: r.regionName,
+      Nodes: r.nodes.map((n) => ({
+        Name: n.name,
+        RegionID: r.regionId,
+        HostName: n.hostname,
+        STUNPort: n.stunPort ?? 3478,
+        DERPPort: n.derpPort ?? 443,
+      })),
+    };
+  }
+  const coordMap: CoordDerpMap = {
+    regions: coordRegions,
+    omit_default_regions: data.usePublicDerp === false ? true : undefined,
+  };
+  await coordRequest("PUT", "/api/derp", coordMap);
+  return {
+    status: "updated",
+    regions,
+    embeddedDerpEnabled: false,
+    usePublicDerp: data.usePublicDerp ?? true,
+  };
+}

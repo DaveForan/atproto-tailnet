@@ -140,7 +140,7 @@ pub async fn build_map_snapshot(
     state: &Arc<CoordinatorState>,
     machine_key: &[u8; 32],
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    let resp = state.netmap.build_snapshot(machine_key).await?;
+    let resp = state.netmap.read().await.build_snapshot(machine_key).await?;
     Ok(serde_json::to_string(&resp)?)
 }
 
@@ -149,7 +149,7 @@ pub async fn build_delta_response(
     _machine_key: &[u8; 32],
     event: &PeerEvent,
 ) -> Option<String> {
-    let resp = state.netmap.build_delta(event).await?;
+    let resp = state.netmap.read().await.build_delta(event).await?;
     serde_json::to_string(&resp).ok()
 }
 

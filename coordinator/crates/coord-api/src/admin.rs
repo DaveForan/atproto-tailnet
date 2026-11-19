@@ -569,6 +569,52 @@ pub async fn delete_node_handler(
     }
 }
 
+// ── DERP map management ──
+
+pub async fn get_derp_map(
+    State(state): State<Arc<CoordinatorState>>,
+) -> impl IntoResponse {
+    let map = state.derp_map().read().await;
+    Json(serde_json::json!(&*map))
+}
+
+pub async fn set_derp_map(
+    State(state): State<Arc<CoordinatorState>>,
+    Json(body): Json<coord_proto::map::DerpMap>,
+) -> impl IntoResponse {
+    if body.regions.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "DERP map must have at least one region"})),
+        ).into_response();
+    }
+
+    for (id, region) in &body.regions {
+        if region.region_id != *id {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("region key {} does not match region_id {}", id, region.region_id)})),
+            ).into_response();
+        }
+        if region.nodes.is_empty() {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("region {} has no nodes", id)})),
+            ).into_response();
+        }
+    }
+
+    let region_count = body.regions.len();
+    state.update_derp_map(body).await;
+
+    tracing::info!(regions = region_count, "DERP map updated via admin API");
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({"status": "updated", "regions": region_count})),
+    ).into_response()
+}
+
 pub async fn rename_node_handler(
     State(state): State<Arc<CoordinatorState>>,
     Path(id): Path<String>,

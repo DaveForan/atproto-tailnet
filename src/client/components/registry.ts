@@ -27,7 +27,7 @@ const perm =
 export const tabRegistry: TabEntry[] = [
   // Network
   { id: "status", label: "Status", group: "Network", gate: always },
-  { id: "derp", label: "DERP Relays", group: "Network", gate: (hp, _s, t) => hp("manage_acl") && !t?.coordinatorTenantId },
+  { id: "derp", label: "DERP Relays", group: "Network", gate: perm("manage_acl") },
   { id: "ipconfig", label: "IP Ranges", group: "Network", gate: perm("manage_settings") },
   { id: "routes", label: "Routes", group: "Network", gate: perm("manage_devices") },
   { id: "devices", label: "Devices", group: "Network", gate: always },

@@ -74,6 +74,7 @@ pub fn router(state: Arc<CoordinatorState>) -> Router {
         .route("/nodes/{id}", get(admin::get_node_handler).delete(admin::delete_node_handler))
         .route("/nodes/{id}/name", post(admin::rename_node_handler))
         .route("/acl", post(admin::set_acl))
+        .route("/derp", get(admin::get_derp_map).put(admin::set_derp_map))
         .layer(middleware::from_fn_with_state(state.clone(), require_admin_auth));
 
     let federation_routes = Router::new()
