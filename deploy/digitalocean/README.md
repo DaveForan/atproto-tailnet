@@ -1,13 +1,13 @@
 # Deploying atproto-tailnet on DigitalOcean
 
-There are two deployment options on DigitalOcean. The Droplet approach is
-**recommended** because it provides Docker socket access, which is required for
-per-tenant Headscale container orchestration.
+DigitalOcean has two deployment options. The Droplet approach is
+**recommended** because it gives Docker socket access. The app needs this access
+to manage the Headscale container of each tenant.
 
 ## Option 1: Droplet (recommended)
 
-A single Droplet runs the full stack via Docker Compose. This gives you Docker
-socket access, persistent volumes, and full control over the host.
+A single Droplet runs the full stack with Docker Compose. You get Docker
+socket access, persistent volumes, and full control of the host.
 
 ### Prerequisites
 
@@ -27,7 +27,7 @@ doctl compute droplet create atproto-tailnet \
   --ssh-keys <your-ssh-key-id>
 ```
 
-Or via the DigitalOcean dashboard -- choose Ubuntu 22.04, 2 GB RAM minimum.
+Or use the DigitalOcean dashboard. Choose Ubuntu 22.04 and a minimum of 2 GB RAM.
 
 ### Bootstrap
 
@@ -36,13 +36,13 @@ Or via the DigitalOcean dashboard -- choose Ubuntu 22.04, 2 GB RAM minimum.
 ssh root@<droplet-ip> 'bash -s' < deploy/digitalocean/droplet-setup.sh
 ```
 
-The script will:
+The script does these steps:
 1. Install Docker and Docker Compose
 2. Clone the repository
 3. Create `.env` from the example (you must edit it)
 4. Build and start the production stack
 
-After the script runs, SSH in and edit `.env`:
+After the script finishes, SSH in and edit `.env`:
 
 ```sh
 ssh root@<droplet-ip>
@@ -90,7 +90,7 @@ docker stats
 
 ### Backups
 
-Enable DigitalOcean Droplet backups ($1/month) and set up periodic Postgres
+Enable DigitalOcean Droplet backups ($1/month). Then set up regular Postgres
 dumps:
 
 ```sh
@@ -110,12 +110,12 @@ dumps:
 
 ## Option 2: App Platform (limited)
 
-DigitalOcean App Platform provides managed deployments with built-in Postgres,
-but **does not provide Docker socket access**. This means Headscale container
-orchestration will not work natively.
+DigitalOcean App Platform gives managed deployments with built-in Postgres,
+but it **does not give Docker socket access**. Because of this, Headscale
+container management does not work natively.
 
-Use this only if you plan to run Headscale containers on a separate host and
-connect via a remote Docker daemon.
+Use this option only if you plan to run Headscale containers on a separate host
+and connect with a remote Docker daemon.
 
 ### Deploy
 
@@ -125,15 +125,15 @@ doctl apps create --spec deploy/digitalocean/.do/app.yaml
 
 ### Limitations
 
-- No Docker socket -- cannot create/manage Headscale containers
-- No host-level port binding -- Headscale ports 10001-10100 unavailable
-- No wildcard TLS -- need external proxy for `*.ts.yourdomain.com`
-- No persistent filesystem -- Headscale data dir requires external storage
+- No Docker socket: the app cannot create or manage Headscale containers
+- No host-level port binding: Headscale ports 10001-10100 are not available
+- No wildcard TLS: you need an external proxy for `*.ts.yourdomain.com`
+- No persistent filesystem: the Headscale data directory needs external storage
 
 ### Hybrid approach
 
 1. Deploy the web tier on App Platform (app + managed Postgres)
-2. Run a small Droplet for Headscale containers
+2. Run a small Droplet for the Headscale containers
 3. Set `DOCKER_HOST=tcp://<droplet-ip>:2376` on the App Platform service
 4. Secure the remote Docker socket with TLS client certificates
 

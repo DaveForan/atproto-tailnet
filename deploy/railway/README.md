@@ -3,27 +3,27 @@
 ## Important limitation
 
 **Docker socket access is not available on Railway.** Railway runs containers in
-an isolated environment without access to the host Docker daemon. Since
-atproto-tailnet manages per-tenant Headscale containers via the Docker socket,
-the core orchestration functionality will not work on Railway alone.
+an isolated environment. The containers cannot access the host Docker daemon.
+atproto-tailnet manages the Headscale container of each tenant through the
+Docker socket. Because of this, the core orchestration function does not work on
+Railway alone.
 
 ### Workarounds
 
-1. **External Docker host** -- Run Headscale containers on a separate VPS and
-   configure the app to connect to a remote Docker daemon over TCP/TLS. This
-   requires modifying `src/orchestrator/headscale.ts` to accept a
-   `DOCKER_HOST` environment variable instead of the local socket.
+1. **External Docker host** -- Run the Headscale containers on a separate VPS.
+   Configure the app to connect to a remote Docker daemon over TCP/TLS. You must
+   change `src/orchestrator/headscale.ts` so that it accepts a `DOCKER_HOST`
+   environment variable instead of the local socket.
 
 2. **Railway + companion VPS** -- Deploy the app and Postgres on Railway for the
-   web tier, but point `DOCKER_HOST` at a cheap VPS (Hetzner, DigitalOcean
-   Droplet) that handles Headscale containers.
+   web tier. Point `DOCKER_HOST` at a low-cost VPS (Hetzner or DigitalOcean
+   Droplet) that runs the Headscale containers.
 
-3. **Docker-in-Docker** -- Railway does not officially support DinD. If they add
-   it in the future, mount the inner socket to the app container.
+3. **Docker-in-Docker** -- Railway does not officially support DinD. If Railway
+   adds support in the future, mount the inner socket to the app container.
 
-If none of these options work for your setup, consider deploying to a
-DigitalOcean Droplet or AWS EC2 instance instead (see `deploy/digitalocean/` and
-`deploy/aws/`).
+If none of these options work for your setup, deploy to a DigitalOcean Droplet
+or an AWS EC2 instance instead (see `deploy/digitalocean/` and `deploy/aws/`).
 
 ## Setup (web tier only)
 
@@ -44,7 +44,7 @@ railway init
 railway add --plugin postgresql
 ```
 
-Railway provisions a managed Postgres instance and injects `DATABASE_URL`
+Railway creates a managed Postgres instance and sets `DATABASE_URL`
 automatically.
 
 ### 3. Set environment variables
@@ -81,25 +81,25 @@ railway up
 railway domain add your-app.yourdomain.com
 ```
 
-Railway handles TLS termination for the primary domain. For wildcard subdomains
-(`*.ts.yourdomain.com`), you will still need Caddy or another proxy that
-supports wildcard certificates, running externally.
+Railway terminates TLS for the primary domain. For wildcard subdomains
+(`*.ts.yourdomain.com`), you still need Caddy or another proxy that supports
+wildcard certificates. This proxy must run externally.
 
 ## Caddy and wildcard TLS
 
 Railway does not support wildcard TLS certificates natively. For production with
-tenant subdomains, you need one of:
+tenant subdomains, you need one of these options:
 
 - An external Caddy or nginx instance that terminates TLS for `*.ts.yourdomain.com`
   and proxies to the Railway app
-- Cloudflare proxy with wildcard DNS rules
+- A Cloudflare proxy with wildcard DNS rules
 
 ## Cost estimate
 
 - **Starter plan**: ~$5/month for the app + included Postgres
-- **Pro plan**: $20/month base + usage-based compute and database
+- **Pro plan**: $20/month base + compute and database costs based on use
 
 ## Healthcheck
 
-The app exposes `GET /health` which returns `200 OK` when the service is ready.
-Railway uses this for zero-downtime deploys.
+The app has a `GET /health` endpoint. It returns `200 OK` when the service is ready.
+Railway uses this endpoint for deploys without downtime.

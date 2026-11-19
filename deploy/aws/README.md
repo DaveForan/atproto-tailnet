@@ -1,12 +1,12 @@
 # Deploying atproto-tailnet on AWS
 
-Two deployment approaches are provided. **EC2 is recommended** because
-atproto-tailnet requires Docker socket access to manage per-tenant Headscale
-containers.
+This guide gives two deployment approaches. **EC2 is recommended** because
+atproto-tailnet needs Docker socket access to manage the Headscale containers
+of each tenant.
 
 ## Option 1: EC2 + RDS via CloudFormation (recommended)
 
-The CloudFormation template provisions:
+The CloudFormation template creates these resources:
 - EC2 instance (t3.medium) with Docker pre-installed
 - RDS PostgreSQL 17 (db.t3.micro, encrypted, 7-day backups)
 - Encrypted EBS data volume for Headscale tenant data
@@ -18,7 +18,7 @@ The CloudFormation template provisions:
 
 - AWS CLI configured (`aws configure`)
 - An EC2 key pair in your target region
-- A VPC with at least one public and two private subnets
+- A VPC with at least one public subnet and two private subnets
 - Wildcard DNS ready to point at the Elastic IP
 
 ### Deploy
@@ -61,15 +61,15 @@ curl https://tailnets.yourdomain.com/health
 
 ### DNS setup
 
-Create these DNS records pointing to the Elastic IP from the stack outputs:
+Create these DNS records. Point them at the Elastic IP from the stack outputs:
 
 | Type | Name | Value |
 |------|------|-------|
 | A | `tailnets.yourdomain.com` | `<Elastic IP>` |
 | A | `*.ts.yourdomain.com` | `<Elastic IP>` |
 
-If using Cloudflare for DNS, the wildcard record can use orange-cloud (proxied)
-or DNS-only. Caddy handles TLS via DNS-01 challenge with `CF_API_TOKEN`.
+If you use Cloudflare for DNS, the wildcard record can be orange-cloud (proxied)
+or DNS-only. Caddy handles TLS with a DNS-01 challenge and `CF_API_TOKEN`.
 
 ### Updating
 
@@ -95,24 +95,24 @@ docker compose -f docker-compose.production.yml up -d app
 
 ## Option 2: ECS Fargate (limited)
 
-An ECS task definition is provided in `ecs-task-definition.json`, but it comes
-with significant limitations.
+The file `ecs-task-definition.json` contains an ECS task definition. This option
+has significant limitations.
 
 ### Limitations
 
 - **No Docker socket**: Fargate tasks run in isolated microVMs. The app cannot
   create or manage Headscale containers. You must run Headscale on a separate
-  EC2 instance and set `DOCKER_HOST` to point at it.
-- **No host port binding**: Ports 10001-10100 cannot be exposed from Fargate.
+  EC2 instance. Set `DOCKER_HOST` to point at that instance.
+- **No host port binding**: Fargate cannot expose ports 10001-10100.
   Headscale containers must run elsewhere with their own networking.
-- **No persistent local storage**: Headscale data must be stored on EFS or the
-  external host.
+- **No persistent local storage**: You must store Headscale data on EFS or on
+  the external host.
 
 ### When to use ECS
 
-- You already have an ECS cluster and want the web tier managed by Fargate
-- You are running Headscale on EC2 separately and connecting via remote Docker
-- You want auto-scaling for the web tier (though a single instance is fine for
+- You already have an ECS cluster and you want Fargate to manage the web tier
+- You run Headscale on a separate EC2 instance and connect with remote Docker
+- You want auto-scaling for the web tier (but a single instance is enough for
   most deployments)
 
 ### Setup
@@ -127,7 +127,7 @@ aws ecr get-login-password | docker login --username AWS --password-stdin ACCOUN
 docker push ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/atproto-tailnet:latest
 ```
 
-2. Store secrets in Secrets Manager:
+2. Store the secrets in Secrets Manager:
 
 ```sh
 aws secretsmanager create-secret --name atproto-tailnet/database-url \
@@ -137,9 +137,9 @@ aws secretsmanager create-secret --name atproto-tailnet/session-secret \
 ```
 
 3. Edit `ecs-task-definition.json`:
-   - Replace `ACCOUNT_ID` and `REGION` placeholders
-   - Update secret ARNs
-   - Set environment variables
+   - Replace the `ACCOUNT_ID` and `REGION` placeholders
+   - Update the secret ARNs
+   - Set the environment variables
 
 4. Register the task and create a service:
 
@@ -162,4 +162,4 @@ aws ecs create-service \
 | RDS db.t3.micro | ~$15 |
 | **Total** | **~$30** |
 
-Plus the cost of any companion EC2 for Headscale (~$10-30/month).
+Add the cost of the companion EC2 instance for Headscale (~$10-30/month).

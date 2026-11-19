@@ -4,11 +4,11 @@ title: Managing Your Network
 
 # Managing Your Network
 
-Once your tailnet is provisioned, the dashboard provides tools for managing devices, members, permissions, security, and networking. This guide covers the day-to-day operations.
+After the system provisions your tailnet, the dashboard gives you tools to manage devices, members, permissions, security, and networking. This guide describes the daily operations.
 
 ## Dashboard overview
 
-The dashboard is a React 19 single-page application served at your instance's root URL. It features 20 lazy-loaded tabs with permission-based visibility:
+The dashboard is a React 19 single-page application. It is served at the root URL of your instance. It has 20 lazy-loaded tabs. Your permissions control which tabs you see:
 
 **Status** -- Network health, node count, member count, provisioning status
 
@@ -52,28 +52,29 @@ The dashboard is a React 19 single-page application served at your instance's ro
 
 ## Inviting members
 
-Members join your network by their AT Protocol handle:
+Members join your network with their AT Protocol handle:
 
-1. Go to the **Invite** tab
-2. Enter the handle (e.g., `alice.bsky.social`)
-3. The invitee receives an invitation they can accept through the web UI
-4. On acceptance, they become a member with the "citizen" role
+1. Go to the **Invite** tab.
+2. Enter the handle (for example, `alice.bsky.social`).
+3. The invitee receives an invitation. The invitee can accept it in the web UI.
+4. After acceptance, the invitee becomes a member with the "citizen" role.
 
-Invitations can be revoked before acceptance. The **Join Requests** feature (toggle in Security tab) provides an alternative: a public `/join/<slug>` URL where users can request to join, subject to operator approval.
+You can revoke an invitation before the invitee accepts it. The **Join Requests** feature is an alternative. You enable it with a toggle in the Security tab. It provides a public `/join/<slug>` URL where users can request to join. An operator must approve each request.
 
 ### Join requests
 
 When `allowJoinRequests` is enabled:
-- Anyone can visit `https://yourdomain.com/join/<your-slug>` and submit a join request
-- Requests appear in the dashboard for approval (requires `approve_joins` permission)
-- Lockdown mode blocks new join requests
+
+- Anyone can visit `https://yourdomain.com/join/<your-slug>` and submit a join request.
+- Requests appear in the dashboard for approval (the `approve_joins` permission is necessary).
+- Lockdown mode blocks new join requests.
 
 ## Roles and permissions
 
 Every network has two built-in roles:
 
-- **Originator** -- The network creator. Has all permissions, cannot be kicked or demoted. This is a hard identity (`isOriginator` flag), not just a role assignment.
-- **Citizen** -- The default role for new members. Permissions are customizable.
+- **Originator** -- The creator of the network. The originator has all permissions. Nobody can kick or demote the originator. This is a hard identity (`isOriginator` flag), not only a role assignment.
+- **Citizen** -- The default role for new members. You can customize the permissions of this role.
 
 ### Custom roles
 
@@ -83,8 +84,8 @@ Create custom roles with any combination of 16 permissions:
 |-----------|-------------|
 | `invite` | Send invitations to new members |
 | `kick` | Remove members from the network |
-| `manage_roles` | Create/edit/delete roles and assign them |
-| `manage_settings` | Change tenant settings (posture, hibernation, etc.) |
+| `manage_roles` | Create, edit, and delete roles and assign them |
+| `manage_settings` | Change tenant settings (posture, hibernation, and others) |
 | `approve_devices` | Approve pending device connections |
 | `approve_joins` | Approve join requests |
 | `approve_services` | Approve service registrations |
@@ -95,16 +96,16 @@ Create custom roles with any combination of 16 permissions:
 | `manage_board` | Moderate the public board |
 | `create_posts` | Post to the public board |
 | `create_agent_tokens` | Generate API tokens |
-| `manage_agent_tokens` | Revoke any member's API tokens |
+| `manage_agent_tokens` | Revoke the API tokens of any member |
 | `manage_acl` | Edit ACL policy and DERP configuration |
 
-Assign roles to members from the **Members** tab. A member's effective permissions are the union of their role's permissions.
+Assign roles to members in the **Members** tab. The effective permissions of a member are the union of the permissions of the role of that member.
 
 ## Device management
 
 ### Connecting devices
 
-Members generate **pre-authentication keys** from the Devices tab. These are one-time-use tokens that authorize a Tailscale client to join the network:
+Members generate **pre-authentication keys** in the Devices tab. Each key is a one-time-use token. The token authorizes a Tailscale client to join the network:
 
 ```bash
 tailscale up --login-server=https://<slug>.ts.yourdomain.com \
@@ -114,27 +115,30 @@ tailscale up --login-server=https://<slug>.ts.yourdomain.com \
 ### Device approval
 
 When `requireDeviceApproval` is enabled (Security tab):
-- New device connections create a pending approval entry
-- A user with `approve_devices` permission must approve before the device gets a key
-- Rejected devices cannot connect
+
+- A new device connection creates a pending approval entry.
+- A user with the `approve_devices` permission must approve the entry before the device receives a key.
+- Rejected devices cannot connect.
 
 ### Device locking
 
 Device locks bind a membership to specific machine keys:
-- Once locked, the member cannot generate new auth keys until unlocked
-- Prevents a compromised account from adding rogue devices
-- Requires `lock_devices` permission to manage
+
+- After you lock a member, the member cannot generate new auth keys until you unlock the member.
+- A lock prevents a compromised account from adding rogue devices.
+- You need the `lock_devices` permission to manage locks.
 
 ### Node operations
 
-From the Devices tab, operators with `manage_devices` permission can:
+In the Devices tab, operators with the `manage_devices` permission can do these tasks:
+
 - View all connected devices and their online status
 - Rename devices
 - Remove devices from the network
 
 ## Access control (ACL)
 
-The ACL tab provides a policy editor for controlling which devices can talk to each other. The policy uses Tailscale's ACL format:
+The ACL tab provides a policy editor. The policy controls which devices can talk to each other. The policy uses the Tailscale ACL format:
 
 ```json
 {
@@ -162,31 +166,31 @@ The ACL tab provides a policy editor for controlling which devices can talk to e
 }
 ```
 
-Changes take effect immediately when saved.
+Changes take effect immediately when you save them.
 
 ## Networking
 
 ### Exit nodes
 
-An **exit node** routes all of a device's internet traffic through another device on the network. Devices advertise exit node capability; the network operator approves or denies from the Routes tab.
+An **exit node** routes all internet traffic of a device through another device on the network. Devices advertise the exit node capability. The network operator approves or denies the capability in the Routes tab.
 
 ### Subnet routers
 
-**Subnet routers** advertise access to physical network subnets (e.g., `192.168.1.0/24`). This lets network members reach devices on a LAN without installing Tailscale on every device. Like exit nodes, subnet routes require operator approval.
+**Subnet routers** advertise access to physical network subnets (for example, `192.168.1.0/24`). Network members can then reach devices on a LAN. You do not install Tailscale on each device. As with exit nodes, an operator must approve subnet routes.
 
 ### IP ranges
 
-Each network gets a default IP range in the CGNAT space (`100.64.0.0/10` for IPv4, `fd7a:115c:a1e0::/48` for IPv6). You can customize these from the IP Ranges tab, choosing:
+Each network receives a default IP range in the CGNAT space (`100.64.0.0/10` for IPv4, `fd7a:115c:a1e0::/48` for IPv6). You can change these ranges in the IP Ranges tab. You can choose these settings:
 
 - IPv4 prefix and size
 - IPv6 prefix and size
 - Allocation strategy: sequential or random
 
-Changing IP ranges requires a control plane restart and re-registration of all devices.
+When you change IP ranges, you must restart the control plane. You must also register all devices again.
 
 ### DERP relays
 
-DERP relays provide encrypted relay connectivity when direct peer-to-peer connections fail (e.g., behind restrictive NATs). By default, Tailscale's public relays are used. From the DERP tab you can:
+DERP relays provide encrypted relay connectivity when direct peer-to-peer connections fail (for example, behind restrictive NATs). By default, the network uses the public Tailscale relays. In the DERP tab you can do these tasks:
 
 - Add custom relay regions (IDs 900-999)
 - Toggle the embedded DERP server
@@ -194,14 +198,14 @@ DERP relays provide encrypted relay connectivity when direct peer-to-peer connec
 
 ## Agent tokens
 
-Agent tokens allow programmatic API access for automation, CI/CD, and AI agents:
+Agent tokens give programmatic API access to automation, CI/CD, and AI agents:
 
-- Tokens are prefixed with `at_` and stored as SHA-256 hashes
-- Each token is scoped to a single tenant and a subset of permissions
-- Mandatory expiry (maximum 365 days)
-- Tokens are resolved at request time --- revoking a token or disabling the `allowAgentTokens` toggle takes effect immediately
+- Tokens have the prefix `at_`. The system stores them as SHA-256 hashes.
+- Each token applies to a single tenant and to a subset of permissions.
+- Expiry is mandatory (maximum 365 days).
+- The system resolves tokens at request time. When you revoke a token or disable the `allowAgentTokens` toggle, the change takes effect immediately.
 
-Create tokens from the **Agents** tab. The token value is shown once on creation.
+Create tokens in the **Agents** tab. The dashboard shows the token value once, when you create the token.
 
 ### Using agent tokens
 
@@ -210,11 +214,11 @@ curl https://yourdomain.com/api/tenants/<id>/nodes \
   -H "Authorization: Bearer at_XXXXX"
 ```
 
-Agent tokens can access any endpoint their permission scope allows, restricted to their tenant.
+An agent token can access each endpoint that its permission scope allows. The token is restricted to its tenant.
 
 ## Security settings
 
-The **Security** tab controls tenant-wide security toggles:
+The **Security** tab controls the security toggles for the whole tenant:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
@@ -228,48 +232,48 @@ The **Security** tab controls tenant-wide security toggles:
 
 ### Lockdown mode
 
-Lockdown is an emergency switch that immediately:
+Lockdown is an emergency switch. It immediately blocks these actions:
 
-- Blocks all new invitations
-- Blocks invitation acceptance
-- Blocks auth key generation
-- Blocks agent token creation
-- Blocks join requests
-- Blocks federation activity (inbound and outbound)
+- New invitations
+- Invitation acceptance
+- Auth key generation
+- Agent token creation
+- Join requests
+- Federation activity (inbound and outbound)
 
-Lockdown does not disconnect existing devices or revoke existing tokens. It prevents any new access from being granted.
+Lockdown does not disconnect existing devices. It does not revoke existing tokens. It prevents the grant of any new access.
 
 ## Audit log
 
-Every security-relevant action is logged to the audit trail, viewable from the **Audit** tab (requires `view_audit_log` permission). Logged actions include:
+The system logs each security-relevant action to the audit trail. You can view the trail in the **Audit** tab (the `view_audit_log` permission is necessary). The system logs these actions:
 
-- Member joins, leaves, role changes
-- Device approvals, locks, removals
-- Invitation creates, accepts, revokes
+- Member joins, leaves, and role changes
+- Device approvals, locks, and removals
+- Invitation creates, accepts, and revokes
 - Tenant settings changes
 - ACL policy updates
-- Agent token creates, revokes
+- Agent token creates and revokes
 - Federation link actions
 - Lockdown toggles
 - Tenant lifecycle (start, stop, delete)
 
-Audit entries include the actor's user ID, timestamp, action type, and relevant metadata.
+Each audit entry includes the user ID of the actor, the timestamp, the action type, and relevant metadata.
 
 ## Usage and limits
 
-The **Usage** tab shows:
+The **Usage** tab shows these items:
 
-- **Live counts**: Current devices, members, services
-- **Plan limits**: Maximum devices, members (configurable via API)
-- **7-day history**: 168 data points (sampled every 5 minutes by the health monitor)
+- **Live counts**: Current devices, members, and services
+- **Plan limits**: Maximum devices and members (you can configure them with the API)
+- **7-day history**: 168 data points (the health monitor samples every 5 minutes)
 
-Usage snapshots are stored in the `usage_snapshots` table and displayed as a sparkline chart.
+The system stores usage snapshots in the `usage_snapshots` table. The dashboard shows them as a sparkline chart.
 
 ## Instance hibernation
 
-To save resources, idle networks can be automatically stopped:
+To save resources, the system can stop idle networks automatically:
 
-- Set `hibernateAfterDays` in the Security tab (0 = disabled)
-- `lastActivityAt` is updated on API access (debounced to avoid write amplification)
-- The health monitor sweeps all tenants and stops any that have been idle past the threshold
-- Hibernated networks restart on the next API access
+- Set `hibernateAfterDays` in the Security tab (0 = disabled).
+- The system updates `lastActivityAt` on API access (debounced to avoid write amplification).
+- The health monitor sweeps all tenants. It stops each tenant that is idle longer than the threshold.
+- A hibernated network restarts on the next API access.

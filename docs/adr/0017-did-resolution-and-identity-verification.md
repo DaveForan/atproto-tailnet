@@ -7,32 +7,34 @@
 
 ## Context
 
-ADR-0012 defines the AT Proto Identity Passport — VC-JWT credentials for
-membership, role attestation, and capability tokens. The credential issuer
-and verifier modules exist, but the **identity verification infrastructure**
-needed to make them work in production is missing:
+ADR-0012 defines the AT Proto Identity Passport. It has VC-JWT credentials for
+membership, role attestation, and capability tokens. The credential issuer and
+verifier modules exist. But the **identity verification infrastructure** that
+they need in production is missing:
 
-- Collective DIDs (`did:web`) are generated but no `/.well-known/did.json`
-  is served, so remote parties cannot resolve them
+- The service generates collective DIDs (`did:web`) but serves no
+  `/.well-known/did.json`, so remote parties cannot resolve them
 - No `PublicKeyResolver` implementation exists outside test mocks
-- DID resolution is limited to handle→DID for invitations (Bluesky API)
-- No `did:plc` directory lookups or `did:web` document fetching
-- Credential verification functions exist but are dead code (no route calls them)
-- Holder binding challenge has no submit/verify endpoint
+- DID resolution covers only handle→DID for invitations (Bluesky API)
+- The service has no `did:plc` directory lookups and no `did:web` document
+  fetching
+- The credential verification functions are dead code (no route calls them)
+- The holder binding challenge has no submit or verify endpoint
 
-Without DID resolution, the credential system cannot verify that a credential
-was issued by a known collective or that a holder is who they claim to be.
+Without DID resolution, the credential system cannot verify that a known
+collective issued a credential. It also cannot verify that a holder is the
+person that the holder claims to be.
 
 ## Decision
 
 ### 1. Serve a DID document per collective
 
-Collectives share the instance's domain, so their DIDs are path-based:
-`did:web:<host>:collective:<slug>` (the port, if any, percent-encoded as
-did:web requires — `localhost%3A3000`). did:web maps that to
-`https://<host>/collective/<slug>/did.json`, which the service serves.
-`/.well-known/did.json?collective=<slug>` is kept as a convenience alias.
-The document contains:
+Collectives share the domain of the instance, so their DIDs are path-based:
+`did:web:<host>:collective:<slug>`. The port, if any, is percent-encoded as
+did:web requires (`localhost%3A3000`). did:web maps that DID to
+`https://<host>/collective/<slug>/did.json`, which the service serves. We keep
+`/.well-known/did.json?collective=<slug>` as a convenience alias. The document
+contains:
 
 ```json
 {
@@ -52,73 +54,80 @@ The document contains:
 
 ### 2. DID resolver module
 
-Create `src/identity/resolver.ts` with a `DIDResolver` that supports:
+We created `src/identity/resolver.ts` with a `DIDResolver` that supports:
 
-- **`did:web`**: Fetch `/.well-known/did.json` (or path-based equivalent)
-  from the DID's domain, extract the public key from the verification method
+- **`did:web`**: Fetch `/.well-known/did.json` (or the path-based equivalent)
+  from the domain of the DID. Extract the public key from the verification
+  method
 - **`did:plc`**: Query the PLC directory (`https://plc.directory/{did}`) to
   resolve the DID document and extract the signing key
-- **Local collectives**: DIDs hosted by this instance are answered from
-  `collective_dids` directly — no HTTP round-trip to ourselves, and key
-  rotation takes effect immediately (never cached)
-- **Cache**: bounded cache with TTL (5 min default) to avoid repeated fetches
-- **Timeout**: 5s per resolution attempt, fail closed
+- **Local collectives**: The resolver answers DIDs that this instance hosts
+  from `collective_dids` directly. It makes no HTTP round-trip to itself. Key
+  rotation takes effect immediately because the resolver never caches these
+  DIDs
+- **Cache**: a bounded cache with TTL (5 min default) prevents repeated
+  fetches
+- **Timeout**: 5s for each resolution attempt, fail closed
 - **SSRF guard**: DIDs arrive from unauthenticated callers (credential
-  verification, HELLO). did:web hosts must use the default HTTPS port and
-  resolve only to public addresses; redirects are refused; the fetched
-  document's `id` must equal the DID asked for
+  verification, HELLO). The did:web hosts must use the default HTTPS port and
+  must resolve only to public addresses. The resolver refuses redirects. The
+  `id` of the fetched document must equal the requested DID
 - **Keys**: Ed25519 `publicKeyJwk` only
 
-This module implements the `PublicKeyResolver` interface expected by
-`src/credentials/verifier.ts`.
+This module implements the `PublicKeyResolver` interface that
+`src/credentials/verifier.ts` expects.
 
 ### 3. Credential verification endpoint
 
-Add `POST /api/credentials/verify` that accepts a signed credential (VC-JWT)
-and returns the verification result. Uses the DID resolver to fetch the
-issuer's public key, then calls `verifyCredential()`.
+We added `POST /api/credentials/verify`. It accepts a signed credential
+(VC-JWT) and returns the verification result. It uses the DID resolver to
+obtain the public key of the issuer. Then it calls `verifyCredential()`.
 
-The result also reports `revoked: true` when the issuer hosted here has
-revoked the credential.
+The result also reports `revoked: true` when the issuer that this instance
+hosts has revoked the credential.
 
 ### 4. Holder binding verification endpoint
 
-Add `POST /api/tenants/:tenantId/credentials/challenge/verify` that accepts a
-`HolderBindingProof` (nonce + signature + did). The server:
-- Atomically claims the challenge by nonce (stored in DB with TTL) — it is
-  single-use whether or not verification succeeds
-- Verifies the signature against the holder's resolved public key
-- Returns the verification result
+We added `POST /api/tenants/:tenantId/credentials/challenge/verify`. It
+accepts a `HolderBindingProof` (nonce, signature, and did). The server does
+these steps:
+- It atomically claims the challenge by nonce (stored in the DB with a TTL).
+  The challenge is single-use whether or not verification succeeds
+- It verifies the signature against the resolved public key of the holder
+- It returns the verification result
 
 ### 5. Credential status with revocation
 
-Replace the stub status endpoint with a real revocation store:
-- `credential_revocations` table tracks revoked credential IDs with reason and timestamp
-- `POST /api/tenants/:tenantId/credentials/:credentialId/revoke` to revoke.
-  Gated by issuer identity: the caller presents the credential (`jwt`), and
-  it is revoked only if it verifies against *this* collective's key and its
-  `jti` is the id in the URL — a tenant cannot revoke another issuer's
-  credential. Audit-logged as `credential_revoked`
-- `GET /.well-known/collective-credential-status/:credentialId` checks the revocation table
+We replaced the stub status endpoint with a real revocation store:
+- The `credential_revocations` table tracks revoked credential IDs with a
+  reason and a timestamp
+- `POST /api/tenants/:tenantId/credentials/:credentialId/revoke` revokes a
+  credential. Issuer identity gates it. The caller presents the credential
+  (`jwt`). The server revokes it only if it verifies against the key of *this*
+  collective and its `jti` is the id in the URL. A tenant cannot revoke the
+  credential of another issuer. The server audit-logs the action as
+  `credential_revoked`
+- `GET /.well-known/collective-credential-status/:credentialId` checks the
+  revocation table
 
 ## Consequences
 
-- Remote collectives can resolve any collective's DID to its public key
-- Credentials can be verified end-to-end without pre-shared keys
+- Remote collectives can resolve the DID of any collective to its public key
+- The system can verify credentials end-to-end without pre-shared keys
 - The DID resolver is reusable for both federation handshake signature
   verification and credential verification
-- `did:web` resolution depends on DNS and HTTPS — operational concern
+- `did:web` resolution depends on DNS and HTTPS. This is an operational concern
   for air-gapped or private deployments (future: `did:plc` as fallback)
-- Challenge storage adds a table but challenges are short-lived (5 min TTL)
+- Challenge storage adds a table, but challenges are short-lived (5 min TTL)
 
 ## Known limitations
 
-- **did:plc holders cannot be verified.** AT Proto account DID documents
-  publish secp256k1/P-256 keys as `publicKeyMultibase`, which the resolver
-  does not read — and that signing key is held by the user's PDS, so a holder
-  could not sign a challenge with it anyway. Holder binding therefore works
-  for did:web holders (collectives) only; binding a Bluesky user to a
-  credential needs a different proof (e.g. an OAuth-authenticated session).
-- Credentials are not recorded at issuance, so revoking one requires the
-  credential itself.
-
+- **did:plc holders cannot be verified.** The DID documents of AT Proto
+  accounts publish secp256k1/P-256 keys as `publicKeyMultibase`. The resolver
+  does not read this format. The PDS of the user also holds that signing key,
+  so a holder could not sign a challenge with it anyway. Holder binding
+  therefore works only for did:web holders (collectives). To bind a Bluesky
+  user to a credential, we need a different proof (for example, an
+  OAuth-authenticated session).
+- The system does not record credentials at issuance. To revoke a credential,
+  the caller must present the credential itself.

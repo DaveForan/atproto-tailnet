@@ -5,39 +5,39 @@
 
 ## Context
 
-Tailscale devices can advertise routes to the network: subnet routers
-expose specific CIDR ranges (e.g., 192.168.1.0/24 for a home LAN), and
-exit nodes advertise the default route (0.0.0.0/0 and ::/0) to tunnel all
-traffic through themselves. In Headscale, advertised routes exist in a
-"pending" state until an administrator explicitly enables them.
+Tailscale devices can advertise routes to the network. Subnet routers
+expose specific CIDR ranges (for example, 192.168.1.0/24 for a home LAN).
+Exit nodes advertise the default route (0.0.0.0/0 and ::/0) and tunnel all
+traffic through themselves. In Headscale, an advertised route stays in a
+"pending" state until an administrator enables it.
 
-The atproto-tailnet dashboard needs to surface these advertised routes and
-let authorized members approve, reject, or remove them — without
-reimplementing route state management that Headscale already handles.
+The atproto-tailnet dashboard must show these advertised routes. It must
+let authorized members approve, reject, or remove them. Headscale already
+manages route state, and the dashboard must not implement it again.
 
 ## Decision
 
 ### Thin wrapper over Headscale route API
 
-Route management is implemented as a pass-through layer over Headscale's
-existing route REST API. The service does not store route state in its own
-database — Headscale is the single source of truth for which routes exist,
-which are enabled, and which devices advertise them.
+The route management feature is a pass-through layer over the existing
+Headscale route REST API. The service does not store route state in its own
+database. Headscale is the single source of truth. It knows which routes
+exist, which routes are enabled, and which devices advertise them.
 
 ### Route listing
 
-`GET /api/tenants/:id/routes` queries the tenant's Headscale instance for
-all routes and splits the response into two categories:
+`GET /api/tenants/:id/routes` queries the Headscale instance of the tenant
+for all routes. It splits the response into two categories:
 
-- **Exit nodes** — routes where the prefix is `0.0.0.0/0` or `::/0`
-- **Subnets** — all other advertised CIDR prefixes
+- **Exit nodes**: routes where the prefix is `0.0.0.0/0` or `::/0`
+- **Subnets**: all other advertised CIDR prefixes
 
-Each route entry includes its Headscale route ID, the advertising device's
-name and ID, the prefix, and whether it is currently enabled.
+Each route entry includes these fields: the Headscale route ID, the name and ID
+of the advertising device, the prefix, and the current enabled state.
 
 ### Route actions
 
-Three actions are supported, each targeting a specific route by its
+The service supports three actions. Each action targets one route by its
 Headscale route ID:
 
 - `POST /api/tenants/:id/routes/:routeId/enable` — enables a pending or
@@ -49,17 +49,17 @@ Headscale route ID:
 
 ### Permission gating
 
-All route management endpoints are gated by the `manage_devices` permission,
-consistent with the principle that route approval is a device-level
-administrative action. Originators pass this check unconditionally via the
+The `manage_devices` permission gates all route management endpoints. This
+follows the principle that route approval is an administrative action on
+devices. Originators pass this check without conditions because of the
 `isOriginator` short-circuit.
 
 ### Audit trail
 
-Every enable, disable, and delete action is recorded in the `audit_logs`
-table with actions `route_enabled`, `route_disabled`, and `route_deleted`
-respectively. The audit entry includes the route ID, prefix, and
-advertising device name for traceability.
+The system records every enable, disable, and delete action in the `audit_logs`
+table. The actions are `route_enabled`, `route_disabled`, and `route_deleted`.
+The audit entry includes the route ID, the prefix, and the name of the
+advertising device for traceability.
 
 ### API surface
 
@@ -70,20 +70,20 @@ advertising device name for traceability.
 
 ## Consequences
 
-- **Route state lives entirely in Headscale** — the service has no local
+- **Route state lives only in Headscale**: the service has no local
   cache or mirror of route data. If Headscale is unreachable, route listing
   and management fail. There is no offline or degraded-mode fallback.
-- **No route creation** — routes are advertised by Tailscale clients on
-  devices, not created through the admin API. This service only manages
-  (approves/rejects/removes) routes that devices have already advertised.
-- **Audit trail provides accountability** — since route state is not in our
-  DB, the audit log is the only record of who approved or removed a route
+- **No route creation**: Tailscale clients advertise routes on
+  devices. The admin API does not create routes. This service only manages
+  (approves, rejects, or removes) routes that devices already advertise.
+- **The audit trail provides accountability**: route state is not in our
+  DB, so the audit log is the only record of who approved or removed a route
   and when. This is critical for compliance and incident response.
-- **Exit node vs. subnet split is presentation-only** — Headscale treats
-  all routes uniformly. The split is a UI convenience that helps
-  administrators distinguish between "tunnel all traffic" and "expose a
+- **The split between exit nodes and subnets is for presentation only**:
+  Headscale treats all routes the same way. The split is a UI feature. It
+  helps administrators to distinguish "tunnel all traffic" from "expose a
   specific network."
-- **Route IDs are Headscale-internal** — they are opaque integers that may
-  change if a device re-advertises a route. The audit log captures the
-  prefix and device name alongside the ID to maintain human-readable
-  history even if IDs are recycled.
+- **Route IDs are internal to Headscale**: they are opaque integers. They can
+  change when a device advertises a route again. The audit log records the
+  prefix and device name with the ID. The history stays readable even if
+  Headscale reuses IDs.

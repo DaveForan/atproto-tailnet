@@ -4,20 +4,20 @@ title: Deployment
 
 # Deployment
 
-atproto-tailnet can be deployed on any server with Docker. Four cloud providers have fully automated deployment orchestration that an AI agent (or human) can run end-to-end: server provisioning, DNS setup, TLS certificates, and stack startup.
+You can deploy atproto-tailnet on any server with Docker. Four cloud providers have fully automated deployment orchestration. An AI agent or a human can run it from start to finish: server provisioning, DNS setup, TLS certificates, and stack startup.
 
 ## Provider comparison
 
 | Provider | CLI tool | Cost/month | TLS strategy | Notes |
 |----------|----------|-----------|--------------|-------|
-| [Hetzner](#hetzner) | `hcloud` | ~EUR 4-8 | `hetzner` | Cheapest. DNS API is separate from Cloud API |
+| [Hetzner](#hetzner) | `hcloud` | ~EUR 4-8 | `hetzner` | Cheapest. The DNS API is separate from the Cloud API |
 | [Vultr](#vultr) | `vultr-cli` | ~$6-24 | `vultr` | Simple API, good value |
-| [DigitalOcean](#digitalocean) | `doctl` | ~$18-24 | `digitalocean` | Single API for compute + DNS |
+| [DigitalOcean](#digitalocean) | `doctl` | ~$18-24 | `digitalocean` | One API for compute and DNS |
 | [AWS](#aws) | `aws` | ~$30-50 | `route53` | Most complex. Instance roles for TLS |
 
-All providers deploy in **coordinator mode** using `docker-compose.coordinator.yml`. Each has an `AGENT.md` in its `deploy/<provider>/` directory with exact CLI commands for autonomous deployment.
+All providers deploy in **coordinator mode** and use `docker-compose.coordinator.yml`. Each provider has an `AGENT.md` in its `deploy/<provider>/` directory. The file contains the exact CLI commands for autonomous deployment.
 
-## What gets deployed
+## What the stack contains
 
 ```
                    Internet
@@ -42,11 +42,11 @@ All providers deploy in **coordinator mode** using `docker-compose.coordinator.y
             +--------------+
 ```
 
-All four services run as Docker containers via a single `docker compose up -d`. The coordinator handles the Tailscale control protocol natively; no Docker socket mount is needed.
+All four services run as Docker containers when you use a single `docker compose up -d` command. The coordinator handles the Tailscale control protocol natively. You do not need a Docker socket mount.
 
 ## TLS strategies
 
-The `TLS_STRATEGY` environment variable selects how Caddy obtains certificates for tenant subdomains. Each strategy is a directory in `caddy/tls-strategies/` containing Caddy configuration snippets.
+The `TLS_STRATEGY` environment variable selects how Caddy obtains certificates for tenant subdomains. Each strategy is a directory in `caddy/tls-strategies/` that contains Caddy configuration snippets.
 
 | Strategy | How it works | Needs DNS API? | Caddy module needed |
 |----------|-------------|:---:|---|
@@ -57,12 +57,12 @@ The `TLS_STRATEGY` environment variable selects how Caddy obtains certificates f
 | `hetzner` | DNS-01 wildcard | Yes | `caddy-dns/hetzner` |
 | `vultr` | DNS-01 wildcard | Yes | `caddy-dns/vultr` |
 | `rfc2136` | DNS-01 wildcard (BIND/Knot/PowerDNS) | Yes | `caddy-dns/rfc2136` |
-| `acmedns` | DNS-01 wildcard via delegation | One-time CNAME | `caddy-dns/acmedns` |
-| `manual` | Bring your own cert | No | None |
+| `acmedns` | DNS-01 wildcard through delegation | One-time CNAME | `caddy-dns/acmedns` |
+| `manual` | Use your own cert | No | None |
 
-**On-demand** (default) is the simplest — no DNS provider API access required. DNS-01 strategies issue a single wildcard certificate, which is more efficient with many tenants. When your DNS provider matches your server provider, use that provider's strategy for fully autonomous deployment.
+**On-demand** (default) is the simplest strategy. It does not need access to a DNS provider API. DNS-01 strategies issue one wildcard certificate. This is more efficient when you have many tenants. When your DNS provider is the same as your server provider, use the strategy of that provider. Then the deployment is fully autonomous.
 
-DNS-01 strategies require building Caddy with the appropriate module. Set `CADDY_DNS_PLUGINS` in `.env`:
+DNS-01 strategies need a Caddy build that includes the correct module. Set `CADDY_DNS_PLUGINS` in `.env`:
 
 ```sh
 CADDY_DNS_PLUGINS=github.com/caddy-dns/route53
@@ -70,9 +70,9 @@ CADDY_DNS_PLUGINS=github.com/caddy-dns/route53
 
 ## Hetzner
 
-The cheapest option at ~EUR 4/month for a cx22 (2 vCPU, 4 GB RAM).
+Hetzner is the cheapest option. A cx22 server (2 vCPU, 4 GB RAM) costs ~EUR 4/month.
 
-**Key detail**: Hetzner has two separate APIs with separate tokens. The Cloud API (`hcloud` CLI) manages servers. The DNS API (`dns.hetzner.com/api/v1`, curl only) manages DNS records. Both are needed.
+**Key detail**: Hetzner has two separate APIs, and each API has its own token. The Cloud API (`hcloud` CLI) manages servers. The DNS API (`dns.hetzner.com/api/v1`, curl only) manages DNS records. You need both tokens.
 
 ```sh
 # Full instructions
@@ -83,11 +83,11 @@ hcloud server create --name atproto-tailnet --type cx22 --image ubuntu-22.04 --s
 ssh root@$(hcloud server ip atproto-tailnet) 'bash -s' < deploy/hetzner/server-setup.sh
 ```
 
-See [`deploy/hetzner/AGENT.md`](https://github.com/DaveForan/atproto-tailnet/blob/master/deploy/hetzner/AGENT.md) for the full step-by-step.
+For the full step-by-step procedure, see [`deploy/hetzner/AGENT.md`](https://github.com/DaveForan/atproto-tailnet/blob/master/deploy/hetzner/AGENT.md).
 
 ## Vultr
 
-Good value starting at $6/month for a vc2-1c-2gb (1 vCPU, 2 GB RAM).
+Vultr is good value. A vc2-1c-2gb server (1 vCPU, 2 GB RAM) costs $6/month and up.
 
 ```sh
 # Full instructions
@@ -98,11 +98,11 @@ vultr-cli instance create --plan vc2-1c-2gb --region ewr --os 2284 --ssh-keys <i
 ssh root@<ip> 'bash -s' < deploy/vultr/server-setup.sh
 ```
 
-See [`deploy/vultr/AGENT.md`](https://github.com/DaveForan/atproto-tailnet/blob/master/deploy/vultr/AGENT.md) for the full step-by-step.
+For the full step-by-step procedure, see [`deploy/vultr/AGENT.md`](https://github.com/DaveForan/atproto-tailnet/blob/master/deploy/vultr/AGENT.md).
 
 ## DigitalOcean
 
-Single API covers compute and DNS. $18/month for an s-2vcpu-2gb Droplet.
+One API covers compute and DNS. An s-2vcpu-2gb Droplet costs $18/month.
 
 ```sh
 # Full instructions
@@ -113,42 +113,42 @@ doctl compute droplet create atproto-tailnet --region nyc1 --size s-2vcpu-2gb --
 ssh root@$(doctl compute droplet get atproto-tailnet --format PublicIPv4 --no-header) 'bash -s' < deploy/digitalocean/droplet-setup.sh
 ```
 
-See [`deploy/digitalocean/AGENT.md`](https://github.com/DaveForan/atproto-tailnet/blob/master/deploy/digitalocean/AGENT.md) for the full step-by-step.
+For the full step-by-step procedure, see [`deploy/digitalocean/AGENT.md`](https://github.com/DaveForan/atproto-tailnet/blob/master/deploy/digitalocean/AGENT.md).
 
 ## AWS
 
-EC2 + Route53. Most complex setup but supports instance roles for TLS (no API keys needed on the instance). ~$30/month for a t3.medium.
+AWS uses EC2 and Route53. The setup is the most complex, but it supports instance roles for TLS. You do not need API keys on the instance. A t3.medium costs ~$30/month.
 
-Two deployment paths:
-- **Path A (minimal)**: Manual EC2 + Route53 via AWS CLI
-- **Path B (CloudFormation)**: Automated via the included `cloudformation.yaml` template
+There are two deployment paths:
+- **Path A (minimal)**: Set up EC2 and Route53 manually with the AWS CLI
+- **Path B (CloudFormation)**: Use the included `cloudformation.yaml` template for automatic setup
 
 ```sh
 # Full instructions
 cat deploy/aws/AGENT.md
 ```
 
-See [`deploy/aws/AGENT.md`](https://github.com/DaveForan/atproto-tailnet/blob/master/deploy/aws/AGENT.md) for both paths.
+For both paths, see [`deploy/aws/AGENT.md`](https://github.com/DaveForan/atproto-tailnet/blob/master/deploy/aws/AGENT.md).
 
 ## DNS requirements
 
-Regardless of provider, you need two DNS records pointing to your server:
+For all providers, you need two DNS records that point to your server:
 
 | Type | Name | Value |
 |------|------|-------|
 | A | `tailnets.yourdomain.com` (or your `APP_DOMAIN`) | Server IP |
 | A | `*.ts.yourdomain.com` (or `*.<BASE_DOMAIN>`) | Server IP |
 
-The AGENT.md files for each provider include the exact CLI commands to create these records.
+The AGENT.md file of each provider contains the exact CLI commands to create these records.
 
 ## After deployment
 
-Once the stack is running:
+When the stack runs, do these steps:
 
 1. **Verify health**: `curl https://tailnets.yourdomain.com/health`
 2. **Check TLS**: `curl -vI https://tailnets.yourdomain.com 2>&1 | grep issuer`
 3. **View logs**: `docker compose -f docker-compose.coordinator.yml logs -f`
-4. **Sign in**: Visit `https://tailnets.yourdomain.com` and authenticate with your AT Protocol handle
+4. **Sign in**: Go to `https://tailnets.yourdomain.com` and authenticate with your AT Protocol handle
 
 ## Updating
 
@@ -163,8 +163,8 @@ docker compose -f docker-compose.coordinator.yml up -d
 
 - `SESSION_SECRET` is a unique random string (32+ characters)
 - `COORDINATOR_API_KEY` is a strong random value
-- `FEDERATION_KEY_ENCRYPTION_KEY` is 64 random hex characters (if using federation)
+- `FEDERATION_KEY_ENCRYPTION_KEY` is 64 random hex characters (if you use federation)
 - `ATPROTO_PRIVATE_KEY` is set for production AT Proto OAuth
-- PostgreSQL password is strong and not exposed to the internet
-- Only ports 22, 80, 443, and 443/udp are open in the firewall
-- Port 9443 (coordinator) is **not** exposed — it's internal to Docker
+- The PostgreSQL password is strong, and the internet cannot reach PostgreSQL
+- The firewall opens only ports 22, 80, 443, and 443/udp
+- Port 9443 (coordinator) is **not** exposed. It is internal to Docker

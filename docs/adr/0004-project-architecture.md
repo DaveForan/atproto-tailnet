@@ -5,7 +5,12 @@
 
 ## Context
 
-We need a service layer that sits between AT Proto OAuth (identity) and Headscale instances (networking). It handles tenant lifecycle, user management, invitations, and instance orchestration.
+We need a service layer between AT Proto OAuth (identity) and the Headscale instances (networking). The service layer handles these functions:
+
+- Tenant lifecycle
+- User management
+- Invitations
+- Instance orchestration
 
 ## Decision
 
@@ -39,20 +44,20 @@ We need a service layer that sits between AT Proto OAuth (identity) and Headscal
 | Component | Role |
 |-----------|------|
 | **Service API** | AT Proto OAuth, tenant CRUD, user/invitation management, Headscale instance orchestration, pre-auth key generation via Headscale gRPC API |
-| **PostgreSQL** | Service state: users, tenants, memberships, invitations, OAuth sessions. NOT Headscale data — each Headscale instance owns its own SQLite. |
-| **Headscale instances** | One per tenant. Managed as Docker containers (dev) or systemd units (prod). Each has its own config, DB, API key, and port. |
-| **Caddy** | TLS termination, subdomain routing. `<tenant>.ts.example.com` → correct Headscale port. `api.ts.example.com` → service API. Automatic Let's Encrypt. |
+| **PostgreSQL** | Service state: users, tenants, memberships, invitations, OAuth sessions. It does NOT store Headscale data. Each Headscale instance owns its own SQLite. |
+| **Headscale instances** | One for each tenant. Docker containers (dev) or systemd units (prod) run the instances. Each instance has its own config, DB, API key, and port. |
+| **Caddy** | TLS termination and subdomain routing. `<tenant>.ts.example.com` → correct Headscale port. `api.ts.example.com` → service API. Caddy obtains Let's Encrypt certificates automatically. |
 
 ### Technology choices
 
 | Choice | Rationale |
 |--------|-----------|
-| **TypeScript / Node.js** | AT Proto SDK is TypeScript-first. Dave's primary stack. |
-| **Express** | Simple, well-known. No framework magic. |
-| **PostgreSQL** | Relational data (users, tenants, memberships). Proven. |
-| **Drizzle ORM** | Type-safe, lightweight, good migration story. |
-| **Docker** for Headscale instances | Isolation, easy lifecycle (create/start/stop/rm). Dev and initial prod. |
-| **Caddy** | Automatic TLS with wildcard certs. Clean reverse proxy config. API for dynamic upstreams. |
+| **TypeScript / Node.js** | The AT Proto SDK is TypeScript-first. It is the primary stack of Dave. |
+| **Express** | Simple and well-known. It has no framework magic. |
+| **PostgreSQL** | Relational data (users, tenants, memberships). It is proven technology. |
+| **Drizzle ORM** | Type-safe and lightweight. It has good migration support. |
+| **Docker** for Headscale instances | Isolation and an easy lifecycle (create/start/stop/rm). We use it in dev and in the first production release. |
+| **Caddy** | Automatic TLS with wildcard certificates. Clean reverse proxy config. An API for dynamic upstreams. |
 
 ### Headscale instance lifecycle
 
@@ -75,21 +80,22 @@ delete_tenant(tenant_id):
 
 ### Headscale API integration
 
-Each Headscale instance exposes a gRPC API (and REST via grpc-gateway). The service communicates with each instance using:
+Each Headscale instance exposes a gRPC API (and REST through grpc-gateway). The service communicates with each instance with these items:
 
-- Instance-specific API key (generated at provisioning time)
-- `localhost:<port>` connection (co-located, no TLS needed internally)
+- An API key for the instance (generated at provisioning time)
+- A `localhost:<port>` connection (the service and instance run on the same host, so internal TLS is not necessary)
 
-Key operations:
-- **Create user** — when someone accepts an invitation
-- **Create pre-auth key** — for node registration
-- **List nodes** — for the dashboard
-- **Delete node** — for device management
-- **Set/update ACL policy** — for network rules
+The service uses these key operations:
+
+- **Create user**: when a user accepts an invitation
+- **Create pre-auth key**: for node registration
+- **List nodes**: for the dashboard
+- **Delete node**: for device management
+- **Set/update ACL policy**: for network rules
 
 ## Consequences
 
-- Docker is the initial instance manager; can swap to K8s, systemd, or Firecracker later without changing the service layer.
-- Port allocation needs a simple registry (DB table) to avoid collisions.
-- Caddy's admin API allows dynamic upstream registration without config reload.
-- The service API is the single source of truth for tenant/user state; Headscale instances are treated as disposable infrastructure.
+- Docker is the first instance manager. We can change to K8s, systemd, or Firecracker later. The service layer does not change.
+- Port allocation needs a simple registry (a DB table) to prevent collisions.
+- The Caddy admin API registers upstreams dynamically. It does not need a config reload.
+- The service API is the single source of truth for tenant and user state. We treat Headscale instances as disposable infrastructure.

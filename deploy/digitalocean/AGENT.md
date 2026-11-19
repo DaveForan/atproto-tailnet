@@ -1,14 +1,14 @@
 # DigitalOcean Autonomous Deployment Guide
 
-Machine-readable instructions for an AI agent to deploy atproto-tailnet on DigitalOcean with zero human intervention.
+Machine-readable instructions for an AI agent. The agent deploys atproto-tailnet on DigitalOcean without human help.
 
 ## Overview
 
-- **What**: Single Droplet running the full coordinator-mode stack (TypeScript service + Rust coordinator + PostgreSQL + Caddy)
-- **Provider**: DigitalOcean (compute + DNS in one API)
-- **TLS strategy**: `digitalocean` -- DNS-01 wildcard via DO API token
+- **What**: A single Droplet that runs the full coordinator-mode stack (TypeScript service, Rust coordinator, PostgreSQL, and Caddy)
+- **Provider**: DigitalOcean (compute and DNS in one API)
+- **TLS strategy**: `digitalocean` -- DNS-01 wildcard with the DO API token
 - **Compose file**: `docker-compose.coordinator.yml`
-- **Cost estimate**: ~$18-24/month ($18 Droplet + $3.60 backups optional + $0 DNS)
+- **Cost estimate**: ~$18-24/month ($18 Droplet + $3.60 optional backups + $0 DNS)
 
 ## Prerequisites
 
@@ -28,15 +28,15 @@ Machine-readable instructions for an AI agent to deploy atproto-tailnet on Digit
 |---|---|---|
 | `DO_AUTH_TOKEN` | DigitalOcean API token (read+write) | `dop_v1_abc123...` |
 | `DOMAIN` | Base domain managed in DO DNS | `example.com` |
-| `APP_SUBDOMAIN` | Subdomain for the web UI | `tailnets` (produces `tailnets.example.com`) |
-| `TENANT_SUBDOMAIN` | Subdomain prefix for tenant wildcard | `ts` (produces `*.ts.example.com`) |
+| `APP_SUBDOMAIN` | Subdomain for the web UI | `tailnets` (gives `tailnets.example.com`) |
+| `TENANT_SUBDOMAIN` | Subdomain prefix for the tenant wildcard | `ts` (gives `*.ts.example.com`) |
 | `SSH_KEY_FINGERPRINT` | Fingerprint from `doctl compute ssh-key list` | `ab:cd:ef:...` |
 | `REGION` | DigitalOcean region slug | `nyc1` |
 | `DROPLET_SIZE` | Droplet size slug (2 GB RAM minimum) | `s-2vcpu-2gb` |
 | `REPO_URL` | Git clone URL for the repository | `https://github.com/org/atproto-tailnet.git` |
 | `BRANCH` | Git branch to deploy | `main` |
 
-### Generated secrets (generate at deploy time)
+### Generated secrets (generate them at deploy time)
 
 | Variable | Generation command |
 |---|---|
@@ -59,14 +59,14 @@ doctl compute droplet create atproto-tailnet \
   --wait
 ```
 
-### 2. Get the Droplet IP
+### 2. Obtain the Droplet IP
 
 ```sh
 DROPLET_IP=$(doctl compute droplet get atproto-tailnet --format PublicIPv4 --no-header)
 echo "$DROPLET_IP"
 ```
 
-Retry with 5s backoff if the IP is empty (Droplet still provisioning).
+If the IP is empty, the Droplet is still provisioning. Retry with a 5s backoff.
 
 ### 3. Create DNS records
 
@@ -120,7 +120,7 @@ ssh root@"$DROPLET_IP" "git clone --branch $BRANCH $REPO_URL /opt/atproto-tailne
 
 ### 7. Generate secrets and write .env
 
-Generate all secrets locally, then write the .env file to the Droplet in one shot. Substitute all variables before sending.
+Generate all secrets locally. Then write the .env file to the Droplet in one operation. Substitute all variables before you send the file.
 
 ```sh
 SESSION_SECRET=$(openssl rand -hex 32)
@@ -181,7 +181,7 @@ ufw --force enable
 REMOTE
 ```
 
-Note: Port range 10001-10100 is not needed in coordinator mode (no per-tenant Headscale containers).
+Note: Coordinator mode does not need the port range 10001-10100 because it has no Headscale containers for each tenant.
 
 ### 10. Build and start the stack
 
@@ -195,7 +195,7 @@ REMOTE
 
 ### 11. Wait for health check
 
-Poll the health endpoint. Caddy needs time to obtain the TLS certificate on first boot.
+Poll the health endpoint. Caddy needs time to obtain the TLS certificate at the first start.
 
 ```sh
 for i in $(seq 1 60); do
@@ -209,7 +209,7 @@ done
 
 ### 12. Verify HTTPS externally
 
-Wait for DNS propagation (up to 300s for DO DNS), then verify:
+Wait for DNS propagation (up to 300s for DO DNS). Then verify:
 
 ```sh
 for i in $(seq 1 60); do
@@ -291,7 +291,7 @@ doctl compute domain records delete "$DOMAIN" "$WILDCARD_RECORD_ID" --force
 
 **Symptom**: Caddy logs show `failed to solve challenge` or `DNS record not found`.
 
-**Cause**: DO_AUTH_TOKEN lacks domain write scope, or DNS records not yet propagated.
+**Cause**: `DO_AUTH_TOKEN` has no domain write scope, or the DNS records did not propagate yet.
 
 **Fix**:
 ```sh
@@ -308,18 +308,18 @@ ssh root@"$DROPLET_IP" "docker exec \$(docker ps -qf name=caddy) ls /etc/caddy/t
 
 ### DNS propagation delay
 
-**Symptom**: `dig` returns no result or old IP; curl gets connection refused.
+**Symptom**: `dig` returns no result or an old IP, and curl gets "connection refused".
 
-**Cause**: DO DNS TTL not yet expired. Default TTL is 300s.
+**Cause**: The DO DNS TTL did not expire yet. The default TTL is 300s.
 
-**Fix**: Wait up to 5 minutes. Verify with:
+**Fix**: Wait up to 5 minutes. Then verify with:
 ```sh
 dig +short "${APP_DOMAIN}" @ns1.digitalocean.com
 ```
 
 ### Coordinator not starting
 
-**Symptom**: `coordinator` container exits or health check fails.
+**Symptom**: The `coordinator` container exits or the health check fails.
 
 **Fix**:
 ```sh
@@ -329,7 +329,7 @@ ssh root@"$DROPLET_IP" "cd /opt/atproto-tailnet && docker compose -f docker-comp
 
 ### App returns 502 Bad Gateway
 
-**Symptom**: Caddy is up but returns 502.
+**Symptom**: Caddy runs but returns 502.
 
 **Cause**: The `app` container is not healthy, or the coordinator is not ready.
 
@@ -344,7 +344,7 @@ ssh root@"$DROPLET_IP" "cd /opt/atproto-tailnet && docker compose -f docker-comp
 
 ### Database connection errors
 
-**Symptom**: App or coordinator logs show `connection refused` to postgres.
+**Symptom**: The app or coordinator logs show `connection refused` to postgres.
 
 **Fix**:
 ```sh
@@ -357,7 +357,7 @@ ssh root@"$DROPLET_IP" "grep POSTGRES_PASSWORD /opt/atproto-tailnet/.env"
 
 ### Out of memory
 
-**Symptom**: Docker containers OOM-killed (check `dmesg` or `docker inspect`).
+**Symptom**: The system kills Docker containers for out-of-memory (check `dmesg` or `docker inspect`).
 
 **Fix**: Upgrade to a larger Droplet:
 ```sh
@@ -368,9 +368,9 @@ doctl compute droplet-action resize atproto-tailnet --size s-2vcpu-4gb --wait
 
 **Symptom**: `docker compose build caddy` fails with xcaddy errors.
 
-**Cause**: `CADDY_DNS_PLUGINS` env var missing or misspelled.
+**Cause**: The `CADDY_DNS_PLUGINS` env var is missing or has a spelling error.
 
-**Fix**: Verify `.env` contains exactly:
+**Fix**: Verify that `.env` contains exactly:
 ```
 CADDY_DNS_PLUGINS=github.com/caddy-dns/digitalocean
 ```

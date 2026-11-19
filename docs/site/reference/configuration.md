@@ -4,7 +4,7 @@ title: Configuration Reference
 
 # Configuration Reference
 
-All configuration flows through environment variables, validated at startup by a Zod schema in `src/config.ts`. Invalid configuration causes an immediate exit with a descriptive error.
+All configuration comes from environment variables. A Zod schema in `src/config.ts` validates them at startup. If the configuration is not valid, the service exits immediately and shows a descriptive error.
 
 ## Core settings
 
@@ -13,9 +13,9 @@ All configuration flows through environment variables, validated at startup by a
 | `DATABASE_URL` | Yes | --- | PostgreSQL connection string |
 | `SESSION_SECRET` | Yes | --- | Session signing key. Must be at least 32 characters for non-loopback deployments |
 | `PORT` | No | `3000` | HTTP listen port for the TypeScript service |
-| `PUBLIC_URL` | No | `http://127.0.0.1:3000` | Public-facing URL. Must use an IP address or real domain (not `localhost`) for AT Proto OAuth |
+| `PUBLIC_URL` | No | `http://127.0.0.1:3000` | Public URL. Must use an IP address or real domain (not `localhost`) for AT Proto OAuth |
 | `BASE_DOMAIN` | No | `ts.localhost` | Wildcard domain for tenant subdomains. Tenant URLs are `<slug>.<BASE_DOMAIN>` |
-| `TENANT_PUBLIC_PORT` | No | *(from URL)* | Port included in device connection URLs. Set to `8180` for local dev with Caddy |
+| `TENANT_PUBLIC_PORT` | No | *(from URL)* | Port in the device connection URLs. Set to `8180` for local dev with Caddy |
 | `LOG_LEVEL` | No | `info` | Pino log level: `debug`, `info`, `warn`, `error` |
 
 ## Coordinator mode
@@ -27,7 +27,7 @@ All configuration flows through environment variables, validated at startup by a
 
 ## Legacy Headscale mode
 
-These are only used when `COORDINATOR_URL` is **not** set:
+The service uses these variables only when `COORDINATOR_URL` is **not** set:
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
@@ -41,13 +41,13 @@ These are only used when `COORDINATOR_URL` is **not** set:
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `ATPROTO_PRIVATE_KEY` | Production only | --- | ES256 private key in JWK format for AT Proto OAuth client authentication. Not needed for local development (ephemeral keys are generated) |
+| `ATPROTO_PRIVATE_KEY` | Production only | --- | ES256 private key in JWK format for AT Proto OAuth client authentication. Not needed for local development (the service generates ephemeral keys) |
 
 ## Federation
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `FEDERATION_KEY_ENCRYPTION_KEY` | For federation | --- | 64 hex characters (32 bytes). AES-256-GCM key for encrypting collective signing keys at rest |
+| `FEDERATION_KEY_ENCRYPTION_KEY` | For federation | --- | 64 hex characters (32 bytes). AES-256-GCM key that encrypts collective signing keys at rest |
 
 ## Caddy and TLS
 
@@ -60,11 +60,11 @@ These are only used when `COORDINATOR_URL` is **not** set:
 
 ### TLS strategies
 
-The `TLS_STRATEGY` variable selects how Caddy obtains certificates for tenant subdomains. Each strategy is a directory in `caddy/tls-strategies/` containing `global.caddy` and `site.caddy` snippets that the production Caddyfile imports.
+The `TLS_STRATEGY` variable selects how Caddy obtains certificates for tenant subdomains. Each strategy is a directory in `caddy/tls-strategies/`. The directory contains the snippets `global.caddy` and `site.caddy`. The production Caddyfile imports these snippets.
 
 | Strategy | Type | DNS credentials | Caddy module needed | Notes |
 |----------|------|-----------------|---------------------|-------|
-| `on-demand` | Per-tenant certs | None | None | Default. Caddy issues individual certs on first connection. Requires `/internal/tls-check` endpoint (built-in) |
+| `on-demand` | Per-tenant certs | None | None | Default. Caddy issues individual certs on first connection. Needs the `/internal/tls-check` endpoint (built-in) |
 | `cloudflare` | Wildcard | `CF_API_TOKEN` | `caddy-dns/cloudflare` | |
 | `route53` | Wildcard | `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | `caddy-dns/route53` | Instance roles also work (no key env vars) |
 | `digitalocean` | Wildcard | `DO_AUTH_TOKEN` | `caddy-dns/digitalocean` | |
@@ -74,11 +74,11 @@ The `TLS_STRATEGY` variable selects how Caddy obtains certificates for tenant su
 | `vultr` | Wildcard | `VULTR_API_KEY` | `caddy-dns/vultr` | |
 | `manual` | Wildcard | None | None | Bring your own cert. Mount at `/etc/caddy/certs/` |
 
-**Choosing a strategy:** `on-demand` is the simplest — no DNS provider API access required, no extra Caddy modules. DNS-01 strategies issue a single wildcard certificate which is faster for many tenants. `rfc2136` and `acmedns` work with self-hosted DNS and avoid all cloud provider dependencies. `manual` is for environments with existing certificate management.
+**Choosing a strategy:** `on-demand` is the simplest option. It needs no DNS provider API access and no extra Caddy modules. DNS-01 strategies issue a single wildcard certificate. This is faster for many tenants. `rfc2136` and `acmedns` work with self-hosted DNS and have no cloud provider dependencies. Use `manual` in environments that already have certificate management.
 
 ## Coordinator binary configuration
 
-The Rust coordinator has its own configuration, separate from the TypeScript service. It reads a TOML file (first CLI argument) and environment variables (which take precedence).
+The Rust coordinator has its own configuration, separate from the TypeScript service. It reads a TOML file (the first CLI argument) and environment variables. Environment variables have priority.
 
 ### TOML file
 
@@ -101,7 +101,7 @@ store_backend = "sqlite"      # "sqlite", "postgres", or "memory"
 | `COORD_SQLITE_PATH` | `coordinator.db` | SQLite database file path (used when backend = `sqlite`) |
 | `COORD_DERP_MAP` | *(none)* | Path to JSON DERP map file (overrides TOML `derp_map_file`) |
 | `DATABASE_URL` | *(none)* | PostgreSQL URL (required when backend = `postgres`) |
-| `RUST_LOG` | `info` | Rust logging filter (e.g., `coordinator=debug,coord_api=trace`) |
+| `RUST_LOG` | `info` | Rust log filter (e.g., `coordinator=debug,coord_api=trace`) |
 
 ## Docker Compose files
 
@@ -121,7 +121,7 @@ store_backend = "sqlite"      # "sqlite", "postgres", or "memory"
 | `Caddyfile.production` | Legacy prod | HTTPS with pluggable TLS strategy (imports from mounted `tls-strategy/`) |
 | `Caddyfile.coordinator.production` | Coordinator prod | HTTPS with pluggable TLS strategy (imports from mounted `tls-strategy/`) |
 
-All Caddyfiles name the server `tailnet_proxy`. The TypeScript service dynamically manages one route (`@id: tailnet_tenants`) via the Caddy admin API to route tenant subdomains to the correct backend.
+All Caddyfiles name the server `tailnet_proxy`. The TypeScript service manages one route (`@id: tailnet_tenants`) through the Caddy admin API. This route sends tenant subdomains to the correct backend.
 
 ## npm scripts
 
@@ -140,11 +140,11 @@ All Caddyfiles name the server `tailnet_proxy`. The TypeScript service dynamical
 
 - [ ] `SESSION_SECRET` is a unique random string, at least 32 characters
 - [ ] `PUBLIC_URL` is your real HTTPS domain
-- [ ] `BASE_DOMAIN` has wildcard DNS pointing to your server
+- [ ] `BASE_DOMAIN` has wildcard DNS that points to your server
 - [ ] `COORDINATOR_API_KEY` / `COORD_ADMIN_KEY` are strong random values (matching)
-- [ ] `FEDERATION_KEY_ENCRYPTION_KEY` is 64 random hex characters (if using federation)
+- [ ] `FEDERATION_KEY_ENCRYPTION_KEY` is 64 random hex characters (if you use federation)
 - [ ] `ATPROTO_PRIVATE_KEY` is set (generate with AT Proto tooling)
 - [ ] `TLS_STRATEGY` is set and the required env vars for that strategy are provided (see [TLS strategies](#tls-strategies))
 - [ ] PostgreSQL has a strong password and is not exposed to the internet
 - [ ] Caddy is the only service bound to ports 80/443
-- [ ] `COORD_ADMIN_KEY` is set on the coordinator (otherwise admin API is unauthenticated)
+- [ ] `COORD_ADMIN_KEY` is set on the coordinator (otherwise the admin API has no authentication)

@@ -4,7 +4,7 @@ title: API Reference
 
 # API Reference
 
-The platform exposes two API surfaces: the **TypeScript service API** (user-facing, session/token authenticated) and the **coordinator admin API** (internal, bearer token authenticated).
+The platform has two API surfaces: the **TypeScript service API** (for users, authenticated by session or token) and the **coordinator admin API** (internal, authenticated by bearer token).
 
 ## TypeScript service API
 
@@ -29,7 +29,7 @@ Rate limits: 10 req/min on auth routes, 60 req/min on API routes.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/auth/login?handle=<handle>` | Initiate AT Proto OAuth |
+| `GET` | `/auth/login?handle=<handle>` | Start AT Proto OAuth |
 | `GET` | `/auth/callback` | OAuth callback |
 | `GET` | `/auth/logout` | End session |
 
@@ -38,8 +38,8 @@ Rate limits: 10 req/min on auth routes, 60 req/min on API routes.
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/me` | Current user info |
-| `GET` | `/api/permissions` | Current user's permissions in context |
-| `GET` | `/api/tenants` | List user's tenants |
+| `GET` | `/api/permissions` | Permissions of the current user in context |
+| `GET` | `/api/tenants` | List tenants of the user |
 | `GET` | `/api/tenants/:id` | Tenant details |
 | `DELETE` | `/api/tenants/:id` | Delete tenant |
 | `POST` | `/api/tenants/:id/start` | Start tenant instance |
@@ -52,7 +52,7 @@ Rate limits: 10 req/min on auth routes, 60 req/min on API routes.
 |--------|------|-----------|-------------|
 | `GET` | `/api/tenants/:id/members` | *any member* | List members |
 | `DELETE` | `/api/tenants/:id/members/:mid` | `kick` | Remove member |
-| `PUT` | `/api/tenants/:id/members/:mid/role` | `manage_roles` | Change member's role |
+| `PUT` | `/api/tenants/:id/members/:mid/role` | `manage_roles` | Change role of member |
 | `POST` | `/api/tenants/:id/invitations` | `invite` | Create invitation |
 | `GET` | `/api/tenants/:id/invitations` | `invite` | List invitations |
 | `POST` | `/api/tenants/:id/invitations/:iid/accept` | *invitee* | Accept invitation |
@@ -122,7 +122,7 @@ Rate limits: 10 req/min on auth routes, 60 req/min on API routes.
 
 ## Coordinator admin API
 
-Base URL: the coordinator's listen address (default `http://127.0.0.1:9443`).
+Base URL: the listen address of the coordinator (default `http://127.0.0.1:9443`).
 
 Authentication: `Authorization: Bearer <COORD_ADMIN_KEY>` on all `/api/*` endpoints. The `/health` and `/key` endpoints are public.
 
@@ -148,9 +148,9 @@ Authentication: `Authorization: Bearer <COORD_ADMIN_KEY>` on all `/api/*` endpoi
 | `GET` | `/api/tenants` | List all tenants |
 | `POST` | `/api/tenants` | Create tenant. Body: `{"slug": "...", "parent_id": "...", "federation_posture": "..."}` |
 | `GET` | `/api/tenants/:id` | Get tenant with children |
-| `DELETE` | `/api/tenants/:id` | Delete tenant (fails if has children: 409) |
+| `DELETE` | `/api/tenants/:id` | Delete tenant (fails with 409 if the tenant has children) |
 | `GET` | `/api/tenants/:id/routes` | Get routes with aggregated child routes |
-| `GET` | `/api/tenants/:id/nodes` | List tenant's nodes |
+| `GET` | `/api/tenants/:id/nodes` | List nodes of the tenant |
 | `GET` | `/api/tenants/:id/acl` | Get ACL policy |
 | `POST` | `/api/tenants/:id/acl` | Set ACL policy |
 | `PUT` | `/api/tenants/:id/posture` | Set federation posture. Body: `{"posture": "closed|selective|open"}` |
@@ -178,7 +178,7 @@ Authentication: `Authorization: Bearer <COORD_ADMIN_KEY>` on all `/api/*` endpoi
 
 ### Federation messages
 
-All federation endpoints require a `CFP-Recipient` header with the target collective's DID.
+All federation endpoints need a `CFP-Recipient` header. The header contains the DID of the target collective.
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -203,7 +203,7 @@ All endpoints return JSON errors:
 |--------|---------|
 | 400 | Bad request (validation failure, invalid UUID, bad posture value) |
 | 401 | Missing or invalid authentication |
-| 403 | Node doesn't belong to specified tenant |
+| 403 | Node does not belong to the specified tenant |
 | 404 | Resource not found |
 | 405 | Method not allowed |
 | 409 | Conflict (duplicate slug, tenant has children) |

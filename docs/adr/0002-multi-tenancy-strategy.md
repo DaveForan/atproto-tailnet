@@ -5,53 +5,60 @@
 
 ## Context
 
-Headscale is fundamentally single-tenant: one instance = one tailnet. The maintainers have explicitly rejected multi-tenancy as out of scope (issue #2711). We need multiple isolated tailnets for our service.
+Headscale is single-tenant by design: one instance runs one tailnet. The maintainers rejected multi-tenancy as out of scope (issue #2711). Our service needs multiple isolated tailnets.
 
 ### Options considered
 
 | Option | Effort | Isolation | Maintenance burden |
 |--------|--------|-----------|-------------------|
-| **A: Fork Headscale, add tenant_id** | 4-8 weeks MVP, 5-7K LOC changes across ~70 files | Full (if done right) | High — must rebase against every upstream release. Headscale evolves fast (v0.29.1, active development). |
-| **B: ACL-based isolation within single instance** | 1 week | Partial — blocks data-plane traffic but DNS, DERP, IP pool, and node enumeration all leak across tenants. | Low — no fork. |
-| **C: One Headscale instance per tenant (orchestrator)** | 2-3 weeks for orchestrator | Perfect — separate processes, DBs, configs, DNS domains. | Low — use upstream unmodified. Ops cost scales linearly with tenants. |
+| **A: Fork Headscale, add tenant_id** | 4-8 weeks MVP, 5-7K LOC changes across ~70 files | Full (if done right) | High. We must rebase on every upstream release. Headscale changes fast (v0.29.1, active development). |
+| **B: ACL-based isolation within single instance** | 1 week | Partial. ACLs block data-plane traffic, but DNS, DERP, IP pool, and node enumeration leak across tenants. | Low. No fork. |
+| **C: One Headscale instance per tenant (orchestrator)** | 2-3 weeks for orchestrator | Perfect. Each tenant has separate processes, DBs, configs, and DNS domains. | Low. We use upstream unmodified. Operations cost grows linearly with the number of tenants. |
 
 ### Fork feasibility assessment (Option A)
 
-We conducted a deep analysis of the Headscale codebase (see `research_notes/`):
+We analyzed the Headscale codebase in depth (see `research_notes/`):
 
-- **Cylonix fork** proves it's possible: ~4K lines across 73 files, 79 commits. Added Namespace + NetworkDomain dimensions with 4-tier auth.
-- **Subsystem difficulty**: Database (Medium), API v2 (Easy-Medium, `{tailnet}` param already in URLs), Policy (Medium, already parameterized on user/node lists), DNS (Easy, follows from netmap isolation), DERP (Easy, shared is fine), State singleton (Hard, 115 methods assume global state), Tests (Hard, 122K LOC assume single tenant).
-- **Risk**: Cylonix fork was against an older Headscale. Current codebase has evolved significantly (NodeStore copy-on-write, change.Change system, credentials unification, v2 API). Fork maintenance is the real cost, not the initial implementation.
+- **Cylonix fork** proves the fork is possible. It has ~4K lines across 73 files and 79 commits. It adds Namespace and NetworkDomain dimensions with 4-tier auth.
+- **Subsystem difficulty**:
+  - Database: Medium.
+  - API v2: Easy-Medium. The URLs already have a `{tailnet}` parameter.
+  - Policy: Medium. It already takes user and node lists as parameters.
+  - DNS: Easy. It follows from netmap isolation.
+  - DERP: Easy. A shared relay is acceptable.
+  - State singleton: Hard. 115 methods assume global state.
+  - Tests: Hard. 122K LOC assume a single tenant.
+- **Risk**: The Cylonix fork targets an older Headscale. The current codebase changed much (NodeStore copy-on-write, change.Change system, credentials unification, v2 API). The real cost is fork maintenance, not the first implementation.
 
 ### Why we chose Option C
 
-1. **Zero fork maintenance** — use upstream Headscale as-is, track releases trivially.
-2. **Perfect isolation by default** — no chance of cross-tenant data leaks; each tenant gets its own process, database, and DNS domain.
-3. **Our differentiator is the identity layer** (AT Proto), not the control plane internals. Engineering time is better spent there.
-4. **Escape hatch exists** — if we hit a scaling wall (hundreds of tenants where per-tenant containers are expensive), we can fork then, informed by real usage patterns rather than speculation.
-5. **Operational cost is manageable** — Headscale is lightweight (single Go binary, SQLite). A single host can run dozens of instances. We can scale to containers/K8s later.
+1. **Zero fork maintenance.** We use upstream Headscale as is. We track releases with little effort.
+2. **Perfect isolation by default.** Cross-tenant data leaks are not possible. Each tenant has its own process, database, and DNS domain.
+3. **The identity layer (AT Proto) is our differentiator.** The control plane internals are not. We spend engineering time on the identity layer.
+4. **An escape hatch exists.** If we reach a scaling limit (hundreds of tenants, where per-tenant containers cost too much), we can fork then. Real usage patterns will guide us, not speculation.
+5. **The operational cost is manageable.** Headscale is lightweight (single Go binary, SQLite). One host can run dozens of instances. We can move to containers or K8s later.
 
 ## Decision
 
-Run **one Headscale instance per tenant**, managed by an orchestration service. Each instance gets:
+We run **one Headscale instance for each tenant**. An orchestration service manages the instances. Each instance has:
 
 - Its own SQLite database
 - Its own DNS subdomain (`<tenant-slug>.atproto-tailnet.example.com`)
-- Its own config file (generated from template)
-- Its own listening port (reverse-proxied via Caddy/Nginx)
-- Shared DERP relay infrastructure (WireGuard encryption provides data isolation)
+- Its own config file (generated from a template)
+- Its own listening port (reverse-proxied through Caddy/Nginx)
+- Access to the shared DERP relay infrastructure (WireGuard encryption isolates the data)
 
-The orchestrator provisions, starts, stops, and destroys Headscale instances in response to tenant lifecycle events.
+The orchestrator provisions, starts, stops, and destroys Headscale instances. It acts on tenant lifecycle events.
 
 ## Consequences
 
-- Memory/port usage scales linearly per tenant. Headscale is ~30MB RSS per instance, so 100 tenants ≈ 3GB — manageable on a single host.
-- Need a reverse proxy that routes by subdomain to the correct instance port.
-- Need a process supervisor (systemd, Docker, or in-process) for instance lifecycle.
-- SQLite per tenant means no shared DB connection pooling, but also no multi-tenant query bugs.
-- Upgrades are simple: update the Headscale binary, restart all instances.
+- Memory and port use grow linearly for each tenant. Headscale uses ~30MB RSS for each instance, so 100 tenants use ~3GB. A single host can handle this.
+- We need a reverse proxy. It routes each subdomain to the correct instance port.
+- We need a process supervisor (systemd, Docker, or in-process) for the instance lifecycle.
+- SQLite for each tenant means no shared DB connection pooling. It also means no multi-tenant query bugs.
+- Upgrades are simple. Update the Headscale binary, then restart all instances.
 
 ## Future considerations
 
-- If we reach 500+ tenants on a single host, evaluate the fork approach or move to K8s with resource limits per pod.
-- Consider instance hibernation (stop idle instances, restart on first connection) to reduce resource usage for inactive tenants.
+- If we reach 500+ tenants on a single host, evaluate the fork approach or move to K8s with resource limits for each pod.
+- Consider instance hibernation. The system stops idle instances and restarts them on the first connection. This reduces resource use for inactive tenants.

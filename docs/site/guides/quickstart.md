@@ -4,14 +4,14 @@ title: Quickstart
 
 # Quickstart
 
-Get a local atproto-tailnet instance running on your machine. This guide uses **coordinator mode** (recommended) with Docker Compose for PostgreSQL and Caddy, and the TypeScript service running on the host.
+Start a local atproto-tailnet instance on your machine. This guide uses **coordinator mode** (recommended). Docker Compose runs PostgreSQL and Caddy, and the TypeScript service runs on the host.
 
 ## Prerequisites
 
 - **Node.js 22+** and npm
 - **Docker** and Docker Compose
 - **Rust 1.85+** and Cargo (for the coordinator)
-- A **Bluesky account** (or any AT Protocol identity) for testing login
+- A **Bluesky account** (or any AT Protocol identity) to test the login
 
 ## Steps
 
@@ -26,7 +26,7 @@ cd atproto-tailnet
 cp .env.example .env
 ```
 
-Edit `.env` and set at minimum:
+Edit `.env` and set at least these variables:
 
 ```ini
 DATABASE_URL=postgresql://atproto_tailnet:atproto_tailnet@localhost:5432/atproto_tailnet
@@ -37,7 +37,7 @@ COORDINATOR_URL=http://127.0.0.1:9443
 COORDINATOR_API_KEY=dev-coordinator-key
 ```
 
-> `PUBLIC_URL` must use `127.0.0.1`, not `localhost` --- the AT Protocol OAuth spec requires an IP or a public domain.
+> `PUBLIC_URL` must use `127.0.0.1`, not `localhost`. The AT Protocol OAuth specification requires an IP address or a public domain.
 
 </li>
 <li>
@@ -48,7 +48,7 @@ COORDINATOR_API_KEY=dev-coordinator-key
 docker compose -f docker-compose.coordinator.dev.yml up -d
 ```
 
-This starts PostgreSQL on port 5432, the Rust coordinator on port 9443, and Caddy on port 8180. Verify:
+This command starts PostgreSQL on port 5432, the Rust coordinator on port 9443, and Caddy on port 8180. To verify, run:
 
 ```bash
 curl http://127.0.0.1:9443/health
@@ -67,7 +67,7 @@ npx drizzle-kit generate
 npx drizzle-kit migrate
 ```
 
-> If `NODE_ENV=production` is set globally on your system, the `--include=dev` flag is required for npm to install dev dependencies.
+> If you set `NODE_ENV=production` globally on your system, you must use the `--include=dev` flag. Without the flag, npm does not install dev dependencies.
 
 </li>
 <li>
@@ -78,7 +78,7 @@ npx drizzle-kit migrate
 npm run dev
 ```
 
-The service starts on `http://127.0.0.1:3000`. You should see:
+The service starts on `http://127.0.0.1:3000`. The output shows this line:
 
 ```
 {"level":30,"msg":"Server listening on port 3000"}
@@ -89,30 +89,30 @@ The service starts on `http://127.0.0.1:3000`. You should see:
 
 **Sign in**
 
-Open `http://127.0.0.1:3000` in your browser. Enter your AT Protocol handle (e.g., `you.bsky.social`) and click **Sign In**. You'll be redirected to your PDS for OAuth authorization, then back to your new dashboard.
+Open `http://127.0.0.1:3000` in your browser. Enter your AT Protocol handle (for example, `you.bsky.social`) and click **Sign In**. The browser redirects you to your PDS for OAuth authorization. Then it returns you to your new dashboard.
 
-On first login, a tenant (your private mesh network) is provisioned automatically. The dashboard shows its status cycling from "provisioning" to "running."
+On first login, the platform provisions a tenant (your private mesh network) automatically. The dashboard shows the status change from "provisioning" to "running."
 
 </li>
 <li>
 
 **Connect a device**
 
-From the **Devices** tab in the dashboard, click **Generate Auth Key** to get a pre-authentication key. Then on the device you want to connect:
+In the **Devices** tab of the dashboard, click **Generate Auth Key** to receive a pre-authentication key. Then run this command on the device that you want to connect:
 
 ```bash
 tailscale up --login-server=http://<your-tenant-slug>.ts.localhost:8180 \
              --authkey=tskey-auth-XXXXX
 ```
 
-The device appears in your Devices tab once connected.
+When the device connects, it appears in your Devices tab.
 
 </li>
 </ol>
 
-## What's running
+## What runs after setup
 
-After these steps you have:
+After these steps, these components run:
 
 | Component | Address | Purpose |
 |-----------|---------|---------|

@@ -4,7 +4,7 @@ title: Coordinator Mode
 
 # Coordinator Mode
 
-The Rust mesh coordinator is a purpose-built, multi-tenant WireGuard control plane that replaces per-tenant Headscale Docker containers with a single binary. It handles the Tailscale client protocol natively, so standard Tailscale clients connect directly.
+The Rust mesh coordinator is a purpose-built, multi-tenant WireGuard control plane. It replaces the Headscale Docker containers of each tenant with one binary. It handles the Tailscale client protocol natively, so standard Tailscale clients connect directly.
 
 ## Architecture
 
@@ -25,7 +25,7 @@ Tailscale clients ──► Caddy (TLS termination)
                                 └──► PostgreSQL
 ```
 
-The coordinator uses the `Noise_IK_25519_ChaChaPoly_BLAKE2s` handshake protocol, the same Noise variant Tailscale uses. Clients connect to `POST /ts2021` to upgrade to a Noise-encrypted HTTP/2 session, then register via `POST /machine/register` and subscribe to peer updates via `POST /machine/map`.
+The coordinator uses the `Noise_IK_25519_ChaChaPoly_BLAKE2s` handshake protocol. This is the same Noise variant that Tailscale uses. Clients connect to `POST /ts2021` to upgrade to a Noise-encrypted HTTP/2 session. Then they register with `POST /machine/register` and subscribe to peer updates with `POST /machine/map`.
 
 ## Local development
 
@@ -38,21 +38,21 @@ The coordinator uses the `Noise_IK_25519_ChaChaPoly_BLAKE2s` handshake protocol,
 docker compose -f docker-compose.coordinator.dev.yml up -d
 ```
 
-This starts the coordinator, PostgreSQL, and Caddy. The coordinator is built from the `coordinator/Dockerfile` and runs with `COORD_ADMIN_KEY=dev-coordinator-key`.
+This command starts the coordinator, PostgreSQL, and Caddy. Docker builds the coordinator from `coordinator/Dockerfile`. The coordinator starts with `COORD_ADMIN_KEY=dev-coordinator-key`.
 
 </li>
 <li>
 
 **Configure the service**
 
-Add to your `.env`:
+Add these lines to your `.env`:
 
 ```ini
 COORDINATOR_URL=http://localhost:9443
 COORDINATOR_API_KEY=dev-coordinator-key
 ```
 
-When `COORDINATOR_URL` is set, the service uses the `CoordinatorApiClient` instead of `HeadscaleApiClient`. Tenant provisioning creates tenants via the coordinator REST API instead of launching Docker containers.
+When you set `COORDINATOR_URL`, the service uses the `CoordinatorApiClient` and not the `HeadscaleApiClient`. Tenant provisioning creates tenants through the coordinator REST API. It does not launch Docker containers.
 
 </li>
 <li>
@@ -103,7 +103,7 @@ APP_DOMAIN=yourdomain.com
 TLS_STRATEGY=on-demand
 ```
 
-Generate keys:
+Generate the keys:
 
 ```bash
 # Admin/API key
@@ -116,9 +116,9 @@ openssl rand -hex 32
 </li>
 <li>
 
-**Choose TLS strategy**
+**Choose a TLS strategy**
 
-The `TLS_STRATEGY` env var selects how Caddy obtains certificates. The default `on-demand` needs no DNS credentials — Caddy issues per-tenant certs automatically. For DNS-01 wildcard strategies, set the strategy name and its required env vars (see `caddy/tls-strategies/` for per-strategy docs), plus build Caddy with the DNS module:
+The `TLS_STRATEGY` env var selects how Caddy obtains certificates. The default `on-demand` strategy does not need DNS credentials. Caddy issues a certificate for each tenant automatically. For DNS-01 wildcard strategies, set the strategy name and its required env vars. The `caddy/tls-strategies/` directory has the documentation for each strategy. You must also build Caddy with the DNS module:
 
 ```ini
 TLS_STRATEGY=route53
@@ -135,7 +135,7 @@ AWS_REGION=us-east-1
 docker compose -f docker-compose.coordinator.yml up -d
 ```
 
-This launches:
+This command starts these services:
 - **coordinator** --- Rust binary on port 9443 (internal)
 - **app** --- TypeScript service on port 3000 (internal)
 - **postgres** --- PostgreSQL 17 with health checks
@@ -161,7 +161,7 @@ curl https://yourdomain.com/key
 
 ## Coordinator configuration
 
-The coordinator reads configuration from a TOML file (passed as the first CLI argument) and environment variables. Environment variables take precedence.
+The coordinator reads its configuration from a TOML file and from environment variables. You pass the TOML file as the first CLI argument. Environment variables have priority.
 
 | Setting | TOML key | Env var | Default |
 |---------|----------|---------|---------|
@@ -175,17 +175,17 @@ The coordinator reads configuration from a TOML file (passed as the first CLI ar
 
 ### Storage backends
 
-The coordinator requires an explicit `store_backend` setting (TOML key or `COORD_STORE_BACKEND` env var):
+You must set `store_backend` explicitly (TOML key or `COORD_STORE_BACKEND` env var):
 
-- **SQLite** (`sqlite`): Zero-dependency, single-file database. Recommended for standalone deployments and self-hosting. Configurable path via `sqlite_path` or `COORD_SQLITE_PATH` (default: `coordinator.db`). Uses WAL mode for concurrent reads.
-- **PostgreSQL** (`postgres`): Full PostgreSQL via `database_url` or `DATABASE_URL`. Required when running alongside the TypeScript service (shared database). Runs migrations on startup.
-- **Memory** (`memory`): All state in-process, lost on restart. For development and testing only.
+- **SQLite** (`sqlite`): A single-file database with no dependencies. Use it for standalone deployments and self-hosting. Set the path with `sqlite_path` or `COORD_SQLITE_PATH` (default: `coordinator.db`). It uses WAL mode for concurrent reads.
+- **PostgreSQL** (`postgres`): Full PostgreSQL. Set the connection with `database_url` or `DATABASE_URL`. You must use it when the coordinator runs together with the TypeScript service (shared database). It runs migrations at startup.
+- **Memory** (`memory`): The coordinator keeps all state in the process. The state is lost at restart. Use it only for development and testing.
 
-All three backends support both the core node/tenant store and the federation store (links, broker sessions, collective DIDs).
+All three backends support the core node/tenant store and the federation store (links, broker sessions, collective DIDs).
 
 ### DERP map
 
-DERP (Designated Encrypted Relay for Packets) relays provide fallback connectivity when direct peer-to-peer connections fail. By default, the coordinator uses Tailscale's public DERP infrastructure (region 1, `derp1.tailscale.com`).
+DERP (Designated Encrypted Relay for Packets) relays give fallback connectivity when direct peer-to-peer connections fail. By default, the coordinator uses the public DERP infrastructure of Tailscale (region 1, `derp1.tailscale.com`).
 
 To use self-hosted DERP relays, create a JSON file:
 
@@ -208,21 +208,21 @@ To use self-hosted DERP relays, create a JSON file:
 }
 ```
 
-Point to it with `derp_map_file` in the TOML or `COORD_DERP_MAP` env var.
+Set `derp_map_file` in the TOML or the `COORD_DERP_MAP` env var to the path of this file.
 
 ## Disconnect detection
 
-The coordinator uses HTTP/2 PING frames to detect dead client sessions:
+The coordinator sends HTTP/2 PING frames to detect dead client sessions:
 
 - **Keep-alive interval**: 30 seconds
 - **Keep-alive timeout**: 90 seconds
 
-If a client's H2 connection drops (process killed, network down), the coordinator marks the node offline within ~90 seconds and notifies all peers via the streaming map update channel.
+If the H2 connection of a client drops (process killed, network down), the coordinator marks the node offline within ~90 seconds. Then it tells all peers through the streaming map update channel.
 
-A graceful `tailscale down` keeps the Noise session alive but stops responding to H2 PINGs, so the timeout mechanism handles both crash and graceful shutdown cases.
+A graceful `tailscale down` keeps the Noise session open but the client stops its response to H2 PINGs. The timeout mechanism handles both crashes and graceful shutdowns.
 
 ## Admin API
 
-When `COORD_ADMIN_KEY` is set, all `/api/*` endpoints require `Authorization: Bearer <key>`. The health (`/health`) and key (`/key`) endpoints are always public.
+When you set `COORD_ADMIN_KEY`, all `/api/*` endpoints need the header `Authorization: Bearer <key>`. The health (`/health`) and key (`/key`) endpoints are always public.
 
-See the [API reference](../reference/api) for the full endpoint listing.
+For the full endpoint list, see the [API reference](../reference/api).

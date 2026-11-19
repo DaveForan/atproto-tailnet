@@ -5,63 +5,63 @@
 
 ## Context
 
-Tenants need network customization beyond Headscale's defaults. Three areas
-drive this:
+Tenants need network customization beyond the Headscale defaults. Three
+areas drive this need:
 
-1. **Custom relay regions** — some tenants need DERP relays in specific
+1. **Custom relay regions**: some tenants need DERP relays in specific
    geographic regions for latency or data-residency compliance. Headscale
-   supports loading DERP maps from YAML path files, but there is no
-   per-tenant abstraction in the service layer.
+   can load DERP maps from YAML path files. The service layer has no
+   abstraction for each tenant.
 
-2. **IP range isolation** — by default all tenants share Headscale's
-   built-in 100.64.0.0/10 and fd7a:115c:a1e0::/48 prefixes. Tenants with
-   overlapping use-cases (e.g., multiple staging environments) or compliance
-   constraints need distinct CIDR prefixes so their address spaces never
-   collide.
+2. **IP range isolation**: by default, all tenants share the built-in
+   Headscale prefixes 100.64.0.0/10 and fd7a:115c:a1e0::/48. Some tenants
+   have overlapping use-cases (for example, multiple staging environments)
+   or compliance constraints. These tenants need distinct CIDR prefixes
+   so their address spaces never collide.
 
-3. **Allocation strategy** — sequential allocation is predictable and easy
-   to audit; random allocation reduces information leakage about network
-   size. Different tenants have different preferences.
+3. **Allocation strategy**: sequential allocation is predictable and easy
+   to audit. Random allocation reveals less information about the network
+   size. Different tenants prefer different strategies.
 
 ## Decision
 
 ### Custom DERP regions
 
-Per-tenant DERP region definitions are stored in the tenant row (JSONB
-`derpRegions` column). Region IDs are constrained to 900-999 to avoid
-collision with Tailscale's public relay IDs.
+The tenant row stores the DERP region definitions for each tenant (JSONB
+`derpRegions` column). Region IDs are limited to 900-999. This prevents
+collision with the public relay IDs of Tailscale.
 
 On write, `writeDerpRegionsFile()` in `orchestrator/headscale.ts` generates
-a YAML paths file at `<data-dir>/<tenant-slug>/derp-custom.yaml` and
-references it in the tenant's Headscale `config.yaml`. Headscale hot-reloads
-DERP path files every 5 minutes — no container restart required.
+a YAML paths file at `<data-dir>/<tenant-slug>/derp-custom.yaml`. It then
+references the file in the Headscale `config.yaml` of the tenant. Headscale
+hot-reloads DERP path files every 5 minutes. The container does not need a restart.
 
-Two additional toggles are stored on the tenant:
+The tenant stores two more toggles:
 
-- **`embeddedDerpEnabled`** — runs the DERP relay inside the Headscale
-  container itself. Changing this value requires a container restart
-  (applied via `updateInstanceConfig()` + restart).
-- **`publicDerpEnabled`** — controls whether the tenant's Headscale
-  instance uses Tailscale's public DERP relays as a fallback.
+- **`embeddedDerpEnabled`**: runs the DERP relay inside the Headscale
+  container. A change to this value needs a container restart
+  (the system applies it with `updateInstanceConfig()` and a restart).
+- **`publicDerpEnabled`**: controls if the Headscale instance of the
+  tenant uses the public DERP relays of Tailscale as a fallback.
 
-All DERP configuration is gated by the `manage_acl` permission. Changes are
-audit-logged.
+The `manage_acl` permission controls all DERP configuration. The system
+writes each change to the audit log.
 
 ### Per-tenant IP ranges
 
-The tenant row stores four additional columns:
+The tenant row stores three more columns:
 
-- `ipv4Prefix` — CIDR prefix for IPv4 allocation (default: 100.64.0.0/10)
-- `ipv6Prefix` — CIDR prefix for IPv6 allocation (default: fd7a:115c:a1e0::/48)
-- `allocationStrategy` — enum: `sequential` (default) or `random`
+- `ipv4Prefix`: CIDR prefix for IPv4 allocation (default: 100.64.0.0/10)
+- `ipv6Prefix`: CIDR prefix for IPv6 allocation (default: fd7a:115c:a1e0::/48)
+- `allocationStrategy`: enum: `sequential` (default) or `random`
 
-On write, `updateInstanceConfig()` rewrites the tenant's Headscale
-`config.yaml` with the new prefixes and strategy. Because Headscale reads
-IP configuration only at startup, the container is restarted after any
-change.
+On write, `updateInstanceConfig()` rewrites the Headscale `config.yaml` of
+the tenant with the new prefixes and strategy. Headscale reads the IP
+configuration only at startup. Because of this, the system restarts the container
+after each change.
 
-IP range configuration is gated by the `manage_settings` permission.
-Changes are audit-logged.
+The `manage_settings` permission controls IP range configuration.
+The system writes each change to the audit log.
 
 ### API surface
 
@@ -72,15 +72,15 @@ Changes are audit-logged.
 
 ## Consequences
 
-- DERP region changes are **eventually consistent** — up to 5 minutes for
-  Headscale to reload the paths file. The API returns success immediately
+- DERP region changes are **eventually consistent**. Headscale needs up to
+  5 minutes to reload the paths file. The API returns success immediately,
   but the effect is delayed.
-- Embedded DERP toggle changes require a **container restart**, causing a
-  brief connectivity interruption for all devices in the tenant's tailnet.
-- IP prefix/strategy changes are **destructive** — they require a container
-  restart and all existing devices must re-register to receive addresses from
-  the new range. The API warns about this in its response.
-- Region IDs 900-999 cap custom regions at 100 per tenant, which is
-  sufficient for foreseeable use-cases.
-- DERP YAML files are written to the tenant's data directory, tying
-  configuration to the filesystem layout established in ADR-0002.
+- A change to the embedded DERP toggle needs a **container restart**. All
+  devices in the tailnet of the tenant lose connectivity for a short time.
+- IP prefix and strategy changes are **destructive**. They need a container
+  restart. All existing devices must register again to receive addresses from
+  the new range. The API response includes a warning about this.
+- Region IDs 900-999 limit the custom regions to 100 for each tenant. This
+  limit is enough for the use-cases we foresee.
+- The system writes DERP YAML files to the data directory of the tenant.
+  This ties the configuration to the filesystem layout from ADR-0002.

@@ -7,98 +7,107 @@
 
 ## Context
 
-Federation between tailnets today is management-layer only. ADR-0007
-introduced a `federation_links` table that records bidirectional trust
-relationships — each side declares which CIDR ranges it shares — but the
-table stores intent, not connectivity. Actual cross-network traffic requires
-a device straddling both Headscale instances (dual-homed node), which is
-fragile, operationally opaque, and impossible to policy-gate.
+Federation between tailnets works only at the management layer today.
+ADR-0007 introduced a `federation_links` table. The table records
+bidirectional trust relationships, and each side declares the CIDR ranges
+that it shares. But the table stores intent, not connectivity. Actual
+cross-network traffic needs a device that connects to both Headscale
+instances (a dual-homed node). This design is fragile and operationally
+opaque. It also cannot be gated by policy.
 
-The project's vision is an "internet of internets" — hierarchical, federated
-private networks where people traverse collective boundaries carrying
-portable AT Protocol identity. ADR-0009 introduces hierarchical tenancy
-(parent/child collectives). This ADR addresses the next layer: a purpose-
-built control plane that coordinates federation at the WireGuard/protocol
-level, eliminating the dual-homed device hack.
+The vision of the project is an "internet of internets". These are
+hierarchical, federated private networks. People cross collective
+boundaries and carry a portable AT Protocol identity. ADR-0009 introduces
+hierarchical tenancy (parent/child collectives). This ADR addresses the next
+layer: a purpose-built control plane that coordinates federation at the
+WireGuard and protocol level. It removes the dual-homed device workaround.
 
 ### Requirements
 
-1. Collectives discover and authenticate each other without out-of-band
-   coordination beyond the initial federation request.
-2. Route advertisements flow across federation boundaries, subject to
-   traversal policy (ADR-0011) at every hop.
-3. WireGuard peers in separate Headscale instances communicate via
-   broker-managed relay nodes registered in both instances, without
-   end-user devices registering in the remote instance.
-4. Routes cascade through hierarchy (child -> parent -> federated peer) with
-   policy filters at each boundary.
+1. Collectives discover and authenticate each other. After the first
+   federation request, no out-of-band coordination is necessary.
+2. Route advertisements cross federation boundaries. Traversal policy
+   (ADR-0011) applies at every hop.
+3. WireGuard peers in separate Headscale instances communicate through
+   relay nodes that the broker manages. The relay nodes register in both
+   instances. End-user devices do not register in the remote instance.
+4. Routes cascade through the hierarchy (child -> parent -> federated peer).
+   Policy filters apply at each boundary.
 5. DNS resolution works across federation boundaries for published services.
 
 ## Decision
 
-Build a **Federation Control Plane (FCP)** as a distinct service layer above
-individual Headscale instances. The FCP has six components.
+We build a **Federation Control Plane (FCP)** as a separate service layer
+above the individual Headscale instances. The FCP has six components.
 
 ### 1. Federation Broker
 
-A long-running process at each collective's boundary — sidecar to the
-Headscale container, or standalone for multi-instance collectives. It
-advertises exportable route prefixes to peers (filtered by traversal
-policy), negotiates the protocol-level handshake when a management-layer
-link transitions to `active`, sends keepalives and route withdrawals, and
-for parent collectives, aggregates child routes for re-advertisement.
+A long-running process at the boundary of each collective. It runs as a
+sidecar to the Headscale container, or as a standalone process for
+multi-instance collectives. The broker does these tasks:
 
-The broker exposes a gRPC API for the orchestrator and an internal pub/sub
-channel (NATS or Redis Streams) for broker-to-broker coordination.
+- It advertises exportable route prefixes to peers (filtered by traversal
+  policy).
+- It negotiates the protocol-level handshake when a management-layer link
+  changes to `active`.
+- It sends keepalives and route withdrawals.
+- For parent collectives, it aggregates child routes for re-advertisement.
+
+The broker exposes a gRPC API for the orchestrator. It also exposes an
+internal pub/sub channel (NATS or Redis Streams) for broker-to-broker
+coordination.
 
 ### 2. Peer Discovery Protocol
 
-Collectives discover and authenticate each other using AT Protocol DIDs as
-trust anchors.
+Collectives discover and authenticate each other. They use AT Protocol DIDs
+as trust anchors.
 
-- Each collective has a **collective DID** using `did:web` (resolving to
-  the platform instance's domain), registered at provisioning time. AT Proto
-  does not support organizational accounts, so `did:plc` (which requires
-  Bluesky PDS infrastructure) is not used for collectives. The DID document
-  advertises the broker endpoint in a `#federationBroker` service entry.
-  PDS-based features (federation offers, relay discovery) are future/optional
-  and not required for core federation.
-- **Key custody**: the collective DID private key is held by the platform
-  service (the atproto-tailnet instance), not by any individual user. Key
-  material is stored encrypted in the database and decrypted at runtime.
-  The originator can trigger key rotation. On originator change, the new
-  originator inherits key management (the platform holds the key, not the
-  person). For self-hosted instances, the instance operator holds the key.
-- Federation requests (modeled in `federation_links`) are signed with the
-  collective's keypair. The target verifies the signature against the DID
-  document before accepting.
-- Active links: both brokers periodically re-resolve each other's DID
-  documents to detect endpoint changes or key rotation.
+- Each collective has a **collective DID** that uses `did:web` (it resolves
+  to the domain of the platform instance). The system registers it at
+  provisioning time. AT Proto does not support organizational accounts.
+  The `did:plc` method needs Bluesky PDS infrastructure, so we do not use
+  it for collectives. The DID document advertises the broker endpoint in a
+  `#federationBroker` service entry. PDS-based features (federation offers,
+  relay discovery) are future and optional. Core federation does not need
+  them.
+- **Key custody**: the platform service (the atproto-tailnet instance)
+  holds the private key of the collective DID. No individual user holds it.
+  The system stores the key material encrypted in the database and decrypts
+  it at runtime. The originator can start a key rotation. When the
+  originator changes, the new originator inherits key management (the
+  platform holds the key, not the person). For self-hosted instances, the
+  instance operator holds the key.
+- The collective signs federation requests (modeled in `federation_links`)
+  with its keypair. The target verifies the signature against the DID
+  document before it accepts the request.
+- Active links: both brokers periodically resolve the DID documents of
+  each other again. This detects endpoint changes and key rotation.
 - New peer discovery: collectives publish `app.tailnet.federation.offer`
-  lexicon records to their PDS, discoverable via AT Protocol relay
-  subscription. (Requires future PDS integration; not needed for initial
-  federation.)
+  lexicon records to their PDS. Other collectives discover them through
+  AT Protocol relay subscription. (This needs a future PDS integration.
+  Initial federation does not need it.)
 
-This reuses AT Proto infrastructure rather than building custom PKI. DID-
-based trust means federation offers are verifiable by any third party.
+This design reuses AT Proto infrastructure. We do not build a custom PKI.
+DID-based trust lets any third party verify federation offers.
 
 ### 3. Route Propagation
 
-Routes propagate bidirectionally with policy enforcement at every boundary.
+Routes propagate in both directions. Policy enforcement applies at every
+boundary.
 
 - **Export policy**: extends `requestorCidrs`/`targetCidrs` in
   `federation_links` with a richer model (prefix lists, community tags,
-  time-of-day constraints — defined in ADR-0011).
+  time-of-day constraints, defined in ADR-0011).
 - **Import filtering**: the receiving broker applies its own import policy
-  before installing remote routes into the local Headscale route table.
-- **Hierarchical cascade**: child -> parent -> federated peer, mirroring
-  BGP's customer -> provider -> peer model. The parent aggregates child
-  routes and applies its own export policy before re-advertising.
+  before it installs remote routes in the local Headscale route table.
+- **Hierarchical cascade**: child -> parent -> federated peer. This mirrors
+  the BGP customer -> provider -> peer model. The parent aggregates child
+  routes and applies its own export policy before it advertises them again.
 - **Loop prevention**: each route carries an `as-path`-style collective
-  chain. Brokers reject routes whose chain already contains their own DID.
-- **Convergence**: broker-to-broker gRPC streams carry full table sync on
-  session establishment, incremental updates thereafter. Target: < 30s for
-  a single federation hop.
+  chain. Brokers reject routes when the chain already contains their own DID.
+- **Convergence**: broker-to-broker gRPC streams carry a full table sync
+  when the session starts. After that, they carry incremental updates.
+  Target: < 30s for a single federation hop.
 
 ### 4. Key Exchange Bridge
 
@@ -110,80 +119,85 @@ WireGuard peers in different Headscale instances need encrypted tunnels.
 | **Direct peer-to-peer** | Lowest | High | Difficult |
 | **Hybrid** | Adaptive | Medium | Graceful degradation |
 
-**Decision: hybrid.** DERP relay bridging as the default; direct peer-to-
-peer when both endpoints are reachable.
+**Decision: hybrid.** DERP relay bridging is the default. Direct
+peer-to-peer is the choice when both endpoints are reachable.
 
-- **Relay nodes**: federation uses dedicated **relay nodes** — lightweight
-  WireGuard peers (containers or long-lived processes) that the federation
-  broker provisions and registers as devices in BOTH Headscale instances.
-  Each relay node holds valid registrations on each side and bridges
-  traffic between the two networks. This is how cross-network routing
-  works with Headscale today; there is no API to inject arbitrary
-  WireGuard peers without node registration. Traffic flow for relayed
-  connections: peer A -> A's DERP -> relay node -> B's DERP -> peer B.
-  The relay node is the bridge, not the DERP servers themselves (DERP
-  servers in separate Headscale instances have no inter-DERP bridging
-  mechanism). The broker manages relay node lifecycle: provisioning,
-  registration, health monitoring, and teardown on link revocation.
-- **Direct path upgrade**: after the relayed session is established, peers
-  attempt a direct WireGuard handshake via endpoints exchanged through the
-  broker (analogous to Tailscale's direct connection upgrade).
-- **Key exchange**: the broker acts as intermediary for WireGuard public key
-  exchange over the authenticated gRPC channel. Relay nodes register in
-  both Headscale instances as normal devices; the broker coordinates their
-  provisioning and key material distribution.
+- **Relay nodes**: federation uses dedicated **relay nodes**. These are
+  lightweight WireGuard peers (containers or long-lived processes). The
+  federation broker provisions them and registers them as devices in BOTH
+  Headscale instances. Each relay node has a valid registration on each
+  side and bridges traffic between the two networks. This is how
+  cross-network routing works with Headscale today. Headscale has no API to
+  inject arbitrary WireGuard peers without node registration. Traffic flow
+  for relayed connections: peer A -> A's DERP -> relay node -> B's DERP ->
+  peer B. The relay node is the bridge. The DERP servers are not the bridge,
+  because DERP servers in separate Headscale instances have no mechanism
+  for inter-DERP bridging. The broker manages the lifecycle of the relay
+  nodes: provisioning, registration, health monitoring, and teardown when
+  the link is revoked.
+- **Direct path upgrade**: after the relayed session starts, peers try a
+  direct WireGuard handshake. They use endpoints that they exchange through
+  the broker (similar to the direct connection upgrade in Tailscale).
+- **Key exchange**: the broker is the intermediary for the WireGuard public
+  key exchange. It uses the authenticated gRPC channel. Relay nodes
+  register in both Headscale instances as normal devices. The broker
+  coordinates their provisioning and the distribution of key material.
 
 ### 5. Federation Registry
 
 A distributed registry for collective identity, federation offers, and
-network metadata — built on AT Protocol rather than a custom DHT.
+network metadata. We build it on AT Protocol. We do not build a custom DHT.
 
-- **Collective profile**: lexicon record (`app.tailnet.collective.profile`)
-  on the collective's PDS. Contains DID, display name, federation posture
-  (open/selective/closed), and supported protocol version.
-- **Federation offers**: lexicon record published when a collective is open
-  to peering. Contains acceptable terms, geographic scope, hierarchy level.
+- **Collective profile**: a lexicon record (`app.tailnet.collective.profile`)
+  on the PDS of the collective. It contains the DID, the display name, the
+  federation posture (open/selective/closed), and the supported protocol
+  version.
+- **Federation offers**: a lexicon record that the collective publishes when
+  it is open to peering. It contains the acceptable terms, the geographic
+  scope, and the hierarchy level.
 - **Search**: the relay network indexes these records. The service provides
-  a search UI filtering by compatibility, geography, and policy.
+  a search UI. Users can filter by compatibility, geography, and policy.
 
 ### 6. Split-Horizon DNS
 
 Each collective has its own namespace (`*.collective-slug.tailnet`).
 Federated access resolves across boundaries through the FCP.
 
-- The broker runs a DNS forwarder that intercepts queries for federated
-  namespaces and proxies them to the appropriate remote broker.
-- Resolution is policy-gated: queries only resolve if the querying
-  collective has an active federation link and traversal policy permits it.
-- MagicDNS integration: the broker writes forwarding rules into Headscale's
-  DNS configuration on link activation and removes them on revocation.
+- The broker runs a DNS forwarder. The forwarder intercepts queries for
+  federated namespaces and proxies them to the correct remote broker.
+- Policy gates resolution. A query resolves only if the querying collective
+  has an active federation link and traversal policy permits it.
+- MagicDNS integration: the broker writes forwarding rules in the DNS
+  configuration of Headscale when the link activates. It removes them when
+  the link is revoked.
 
 ## Consequences
 
 - **New service**: `federation-broker` ships as a sidecar to each Headscale
   instance. Standalone deployment for multi-instance collectives is a later
   optimization.
-- **Protocol design prerequisite**: the broker-to-broker gRPC protocol,
-  route format, and key exchange flow need formal specification before
-  implementation (tracked as ADR-0014).
-- **Relay nodes become critical path**: cross-network traffic defaults to
-  relay nodes bridging both Headscale instances. Relay node health
-  monitoring, redundancy, and DERP availability on both sides are promoted
+- **Protocol design prerequisite**: the broker-to-broker gRPC protocol, the
+  route format, and the key exchange flow need a formal specification
+  before implementation (tracked as ADR-0014).
+- **Relay nodes become the critical path**: cross-network traffic uses
+  relay nodes that bridge both Headscale instances by default. Relay node
+  health monitoring, redundancy, and DERP availability on both sides change
   from optional to required.
-- **Trust model**: collective `did:web` DIDs are the root of trust, with
-  private keys held by the platform service (encrypted at rest, decrypted
-  at runtime). Signing key compromise allows impersonation — the originator
-  can trigger key rotation, and operator-level key rotation is available
-  for self-hosted instances.
-- **Latency**: cross-network hops add 10-50ms per relay node hop. Direct
-  peering upgrades mitigate this for long-lived flows.
+- **Trust model**: collective `did:web` DIDs are the root of trust. The
+  platform service holds the private keys (encrypted at rest, decrypted at
+  runtime). If an attacker compromises the signing key, the attacker can
+  impersonate the collective. The originator can start a key rotation. For
+  self-hosted instances, the operator can rotate the key.
+- **Latency**: each relay node hop adds 10-50ms to cross-network traffic.
+  Direct peering upgrades reduce this delay for long-lived flows.
 - **Schema migration**: `federation_links` gains columns for broker
-  endpoints, protocol version, and route table metadata. Existing fields
-  are preserved as the intent layer the FCP acts upon.
-- **Operational complexity**: federation debugging requires visibility into
-  broker sessions, route tables, and key exchange state. A federation
+  endpoints, protocol version, and route table metadata. The existing fields
+  stay as the intent layer that the FCP uses.
+- **Operational complexity**: to debug federation, engineers need visibility
+  into broker sessions, route tables, and key exchange state. A federation
   health dashboard and structured broker logs are implementation
   requirements.
-- **AT Proto dependency deepens**: registry and discovery assume a
-  functioning relay network. If unavailable, discovery degrades to manual
-  endpoint exchange (the current model). Runtime traffic is unaffected.
+- **Deeper AT Proto dependency**: the registry and discovery assume a
+  functioning relay network. If the relay network is unavailable, discovery
+  falls back to manual endpoint exchange (the current model). Runtime
+  traffic is not affected.

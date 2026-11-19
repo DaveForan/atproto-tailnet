@@ -1,6 +1,6 @@
 # ADR Index — atproto-tailnet
 
-Track ADRs like stories on a board. Each ADR moves through a lifecycle:
+Track ADRs like stories on a board. Each ADR moves through these lifecycle states:
 
 **Proposed** → **Accepted** → **In Progress** → **Implemented** → **Superseded** / **Deprecated**
 
@@ -60,16 +60,16 @@ Track ADRs like stories on a board. Each ADR moves through a lifecycle:
 
 ## Lifecycle rules
 
-- **Proposed**: Draft written, open for discussion
-- **Accepted**: Decision made, ready for implementation
-- **In Progress**: Active development underway
-- **Implemented**: Code shipped, feature complete
-- **Superseded**: Replaced by a newer ADR (link the replacement)
-- **Deprecated**: No longer relevant, no replacement needed
+- **Proposed**: The draft is complete. The team can discuss it.
+- **Accepted**: The team made the decision. The ADR is ready for implementation.
+- **In Progress**: Development is in progress.
+- **Implemented**: The code is in production and the feature is complete.
+- **Superseded**: A newer ADR replaces this ADR. Link to the new ADR.
+- **Deprecated**: The ADR is no longer relevant. No new ADR replaces it.
 
 ## Conventions
 
-- IDs are zero-padded 4-digit sequential numbers
-- Every ADR frontmatter must include: Status, Date, Priority, Depends On
-- When an ADR moves to Superseded, add `Superseded By: ADR-XXXX` to its frontmatter
-- Dependencies form a DAG — never circular
+- An ID is a sequential number with 4 digits and leading zeros.
+- The frontmatter of each ADR must include these fields: Status, Date, Priority, Depends On.
+- When an ADR moves to Superseded, add `Superseded By: ADR-XXXX` to its frontmatter.
+- Dependencies form a DAG. Do not create circular dependencies.

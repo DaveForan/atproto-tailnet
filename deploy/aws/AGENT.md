@@ -1,19 +1,19 @@
 # AWS Deployment — Agent Instructions
 
 Machine-readable deployment guide for atproto-tailnet on AWS.
-Coordinator mode with Route53 DNS-01 wildcard TLS.
+This guide uses coordinator mode with Route53 DNS-01 wildcard TLS.
 
 ## Overview
 
 - EC2 instance (t3.medium) + Route53 DNS, coordinator mode
-- TLS strategy: `route53` (DNS-01 wildcard certs via AWS API — instance role or access keys)
+- TLS strategy: `route53` (DNS-01 wildcard certs through the AWS API, with an instance role or access keys)
 - Compose file: `docker-compose.coordinator.yml` (Rust coordinator, no Docker socket needed)
-- Cost: ~$30-50/month (EC2 + containerized Postgres; add ~$15 for optional RDS)
+- Cost: ~$30-50/month (EC2 and Postgres in a container; add ~$15 for optional RDS)
 
 ## Prerequisites
 
 - AWS CLI configured (`aws configure`)
-- IAM user or role with permissions for: EC2, Route53, VPC (optionally RDS)
+- IAM user or role with permissions for EC2, Route53, and VPC (and RDS, if you use it)
 - A Route53 hosted zone for the domain (or create one)
 - An EC2 key pair in the target region
 - A VPC with at least one public subnet
@@ -22,12 +22,12 @@ Coordinator mode with Route53 DNS-01 wildcard TLS.
 
 | Variable | Source | Description |
 |----------|--------|-------------|
-| `AWS_REGION` | Your choice | AWS region (e.g. `us-east-1`) |
-| `AWS_ACCESS_KEY_ID` | IAM user or omit if using instance role | Route53 API access |
-| `AWS_SECRET_ACCESS_KEY` | IAM user or omit if using instance role | Route53 API secret |
-| `DOMAIN` | Your domain | e.g. `yourdomain.com` |
-| `APP_DOMAIN` | Derived | e.g. `tailnets.yourdomain.com` |
-| `BASE_DOMAIN` | Derived | e.g. `ts.yourdomain.com` |
+| `AWS_REGION` | Your choice | AWS region (for example `us-east-1`) |
+| `AWS_ACCESS_KEY_ID` | IAM user, or omit if you use an instance role | Route53 API access |
+| `AWS_SECRET_ACCESS_KEY` | IAM user, or omit if you use an instance role | Route53 API secret |
+| `DOMAIN` | Your domain | For example `yourdomain.com` |
+| `APP_DOMAIN` | Derived | For example `tailnets.yourdomain.com` |
+| `BASE_DOMAIN` | Derived | For example `ts.yourdomain.com` |
 | `KEY_PAIR_NAME` | EC2 console | Name of your EC2 key pair |
 | `VPC_ID` | VPC console | VPC with public subnet |
 | `SUBNET_ID` | VPC console | Public subnet ID |
@@ -46,7 +46,7 @@ FEDERATION_KEY_ENCRYPTION_KEY=$(openssl rand -hex 32)
 
 ## Deployment Steps
 
-### Path A: Minimal (EC2 + SQLite/Containerized Postgres, no RDS)
+### Path A: Minimal (EC2 + SQLite/Postgres in a container, no RDS)
 
 #### 1. Create Security Group
 
@@ -65,7 +65,7 @@ aws ec2 authorize-security-group-ingress --group-id "$SG_ID" --protocol udp --po
 
 #### 2. Launch EC2 Instance
 
-Use Ubuntu 22.04 LTS AMI. Find the current AMI for your region:
+Use the Ubuntu 22.04 LTS AMI. Find the current AMI for your region:
 
 ```sh
 AMI_ID=$(aws ec2 describe-images \
@@ -133,7 +133,7 @@ aws route53 change-resource-record-sets \
 
 #### 5. SSH In and Run Bootstrap
 
-Pipe the bootstrap script over SSH (the repo isn't cloned yet, so the script must come from your local machine):
+Pipe the bootstrap script over SSH. The repository is not cloned yet, so the script must come from your local machine:
 
 ```sh
 ssh -i ~/.ssh/"$KEY_PAIR_NAME".pem ubuntu@"$EIP" \
@@ -143,9 +143,9 @@ ssh -i ~/.ssh/"$KEY_PAIR_NAME".pem ubuntu@"$EIP" \
 
 #### 6. Configure .env
 
-The bootstrap creates a placeholder `.env` and exits. Write the real `.env` over SSH before starting services.
+The bootstrap creates a placeholder `.env` and exits. Write the real `.env` over SSH before you start the services.
 
-Generate all secrets locally first (see [Required Inputs](#required-inputs)), then write the file:
+First, generate all secrets locally (see [Required Inputs](#required-inputs)). Then write the file:
 
 ```sh
 ssh -i ~/.ssh/"$KEY_PAIR_NAME".pem ubuntu@"$EIP" "sudo tee /opt/atproto-tailnet/.env > /dev/null" <<ENVEOF
@@ -170,7 +170,7 @@ AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
 ENVEOF
 ```
 
-If using an EC2 instance role instead of access keys, leave `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` empty.
+If you use an EC2 instance role instead of access keys, leave `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` empty.
 
 #### 7. Start Services
 
@@ -191,7 +191,7 @@ sudo docker compose -f docker-compose.coordinator.yml logs caddy | tail -20
 
 ### Path B: CloudFormation (EC2 + RDS)
 
-Uses the existing `cloudformation.yaml` template. Pass `TLS_STRATEGY=route53` and AWS credentials instead of Cloudflare token.
+This path uses the existing `cloudformation.yaml` template. Pass `TLS_STRATEGY=route53` and the AWS credentials. Do not pass the Cloudflare token.
 
 ```sh
 aws cloudformation create-stack \
@@ -212,7 +212,7 @@ aws cloudformation create-stack \
 aws cloudformation wait stack-create-complete --stack-name atproto-tailnet
 ```
 
-After stack creation, SSH in and update `.env` to set TLS strategy variables:
+After the stack is created, SSH in and update `.env` to set the TLS strategy variables:
 
 ```sh
 EIP=$(aws cloudformation describe-stacks --stack-name atproto-tailnet \
@@ -237,7 +237,7 @@ sudo docker compose -f docker-compose.coordinator.yml up -d
 
 ## IAM Policy for Route53 TLS
 
-The EC2 instance (or IAM user) needs these Route53 permissions for Caddy DNS-01 challenges.
+Caddy needs these Route53 permissions for DNS-01 challenges. Grant them to the EC2 instance or the IAM user.
 
 Minimal IAM policy:
 
@@ -267,7 +267,7 @@ Minimal IAM policy:
 
 Replace `HOSTED_ZONE_ID` with the actual hosted zone ID.
 
-To attach via instance role (preferred over access keys):
+To attach the policy with an instance role (preferred over access keys):
 
 ```sh
 # Create the policy
@@ -387,10 +387,10 @@ aws cloudformation wait stack-delete-complete --stack-name atproto-tailnet
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| Caddy logs: `failed to solve challenge` | Missing Route53 IAM permissions | Attach the IAM policy above; verify with `aws route53 list-hosted-zones` from the instance |
-| Caddy logs: `no credentials found` | No access keys and no instance role | Set `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` in `.env` or attach an instance role |
-| `curl: connection refused` on 443 | Security group missing 443/tcp rule | `aws ec2 authorize-security-group-ingress --group-id $SG_ID --protocol tcp --port 443 --cidr 0.0.0.0/0` |
-| DNS not resolving | Records not created or still propagating | Wait 5 minutes; verify with `dig +short $APP_DOMAIN` |
-| Health returns unhealthy | Postgres not ready or coordinator failed | Check `docker compose logs postgres coordinator` |
-| Certificate shows staging issuer | Caddy defaulted to staging | Check `.env` has `TLS_STRATEGY=route53` and `CADDY_DNS_PLUGINS=github.com/caddy-dns/route53`; rebuild Caddy image |
-| `AWS_REGION` required error | Missing region in `.env` | Add `AWS_REGION=us-east-1` (or your region) to `.env` |
+| Caddy logs: `failed to solve challenge` | The Route53 IAM permissions are missing | Attach the IAM policy above. Verify with `aws route53 list-hosted-zones` from the instance |
+| Caddy logs: `no credentials found` | There are no access keys and no instance role | Set `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` in `.env` or attach an instance role |
+| `curl: connection refused` on 443 | The security group has no 443/tcp rule | `aws ec2 authorize-security-group-ingress --group-id $SG_ID --protocol tcp --port 443 --cidr 0.0.0.0/0` |
+| DNS not resolving | The records do not exist or are still propagating | Wait 5 minutes. Verify with `dig +short $APP_DOMAIN` |
+| Health returns unhealthy | Postgres is not ready or the coordinator failed | Check `docker compose logs postgres coordinator` |
+| Certificate shows staging issuer | Caddy used staging by default | Check that `.env` has `TLS_STRATEGY=route53` and `CADDY_DNS_PLUGINS=github.com/caddy-dns/route53`. Rebuild the Caddy image |
+| `AWS_REGION` required error | The region is missing in `.env` | Add `AWS_REGION=us-east-1` (or your region) to `.env` |

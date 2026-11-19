@@ -7,21 +7,20 @@
 
 ## Context
 
-ADR-0016 made the federation handshake real: two collectives exchange
-signed HELLO / COMMIT messages over HTTP, authenticate each other by DID,
-and keep a session alive. But both collectives must be tenants of the
-**same** atproto-tailnet instance. The "internet of internets" goal
-(ADR-0010) needs a collective on one instance to federate with a collective
-on another.
+ADR-0016 made the federation handshake real. Two collectives exchange signed
+HELLO and COMMIT messages over HTTP, authenticate each other by DID, and keep a
+session alive. But both collectives must be tenants of the **same**
+atproto-tailnet instance. The "internet of internets" goal (ADR-0010) needs a
+collective on one instance to federate with a collective on another instance.
 
-An investigation of the current code shows the transport is ready and the
-data model is what blocks it:
+We investigated the current code. The transport is ready, and the data model
+blocks cross-instance federation:
 
 | Area | Today | Blocks cross-instance? |
 |------|-------|------------------------|
 | `federation_links.requesterTenantId` / `targetTenantId` | Both are NOT NULL foreign keys to the local `tenants` table | **Yes** — a remote collective has no tenant row |
 | `broker_sessions.remoteTenantId` | Foreign key to local `tenants` | **Yes** |
-| Link request (`POST .../federation`) | Looks the target up by `targetSlug` in the local DB; request and accept are two writes to one shared row | **Yes** — there is no message that carries a request or its acceptance to another instance |
+| Link request (`POST .../federation`) | Looks the target up by `targetSlug` in the local DB; request and accept are two writes to one shared row | **Yes** — no message carries a request or its acceptance to another instance |
 | HELLO policy check | "Is there an active link between the two local tenants that own these DIDs?" | **Yes** — keyed on tenant ids |
 | Peer broker URL | `requesterBrokerEndpoint` / `targetBrokerEndpoint` columns exist but nothing ever writes them; the broker falls back to its own `PUBLIC_URL` | Yes |
 | `federation_links.signedRequest` | Column exists, never written or read | — (intended for exactly this) |
@@ -29,22 +28,22 @@ data model is what blocks it:
 | Discovery document (`/.well-known/collective-federation?collective=slug`) | Served and signed; nothing consumes it | No |
 | Link CIDRs | `z.string().min(1)` — any string is accepted, with no check that it is a CIDR or that the collective owns it | Not a blocker, but unsafe once the peer is a stranger |
 
-Two further facts shape the design:
+Two more facts shape the design:
 
-- A link is negotiated by **people** (an operator on each side approves the
-  CIDRs to share) before any handshake. Within one instance that
-  negotiation is a pair of authenticated API calls against one row. Across
-  instances it has to be a pair of signed messages between brokers.
-- Once peers can be strangers on the internet, the inbound endpoints accept
+- **People** negotiate a link before any handshake. An operator on each side
+  approves the CIDRs to share. Inside one instance, this negotiation is a pair
+  of authenticated API calls against one row. Across instances, it must be a
+  pair of signed messages between brokers.
+- When peers can be strangers on the internet, the inbound endpoints accept
   input from anyone. Today's protections (signature required, active link
-  required for HELLO) cover the handshake but not link *requests*, which
-  are by nature unsolicited.
+  required for HELLO) cover the handshake. They do not cover link *requests*.
+  Link requests are unsolicited by nature.
 
 ## Decision
 
 ### 1. A link row is one collective's view of a peer
 
-Replace the two-tenant link row with a per-side row, mirroring what
+We replaced the two-tenant link row with a per-side row. This mirrors what
 ADR-0016 already did for `broker_sessions`:
 
 ```
@@ -62,19 +61,19 @@ federation_links
   UNIQUE (local_tenant_id, peer_did) WHERE status IN (pending, active)
 ```
 
-`broker_sessions.remoteTenantId` becomes `peer_did`; a session references
-its side's link row.
+`broker_sessions.remoteTenantId` became `peer_did`. A session references the
+link row of its side.
 
-Two collectives on the same instance are no longer a special case: each has
-its own row naming the other's DID, and the brokers talk over HTTP exactly
-as they would across instances (as they already do today). The migration
-splits each existing row into its two views.
+Two collectives on the same instance are no longer a special case. Each has
+its own row that names the DID of the other. The brokers talk over HTTP, the
+same way as they would across instances (as they already do today). The
+migration splits each existing row into its two views.
 
 ### 2. Link negotiation becomes signed broker messages
 
-Three new CFP message types, sent to the peer's broker with the same
-`CFP-Recipient` addressing and detached-JWS signature as the handshake
-(ADR-0016), each carrying a timestamp and a unique message id:
+We added three CFP message types. The sender sends them to the broker of the
+peer. They use the same `CFP-Recipient` addressing and detached-JWS signature
+as the handshake (ADR-0016). Each carries a timestamp and a unique message id:
 
 | Message | Sent when | Effect on the receiver |
 |---------|-----------|------------------------|
@@ -82,38 +81,40 @@ Three new CFP message types, sent to the peer's broker with the same
 | `LINK_ACCEPT` | The target's operator accepts | Requester's `outgoing` row becomes `active` and records the peer's CIDRs; the accepting side then initiates HELLO as today |
 | `LINK_REJECT` | The target's operator declines | Requester's row becomes `rejected` |
 
-Revocation of an active link keeps using the session-level `REVOKE`; a
-`LINK_REVOKE` covers links that are still pending or have no session.
+Revocation of an active link keeps the session-level `REVOKE`. A `LINK_REVOKE`
+covers links that are still pending or have no session.
 
-The signed `LINK_REQUEST` is stored in `signed_request`, so the operator's
-approval is of a specific, verifiable offer, and the audit trail does not
-depend on trusting the local row.
+The system stores the signed `LINK_REQUEST` in `signed_request`. The approval
+of the operator is therefore of a specific, verifiable offer. The audit trail
+does not depend on trust in the local row.
 
 The existing API routes keep their shape. `POST .../federation` accepts a
-**peer address** instead of a local slug and performs discovery (below);
-accept / reject / revoke update the local row and send the corresponding
-message. The local write happens first; delivery is retried by the broker
-loop, so an unreachable peer delays a link but does not lose it.
+**peer address** instead of a local slug and performs discovery (below). The
+accept, reject, and revoke routes update the local row and send the matching
+message. The local write happens first. The broker loop retries delivery. An
+unreachable peer therefore delays a link but does not lose it.
 
 ### 3. Peer discovery
 
-An operator names a peer as `slug@host` (or pastes its DID). The broker:
+An operator names a peer as `slug@host` (or pastes its DID). The broker does
+these steps:
 
 1. Fetches `https://<host>/.well-known/collective-federation?collective=<slug>`
-2. Resolves the `collectiveDid` it names (ADR-0017) and verifies the
-   descriptor's signature against that key
-3. Checks the descriptor's `federationPolicy` is not `closed`
-4. Records `peer_did`, `brokerUrl` and name on the link row
+2. Resolves the `collectiveDid` that the descriptor names (ADR-0017) and
+   verifies the signature of the descriptor against that key
+3. Checks that the `federationPolicy` of the descriptor is not `closed`
+4. Records `peer_did`, `brokerUrl` and the name on the link row
 
-The DID is the identity; the descriptor only says where that identity's
-broker lives, and is trusted because it is signed by the DID's key. Brokers
-re-resolve it when a send fails, so a peer can move.
+The DID is the identity. The descriptor only says where the broker of that
+identity lives. The broker trusts the descriptor because the key of the DID
+signs it. Brokers resolve the descriptor again when a send fails, so a peer can
+move.
 
-Registry- and PDS-based discovery (ADR-0010 §5, ADR-0015) stay out of
-scope: they find peers, whereas this ADR is about linking to one you can
-already name.
+Registry-based and PDS-based discovery (ADR-0010 §5, ADR-0015) stay out of
+scope. They find peers. This ADR covers links to a peer that you can already
+name.
 
-### 4. Who may send what
+### 4. Who can send what
 
 | Message | Accepted from |
 |---------|---------------|
@@ -122,73 +123,76 @@ already name.
 | `HELLO` | Only a peer with an `active` row (unchanged) |
 | `COMMIT`, `KEEPALIVE`, `REVOKE` | Unchanged from ADR-0016 |
 
-Each collective gets a **federation posture** setting, surfaced in the
-discovery document's existing `federationPolicy` field:
+Each collective gets a **federation posture** setting. The existing
+`federationPolicy` field of the discovery document shows it:
 
-- `closed` — inbound link requests are refused
-- `selective` (default) — inbound requests are queued for an operator
-- `open` — as `selective`; reserved for future auto-accept under traversal
-  policy (ADR-0011)
+- `closed` — the collective refuses inbound link requests
+- `selective` (default) — the collective queues inbound requests for an
+  operator
+- `open` — the same as `selective`. We reserve it for future auto-accept under
+  traversal policy (ADR-0011)
 
-Lockdown mode refuses inbound requests and blocks sending new ones.
+Lockdown mode refuses inbound requests and blocks the sending of new requests.
 
-Abuse controls for the one endpoint strangers can use: rate limits per
-sender DID and per source address, a cap on pending inbound requests per
-collective (oldest expire), bounded message size, and message ids
-remembered for the freshness window so a captured request cannot be
-replayed.
+The one endpoint that strangers can use has these abuse controls:
+- Rate limits for each sender DID and each source address
+- A cap on pending inbound requests for each collective (the oldest requests
+  expire)
+- A bounded message size
+- A record of message ids for the freshness window, so that nobody can replay a
+  captured request
 
 ### 5. Outbound safety
 
-Peer broker URLs come from documents controlled by the peer, so every
-outbound federation request applies the same host policy as did:web
+Documents that the peer controls supply the peer broker URLs. Every outbound
+federation request therefore applies the same host policy as did:web
 resolution (ADR-0017): HTTPS, default port, public addresses only, no
-redirects. The instance's own `PUBLIC_URL` is exempt, which keeps
+redirects. The `PUBLIC_URL` of the instance itself is exempt. This keeps
 same-instance links and local development working.
 
-For testing two instances on one machine, a development-only setting lists
-additional loopback broker origins to trust. It is rejected at startup
-unless the instance itself is a loopback deployment.
+To test two instances on one machine, a development-only setting lists
+additional loopback broker origins to trust. The instance rejects this setting
+at startup unless the instance itself is a loopback deployment.
 
 ### 6. Validate the CIDRs being agreed
 
-Shared CIDRs are parsed and normalised as IPv4/IPv6 prefixes, and:
+The service parses the shared CIDRs and normalises them as IPv4/IPv6 prefixes.
+Then these rules apply:
 
-- a collective may only offer prefixes inside its own tailnet range
-  (`tenants.ipv4Prefix` / `ipv6Prefix`) or subnet routes it has approved;
-- a peer's offered prefixes must not overlap the local collective's own
-  range, any other active link's prefixes, or default routes.
+- A collective can offer only prefixes inside its own tailnet range
+  (`tenants.ipv4Prefix` / `ipv6Prefix`) or subnet routes that it has approved.
+- The prefixes that a peer offers must not overlap the own range of the local
+  collective, the prefixes of any other active link, or default routes.
 
-Offers that fail are rejected at request / accept time, before an operator
-is asked to approve them. Import filtering at handshake time
+The service rejects offers that fail at request or accept time, before it asks
+an operator to approve them. Import filtering at handshake time
 (`filterImportedPrefixes`) stays as the second line of defence.
 
 ## Consequences
 
-- A collective can federate with any collective it can name, on any
+- A collective can federate with any collective that it can name, on any
   instance, with the same operator workflow as today.
-- One code path: same-instance federation stops being a separate case in
-  the data model, the policy check and the dashboard.
-- `federation_links` and `broker_sessions` change shape; the migration
-  rewrites existing rows and every query that joins them to `tenants` for
-  the peer's name.
-- A new unauthenticated-by-session surface (`LINK_REQUEST`) is exposed to
-  the internet. It is the only message a stranger can cause to be stored,
-  and it is bounded by posture, rate limits and the pending cap.
-- Trust in a remote collective rests on did:web: whoever controls the
-  peer's domain controls its identity. Operators approve a DID, and the
-  dashboard must show the host prominently.
-- CIDR validation will reject links that are accepted today — in
-  particular, every tenant defaults to `100.64.0.0/10`, so two tenants with
-  default ranges cannot share their tailnet ranges until one is renumbered
-  (ADR-0006). ADR-0020 covers why the data plane needs this anyway.
-- Key rotation on a peer is picked up within the resolver's cache TTL
-  (5 minutes); handshakes and keepalives may fail in that window and
-  recover on retry.
+- One code path: same-instance federation stops being a separate case in the
+  data model, the policy check, and the dashboard.
+- `federation_links` and `broker_sessions` change shape. The migration rewrites
+  the existing rows. It also rewrites every query that joins them to `tenants`
+  for the name of the peer.
+- The internet gets a new surface that session authentication does not cover
+  (`LINK_REQUEST`). It is the only message that a stranger can cause the system
+  to store. Posture, rate limits, and the pending cap bound it.
+- Trust in a remote collective rests on did:web. Whoever controls the domain of
+  the peer controls its identity. Operators approve a DID, and the dashboard
+  must show the host prominently.
+- CIDR validation rejects links that the system accepts today. In particular,
+  every tenant defaults to `100.64.0.0/10`. Two tenants with default ranges
+  cannot share their tailnet ranges until one tenant is renumbered (ADR-0006).
+  ADR-0020 explains why the data plane needs this anyway.
+- A peer key rotation takes effect within the resolver cache TTL (5 minutes).
+  Handshakes and keepalives can fail in that window. They recover on retry.
 
 ## Not in scope
 
 - Carrying traffic between the federated tailnets (ADR-0020).
 - Registry, PDS-record and mDNS discovery (ADR-0010 §5, ADR-0015).
-- Incremental `ROUTE_UPDATE` exchange after establishment and transit /
+- Incremental `ROUTE_UPDATE` exchange after establishment, and the transit and
   mesh federation types (ADR-0014 §3–4).

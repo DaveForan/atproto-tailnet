@@ -8,60 +8,61 @@
 
 ## Context
 
-ADR-0013 proposed forking Headscale in Go to add multi-tenant namespace
-separation. That approach preserves access to Tailscale's Go libraries but
-inherits Go's type system limitations and Headscale's single-tenant
-architecture — every multi-tenant invariant must be enforced by convention
-and testing, never by the compiler. ADR-0013 explicitly noted this as an
+ADR-0013 proposed a Headscale fork in Go to add multi-tenant namespace
+separation. That approach keeps access to the Go libraries of Tailscale. But it
+inherits the limits of the Go type system and the single-tenant architecture of
+Headscale. Convention and testing must enforce every multi-tenant invariant.
+The compiler cannot enforce any of them. ADR-0013 explicitly noted this as an
 accepted tradeoff.
 
-Revisiting that tradeoff: the project is not Tailscale. It is a
-hierarchical federated mesh network with AT Proto identity, credential-gated
-traversal, and per-hop policy enforcement. Every layer inherited from
-Tailscale/Headscale — the single-coordinator assumption, the flat namespace
-model, the account-based auth, the monolithic netmap — fights the
-architecture this project needs.
+We revisited that tradeoff. The project is not Tailscale. It is a hierarchical
+federated mesh network with AT Proto identity, credential-gated traversal, and
+per-hop policy enforcement. Every layer that we inherit from Tailscale and
+Headscale fights the architecture that this project needs. These layers are the
+single-coordinator assumption, the flat namespace model, the account-based
+auth, and the monolithic netmap.
 
-The protocol layers underneath are well-specified and have production Rust
+The underlying protocol layers are well-specified. They have production Rust
 implementations:
 
 - **WireGuard**: `boringtun` (Cloudflare, production-grade userspace
-  implementation), plus the kernel module for Linux data plane
-- **Noise IK**: `snow` crate (Noise protocol framework, audited)
-- **DERP relay**: Simple HTTP upgrade + binary framing protocol, ~500 lines
-  to implement
-- **STUN/NAT traversal**: `stun-rs`, `webrtc-rs` crates
+  implementation), plus the kernel module for the Linux data plane
+- **Noise IK**: the `snow` crate (Noise protocol framework, audited)
+- **DERP relay**: a simple HTTP upgrade and binary framing protocol. It needs
+  approximately 500 lines to implement
+- **STUN/NAT traversal**: the `stun-rs` and `webrtc-rs` crates
 
-What Headscale provides beyond these primitives is coordination logic:
-netmap generation, node registration, key management, ACL evaluation, and
-the HTTP/Noise transport that Tailscale clients speak. That coordination
-logic is exactly what needs to be redesigned for multi-tenancy, federation,
-and hierarchical namespaces. Forking it means rewriting it anyway, but
-inside someone else's architecture.
+Headscale provides coordination logic on top of these primitives. This logic
+covers netmap generation, node registration, key management, ACL evaluation,
+and the HTTP/Noise transport that Tailscale clients speak. We must redesign
+exactly this coordination logic for multi-tenancy, federation, and hierarchical
+namespaces. If we fork Headscale, we rewrite the logic anyway, but inside the
+architecture of someone else.
 
 ### Why Rust
 
-- **Type-level tenant isolation.** A `TenantId` newtype threading through
-  every query, every netmap build, every ACL evaluation. The compiler
-  catches cross-tenant leaks that Go relies on `WHERE` clauses and code
-  review to prevent.
+- **Type-level tenant isolation.** A `TenantId` newtype runs through every
+  query, every netmap build, and every ACL evaluation. The compiler catches
+  cross-tenant leaks. Go relies on `WHERE` clauses and code review to prevent
+  them.
 - **Enum-driven protocol states.** Noise handshake states, federation link
-  states, traversal credential verification — all as exhaustive enums.
+  states, and traversal credential verification are all exhaustive enums.
   Invalid state transitions are compilation errors.
-- **Memory safety without GC.** A long-running coordinator serving
-  thousands of tenants needs predictable latency. No GC pauses, no
+- **Memory safety without GC.** A long-running coordinator that serves
+  thousands of tenants needs predictable latency. Rust has no GC pauses and no
   goroutine leaks.
-- **Trait-based abstraction.** The coordinator's subsystems (node registry,
-  netmap builder, ACL engine, federation broker) compose via traits, not
-  interface pollution. Generic over storage backend for testing.
-- **Single binary deployment.** No Docker socket, no container-per-tenant,
+- **Trait-based abstraction.** The subsystems of the coordinator (node
+  registry, netmap builder, ACL engine, federation broker) compose through
+  traits, not interface pollution. They are generic over the storage backend
+  for testing.
+- **Single binary deployment.** No Docker socket, no container-per-tenant, and
   no port pool. One process, one binary, one PostgreSQL connection pool.
 
 ## Decision
 
-Build a purpose-built mesh coordinator in Rust. Maintain Tailscale client
-wire compatibility in Phase 1 so existing `tailscale` CLI works
-immediately. Diverge the protocol as the client evolves (ADR-0024).
+We built a purpose-built mesh coordinator in Rust. In Phase 1, we maintain
+Tailscale client wire compatibility, so the existing `tailscale` CLI works
+immediately. We diverge the protocol as the client evolves (ADR-0024).
 
 ### Architecture
 
@@ -91,32 +92,33 @@ immediately. Diverge the protocol as the client evolves (ADR-0024).
 
 ### Tailscale client compatibility
 
-The Tailscale client connects to its coordinator over HTTPS, upgrading to a
-Noise IK session. The coordinator must implement:
+The Tailscale client connects to its coordinator over HTTPS. It upgrades the
+connection to a Noise IK session. The coordinator must implement these items:
 
-1. **`/ts2021` upgrade endpoint** — HTTP upgrade to Noise IK transport.
-   The client sends its machine key; the coordinator responds with the
-   control key. All subsequent messages are Noise-encrypted.
+1. **`/ts2021` upgrade endpoint** — an HTTP upgrade to the Noise IK transport.
+   The client sends its machine key. The coordinator responds with the control
+   key. The Noise session encrypts all later messages.
 
-2. **Control messages over Noise** — The coordinator sends `MapResponse`
-   (the netmap: peer list, DERP map, DNS config, ACL rules) and receives
-   `MapRequest` (node state updates, endpoint changes). These are protobuf
-   or JSON-encoded Tailscale types.
+2. **Control messages over Noise** — The coordinator sends `MapResponse` (the
+   netmap: peer list, DERP map, DNS config, ACL rules). It receives
+   `MapRequest` (node state updates, endpoint changes). These messages are
+   protobuf-encoded or JSON-encoded Tailscale types.
 
-3. **`/key?v=...` endpoint** — Returns the coordinator's Noise public key
-   so clients can initiate the handshake.
+3. **`/key?v=...` endpoint** — It returns the Noise public key of the
+   coordinator, so clients can start the handshake.
 
-4. **`/machine/register`** — Pre-auth key registration (legacy path, some
-   clients still use it).
+4. **`/machine/register`** — Pre-auth key registration (legacy path, which some
+   clients still use).
 
-5. **DERP map serving** — The coordinator tells clients which DERP relays
-   to use. Can point to external Tailscale DERP servers or self-hosted ones.
+5. **DERP map serving** — The coordinator tells clients which DERP relays to
+   use. It can point to external Tailscale DERP servers or to self-hosted
+   servers.
 
-6. **DNS configuration** — MagicDNS names for nodes within the namespace.
+6. **DNS configuration** — MagicDNS names for nodes in the namespace.
 
 ### Multi-tenant model
 
-Every coordinator subsystem is parameterized by `TenantId`:
+`TenantId` parameterizes every coordinator subsystem:
 
 ```rust
 struct TenantId(Uuid);
@@ -135,14 +137,14 @@ trait AclEngine {
 }
 ```
 
-Cross-tenant access is impossible unless the type signatures explicitly
-carry both tenant IDs (as in federation routing).
+Cross-tenant access is impossible unless the type signatures explicitly carry
+both tenant IDs (as in federation routing).
 
 ### Hierarchical namespaces
 
-Sub-collectives are tenants whose `parent_id` references another tenant.
-The netmap builder for a parent tenant can optionally include aggregated
-routes from child tenants (subject to policy). This is in-process — no
+Sub-collectives are tenants whose `parent_id` references another tenant. The
+netmap builder for a parent tenant can optionally include aggregated routes from
+child tenants (subject to policy). This is in-process. It needs no
 cross-container orchestration.
 
 ```rust
@@ -156,15 +158,15 @@ struct Tenant {
 
 ### Federation as a first-class subsystem
 
-The federation broker (currently in TypeScript) moves into the coordinator
-as a Rust module. Federation links, the CFP handshake, route exchange, and
-relay provisioning are all coordinator-internal operations with direct
-access to the netmap and ACL engine. No HTTP round-trips between the
+The federation broker (currently in TypeScript) moves into the coordinator as a
+Rust module. Federation links, the CFP handshake, route exchange, and relay
+provisioning are all coordinator-internal operations. They have direct access
+to the netmap and the ACL engine. No HTTP round-trips occur between the
 management service and the control plane.
 
 ### Project structure
 
-The coordinator lives within the atproto-tailnet repository:
+The coordinator lives in the atproto-tailnet repository:
 
 ```
 coordinator/
@@ -186,7 +188,7 @@ coordinator/
 ### Phased implementation
 
 **Phase 1: Minimal compatible coordinator**
-- Noise IK transport accepting Tailscale client connections
+- Noise IK transport that accepts Tailscale client connections
 - Node registration with pre-auth keys
 - Single-tenant netmap generation
 - REST API for node/key management
@@ -197,13 +199,13 @@ coordinator/
 - Sub-collective namespace tree
 - Per-tenant ACL engine
 - REST API with tenant context
-- TypeScript service delegates to coordinator instead of Headscale
+- The TypeScript service delegates to the coordinator instead of Headscale
 
 **Phase 3: Federation native**
-- Federation broker as coordinator module
+- Federation broker as a coordinator module
 - Cross-tenant route advertisement
 - Traversal credential verification at the coordinator level
-- Relay provisioning integrated
+- Integrated relay provisioning
 
 **Phase 4: Protocol divergence**
 - Custom control messages for credential presentation
@@ -212,30 +214,29 @@ coordinator/
 
 ## Consequences
 
-- **Headscale is removed.** No more container-per-tenant orchestration,
-  Docker socket dependency, port allocation pool, or per-container health
-  monitoring. The TypeScript service manages the coordinator as a single
-  subprocess or sidecar.
-- **Tailscale client compatibility is temporary.** Phase 1-3 maintain it.
-  Phase 4 begins diverging. ADR-0024 covers the transition.
+- **Headscale is removed.** We no longer need container-per-tenant
+  orchestration, the Docker socket dependency, the port allocation pool, or
+  per-container health monitoring. The TypeScript service manages the
+  coordinator as a single subprocess or sidecar.
+- **Tailscale client compatibility is temporary.** Phases 1-3 maintain it.
+  Phase 4 begins the divergence. ADR-0024 covers the transition.
 - **The TypeScript service remains.** It handles AT Proto OAuth, the web
-  dashboard, credential issuance, and user management. The coordinator
-  handles WireGuard coordination, netmap generation, and ACL enforcement.
-  They communicate via REST API and shared PostgreSQL.
-- **New language in the project.** Rust joins TypeScript. The coordinator
-  is a self-contained workspace with its own CI. The boundary is clean:
-  TypeScript is the web layer, Rust is the network layer.
-- **Migration from Headscale.** Existing deployments need a data migration
-  from per-tenant SQLite databases to the shared PostgreSQL schema. The
-  same concern existed in ADR-0013; the solution is the same (iterate
-  SQLite files, transform with tenant_id, preserve WireGuard keys).
-- **ADR-0013 is superseded.** The Go fork approach is replaced by a
-  ground-up Rust implementation. The analysis in ADR-0013 (resource
-  overhead, port limits, Docker socket dependency) motivated this decision
-  and remains valid.
-- **Build time.** Rust compilation is slower than Go. CI caching
-  (`sccache`, cargo registry caching) is essential. Incremental builds
-  during development are fast after the first compile.
+  dashboard, credential issuance, and user management. The coordinator handles
+  WireGuard coordination, netmap generation, and ACL enforcement. They
+  communicate through the REST API and shared PostgreSQL.
+- **New language in the project.** Rust joins TypeScript. The coordinator is a
+  self-contained workspace with its own CI. The boundary is clean. TypeScript
+  is the web layer and Rust is the network layer.
+- **Migration from Headscale.** Existing deployments need a data migration from
+  per-tenant SQLite databases to the shared PostgreSQL schema. The same concern
+  existed in ADR-0013, and the solution is the same: iterate the SQLite files,
+  transform with tenant_id, and preserve the WireGuard keys.
+- **ADR-0013 is superseded.** A ground-up Rust implementation replaces the Go
+  fork approach. The analysis in ADR-0013 (resource overhead, port limits,
+  Docker socket dependency) motivated this decision and remains valid.
+- **Build time.** Rust compiles more slowly than Go. CI caching (`sccache`,
+  cargo registry caching) is essential. Incremental builds during development
+  are fast after the first compile.
 
 ## Implementation progress
 
@@ -266,14 +267,14 @@ coordinator/
 
 ## Risks
 
-- **Tailscale protocol undocumented details.** The control protocol is not
-  a public specification. Headscale reverse-engineered it. We will need to
-  do the same, guided by Headscale's Go source and Wireshark captures. The
-  protocol has been stable enough for Headscale to track for 4+ years.
-- **NAT traversal complexity.** Tailscale's NAT traversal logic (ICE-like
+- **Tailscale protocol undocumented details.** The control protocol is not a
+  public specification. Headscale reverse-engineered it. We must do the same,
+  guided by the Go source of Headscale and Wireshark captures. The protocol has
+  been stable enough for Headscale to track for 4+ years.
+- **NAT traversal complexity.** The NAT traversal logic of Tailscale (ICE-like
   with proprietary extensions) is sophisticated. Phase 1 can defer hard NAT
-  cases by relying on DERP relays for connectivity, adding direct
+  cases because it relies on DERP relays for connectivity. We add direct
   connections incrementally.
-- **Scope creep.** The phased approach exists to prevent this. Phase 1 is
-  a coordinator that does exactly what Headscale does, nothing more. Novel
+- **Scope creep.** The phased approach exists to prevent this. Phase 1 is a
+  coordinator that does exactly what Headscale does, and nothing more. Novel
   features come in later phases.

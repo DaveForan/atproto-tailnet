@@ -4,10 +4,10 @@ Machine-readable deployment guide for AI agents.
 
 ## Overview
 
-- Single Hetzner Cloud server (cx22 or cx32), coordinator mode
-- TLS strategy: `hetzner` (DNS-01 wildcard via Hetzner DNS API)
+- A single Hetzner Cloud server (cx22 or cx32) in coordinator mode
+- TLS strategy: `hetzner` (DNS-01 wildcard with the Hetzner DNS API)
 - Compose file: `docker-compose.coordinator.yml`
-- No Docker socket mount required (coordinator replaces per-tenant Headscale containers)
+- No Docker socket mount needed (the coordinator replaces the Headscale container of each tenant)
 - Cost: ~EUR 4-8/month (cx22 = EUR 3.98, cx32 = EUR 7.11)
 
 ## Prerequisites
@@ -21,10 +21,10 @@ Machine-readable deployment guide for AI agents.
 | Hetzner DNS API token (separate from Cloud API token) | Generated at dns.hetzner.com |
 
 **Important**: Hetzner has two separate APIs with separate tokens:
-1. **Cloud API** (`api.hetzner.cloud`) -- managed by `hcloud` CLI. Controls servers, firewalls, etc.
-2. **DNS API** (`dns.hetzner.com/api/v1`) -- no CLI support. Controls DNS records. Token generated at https://dns.hetzner.com/settings/api-token
+1. **Cloud API** (`api.hetzner.cloud`) -- the `hcloud` CLI uses this API. It controls servers and firewalls.
+2. **DNS API** (`dns.hetzner.com/api/v1`) -- it has no CLI support. It controls DNS records. Generate the token at https://dns.hetzner.com/settings/api-token
 
-Both tokens are needed. The DNS API token is passed to Caddy as `HETZNER_API_TOKEN` for ACME DNS-01 challenges.
+You need both tokens. Pass the DNS API token to Caddy as `HETZNER_API_TOKEN` for ACME DNS-01 challenges.
 
 ## Required Inputs
 
@@ -33,8 +33,8 @@ Both tokens are needed. The DNS API token is passed to Caddy as `HETZNER_API_TOK
 | `HETZNER_API_TOKEN` | Hetzner DNS API token (for Caddy DNS-01 challenges) | `abcdef1234567890` |
 | `HCLOUD_TOKEN` | Hetzner Cloud API token (for `hcloud` CLI) | Set via `hcloud context create` |
 | `DOMAIN` | Base domain for the deployment | `example.com` |
-| `APP_SUBDOMAIN` | Subdomain for the app UI | `tailnets` (yields `tailnets.example.com`) |
-| `TS_SUBDOMAIN` | Subdomain for tenant tailnets | `ts` (yields `*.ts.example.com`) |
+| `APP_SUBDOMAIN` | Subdomain for the app UI | `tailnets` (gives `tailnets.example.com`) |
+| `TS_SUBDOMAIN` | Subdomain for tenant tailnets | `ts` (gives `*.ts.example.com`) |
 | `SSH_KEY_NAME` | Name of SSH key in Hetzner Cloud | Output of `hcloud ssh-key list` |
 | `SERVER_TYPE` | Hetzner server type (lowercase) | `cx22` (2 vCPU, 4 GB) or `cx32` (4 vCPU, 8 GB) |
 | `LOCATION` | Hetzner datacenter | `fsn1` (Falkenstein), `nbg1` (Nuremberg), `hel1` (Helsinki) |
@@ -74,7 +74,7 @@ hcloud server create \
   --firewall atproto-tailnet-fw
 ```
 
-### Step 3: Get Server IP
+### Step 3: Obtain Server IP
 
 ```sh
 SERVER_IP=$(hcloud server ip atproto-tailnet)
@@ -85,7 +85,7 @@ echo "$SERVER_IP"
 
 The `hcloud` CLI does not manage DNS. Use the DNS API directly.
 
-#### 4a. Get Zone ID
+#### 4a. Obtain Zone ID
 
 ```sh
 HETZNER_DNS_TOKEN="<your-dns-api-token>"
@@ -101,7 +101,7 @@ Find your domain in the output. Save the zone ID:
 ZONE_ID="<zone-id-from-output>"
 ```
 
-Or filter directly:
+Or filter the output directly:
 
 ```sh
 ZONE_ID=$(curl -s \
@@ -164,7 +164,7 @@ dig +short tailnets.example.com
 ssh root@${SERVER_IP} 'bash -s' < deploy/hetzner/server-setup.sh
 ```
 
-Or with custom repo/branch:
+Or use a custom repository and branch:
 
 ```sh
 ssh root@${SERVER_IP} "REPO_URL=https://github.com/your-org/atproto-tailnet.git BRANCH=main bash -s" < deploy/hetzner/server-setup.sh
@@ -209,7 +209,7 @@ HETZNER_API_TOKEN=<DNS-API-TOKEN>
 ENVEOF
 ```
 
-Replace all `<GENERATED>` and `<DNS-API-TOKEN>` placeholders with actual values.
+Replace each `<GENERATED>` and `<DNS-API-TOKEN>` placeholder with the actual value.
 
 ### Step 7: Start Services
 
@@ -236,7 +236,7 @@ echo | openssl s_client -connect tailnets.example.com:443 -servername tailnets.e
 ## DNS API Reference
 
 All Hetzner DNS API endpoints use `https://dns.hetzner.com/api/v1` as the base URL.
-Authentication: `Auth-API-Token` header with the DNS API token.
+For authentication, send the `Auth-API-Token` header with the DNS API token.
 
 | Operation | Method | Endpoint | Body |
 |---|---|---|---|
@@ -287,16 +287,16 @@ done
 
 ## Troubleshooting
 
-### Server won't start
+### Server does not start
 
 ```sh
 hcloud server describe atproto-tailnet
 hcloud server reset atproto-tailnet   # hard reboot
 ```
 
-### Caddy fails to get TLS certificate
+### Caddy fails to obtain TLS certificate
 
-Check that `HETZNER_API_TOKEN` is the **DNS API** token (from dns.hetzner.com), not the Cloud API token.
+Make sure that `HETZNER_API_TOKEN` is the **DNS API** token (from dns.hetzner.com). It must not be the Cloud API token.
 
 ```sh
 # Test DNS API token
@@ -306,17 +306,21 @@ curl -s -H "Auth-API-Token: ${HETZNER_DNS_TOKEN}" "https://dns.hetzner.com/api/v
 ssh root@${SERVER_IP} "cd /opt/atproto-tailnet && docker compose -f docker-compose.coordinator.yml logs caddy | grep -i acme"
 ```
 
-### Containers crash-looping
+### Containers crash repeatedly
 
 ```sh
 ssh root@${SERVER_IP} "cd /opt/atproto-tailnet && docker compose -f docker-compose.coordinator.yml logs --tail=100 <service>"
 ```
 
-Where `<service>` is one of: `coordinator`, `app`, `postgres`, `caddy`.
+Replace `<service>` with one of these names:
+- `coordinator`
+- `app`
+- `postgres`
+- `caddy`
 
 ### Database connection refused
 
-Postgres must be healthy before coordinator and app start. Check:
+Postgres must be healthy before the coordinator and the app start. Check Postgres:
 
 ```sh
 ssh root@${SERVER_IP} "cd /opt/atproto-tailnet && docker compose -f docker-compose.coordinator.yml logs postgres"
@@ -325,18 +329,18 @@ ssh root@${SERVER_IP} "cd /opt/atproto-tailnet && docker compose -f docker-compo
 
 ### DNS not resolving
 
-Hetzner DNS propagation typically takes 1-5 minutes. Check:
+Hetzner DNS propagation usually takes 1-5 minutes. Check the records:
 
 ```sh
 dig +short tailnets.example.com @oxygen.ns.hetzner.com
 dig +short tailnets.example.com @hydrogen.ns.hetzner.com
 ```
 
-If records exist in the API but don't resolve, verify the domain's NS records point to Hetzner (`oxygen.ns.hetzner.com`, `hydrogen.ns.hetzner.com`, `helium.ns.hetzner.de`).
+If the records exist in the API but do not resolve, verify that the NS records of the domain point to Hetzner (`oxygen.ns.hetzner.com`, `hydrogen.ns.hetzner.com`, `helium.ns.hetzner.de`).
 
 ### Disk space
 
-CX22 has 40 GB. Check usage:
+The CX22 has 40 GB. Check the disk usage:
 
 ```sh
 ssh root@${SERVER_IP} "df -h / && docker system df"

@@ -4,71 +4,76 @@ title: Federation
 
 # Federation
 
-Federation connects separate mesh networks (collectives) so devices in one network can reach devices in another. Each side retains full control over what routes are shared, who can connect, and whether to accept or reject link proposals.
+Federation connects separate mesh networks (collectives). Devices in one network can then reach devices in another network. Each side keeps full control of the routes it shares and of the users who can connect. Each side also decides to accept or reject link proposals.
 
 ## Concepts
 
 ### Collectives
 
-A **collective** is a tenant's mesh network viewed as a federation participant. Each collective has:
+A **collective** is the mesh network of a tenant, seen as a federation participant. Each collective has these items:
 
-- A **DID identity**: `did:web:<host>:collective:<slug>` --- a decentralized identifier published as a DID document at `/.well-known/did.json` under the collective's subdomain.
-- A **signing key**: Ed25519 keypair. The private key is encrypted at rest with AES-256-GCM. Used to sign all outbound federation messages.
-- A **discovery document**: Published metadata including the collective's DID, federation policy (posture), broker endpoint URL, and supported protocol versions.
+- A **DID identity**: `did:web:<host>:collective:<slug>` --- a decentralized identifier. The collective publishes it as a DID document at `/.well-known/did.json` under the collective's subdomain.
+- A **signing key**: an Ed25519 keypair. The system encrypts the private key at rest with AES-256-GCM. The collective uses the key to sign all outbound federation messages.
+- A **discovery document**: published metadata. It contains the collective's DID, the federation policy (posture), the broker endpoint URL, and the supported protocol versions.
 
 ### Collective Federation Protocol (CFP)
 
-CFP is the wire protocol for inter-collective communication. It runs as JSON messages over HTTPS, authenticated by detached JWS signatures over the raw request body. Every message carries a `CFP-Recipient` header identifying the target collective by DID.
+CFP is the wire protocol for communication between collectives. It sends JSON messages over HTTPS. Detached JWS signatures over the raw request body authenticate the messages. Each message carries a `CFP-Recipient` header that identifies the target collective by DID.
 
 ### Federation posture
 
-Each collective has a **federation posture** that controls how it responds to inbound link requests from strangers:
+Each collective has a **federation posture**. The posture controls how the collective responds to inbound link requests from strangers:
 
 | Posture | Behavior | Route visibility |
 |---------|----------|-----------------|
 | **Closed** | Refuses all inbound link requests. The collective is invisible to federation. | Hidden from parent tenants in hierarchy. |
-| **Selective** | Inbound requests are queued for the operator to review. The operator sees the requesting collective's DID and proposed CIDRs, and decides whether to accept or reject. | Visible to parent tenants. |
-| **Open** | Currently identical to selective (operator approval required). Reserved for future auto-accept under traversal policy. | Visible to parent tenants. |
+| **Selective** | Queues inbound requests for the operator to review. The operator sees the DID and proposed CIDRs of the requesting collective. The operator then accepts or rejects the request. | Visible to parent tenants. |
+| **Open** | Is identical to selective at this time (operator approval is required). Reserved for future auto-accept under traversal policy. | Visible to parent tenants. |
 
-**Closed** is the default for new tenants. Most production deployments should use **selective**.
+**Closed** is the default for new tenants. Most production deployments must use **selective**.
 
-Two additional gates layer on top of posture:
+Two more gates apply on top of the posture:
 
-- **Lockdown mode**: Blocks all inbound requests and prevents sending outbound ones, regardless of posture setting.
-- **Abuse controls**: Rate limits per sender DID (60 req/min), per source IP, a cap on pending inbound requests, replay guard with a 5-minute window, and a 2 MiB body size limit.
+- **Lockdown mode**: Blocks all inbound requests and prevents outbound requests. The posture setting does not change this.
+- **Abuse controls**: These controls are:
+  - A rate limit per sender DID (60 req/min)
+  - A rate limit per source IP
+  - A cap on pending inbound requests
+  - A replay guard with a 5-minute window
+  - A body size limit of 2 MiB
 
 ## How federation works
 
 ### Establishing a link
 
-The lifecycle of a federation link follows this sequence:
+A federation link follows this sequence:
 
 <ol class="steps">
 <li>
 
 **Link request**
 
-One collective sends a `LINK_REQUEST` to another, proposing shared CIDR prefixes. The request includes the sender's DID and a signed description of which IP ranges it wants to share.
+One collective sends a `LINK_REQUEST` to another collective. The request proposes shared CIDR prefixes. It includes the DID of the sender and a signed description of the IP ranges that the sender wants to share.
 
 </li>
 <li>
 
 **Operator review**
 
-If the recipient's posture is `selective` (or `open`), the request appears in the **Federation** tab of the recipient's dashboard. The operator reviews:
+If the posture of the recipient is `selective` (or `open`), the request appears in the **Federation** tab of the recipient's dashboard. The operator reviews these items:
 
-- The requesting collective's DID and domain
+- The DID and domain of the requesting collective
 - The proposed CIDR prefixes
-- Whether the prefixes conflict with existing routes
+- Conflicts between the prefixes and existing routes
 
-The operator can **accept** or **reject**.
+The operator can **accept** or **reject** the request.
 
 </li>
 <li>
 
 **Session handshake**
 
-On acceptance, the accepting side initiates a CFP session handshake:
+After acceptance, the accepting side starts a CFP session handshake:
 
 ```
 Acceptor                          Requester
@@ -83,61 +88,62 @@ Acceptor                          Requester
    │                                  │
 ```
 
-Both sides verify signatures against the peer's DID document public key at each step.
+At each step, both sides verify the signatures against the public key in the DID document of the peer.
 
 </li>
 <li>
 
 **Route exchange**
 
-Once established, both sides exchange signed route announcements via periodic `KEEPALIVE` messages (every 30 seconds). Only prefixes agreed upon in the link are imported --- `filterImportedPrefixes` rejects anything outside the agreed scope.
+After the session is established, both sides exchange signed route announcements in periodic `KEEPALIVE` messages (every 30 seconds). The system imports only the prefixes that the link specifies. `filterImportedPrefixes` rejects all prefixes outside the agreed scope.
 
-Imported routes are installed as auto-approved routes for a special `tag:federation-relay` tag, so the data plane handles packet forwarding.
+The system installs imported routes as auto-approved routes for the special tag `tag:federation-relay`. The data plane then forwards the packets.
 
 </li>
 <li>
 
 **Ongoing**
 
-Either side can **revoke** the link at any time, which tears down the session and removes imported routes.
+Each side can **revoke** the link at any time. Revocation tears down the session and removes the imported routes.
 
 </li>
 </ol>
 
 ### CIDR validation
 
-Before a link is established, shared CIDRs are validated:
+The system validates the shared CIDRs before it establishes a link:
 
-- A collective can only offer prefixes inside its own tailnet range or approved subnet routes
-- A peer's offered prefixes must not overlap the local collective's own range
-- Prefixes must not overlap any other active link's shared ranges
-- Default routes (`0.0.0.0/0`, `::/0`) are rejected
+- A collective can offer only prefixes inside its own tailnet range or approved subnet routes.
+- The prefixes that a peer offers must not overlap the range of the local collective.
+- Prefixes must not overlap the shared ranges of any other active link.
+- The system rejects default routes (`0.0.0.0/0`, `::/0`).
 
 ### Route scoping
 
-Routes learned through federation carry scope metadata:
+Routes that the system learns through federation carry scope metadata:
 
 | Scope | Priority | Description |
 |-------|----------|-------------|
-| **Local** | 300 | Peers within ~50 km (measured by geographic coordinates) |
+| **Local** | 300 | Peers within about 50 km (measured by geographic coordinates) |
 | **Regional** | 200 | Same broad region |
 | **Global** | 100 | Any distance |
 
-When multiple paths exist to the same prefix, the coordinator selects the best route by:
-1. Lowest measured latency (if available)
-2. Highest scope priority + preference score (if no latency data)
+When more than one path exists to the same prefix, the coordinator selects the best route with these rules:
+
+1. Select the lowest measured latency (if latency data is available).
+2. If no latency data is available, select the highest scope priority plus preference score.
 
 ## Setting up federation
 
 ### Prerequisites
 
-- Two running atproto-tailnet instances (can be on the same or different servers)
-- Each instance must have a public HTTPS URL (federation messages are sent over the internet)
-- `FEDERATION_KEY_ENCRYPTION_KEY` must be set in `.env` (64 hex characters)
+- Two running atproto-tailnet instances (the instances can be on the same server or on different servers)
+- A public HTTPS URL for each instance (federation messages travel over the internet)
+- `FEDERATION_KEY_ENCRYPTION_KEY` in `.env` (64 hex characters)
 
 ### Configure posture
 
-Set your collective's federation posture via the dashboard **Federation** tab or the API:
+Set the federation posture of your collective in the **Federation** tab of the dashboard or with the API:
 
 ```bash
 curl -X PUT https://yourdomain.com/api/tenants/<tenant-id>/posture \
@@ -148,27 +154,28 @@ curl -X PUT https://yourdomain.com/api/tenants/<tenant-id>/posture \
 
 ### Send a link request
 
-From the **Federation** tab, enter the peer collective's DID (`did:web:...`) and the CIDR prefixes you want to share. The system resolves the peer's DID document, discovers the broker endpoint, and sends a signed `LINK_REQUEST`.
+In the **Federation** tab, enter the DID of the peer collective (`did:web:...`). Then enter the CIDR prefixes that you want to share. The system resolves the DID document of the peer and discovers the broker endpoint. Then it sends a signed `LINK_REQUEST`.
 
 ### Accept a link request
 
-When a link request arrives, it appears in your **Federation** tab as a pending request. Review the sender's identity and proposed CIDRs, then accept or reject.
+When a link request arrives, it appears in your **Federation** tab as a pending request. Review the identity of the sender and the proposed CIDRs. Then accept or reject the request.
 
 ### Monitor active links
 
-Active federation links show in the dashboard with:
+The dashboard shows these items for each active federation link:
+
 - Session status (connecting, established, error)
 - Shared prefixes
-- Last keepalive timestamp
-- Peer collective identity
+- Timestamp of the last keepalive
+- Identity of the peer collective
 
 ### Revoke a link
 
-Click **Revoke** on any active link. This sends a `REVOKE` message to the peer, tears down the session, and removes all imported routes.
+Click **Revoke** on an active link. This action sends a `REVOKE` message to the peer. It also tears down the session and removes all imported routes.
 
 ## Sub-collective hierarchy
 
-Tenants can form a parent/child hierarchy (limited to two levels):
+Tenants can form a parent/child hierarchy. The hierarchy has a maximum of two levels:
 
 ```
 Parent collective
@@ -177,18 +184,18 @@ Parent collective
   └── Child C (posture: open)       → routes visible to parent
 ```
 
-A parent tenant sees aggregated routes from all non-closed children in its route table and streaming map updates. This allows organizational structures where a parent network provides shared infrastructure while children maintain independent control over their federation posture.
+A parent tenant sees the aggregated routes from all children that are not closed. The parent sees these routes in its route table and in streaming map updates. This structure lets a parent network provide shared infrastructure. The children keep independent control of their federation posture.
 
 ## Security considerations
 
-- **Signature verification**: Every federation message is signed and verified against the sender's DID document public key. Signatures are computed over the raw request bytes (not parsed/re-serialized JSON) to prevent canonicalization attacks.
+- **Signature verification**: The system signs each federation message and verifies it against the public key in the DID document of the sender. The signatures cover the raw request bytes (not parsed or re-serialized JSON). This prevents canonicalization attacks.
 
-- **Replay protection**: Message IDs are tracked for 5 minutes. Replayed messages are rejected.
+- **Replay protection**: The system tracks message IDs for 5 minutes. It rejects replayed messages.
 
-- **Rate limiting**: 60 requests per minute per sender DID. Source IP rate limiting is also applied.
+- **Rate limiting**: The limit is 60 requests per minute per sender DID. The system also applies a rate limit per source IP.
 
-- **SSRF defense**: Outbound federation requests resolve hostnames and reject private IP addresses (DNS rebinding guard). Only HTTPS with default ports is allowed.
+- **SSRF defense**: Outbound federation requests resolve hostnames and reject private IP addresses (DNS rebinding guard). The system allows only HTTPS with default ports.
 
-- **Pending request cap**: Each collective has a maximum number of pending inbound link requests. Oldest pending requests expire when the cap is reached.
+- **Pending request cap**: Each collective has a maximum number of pending inbound link requests. When the cap is reached, the oldest pending requests expire.
 
-- **Lockdown override**: Activating lockdown mode on a tenant immediately blocks all federation activity regardless of posture, both inbound and outbound.
+- **Lockdown override**: When you activate lockdown mode on a tenant, the system immediately blocks all federation activity, inbound and outbound. The posture does not change this.

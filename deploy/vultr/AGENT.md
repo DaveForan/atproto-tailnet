@@ -2,10 +2,10 @@
 
 ## Overview
 
-Single Vultr Cloud Compute instance running atproto-tailnet in **coordinator mode**.
+A single Vultr Cloud Compute instance runs atproto-tailnet in **coordinator mode**.
 
 - **Instance plan**: `vc2-1c-2gb` (1 vCPU, 2 GB RAM, $6/mo) or `vc2-2c-4gb` (2 vCPU, 4 GB RAM, $24/mo)
-- **TLS strategy**: `vultr` — DNS-01 wildcard certificates via Vultr DNS API
+- **TLS strategy**: `vultr` — DNS-01 wildcard certificates with the Vultr DNS API
 - **Caddy DNS plugin**: `github.com/caddy-dns/vultr`
 - **Compose file**: `docker-compose.coordinator.yml`
 - **Cost**: ~$6-24/month (compute only; Vultr DNS is free)
@@ -31,7 +31,7 @@ Single Vultr Cloud Compute instance running atproto-tailnet in **coordinator mod
 
 ### Secrets to Generate
 
-Generate these before deployment. Do not reuse values.
+Generate these secrets before deployment. Do not reuse values.
 
 ```sh
 SESSION_SECRET=$(openssl rand -hex 32)
@@ -55,9 +55,9 @@ vultr-cli instance create \
 
 OS `2284` = Ubuntu 24.04 LTS x64. Use `387` for Ubuntu 22.04 x64.
 
-To list available OS IDs: `vultr-cli os list | grep -i ubuntu`
+To list the available OS IDs: `vultr-cli os list | grep -i ubuntu`
 
-### 2. Wait for instance and get IP
+### 2. Wait for the instance and obtain the IP
 
 ```sh
 vultr-cli instance list
@@ -65,7 +65,7 @@ vultr-cli instance list
 
 Wait until `STATUS` shows `active` and `POWER STATUS` shows `running`. Note the `MAIN IP` value.
 
-To poll:
+To poll the instance:
 
 ```sh
 vultr-cli instance get <instance-id>
@@ -73,7 +73,7 @@ vultr-cli instance get <instance-id>
 
 ### 3. Create DNS records
 
-If the domain is not yet on Vultr DNS:
+If the domain is not on Vultr DNS yet, add it:
 
 ```sh
 vultr-cli dns domain create --domain yourdomain.com --ip <ip>
@@ -113,7 +113,7 @@ vultr-cli dns record list --domain yourdomain.com
 ssh root@<ip> 'bash -s' < deploy/vultr/server-setup.sh
 ```
 
-Or with explicit repo/branch:
+Or set the repository and branch explicitly:
 
 ```sh
 ssh root@<ip> 'REPO_URL=https://github.com/your-org/atproto-tailnet.git BRANCH=main bash -s' < deploy/vultr/server-setup.sh
@@ -121,7 +121,7 @@ ssh root@<ip> 'REPO_URL=https://github.com/your-org/atproto-tailnet.git BRANCH=m
 
 ### 5. Configure environment
 
-The bootstrap script auto-generates secrets and sets `TLS_STRATEGY=vultr`. Set the remaining values via SSH:
+The bootstrap script generates the secrets and sets `TLS_STRATEGY=vultr`. Set the remaining values over SSH:
 
 ```sh
 ssh root@<ip> bash -c "
@@ -142,7 +142,7 @@ docker compose -f docker-compose.coordinator.yml up -d
 
 ### 7. Wait for HTTPS readiness
 
-DNS propagation and TLS certificate issuance take time. Poll until the service is reachable over HTTPS:
+DNS propagation and TLS certificate issuance take time. Poll until the service responds over HTTPS:
 
 ```sh
 for i in $(seq 1 90); do
@@ -172,7 +172,7 @@ dig +short tailnets.yourdomain.com
 dig +short test.ts.yourdomain.com
 ```
 
-Both should return the instance IP.
+Both commands must return the instance IP.
 
 ### TLS certificate
 
@@ -180,7 +180,7 @@ Both should return the instance IP.
 curl -vI https://tailnets.yourdomain.com 2>&1 | grep -E 'issuer|subject'
 ```
 
-Should show a Let's Encrypt certificate for `tailnets.yourdomain.com`.
+The output must show a Let's Encrypt certificate for `tailnets.yourdomain.com`.
 
 ### Container status
 
@@ -188,7 +188,7 @@ Should show a Let's Encrypt certificate for `tailnets.yourdomain.com`.
 ssh root@<ip> 'cd /opt/atproto-tailnet && docker compose -f docker-compose.coordinator.yml ps'
 ```
 
-All services (coordinator, app, postgres, caddy) should show `Up`.
+All services (coordinator, app, postgres, caddy) must show `Up`.
 
 ### Logs
 
@@ -213,13 +213,13 @@ docker stats
 
 ## Backups
 
-Enable Vultr automatic backups on the instance ($1.20/mo for vc2-1c-2gb):
+Enable automatic Vultr backups on the instance ($1.20/mo for vc2-1c-2gb):
 
 ```sh
 vultr-cli instance update <instance-id> --backups enable
 ```
 
-Set up periodic Postgres dumps:
+Set up regular Postgres dumps:
 
 ```sh
 # Add to root crontab: crontab -e
@@ -258,23 +258,23 @@ vultr-cli firewall group delete --id <firewall-group-id>
 
 ## Troubleshooting
 
-### Instance won't start
+### Instance does not start
 
 ```sh
 vultr-cli instance get <instance-id>
 ```
 
-Check `STATUS` and `POWER STATUS`. If stuck in `pending`, wait — Vultr provisioning can take 1-5 minutes.
+Check `STATUS` and `POWER STATUS`. If the status stays `pending`, wait. Vultr provisioning can take 1-5 minutes.
 
 ### DNS not resolving
 
-Vultr DNS propagation can take up to 15 minutes. Verify the records exist:
+Vultr DNS propagation can take up to 15 minutes. Verify that the records exist:
 
 ```sh
 vultr-cli dns record list --domain yourdomain.com
 ```
 
-Confirm name servers are set to Vultr (`ns1.vultr.com`, `ns2.vultr.com`) at your registrar.
+Confirm that the name servers at your registrar are Vultr name servers (`ns1.vultr.com`, `ns2.vultr.com`).
 
 ### TLS certificate not issued
 
@@ -285,10 +285,10 @@ docker compose -f docker-compose.coordinator.yml logs caddy | grep -i "acme\|tls
 ```
 
 Common causes:
-- `VULTR_API_KEY` not set or invalid in `.env`
-- `TLS_STRATEGY` not set to `vultr`
-- `CADDY_DNS_PLUGINS` not set to `github.com/caddy-dns/vultr`
-- Domain not using Vultr name servers (DNS-01 requires Vultr to serve the `_acme-challenge` TXT record)
+- `VULTR_API_KEY` is not set or is not valid in `.env`
+- `TLS_STRATEGY` is not set to `vultr`
+- `CADDY_DNS_PLUGINS` is not set to `github.com/caddy-dns/vultr`
+- The domain does not use Vultr name servers (DNS-01 requires Vultr to serve the `_acme-challenge` TXT record)
 
 ### Coordinator not healthy
 
@@ -296,7 +296,7 @@ Common causes:
 docker compose -f docker-compose.coordinator.yml logs coordinator
 ```
 
-Check that `COORDINATOR_API_KEY` matches between app and coordinator, and that Postgres is healthy:
+Make sure that `COORDINATOR_API_KEY` is the same in the app and the coordinator. Make sure that Postgres is healthy:
 
 ```sh
 docker compose -f docker-compose.coordinator.yml exec postgres pg_isready -U atproto_tailnet
@@ -304,11 +304,11 @@ docker compose -f docker-compose.coordinator.yml exec postgres pg_isready -U atp
 
 ### SSH connection refused
 
-Vultr instances use password auth by default if SSH key was not attached at creation. Re-create the instance with `--ssh-keys` or use the Vultr console (web dashboard) to access the instance.
+Vultr instances use password authentication by default if you did not attach an SSH key at creation. Re-create the instance with `--ssh-keys`, or use the Vultr console (web dashboard) to access the instance.
 
 ### Out of memory (vc2-1c-2gb)
 
-If the 2 GB plan runs out of memory during Docker builds:
+If the 2 GB plan runs out of memory during Docker builds, add swap:
 
 ```sh
 # Add swap
@@ -319,13 +319,13 @@ swapon /swapfile
 echo '/swapfile none swap sw 0 0' >> /etc/fstab
 ```
 
-Then retry:
+Then try again:
 
 ```sh
 docker compose -f docker-compose.coordinator.yml up -d
 ```
 
-If the problem persists, upgrade to `vc2-2c-4gb`:
+If the problem continues, upgrade to `vc2-2c-4gb`:
 
 ```sh
 vultr-cli instance update <instance-id> --plan vc2-2c-4gb
