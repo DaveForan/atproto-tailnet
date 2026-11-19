@@ -32,6 +32,15 @@ export const securityService = {
       body: JSON.stringify({ [key]: value }),
     }),
 
+  updateWebhook: (
+    tid: string,
+    body: { notificationWebhookUrl?: string | null; notificationWebhookSecret?: string | null },
+  ) =>
+    tenantApi(tid, "/settings", {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
   approveDevice: (tid: string, id: string) =>
     tenantApi(tid, `/device-approvals/${id}/approve`, { method: "POST" }),
 

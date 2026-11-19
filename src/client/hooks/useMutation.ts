@@ -2,6 +2,7 @@ import { useCallback, useRef, useState } from "react";
 import { tenantApi } from "../services/api";
 import { useApp } from "./useAppState";
 import { useToast } from "../components/Toast";
+import { errorMessage } from "../lib/utils";
 
 interface MutationOptions {
   onSuccess?: string;
@@ -38,11 +39,7 @@ export function useTenantMutation(options?: MutationOptions): MutationResult {
         if (reloadFn) await reloadFn();
         return true;
       } catch (e) {
-        toastError(
-          e instanceof Error
-            ? e.message
-            : options?.onError ?? "Operation failed",
-        );
+        toastError(errorMessage(e, options?.onError ?? "Operation failed"));
         return false;
       } finally {
         inFlightRef.current = false;

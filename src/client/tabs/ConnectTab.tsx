@@ -2,38 +2,59 @@ import { useState } from "react";
 import { useApp } from "../hooks/useAppState";
 import { useToast } from "../components/Toast";
 import { Card } from "../components/Card";
-import { copyToClipboard } from "../lib/utils";
+import { copyToClipboard, errorCode, errorMessage } from "../lib/utils";
 import { deviceService } from "../services/devices";
-import type { AuthKeyResponse } from "../lib/types";
+
+const EXPIRY_OPTIONS = [1, 24, 24 * 7, 24 * 30];
+const expiryLabel = (h: number) => (h < 24 ? `${h} hour` : h === 24 ? "24 hours" : `${h / 24} days`);
+
+interface IssuedKey {
+  command: string;
+  reusable: boolean;
+  expiresInHours: number;
+}
 
 export function ConnectTab() {
-  const { currentTenant } = useApp();
+  const { currentTenant, setTab } = useApp();
   const { toast, toastError } = useToast();
-  const [authKey, setAuthKey] = useState<AuthKeyResponse | null>(null);
+  const [issued, setIssued] = useState<IssuedKey | null>(null);
+  const [pending, setPending] = useState(false);
+  const [limitError, setLimitError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
+  const [reusable, setReusable] = useState(false);
+  const [expiresInHours, setExpiresInHours] = useState(24);
 
   const handleGenerate = async () => {
     if (!currentTenant) return;
     setGenerating(true);
+    setLimitError(null);
     try {
-      const result = await deviceService.generateAuthKey(currentTenant.id);
-      if (result) {
-        setAuthKey(result);
-        toast("Auth key generated");
+      const result = await deviceService.generateAuthKey(currentTenant.id, { reusable, expiresInHours });
+      if (!result) return;
+      if ("approvalId" in result) {
+        setIssued(null);
+        setPending(true);
+        toast("Approval requested");
+        return;
       }
+      setPending(false);
+      setIssued({
+        command: result.command || `tailscale up --login-server ${result.loginServer} --authkey ${result.key}`,
+        reusable,
+        expiresInHours,
+      });
+      toast("Auth key generated");
     } catch (e) {
-      toastError(e instanceof Error ? e.message : "Failed to generate auth key");
+      if (errorCode(e) === "device_limit") setLimitError(errorMessage(e, ""));
+      else toastError(errorMessage(e, "Failed to generate auth key"));
     } finally {
       setGenerating(false);
     }
   };
 
-  const fullCommand = authKey
-    ? `tailscale up --login-server ${authKey.loginServer} --authkey ${authKey.authKey}`
-    : "";
-
   const handleCopy = () => {
-    copyToClipboard(fullCommand);
+    if (!issued) return;
+    copyToClipboard(issued.command);
     toast("Copied to clipboard");
   };
 
@@ -45,35 +66,64 @@ export function ConnectTab() {
           command on the device you want to add.
         </p>
 
-        {!authKey ? (
-          <button
-            className="btn btn-primary"
-            onClick={handleGenerate}
-            disabled={generating}
+        <div className="form-row">
+          <label htmlFor="key-expiry">Key expires after</label>
+          <select
+            id="key-expiry"
+            value={expiresInHours}
+            onChange={(e) => setExpiresInHours(Number(e.target.value))}
           >
-            {generating ? "Generating..." : "Generate Auth Key"}
-          </button>
-        ) : (
+            {EXPIRY_OPTIONS.map((h) => (
+              <option key={h} value={h}>{expiryLabel(h)}</option>
+            ))}
+          </select>
+          <label>
+            <input
+              type="checkbox"
+              checked={reusable}
+              onChange={(e) => setReusable(e.target.checked)}
+            />{" "}
+            Reusable (connect several devices with one key)
+          </label>
+        </div>
+
+        {limitError && (
+          <div className="lockdown-banner" role="alert">
+            <span>{limitError}</span>
+            <button className="btn-sm btn-ghost" onClick={() => setTab("usage")}>View limits</button>
+          </div>
+        )}
+
+        {pending && (
+          <p className="help-text" role="status">
+            Device approval is required on this tailnet. Your request was sent to the
+            admins; you will be able to connect once it is approved.
+          </p>
+        )}
+
+        {issued && (
           <div className="auth-key-result">
             <div className="code-block-wrapper">
-              <pre className="code-block">{fullCommand}</pre>
+              <pre className="code-block">{issued.command}</pre>
               <button className="btn-sm btn-ghost copy-btn" onClick={handleCopy}>
                 Copy
               </button>
             </div>
             <p className="help-text">
-              Run this command on the device you want to connect. The auth key
-              can only be used once.
+              Run this command on the device you want to connect.{" "}
+              {issued.reusable ? "The key can be used for several devices" : "The key can only be used once"}{" "}
+              and expires in {expiryLabel(issued.expiresInHours)}. You can revoke it from the Devices tab.
             </p>
-            <button
-              className="btn btn-ghost"
-              onClick={handleGenerate}
-              disabled={generating}
-            >
-              Generate New Key
-            </button>
           </div>
         )}
+
+        <button
+          className={issued ? "btn btn-ghost" : "btn btn-primary"}
+          onClick={handleGenerate}
+          disabled={generating}
+        >
+          {generating ? "Generating..." : issued ? "Generate New Key" : "Generate Auth Key"}
+        </button>
       </Card>
     </div>
   );

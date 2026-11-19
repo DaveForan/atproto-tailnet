@@ -4,99 +4,149 @@ import { useTenantMutation } from "../hooks/useMutation";
 import { useApp } from "../hooks/useAppState";
 import { Card } from "../components/Card";
 import { relativeTime } from "../lib/utils";
-import { PLANS } from "../lib/constants";
 import type { UsageData } from "../lib/types";
 
 const USAGE_FALLBACK: UsageData = {
-  current: { deviceCount: 0, onlineDevices: 0, memberCount: 0, routeCount: 0 },
-  plan: { name: "", maxDevices: 0, maxMembers: 0 },
-  limits: { devicesExceeded: false, membersExceeded: false },
+  current: { devices: 0, onlineDevices: 0, members: 0 },
+  limits: { maxDevices: 0, maxMembers: 0 },
+  overLimit: { devices: false, members: false },
   history: [],
 };
 
+const MAX_CAP = 10000;
 const fmtLimit = (n: number) => (n > 0 ? String(n) : "∞");
 
+function clampCap(v: string): number {
+  const n = Math.floor(Number(v));
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.min(n, MAX_CAP);
+}
+
 export function UsageTab() {
-  const { hasPerm } = useApp();
+  const { isOriginator } = useApp();
   const { data: usage, loading, reload } = useTenantData<UsageData>(
     "/usage",
     USAGE_FALLBACK,
   );
   const { mutate, busy } = useTenantMutation({
-    onSuccess: "Plan updated",
+    onSuccess: "Limits updated",
+    onError: "Failed to update limits",
     reload,
   });
-  const [selectedPlan, setSelectedPlan] = useState("");
+  const [maxDevices, setMaxDevices] = useState(0);
+  const [maxMembers, setMaxMembers] = useState(0);
 
   useEffect(() => {
-    if (usage.plan.name) setSelectedPlan(usage.plan.name);
-  }, [usage.plan.name]);
+    setMaxDevices(usage.limits.maxDevices);
+    setMaxMembers(usage.limits.maxMembers);
+  }, [usage.limits.maxDevices, usage.limits.maxMembers]);
 
-  const handleSavePlan = async () => {
-    if (!usage.plan.name || !selectedPlan) return;
-    await mutate("/plan", {
+  const handleSave = async () => {
+    await mutate("/limits", {
       method: "PUT",
-      body: JSON.stringify({ planName: selectedPlan }),
+      body: JSON.stringify({ maxDevices, maxMembers }),
     });
   };
 
   if (loading) return <div className="loading">Loading...</div>;
-  if (!usage.plan.name)
-    return <div className="loading">No usage data available.</div>;
 
-  const canManage = hasPerm("manage_settings");
+  const { current, limits, overLimit } = usage;
+  const dirty = maxDevices !== limits.maxDevices || maxMembers !== limits.maxMembers;
+  const belowCurrent =
+    (maxDevices > 0 && maxDevices < current.devices) ||
+    (maxMembers > 0 && maxMembers < current.members);
 
   return (
     <div className="tab-content">
+      {(overLimit.devices || overLimit.members) && (
+        <div className="lockdown-banner" role="alert">
+          <span>
+            Over limit:{" "}
+            {[
+              overLimit.devices && `${current.devices} devices (cap ${limits.maxDevices})`,
+              overLimit.members && `${current.members} members (cap ${limits.maxMembers})`,
+            ].filter(Boolean).join(", ")}
+            . New {overLimit.devices && overLimit.members ? "devices and members" : overLimit.devices ? "devices" : "members"} are
+            blocked until usage drops below the cap or the cap is raised.
+          </span>
+        </div>
+      )}
+
       <Card title="Current Usage">
         <div className="stats-row">
           <div className="stat-card">
             <div className="stat-value">
-              {usage.current.deviceCount} / {fmtLimit(usage.plan.maxDevices)}
+              {current.devices} / {fmtLimit(limits.maxDevices)}
             </div>
             <div className="stat-label">
-              Devices ({usage.current.onlineDevices} online)
-              {usage.limits.devicesExceeded && " · over limit"}
+              Devices ({current.onlineDevices} online)
+              {overLimit.devices && " · over limit"}
             </div>
           </div>
           <div className="stat-card">
             <div className="stat-value">
-              {usage.current.memberCount} / {fmtLimit(usage.plan.maxMembers)}
+              {current.members} / {fmtLimit(limits.maxMembers)}
             </div>
             <div className="stat-label">
-              Members{usage.limits.membersExceeded && " · over limit"}
+              Members{overLimit.members && " · over limit"}
             </div>
           </div>
-          <div className="stat-card">
-            <div className="stat-value">{usage.current.routeCount}</div>
-            <div className="stat-label">Routes</div>
-          </div>
+          {current.routes !== undefined && (
+            <div className="stat-card">
+              <div className="stat-value">{current.routes}</div>
+              <div className="stat-label">Routes</div>
+            </div>
+          )}
         </div>
       </Card>
 
-      <Card title="Plan">
-        <div className="form-row">
-          <select
-            value={selectedPlan}
-            onChange={(e) => setSelectedPlan(e.target.value)}
-            disabled={!canManage}
-          >
-            {PLANS.map((plan) => (
-              <option key={plan} value={plan}>
-                {plan}
-              </option>
-            ))}
-          </select>
-          {canManage && (
-            <button
-              className="btn-primary"
-              onClick={handleSavePlan}
-              disabled={busy}
-            >
-              {busy ? "Saving..." : "Save"}
-            </button>
-          )}
-        </div>
+      <Card title="Limits">
+        {isOriginator() ? (
+          <div className="form-stack">
+            <p className="card-description">
+              Caps are enforced when issuing auth keys, approving devices, accepting invitations,
+              and approving join requests. 0 means unlimited. A sub-collective's caps cannot exceed
+              its parent's.
+            </p>
+            <div className="form-row">
+              <label htmlFor="limit-devices">Max devices</label>
+              <input
+                id="limit-devices"
+                type="number"
+                min={0}
+                max={MAX_CAP}
+                value={maxDevices}
+                onChange={(e) => setMaxDevices(clampCap(e.target.value))}
+              />
+            </div>
+            <div className="form-row">
+              <label htmlFor="limit-members">Max members</label>
+              <input
+                id="limit-members"
+                type="number"
+                min={0}
+                max={MAX_CAP}
+                value={maxMembers}
+                onChange={(e) => setMaxMembers(clampCap(e.target.value))}
+              />
+            </div>
+            {belowCurrent && (
+              <p className="help-text" role="status">
+                A cap below current usage blocks new additions but does not remove existing devices or members.
+              </p>
+            )}
+            <div>
+              <button className="btn-primary" onClick={handleSave} disabled={busy || !dirty}>
+                {busy ? "Saving..." : "Save limits"}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <p className="card-description">
+            Max devices: {fmtLimit(limits.maxDevices)} · Max members: {fmtLimit(limits.maxMembers)}.
+            Only the primary admin can change these limits.
+          </p>
+        )}
       </Card>
 
       {usage.history.length > 0 && (

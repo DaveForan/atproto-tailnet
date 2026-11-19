@@ -3,6 +3,7 @@ import { useApp } from "../hooks/useAppState";
 import { securityService } from "../services/security";
 import { useToast } from "./Toast";
 import { Badge } from "./Badge";
+import { NotificationBell } from "./NotificationBell";
 import { tabRegistry, type TabGroup } from "./registry";
 
 function safeUrl(url?: string): string {
@@ -52,6 +53,7 @@ export function Header() {
         <h1>atproto-tailnet</h1>
       </div>
       <div className="user-info">
+        <NotificationBell />
         {avatar && <img src={avatar} alt="" />}
         <span>{user.handle}</span>
         <form action="/auth/logout" method="post" style={{ display: "inline" }}>

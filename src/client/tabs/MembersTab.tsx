@@ -69,11 +69,11 @@ export function MembersTab() {
   };
 
   const handleRemove = async (memberId: string, handle: string) => {
-    if (!confirm(`Remove member @${handle}? This cannot be undone.`)) return;
+    if (!confirm(`Remove member @${handle}? This also removes all of their devices and revokes their outstanding auth keys. This cannot be undone.`)) return;
     await mutate(
       `/members/${memberId}`,
       { method: "DELETE" },
-      { successMsg: "Member removed", reload: reloadAfterMutate },
+      { successMsg: "Member removed, devices deleted and keys revoked", reload: reloadAfterMutate },
     );
   };
 

@@ -5,6 +5,8 @@ import type {
   Member,
   DeviceLockInfo,
   AuthKeyResponse,
+  AuthKeyOptions,
+  AuthKeyInfo,
 } from "../lib/types";
 
 export const deviceService = {
@@ -17,8 +19,17 @@ export const deviceService = {
   removeDevice: (tid: string, id: string) =>
     tenantApi(tid, `/devices/${id}`, { method: "DELETE" }),
 
-  generateAuthKey: (tid: string) =>
-    tenantApi<AuthKeyResponse>(tid, "/devices/auth-key", { method: "POST" }),
+  generateAuthKey: (tid: string, opts: AuthKeyOptions = {}) =>
+    tenantApi<AuthKeyResponse>(tid, "/devices/auth-key", {
+      method: "POST",
+      body: JSON.stringify(opts),
+    }),
+
+  listAuthKeys: (tid: string) =>
+    tenantApi<{ keys: AuthKeyInfo[] }>(tid, "/auth-keys"),
+
+  revokeAuthKey: (tid: string, keyId: string) =>
+    tenantApi(tid, `/auth-keys/${keyId}`, { method: "DELETE" }),
 
   getMembers: (tid: string) =>
     tenantApi<Member[]>(tid, "/members"),

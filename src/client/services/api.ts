@@ -1,5 +1,11 @@
 let csrfToken = "";
 
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number, readonly code?: string) {
+    super(message);
+  }
+}
+
 export function setCsrfToken(token: string) {
   csrfToken = token;
 }
@@ -21,7 +27,11 @@ export async function api<T = unknown>(
     if (res.status === 204) return null;
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: "Request failed" }));
-      throw new Error(err.error || "Something went wrong");
+      throw new ApiError(
+        err.error || "Something went wrong",
+        res.status,
+        typeof err.code === "string" ? err.code : undefined,
+      );
     }
     return res.json();
   } catch (e) {

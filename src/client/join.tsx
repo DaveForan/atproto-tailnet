@@ -1,4 +1,5 @@
 import { StrictMode, useCallback, useEffect, useState } from "react";
+import { errorMessage } from "./lib/utils";
 import { createRoot } from "react-dom/client";
 import { api, fetchCsrfToken } from "./services/api";
 import { ToastProvider, useToast } from "./components/Toast";
@@ -111,7 +112,7 @@ function JoinApp() {
       toast("Request submitted!");
       await init();
     } catch (e) {
-      toastError(e instanceof Error ? e.message : "Failed to submit request");
+      toastError(errorMessage(e, "Failed to submit request"));
     } finally {
       setSubmitting(false);
     }

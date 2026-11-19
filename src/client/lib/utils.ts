@@ -1,3 +1,5 @@
+import { ApiError } from "../services/api";
+
 export function safeUrl(url?: string | null): string {
   if (!url) return "";
   try {
@@ -23,6 +25,31 @@ export function relativeTime(dateStr: string): string {
   const days = Math.floor(hours / 24);
   if (days < 30) return `${days}d ago`;
   return new Date(dateStr).toLocaleDateString();
+}
+
+const LIMIT_HINTS: Record<string, string> = {
+  device_limit: "Device limit reached for this tailnet. Ask the primary admin to raise the device cap or remove unused devices.",
+  member_limit: "This tailnet has reached its member limit. Ask the primary admin to raise the member cap.",
+};
+
+export function errorCode(e: unknown): string | undefined {
+  return e instanceof ApiError ? e.code : undefined;
+}
+
+export function errorMessage(e: unknown, fallback: string): string {
+  const code = errorCode(e);
+  if (code && LIMIT_HINTS[code]) return LIMIT_HINTS[code];
+  return e instanceof Error ? e.message : fallback;
+}
+
+export function formatExpiry(dateStr: string | null): string {
+  if (!dateStr) return "never";
+  const diff = new Date(dateStr).getTime() - Date.now();
+  if (diff <= 0) return "expired";
+  const hours = Math.floor(diff / 3600000);
+  if (hours < 1) return `in ${Math.max(1, Math.floor(diff / 60000))}m`;
+  if (hours < 48) return `in ${hours}h`;
+  return `in ${Math.floor(hours / 24)}d`;
 }
 
 export const auditActionLabels: Record<string, string> = {
@@ -84,6 +111,7 @@ export const auditActionLabels: Record<string, string> = {
   hibernation_updated: "Updated hibernation",
   board_limits_updated: "Updated board limits",
   plan_updated: "Updated plan",
+  limits_updated: "Updated limits",
   route_enabled: "Enabled route",
   route_disabled: "Disabled route",
   route_deleted: "Deleted route",

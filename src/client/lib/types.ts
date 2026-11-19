@@ -37,6 +37,8 @@ export interface Settings {
   maxBoardPosts: number;
   maxBoardPostsDisplayed: number;
   hibernateAfterDays: number;
+  notificationWebhookUrl?: string | null;
+  hasWebhookSecret?: boolean;
 }
 
 export interface Invitation {
@@ -64,6 +66,52 @@ export interface Device {
   ipAddresses: string[];
   online: boolean;
   lastSeen?: string;
+  owner?: OwnerRef | null;
+}
+
+export interface OwnerRef {
+  userId: string;
+  handle: string;
+}
+
+export interface AuthKeyInfo {
+  id: string;
+  prefix: string;
+  owner: OwnerRef | null;
+  reusable: boolean;
+  ephemeral: boolean;
+  used: boolean;
+  expiresAt: string | null;
+  createdAt: string;
+  revoked: boolean;
+}
+
+export type NotificationType =
+  | "device_approval_requested"
+  | "join_request"
+  | "service_device_approval_requested"
+  | "service_approval_requested"
+  | "device_limit_reached";
+
+export interface AppNotification {
+  id: string;
+  type: NotificationType | string;
+  title: string;
+  body: string;
+  link: string | null;
+  createdAt: string;
+  readAt: string | null;
+}
+
+export interface NotificationList {
+  notifications: AppNotification[];
+  unreadCount: number;
+}
+
+export interface WebhookTestResult {
+  ok: boolean;
+  status?: number;
+  error?: string;
 }
 
 export interface DeviceGroup {
@@ -159,21 +207,22 @@ export interface RouteEntry {
   node?: { name: string; givenName?: string; online: boolean };
 }
 
+export interface UsageLimits {
+  maxDevices: number;
+  maxMembers: number;
+}
+
 export interface UsageData {
   current: {
-    deviceCount: number;
+    devices: number;
     onlineDevices: number;
-    memberCount: number;
-    routeCount: number;
+    members: number;
+    routes?: number;
   };
-  plan: {
-    name: string;
-    maxDevices: number;
-    maxMembers: number;
-  };
-  limits: {
-    devicesExceeded: boolean;
-    membersExceeded: boolean;
+  limits: UsageLimits;
+  overLimit: {
+    devices: boolean;
+    members: boolean;
   };
   history: UsageSnapshot[];
 }
@@ -352,9 +401,13 @@ export interface DeviceLockInfo {
 }
 
 // Connect tab response
-export interface AuthKeyResponse {
-  authKey: string;
-  loginServer: string;
+export type AuthKeyResponse =
+  | { key: string; command: string; loginServer: string }
+  | { approvalId: string; status: "pending_approval" };
+
+export interface AuthKeyOptions {
+  reusable?: boolean;
+  expiresInHours?: number;
 }
 
 // ACL data (flattened policy)

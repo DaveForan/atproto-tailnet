@@ -1,4 +1,5 @@
 import { lazy, Suspense } from "react";
+import { errorMessage } from "./lib/utils";
 import { useApp } from "./hooks/useAppState";
 import { Header, LockdownBanner, LoginPage, Sidebar, SidebarProvider, StatsSummary } from "./components/Layout";
 import { invitationService } from "./services/invitations";
@@ -127,7 +128,7 @@ function PendingInvitations({
       toast("Invitation accepted");
       onAction();
     } catch (e) {
-      toastError(e instanceof Error ? e.message : "Failed to accept invitation");
+      toastError(errorMessage(e, "Failed to accept invitation"));
     }
   };
 

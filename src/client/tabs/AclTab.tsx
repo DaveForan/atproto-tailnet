@@ -5,12 +5,13 @@ import { useToast } from "../components/Toast";
 import { useTenantMutation } from "../hooks/useMutation";
 import { Card } from "../components/Card";
 import { EmptyState } from "../components/EmptyState";
-import type { AclGetResponse, AclRule } from "../lib/types";
+import type { AclRule } from "../lib/types";
 
 export function AclTab() {
   const { currentTenant, hasPerm } = useApp();
   const { toast, toastError } = useToast();
-  const { mutate, busy } = useTenantMutation();
+  const { mutate, busy } = useTenantMutation({ onError: "Failed to save ACL policy" });
+  const coordinatorMode = !!currentTenant?.coordinatorTenantId;
   const [users, setUsers] = useState<string[]>([]);
   const [acls, setAcls] = useState<AclRule[]>([]);
   const [groups, setGroups] = useState<Record<string, string[]>>({});
@@ -51,11 +52,9 @@ export function AclTab() {
 
   useEffect(() => { loadAcl(); }, [loadAcl]);
 
-  const sourceOptions = [
-    ...users,
-    ...Object.keys(groups).map((g) => `group:${g}`),
-    "*",
-  ];
+  const sourceOptions = coordinatorMode
+    ? [...Object.keys(hosts), "*"]
+    : [...users, ...Object.keys(groups).map((g) => `group:${g}`), "*"];
 
   const toggleMulti = (
     current: string[],
@@ -122,7 +121,7 @@ export function AclTab() {
   const handleSave = async () => {
     await mutate("/acl", {
       method: "PUT",
-      body: JSON.stringify({ acls, groups, hosts }),
+      body: JSON.stringify(coordinatorMode ? { acls, hosts } : { acls, groups, hosts }),
     }, { successMsg: "ACL policy saved" });
   };
 
@@ -138,6 +137,13 @@ export function AclTab() {
 
   return (
     <div className="tab-content">
+      {coordinatorMode && (
+        <p className="help-text" role="note">
+          This tailnet runs on the built-in coordinator, which supports rules between hosts,
+          IPs/CIDRs and <code>*</code>. Users, groups, tags and auto-approvers are not supported
+          here; policies using them are rejected on save.
+        </p>
+      )}
       <div className="form-row">
         <button className="btn-primary" onClick={handleSave} disabled={busy || !hasPerm("manage_acl")}>
           Save Policy
@@ -222,7 +228,7 @@ export function AclTab() {
         </div>
       </Card>
 
-      <Card title="Groups">
+      {!coordinatorMode && <Card title="Groups">
         {Object.keys(groups).length === 0 ? (
           <EmptyState>No groups defined.</EmptyState>
         ) : (
@@ -270,7 +276,7 @@ export function AclTab() {
             Add Group
           </button>
         </div>
-      </Card>
+      </Card>}
 
       <Card title="Hosts">
         {Object.keys(hosts).length === 0 ? (
