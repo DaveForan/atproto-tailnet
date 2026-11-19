@@ -9,6 +9,7 @@ Machine-readable instructions for an AI agent. The agent deploys atproto-tailnet
 - **TLS strategy**: `digitalocean` -- DNS-01 wildcard with the DO API token
 - **Compose file**: `docker-compose.coordinator.yml`
 - **Cost estimate**: ~$18-24/month ($18 Droplet + $3.60 optional backups + $0 DNS)
+- **Human guide**: "First deployment on DigitalOcean" in [docs/deployment.md](../../docs/deployment.md#first-deployment-on-digitalocean)
 
 ## Prerequisites
 
@@ -19,6 +20,9 @@ Machine-readable instructions for an AI agent. The agent deploys atproto-tailnet
 | Domain added to DO DNS | `doctl compute domain list` |
 | SSH key uploaded to DO | `doctl compute ssh-key list` |
 | Git repo accessible from the Droplet | N/A |
+| Bluesky DID of the instance operator | See the `OPERATOR_DIDS` row below |
+
+Only `doctl` on your workstation needs the full read+write token. It uses this token to create the Droplet, the firewall, and the DNS records.
 
 ## Required Inputs
 
@@ -26,7 +30,10 @@ Machine-readable instructions for an AI agent. The agent deploys atproto-tailnet
 
 | Variable | Description | Example |
 |---|---|---|
-| `DO_AUTH_TOKEN` | DigitalOcean API token (read+write) | `dop_v1_abc123...` |
+| `DO_AUTH_TOKEN` | DigitalOcean API token (read+write), for `doctl` on your workstation only | `dop_v1_abc123...` |
+| `DO_DNS_TOKEN` | DigitalOcean API token for Caddy on the Droplet. Use a custom-scoped token with domain (DNS record) read/write access only, if possible | `dop_v1_def456...` |
+| `OPERATOR_DIDS` | Comma-separated DIDs of the instance operators. You must set it before the first sign-in | `did:plc:abc123...` |
+| `ADMIN_IP` | Public IP address that can connect with SSH | `203.0.113.10` |
 | `DOMAIN` | Base domain managed in DO DNS | `example.com` |
 | `APP_SUBDOMAIN` | Subdomain for the web UI | `tailnets` (gives `tailnets.example.com`) |
 | `TENANT_SUBDOMAIN` | Subdomain prefix for the tenant wildcard | `ts` (gives `*.ts.example.com`) |
@@ -44,6 +51,17 @@ Machine-readable instructions for an AI agent. The agent deploys atproto-tailnet
 | `POSTGRES_PASSWORD` | `openssl rand -hex 16` |
 | `COORDINATOR_API_KEY` | `openssl rand -hex 32` |
 | `FEDERATION_KEY_ENCRYPTION_KEY` | `openssl rand -hex 32` |
+| `ATPROTO_PRIVATE_KEY` | See step 8. Generate it on the Droplet after `.env` exists |
+
+The app does not start in production if `SESSION_SECRET` or `COORDINATOR_API_KEY` has fewer than 32 characters. It also does not start if the value contains `change-me` or `changeme`. The coordinator applies the same rule to its admin key (`COORDINATOR_API_KEY`).
+
+To find the DID of a Bluesky account, use this command:
+
+```sh
+curl "https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle?handle=you.bsky.social"
+```
+
+Only operators, and the "tailnet creators" that an operator designates, get a tailnet. All other users who sign in see a "no access" view. This view shows their pending invitations and a "Request to join" button for the default tailnet. The first tailnet that an operator creates becomes the default tailnet. The default tailnet accepts join requests. If `OPERATOR_DIDS` is empty, the app logs a loud warning and nobody can create a tailnet.
 
 ## Deployment Steps
 
@@ -146,6 +164,9 @@ BASE_DOMAIN=${BASE_DOMAIN}
 LOG_LEVEL=info
 FEDERATION_KEY_ENCRYPTION_KEY=${FEDERATION_KEY_ENCRYPTION_KEY}
 
+# Instance operators (must be set before the first sign-in)
+OPERATOR_DIDS=${OPERATOR_DIDS}
+
 # Coordinator
 COORDINATOR_URL=http://coordinator:9443
 COORDINATOR_API_KEY=${COORDINATOR_API_KEY}
@@ -158,30 +179,46 @@ APP_DOMAIN=${APP_DOMAIN}
 
 # TLS — DigitalOcean DNS-01 wildcard
 TLS_STRATEGY=digitalocean
-DO_AUTH_TOKEN=${DO_AUTH_TOKEN}
+DO_AUTH_TOKEN=${DO_DNS_TOKEN}
 CADDY_DNS_PLUGINS=github.com/caddy-dns/digitalocean
 EOF
+
+ssh root@"$DROPLET_IP" "chmod 600 /opt/atproto-tailnet/.env"
 ```
 
-### 8. Create data directories
+Do not set `FEDERATION_ENABLED`. Federation is off by default. Its data plane needs Docker (Headscale mode). The coordinator stack does not send traffic between instances, so federation links carry no traffic. The app still uses `FEDERATION_KEY_ENCRYPTION_KEY` for collective signing keys and credentials.
 
-```sh
-ssh root@"$DROPLET_IP" "mkdir -p /opt/atproto-tailnet/data/headscale"
-```
+### 8. Generate the AT Protocol OAuth key
 
-### 9. Configure firewall
+Production sign-in fails without `ATPROTO_PRIVATE_KEY`. The app loads it with `JoseKey.fromImportable`. Use a one-line ES256 (P-256) private JWK that starts with `{`. A PKCS8 PEM also works, but it has many lines, so use the JWK.
+
+This command uses the `jose` dependency in the app image. Run it on the Droplet after `.env` exists:
 
 ```sh
 ssh root@"$DROPLET_IP" 'bash -s' <<'REMOTE'
-ufw allow 22/tcp
-ufw allow 80/tcp
-ufw allow 443/tcp
-ufw allow 443/udp
-ufw --force enable
+set -euo pipefail
+cd /opt/atproto-tailnet
+KEY=$(docker compose -f docker-compose.coordinator.yml run --rm --no-deps --entrypoint node app \
+  --input-type=module -e "import {generateKeyPair,exportJWK} from 'jose'; const {privateKey}=await generateKeyPair('ES256',{extractable:true}); console.log(JSON.stringify({...await exportJWK(privateKey),alg:'ES256'}))")
+echo "ATPROTO_PRIVATE_KEY='${KEY}'" >> .env
 REMOTE
 ```
 
-Note: Coordinator mode does not need the port range 10001-10100 because it has no Headscale containers for each tenant.
+The result in `.env` is one line in single quotes: `ATPROTO_PRIVATE_KEY='{"kty":"EC",...}'`.
+
+### 9. Configure the cloud firewall
+
+Docker-published ports (80, 443) bypass `ufw`. `ufw` alone does not protect them. Use a DigitalOcean Cloud Firewall:
+
+```sh
+doctl compute firewall create \
+  --name atproto-tailnet-fw \
+  --tag-names atproto-tailnet \
+  --inbound-rules "protocol:tcp,ports:22,address:${ADMIN_IP}/32 protocol:tcp,ports:80,address:0.0.0.0/0,address:::/0 protocol:tcp,ports:443,address:0.0.0.0/0,address:::/0 protocol:udp,ports:443,address:0.0.0.0/0,address:::/0" \
+  --outbound-rules "protocol:tcp,ports:all,address:0.0.0.0/0,address:::/0 protocol:udp,ports:all,address:0.0.0.0/0,address:::/0 protocol:icmp,address:0.0.0.0/0,address:::/0"
+```
+
+The compose file does not publish the coordinator port (9443) or Postgres. They use `expose` only. Postgres is only on the `internal` network. Caddy is only on the `edge` network. For more hardening steps, see "Droplet hardening" in [docs/deployment.md](../../docs/deployment.md#droplet-hardening).
 
 ### 10. Build and start the stack
 
@@ -195,11 +232,11 @@ REMOTE
 
 ### 11. Wait for health check
 
-Poll the health endpoint. Caddy needs time to obtain the TLS certificate at the first start.
+Poll the health endpoint of the app from inside the `app` container. The compose file does not publish port 3000 on the host.
 
 ```sh
 for i in $(seq 1 60); do
-  if ssh root@"$DROPLET_IP" "curl -sf http://localhost:3000/health" >/dev/null 2>&1; then
+  if ssh root@"$DROPLET_IP" "cd /opt/atproto-tailnet && docker compose -f docker-compose.coordinator.yml exec -T app wget -qO- http://localhost:3000/health" >/dev/null 2>&1; then
     echo "Health check passed"
     break
   fi
@@ -209,7 +246,7 @@ done
 
 ### 12. Verify HTTPS externally
 
-Wait for DNS propagation (up to 300s for DO DNS). Then verify:
+Wait for DNS propagation (up to 300s for DO DNS). Caddy also needs time to get the TLS certificate at the first start. Then verify:
 
 ```sh
 for i in $(seq 1 60); do
@@ -221,13 +258,33 @@ for i in $(seq 1 60); do
 done
 ```
 
+### 13. Sign in as the operator
+
+The operator must sign in first after the deploy. Open `https://${APP_DOMAIN}` and sign in with the Bluesky account in `OPERATOR_DIDS`. Then create the first tailnet. This tailnet becomes the default tailnet. Other users can then send join requests to it.
+
+A sign-in does not create a tailnet automatically.
+
+### 14. Connect Claude (optional)
+
+In Claude, add a custom connector with this URL: `https://<APP_DOMAIN>/mcp`. The connector uses OAuth sign-in with Bluesky. For more data, see [docs/site/guides/mcp.md](../../docs/site/guides/mcp.md).
+
 ## Verification
 
 ### Health check
 
 ```sh
-curl -sf "https://${APP_DOMAIN}/health"
-# Expected: {"status":"ok"} or similar 200 response
+curl -f "https://${APP_DOMAIN}/health"
+# Expected: {"status":"ok"} with HTTP 200
+```
+
+Caddy sets HSTS on `APP_DOMAIN`. Tenant subdomains (`<slug>.BASE_DOMAIN`) expose only `/key`, `/ts2021`, and `/health` from the coordinator. The `app` and `coordinator` containers run as non-root users.
+
+### Operator check
+
+```sh
+ssh root@"$DROPLET_IP" "grep '^OPERATOR_DIDS=' /opt/atproto-tailnet/.env"
+ssh root@"$DROPLET_IP" "cd /opt/atproto-tailnet && docker compose -f docker-compose.coordinator.yml logs app | grep -i 'OPERATOR_DIDS IS EMPTY'"
+# Expected: a DID on the first line; no output from the second command
 ```
 
 ### DNS resolution
@@ -260,18 +317,30 @@ echo | openssl s_client -connect "anything.${BASE_DOMAIN}:443" -servername "anyt
 ssh root@"$DROPLET_IP" "cd /opt/atproto-tailnet && docker compose -f docker-compose.coordinator.yml logs --tail 50"
 ```
 
+## Backups
+
+Back up these two Docker volumes:
+
+- `pgdata` -- the PostgreSQL data.
+- `coord_data` -- the coordinator Noise control key (`COORD_CONTROL_KEY_PATH=/var/lib/coordinator/control.key`).
+
+If you lose `coord_data`, all devices must register and connect again.
+
 ## Teardown
 
 ### 1. Stop services
+
+The `-v` flag deletes all volumes, including `pgdata` and `coord_data`. Make a backup first if you need the data.
 
 ```sh
 ssh root@"$DROPLET_IP" "cd /opt/atproto-tailnet && docker compose -f docker-compose.coordinator.yml down -v"
 ```
 
-### 2. Delete the Droplet
+### 2. Delete the Droplet and the firewall
 
 ```sh
 doctl compute droplet delete atproto-tailnet --force
+doctl compute firewall list --format ID,Name --no-header | awk '$2=="atproto-tailnet-fw"{print $1}' | xargs -r -n1 doctl compute firewall delete --force
 ```
 
 ### 3. Delete DNS records
@@ -291,15 +360,17 @@ doctl compute domain records delete "$DOMAIN" "$WILDCARD_RECORD_ID" --force
 
 **Symptom**: Caddy logs show `failed to solve challenge` or `DNS record not found`.
 
-**Cause**: `DO_AUTH_TOKEN` has no domain write scope, or the DNS records did not propagate yet.
+**Cause**: The `DO_AUTH_TOKEN` value in `.env` on the Droplet has no domain write scope, or the DNS records did not propagate yet.
 
 **Fix**:
 ```sh
 # Check Caddy logs for ACME errors
 ssh root@"$DROPLET_IP" "cd /opt/atproto-tailnet && docker compose -f docker-compose.coordinator.yml logs caddy | grep -i 'error\|acme\|tls\|challenge'"
 
-# Verify DO_AUTH_TOKEN has write access to the domain
+# Verify the domain is in DO DNS (workstation token)
 doctl compute domain records list "$DOMAIN"
+# Verify the token in .env on the Droplet can read the domain records
+ssh root@"$DROPLET_IP" 'curl -sf -H "Authorization: Bearer $(grep ^DO_AUTH_TOKEN= /opt/atproto-tailnet/.env | cut -d= -f2-)" https://api.digitalocean.com/v2/domains/'"$DOMAIN"'/records >/dev/null && echo OK'
 
 # Verify the TLS strategy mount is correct
 ssh root@"$DROPLET_IP" "docker exec \$(docker ps -qf name=caddy) ls /etc/caddy/tls-strategy/"
@@ -373,4 +444,16 @@ doctl compute droplet-action resize atproto-tailnet --size s-2vcpu-4gb --wait
 **Fix**: Verify that `.env` contains exactly:
 ```
 CADDY_DNS_PLUGINS=github.com/caddy-dns/digitalocean
+```
+
+### Sign-in fails or the user has no tailnet
+
+**Symptom**: The OAuth sign-in fails, or the operator sees the "no access" view.
+
+**Fix**:
+- Make sure that `.env` contains a one-line `ATPROTO_PRIVATE_KEY='{"kty":"EC",...}'` (see step 8).
+- Make sure that `OPERATOR_DIDS` contains the DID of the operator account.
+- Restart the app after you change `.env`:
+```sh
+ssh root@"$DROPLET_IP" "cd /opt/atproto-tailnet && docker compose -f docker-compose.coordinator.yml up -d app"
 ```

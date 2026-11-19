@@ -23,7 +23,7 @@ atproto-tailnet supports two control-plane modes:
 | Database | PostgreSQL 16+ |
 | Coordinator | Rust binary (`coordinator/`) or coordinator Docker image |
 | Reverse proxy | Caddy 2 with admin API for dynamic subdomain routing |
-| Ports | 80, 443 (Caddy), 3000 (app), 9443 (coordinator) |
+| Ports | 80, 443 (Caddy) on the host. The app (3000) and the coordinator (9443) are internal to Docker |
 | DNS | Wildcard record `*.ts.yourdomain.com` that points to the host |
 | TLS | Caddy provisions certificates automatically through a pluggable strategy |
 
@@ -54,7 +54,10 @@ atproto-tailnet supports two control-plane modes:
 ## Environment variables
 
 All configuration goes through `src/config.ts`, which Zod validates. The app
-does not start in production if `SESSION_SECRET` is weak.
+does not start in production if `SESSION_SECRET` or `COORDINATOR_API_KEY` is
+weak (shorter than 32 characters, or a `change-me` placeholder). The
+coordinator applies the same rule to `COORD_ADMIN_KEY`. For the full list, see
+the [configuration reference](site/reference/configuration.md).
 
 | Variable | Required | Default | Description |
 |----------|:---:|---------|-------------|
@@ -73,24 +76,27 @@ does not start in production if `SESSION_SECRET` is weak.
 | `TLS_STRATEGY` | No | `on-demand` | TLS certificate strategy (see `caddy/tls-strategies/`) |
 | `COORDINATOR_URL` | Coord | -- | URL of the Rust coordinator (e.g. `http://coordinator:9443`) |
 | `COORDINATOR_API_KEY` | Coord | -- | Bearer token for the coordinator admin API (required when you set `COORDINATOR_URL`) |
-| `APP_DOMAIN` | Yes | -- | Domain of the dashboard. Caddy uses it. The app does not derive it from `PUBLIC_URL` |
+| `APP_DOMAIN` | Yes | -- | Domain of the dashboard, the API and `/mcp`. Caddy uses it. The app does not derive it from `PUBLIC_URL` |
+| `TRUST_PROXY` | Behind a proxy | `0` | Reverse-proxy hops to trust. Must be `1` behind Caddy, or sign-in fails. The compose files set it |
 | `CADDY_DNS_PLUGINS` | DNS-01 | -- | Caddy DNS module for your `TLS_STRATEGY`, for example `github.com/caddy-dns/digitalocean` |
 | `CADDY_CERTS_DIR` | Manual | `./caddy/certs` | Folder with `wildcard.pem` and `wildcard.key` for `TLS_STRATEGY=manual` |
 | `WEBHOOK_ALLOW_PRIVATE` | No | `false` | Set `true` only for single-organisation self-hosting. It lets notification webhooks reach private addresses |
 | `OPERATOR_DIDS` | Yes (production) | -- | Comma-separated DIDs of the instance operators, for example `did:plc:abc123`. Only operators (and the "tailnet creators" they designate) get a tailnet; everyone else who signs in sees invitations or can request to join the default tailnet. Operators get the operator API (`/api/operator/*`). If it is empty the app logs a loud warning and nobody can create a tailnet |
-| `FEDERATION_ENABLED` | No | `false` | Shows federation (links between tailnets). Keep it off. Federation links carry no traffic in the coordinator stack yet |
+| `FEDERATION_ENABLED` | No | `false` | Turns on federation (links between tailnets). Keep it off. The federation data plane needs Docker (Headscale mode), and cross-instance traffic is not implemented. Links carry no traffic in the coordinator stack |
+| `FEDERATION_KEY_ENCRYPTION_KEY` | Recommended | -- | 64 hex characters. Encrypts collective signing keys at rest |
 
 #### Coordinator-side env vars (Rust binary)
 
 | Variable | Required | Default | Description |
 |----------|:---:|---------|-------------|
 | `COORD_LISTEN` | No | `0.0.0.0:9443` | Coordinator listen address |
-| `COORD_ADMIN_KEY` | Yes | -- | Bearer token for the admin API (must match `COORDINATOR_API_KEY` above) |
+| `COORD_ADMIN_KEY` | Yes | -- | Bearer token for the admin API (must match `COORDINATOR_API_KEY` above). At least 32 characters. When unset, the admin API returns 503 |
 | `COORD_STORE_BACKEND` | Yes | -- | Storage backend: `memory`, `postgres`, or `sqlite` |
 | `COORD_SQLITE_PATH` | SQLite | `coordinator.db` | Path to the SQLite database |
 | `DATABASE_URL` | PG | -- | PostgreSQL connection string (when you use the postgres backend) |
 | `COORD_CONTROL_KEY_PATH` | Yes | -- | File that holds the Noise control key. The coordinator creates it at first start. Keep it on a persistent volume. If the key changes, all clients must reconnect |
 | `COORD_DERP_MAP` | No | -- | Path to the default DERP map JSON file. Each tenant can override it from the dashboard |
+| `COORD_FEDERATION_ENABLED` | No | `false` | Serves the Rust federation endpoints. Keep it off |
 
 ### Production `.env` example (coordinator mode)
 
@@ -101,11 +107,11 @@ PORT=3000
 PUBLIC_URL=https://tailnets.yourdomain.com
 BASE_DOMAIN=ts.yourdomain.com
 COORDINATOR_URL=http://coordinator:9443
-COORDINATOR_API_KEY=your-coordinator-api-key
+COORDINATOR_API_KEY=b7c8d9e0f1...   # openssl rand -hex 32
 CADDY_ADMIN_URL=http://caddy:2019
 LOG_LEVEL=info
 TLS_STRATEGY=on-demand
-ATPROTO_PRIVATE_KEY={"kty":"EC","crv":"P-256",...}
+ATPROTO_PRIVATE_KEY='{"kty":"EC","crv":"P-256",...}'
 OPERATOR_DIDS=did:plc:your-own-did
 ```
 
@@ -124,24 +130,302 @@ HEADSCALE_DATA_DIR=/data/headscale
 CADDY_ADMIN_URL=http://caddy:2019
 LOG_LEVEL=info
 TLS_STRATEGY=on-demand
-ATPROTO_PRIVATE_KEY={"kty":"EC","crv":"P-256",...}
+ATPROTO_PRIVATE_KEY='{"kty":"EC","crv":"P-256",...}'
 OPERATOR_DIDS=did:plc:your-own-did
 ```
 
 ---
 
-## Pre-deployment checklist (DigitalOcean, coordinator mode)
+## First deployment on DigitalOcean
 
-1. Add DNS records for `APP_DOMAIN` and the wildcard `*.BASE_DOMAIN`. Point both at the Droplet.
-2. Create a DigitalOcean API token with read and write scope. Set `TLS_STRATEGY=digitalocean`, `DO_AUTH_TOKEN` and `CADDY_DNS_PLUGINS=github.com/caddy-dns/digitalocean`.
-3. Generate strong values for `SESSION_SECRET` (`openssl rand -hex 32`), `POSTGRES_PASSWORD` and `COORDINATOR_API_KEY`. The stack does not start without them.
-4. Generate an ES256 JWK for `ATPROTO_PRIVATE_KEY`. Bluesky sign-in needs it in production.
-5. Set `PUBLIC_URL=https://APP_DOMAIN`.
-6. Keep `FEDERATION_ENABLED` unset.
-7. Set `OPERATOR_DIDS` to your own DID (find it with `curl "https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle?handle=you.bsky.social"`). Without it the instance has no operator and nobody gets a tailnet. Strangers who sign in get no tailnet: they only see their invitations, or can request to join your default tailnet.
-8. Run `deploy/digitalocean/droplet-setup.sh`. Then open `https://APP_DOMAIN` and sign in as the operator. Your first tailnet becomes the instance's default tailnet and accepts join requests. You can change both in the operator settings, turn on single-tailnet mode, or designate other tailnet creators.
+This procedure installs the coordinator-mode stack on one Droplet. It uses the
+`digitalocean` TLS strategy (DNS-01 wildcard certificate). For the commands
+that an agent can run without help, see
+[`deploy/digitalocean/AGENT.md`](../deploy/digitalocean/AGENT.md).
 
-The coordinator stores its Noise control key on the `coord_data` volume. Keep that volume. If you lose it, every device must reconnect.
+In the examples, the dashboard is `tailnets.example.com` and the tenant domain
+is `ts.example.com`. Replace them with your names.
+
+### 1. Create the Droplet and the DNS records
+
+1. Create an Ubuntu 22.04 (or later) Droplet with 2 GB RAM or more. Use an SSH
+   key, not a password.
+2. Add your domain to DigitalOcean DNS.
+3. Add an A record for `APP_DOMAIN` that points to the Droplet.
+4. Add an A record for the wildcard `*.BASE_DOMAIN` that points to the Droplet.
+
+```sh
+doctl compute domain records create example.com --record-type A --record-name tailnets --record-data <droplet-ip>
+doctl compute domain records create example.com --record-type A --record-name '*.ts' --record-data <droplet-ip>
+```
+
+### 2. Create the DNS token
+
+Caddy needs a DigitalOcean API token to make the DNS-01 challenge records.
+
+1. In the DigitalOcean control panel, open **API → Tokens**.
+2. Create a token with custom scopes, if your account supports them.
+3. Give the token only the `domain` scopes (read, create, update, delete).
+4. Keep the token. It goes into `DO_AUTH_TOKEN`.
+
+If you cannot limit the scopes, use a read and write token. Do not use the
+token of your workstation `doctl` on the server.
+
+### 3. Run the setup script
+
+Set `REPO_URL` to your repository, then run the script from your workstation:
+
+```sh
+ssh root@<droplet-ip> "REPO_URL=https://github.com/<you>/atproto-tailnet.git bash -s" < deploy/digitalocean/droplet-setup.sh
+```
+
+The script does these steps:
+
+1. It installs Docker, the Compose plugin and git.
+2. It clones the repository to `/opt/atproto-tailnet`.
+3. It copies `.env.coordinator.example` to `.env`.
+4. It generates `SESSION_SECRET`, `POSTGRES_PASSWORD`, `COORDINATOR_API_KEY`
+   and `FEDERATION_KEY_ENCRYPTION_KEY`.
+5. It sets the mode of `.env` to `600`.
+6. It stops and tells you to edit `.env`.
+
+### 4. Edit `.env`
+
+Open the file on the Droplet:
+
+```sh
+ssh root@<droplet-ip>
+cd /opt/atproto-tailnet
+nano .env
+```
+
+Set these values:
+
+```ini
+PUBLIC_URL=https://tailnets.example.com
+APP_DOMAIN=tailnets.example.com
+BASE_DOMAIN=ts.example.com
+TLS_STRATEGY=digitalocean
+DO_AUTH_TOKEN=dop_v1_...
+CADDY_DNS_PLUGINS=github.com/caddy-dns/digitalocean
+OPERATOR_DIDS=did:plc:your-own-did
+```
+
+To find your DID, run this command:
+
+```sh
+curl "https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle?handle=you.bsky.social"
+```
+
+Keep `FEDERATION_ENABLED` and `WEBHOOK_ALLOW_PRIVATE` unset.
+
+### 5. Generate the OAuth key
+
+Bluesky sign-in needs an ES256 private key in `ATPROTO_PRIVATE_KEY`. The app
+image contains the `jose` library. Run this command in `/opt/atproto-tailnet`.
+The first run builds the app image, so it takes some minutes.
+
+```sh
+docker compose -f docker-compose.coordinator.yml run --rm --no-deps --entrypoint node app \
+  --input-type=module -e "import {generateKeyPair,exportJWK} from 'jose'; const {privateKey}=await generateKeyPair('ES256',{extractable:true}); console.log(JSON.stringify({...await exportJWK(privateKey),alg:'ES256'}))"
+```
+
+The command prints one line of JSON. Add it to `.env` between single quotes:
+
+```ini
+ATPROTO_PRIVATE_KEY='{"kty":"EC","x":"...","y":"...","crv":"P-256","d":"...","alg":"ES256"}'
+```
+
+Do not change this key after users sign in. Keep a copy with your other
+secrets.
+
+### 6. Start the stack
+
+Run the setup script again, or start the stack directly:
+
+```sh
+docker compose -f docker-compose.coordinator.yml up -d
+```
+
+The first start builds Caddy with the DNS module, the app and the coordinator.
+Caddy then gets the certificates.
+
+### 7. Sign in first
+
+Open `https://tailnets.example.com` and sign in with the Bluesky account in
+`OPERATOR_DIDS`. Do this before you tell other people about the instance.
+
+The service then creates your tailnet. This first operator tailnet becomes the
+default tailnet of the instance, and it accepts join requests. In the
+**Instance** tab you can change these items:
+
+- The default tailnet
+- Single-tailnet mode
+- The tailnet creators
+
+Other people who sign in get no tailnet. They see their invitations, or they
+can request to join the default tailnet.
+
+### 8. Verify
+
+```sh
+curl -f https://tailnets.example.com/health
+curl -vI https://tailnets.example.com 2>&1 | grep -i issuer
+docker compose -f docker-compose.coordinator.yml ps
+```
+
+When your tailnet runs, check the tenant subdomain too. A tenant subdomain
+serves only `/key`, `/ts2021` and `/health` from the coordinator:
+
+```sh
+curl -f https://<your-slug>.ts.example.com/key
+```
+
+Then connect a device from the **Add Device** tab.
+
+### 9. Connect Claude (optional)
+
+In Claude, add a custom connector with the URL
+`https://tailnets.example.com/mcp`. For the full procedure, see
+[Connect Claude (MCP)](site/guides/mcp.md).
+
+### 10. Harden the Droplet
+
+Do the steps in [Droplet hardening](#droplet-hardening).
+
+---
+
+## Upgrades from older versions
+
+The coordinator container runs as user `coord` (UID 100). Older versions ran it as root. If you upgrade a stack that has an old `coord_data` volume, the coordinator cannot read `control.key`. Run this command once, then restart the coordinator:
+
+```sh
+docker compose -f docker-compose.coordinator.yml run --rm --user root --entrypoint chown coordinator -R 100:101 /var/lib/coordinator
+```
+
+A new deployment does not need this step.
+
+## Droplet hardening
+
+These steps apply to each single-server deployment. The examples use
+DigitalOcean.
+
+### Cloud firewall
+
+Docker writes its own iptables rules for published ports. Ports 80 and 443 of
+Caddy bypass `ufw`, so `ufw` alone does not protect them. Use a DigitalOcean
+Cloud Firewall. It filters traffic before it gets to the Droplet.
+
+Open only these inbound ports:
+
+| Protocol | Port | Source |
+|----------|------|--------|
+| TCP | 22 | Your IP address only |
+| TCP | 80 | All |
+| TCP | 443 | All |
+| UDP | 443 | All |
+
+```sh
+doctl compute firewall create --name atproto-tailnet-fw \
+  --droplet-ids <droplet-id> \
+  --inbound-rules "protocol:tcp,ports:22,address:<your-ip>/32 protocol:tcp,ports:80,address:0.0.0.0/0,address:::/0 protocol:tcp,ports:443,address:0.0.0.0/0,address:::/0 protocol:udp,ports:443,address:0.0.0.0/0,address:::/0" \
+  --outbound-rules "protocol:tcp,ports:all,address:0.0.0.0/0,address:::/0 protocol:udp,ports:all,address:0.0.0.0/0,address:::/0 protocol:icmp,address:0.0.0.0/0,address:::/0"
+```
+
+Do not publish 5432 (PostgreSQL), 3000 (app), 9443 (coordinator) or 2019
+(Caddy admin). The compose file keeps them internal.
+
+### SSH keys only
+
+Turn off password login:
+
+```sh
+cat > /etc/ssh/sshd_config.d/99-hardening.conf <<'CONF'
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin prohibit-password
+CONF
+systemctl reload ssh
+```
+
+Keep your current SSH session open. Test a new login before you close it.
+
+### Automatic security updates
+
+```sh
+apt-get install -y unattended-upgrades
+dpkg-reconfigure -plow unattended-upgrades
+```
+
+### Protect `.env`
+
+The file contains all secrets. Only root must read it:
+
+```sh
+chmod 600 /opt/atproto-tailnet/.env
+```
+
+The setup script does this when it creates the file. Do the step again if you
+copy or replace the file.
+
+### Limit the DigitalOcean token
+
+The token in `DO_AUTH_TOKEN` stays on the server. If possible, use a token with
+only the `domain` scopes. Then a stolen token cannot create or delete
+Droplets.
+
+### Operators before the first sign-in
+
+Set `OPERATOR_DIDS` before you start the stack the first time. Sign in as the
+operator first. Without operators, nobody can create a tailnet and nobody can
+use the **Instance** tab.
+
+### Backups
+
+Back up these two Docker volumes:
+
+| Volume | Contents | If you lose it |
+|--------|----------|----------------|
+| `pgdata` | All users, tailnets, memberships, keys and coordinator state | You lose the instance |
+| `coord_data` | The Noise control key (`/var/lib/coordinator/control.key`) | Every device must register again |
+
+```sh
+mkdir -p /root/backups && cd /opt/atproto-tailnet
+docker compose -f docker-compose.coordinator.yml exec -T postgres \
+  pg_dump -U atproto_tailnet atproto_tailnet | gzip > /root/backups/db-$(date +%Y%m%d).sql.gz
+docker compose -f docker-compose.coordinator.yml cp \
+  coordinator:/var/lib/coordinator/control.key /root/backups/control.key
+chmod 600 /root/backups/*
+```
+
+Copy the backups off the Droplet. `scripts/backup.sh` does not include the
+control key. You can also turn on DigitalOcean Droplet backups.
+
+### Docker log rotation
+
+The default Docker log driver keeps all logs. Limit the log size:
+
+```sh
+cat > /etc/docker/daemon.json <<'JSON'
+{ "log-driver": "json-file", "log-opts": { "max-size": "10m", "max-file": "5" } }
+JSON
+systemctl restart docker
+cd /opt/atproto-tailnet && docker compose -f docker-compose.coordinator.yml up -d --force-recreate
+```
+
+The new settings apply only to containers that Docker creates after the
+change.
+
+### Built-in protections
+
+The stack has these protections. You do not need to configure them:
+
+- The app and the coordinator containers run as non-root users.
+- PostgreSQL is only on the `internal` network. Caddy is only on the `edge`
+  network.
+- Caddy sends HSTS (`max-age=31536000`) on `APP_DOMAIN`.
+- Caddy returns 404 for `/internal/*` on `APP_DOMAIN`.
+- Tenant subdomains serve only `/key`, `/ts2021` and `/health`.
 
 ---
 
@@ -180,8 +464,9 @@ use stock Caddy and do not need a build step.
 
 ### Caddyfile
 
-The production Caddyfile (`Caddyfile.production`) imports the TLS strategy from
-a mounted directory (`/etc/caddy/tls-strategy/`). The compose files mount the
+The production Caddyfiles (`Caddyfile.coordinator.production` and
+`Caddyfile.production`) import the TLS strategy from a mounted directory
+(`/etc/caddy/tls-strategy/`). The compose files mount the
 correct strategy automatically, based on `TLS_STRATEGY`. Set `APP_DOMAIN` and
 `BASE_DOMAIN` in `.env`. You do not need to edit the Caddyfile.
 
@@ -203,7 +488,12 @@ docker compose -f docker-compose.coordinator.yml up -d
 ```
 
 This command starts the TS service, the Rust coordinator, PostgreSQL, and
-Caddy. The coordinator manages all tenants and the DERP relay configuration.
+Caddy. For a first deployment, use the procedure in
+[First deployment on DigitalOcean](#first-deployment-on-digitalocean). The
+same steps apply on other hosts.
+
+The coordinator manages all tenants. It stores its Noise control key on the
+`coord_data` volume. Back up this volume.
 Each tenant sets its own DERP relays in the dashboard. The service stores the
 settings and sends them to the coordinator for that tenant only. Connected
 devices receive the new relay map immediately. You do not need to restart the
@@ -258,9 +548,11 @@ docker compose -f docker-compose.production.yml logs -f app
 
 These guides give detailed setup instructions for each platform:
 
-- **Railway**: [`deploy/railway/README.md`](../deploy/railway/README.md)
-- **DigitalOcean**: [`deploy/digitalocean/README.md`](../deploy/digitalocean/README.md)
+- **DigitalOcean**: [`deploy/digitalocean/README.md`](../deploy/digitalocean/README.md) and [`deploy/digitalocean/AGENT.md`](../deploy/digitalocean/AGENT.md)
+- **Hetzner**: [`deploy/hetzner/AGENT.md`](../deploy/hetzner/AGENT.md)
+- **Vultr**: [`deploy/vultr/AGENT.md`](../deploy/vultr/AGENT.md)
 - **AWS**: [`deploy/aws/README.md`](../deploy/aws/README.md)
+- **Railway**: [`deploy/railway/README.md`](../deploy/railway/README.md)
 
 ---
 
@@ -280,6 +572,9 @@ curl -f https://tailnets.yourdomain.com/health
 
 ### PostgreSQL
 
+Use the compose file of your mode. The example uses the Headscale mode file.
+For coordinator mode, use `docker-compose.coordinator.yml`.
+
 ```sh
 # Manual dump
 docker compose -f docker-compose.production.yml \
@@ -289,6 +584,11 @@ docker compose -f docker-compose.production.yml \
 gunzip -c backup.sql.gz | docker compose -f docker-compose.production.yml \
   exec -T postgres psql -U atproto_tailnet atproto_tailnet
 ```
+
+### Coordinator control key
+
+In coordinator mode, also back up the `coord_data` volume. It holds the Noise
+control key. See [Backups](#backups) in Droplet hardening.
 
 ### Headscale data
 
@@ -307,11 +607,18 @@ tar czf headscale-backup-$(date +%Y%m%d).tar.gz /data/headscale/
   or more.
 - `ATPROTO_PRIVATE_KEY` is an ES256 JWK. Keep it in a secrets manager. Do not
   keep it in version control.
+- `OPERATOR_DIDS` controls who gets a tailnet and who can use the operator
+  API. Set it before the first sign-in.
+- `TRUST_PROXY` must be `1` behind Caddy. Do not set it when the app is
+  directly on the internet. A wrong value lets clients fake their IP address
+  for the rate limits.
 - `COORDINATOR_API_KEY` and `COORD_ADMIN_KEY` must be equal and strong. This
   key protects all admin operations on the coordinator.
-- **Coordinator mode**: The coordinator listens on port 9443. Use a firewall
-  to let only the TS service reach it. Do not let the public internet reach
-  it. The coordinator admin API uses constant-time Bearer token authentication.
+- **Coordinator mode**: The coordinator listens on port 9443. The compose file
+  does not publish this port. Do not let the public internet reach it. The
+  coordinator admin API uses constant-time Bearer token authentication.
+- Docker-published ports bypass `ufw`. Use the firewall of your cloud
+  provider. See [Droplet hardening](#droplet-hardening).
 - **Headscale mode**: The Docker socket mount gives the app root-equivalent
   access to the host. Harden the host and make sure the app is the only
   consumer. Use a firewall to let only Tailscale protocol traffic (DERP/STUN)

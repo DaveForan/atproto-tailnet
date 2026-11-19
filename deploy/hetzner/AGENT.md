@@ -40,6 +40,16 @@ You need both tokens. Pass the DNS API token to Caddy as `HETZNER_API_TOKEN` for
 | `LOCATION` | Hetzner datacenter | `fsn1` (Falkenstein), `nbg1` (Nuremberg), `hel1` (Helsinki) |
 | `REPO_URL` | Git repository URL | `https://github.com/your-org/atproto-tailnet.git` |
 | `BRANCH` | Git branch to deploy | `main` |
+| `OPERATOR_DIDS` | Comma-separated DIDs of the instance operators. You must set it before the first sign-in | `did:plc:abc123...` |
+| `ADMIN_IP` | Public IP address that can connect with SSH | `203.0.113.10` |
+
+To find the DID of a Bluesky account, use this command:
+
+```sh
+curl "https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle?handle=you.bsky.social"
+```
+
+Only operators, and the "tailnet creators" that an operator designates, get a tailnet. All other users who sign in see a "no access" view. This view shows their pending invitations and a "Request to join" button for the default tailnet. The first tailnet that an operator creates becomes the default tailnet. If `OPERATOR_DIDS` is empty, the app logs a loud warning and nobody can create a tailnet.
 
 ### Secrets to Generate
 
@@ -50,13 +60,19 @@ COORDINATOR_API_KEY=$(openssl rand -hex 32)
 FEDERATION_KEY_ENCRYPTION_KEY=$(openssl rand -hex 32)
 ```
 
+The app does not start in production if `SESSION_SECRET` or `COORDINATOR_API_KEY` has fewer than 32 characters. It also does not start if the value contains `change-me` or `changeme`. The coordinator applies the same rule to its admin key.
+
+You also need `ATPROTO_PRIVATE_KEY`. Generate it on the server in step 6.
+
 ## Deployment Steps
 
 ### Step 1: Create Firewall
 
+Docker-published ports (80, 443) bypass `ufw`. `ufw` alone does not protect them. Use the Hetzner Cloud firewall. Allow SSH from your IP only.
+
 ```sh
 hcloud firewall create --name atproto-tailnet-fw
-hcloud firewall add-rule atproto-tailnet-fw --direction in --protocol tcp --port 22 --source-ips 0.0.0.0/0 --source-ips ::/0 --description "SSH"
+hcloud firewall add-rule atproto-tailnet-fw --direction in --protocol tcp --port 22 --source-ips "${ADMIN_IP}/32" --description "SSH"
 hcloud firewall add-rule atproto-tailnet-fw --direction in --protocol tcp --port 80 --source-ips 0.0.0.0/0 --source-ips ::/0 --description "HTTP"
 hcloud firewall add-rule atproto-tailnet-fw --direction in --protocol tcp --port 443 --source-ips 0.0.0.0/0 --source-ips ::/0 --description "HTTPS"
 hcloud firewall add-rule atproto-tailnet-fw --direction in --protocol udp --port 443 --source-ips 0.0.0.0/0 --source-ips ::/0 --description "HTTP3"
@@ -160,6 +176,8 @@ dig +short tailnets.example.com
 
 ### Step 5: Run Server Setup Script
 
+The script installs Docker and clones the repository. It copies `.env.coordinator.example` to `.env` and generates the secrets. Then it exits, so that you can edit `.env`.
+
 ```sh
 ssh root@${SERVER_IP} 'bash -s' < deploy/hetzner/server-setup.sh
 ```
@@ -199,8 +217,11 @@ LOG_LEVEL=info
 COORDINATOR_URL=http://coordinator:9443
 COORDINATOR_API_KEY=<GENERATED>
 
-# Federation
+# Collective signing keys and credentials (federation stays off; do not set FEDERATION_ENABLED)
 FEDERATION_KEY_ENCRYPTION_KEY=<GENERATED>
+
+# Instance operators (must be set before the first sign-in)
+OPERATOR_DIDS=did:plc:<YOUR-DID>
 
 # TLS (Hetzner DNS-01)
 TLS_STRATEGY=hetzner
@@ -209,7 +230,26 @@ HETZNER_API_TOKEN=<DNS-API-TOKEN>
 ENVEOF
 ```
 
-Replace each `<GENERATED>` and `<DNS-API-TOKEN>` placeholder with the actual value.
+Replace each `<GENERATED>`, `<DNS-API-TOKEN>`, and `<YOUR-DID>` placeholder with the actual value. The setup script already generated secrets in the old `.env`. You can copy them from there before you overwrite the file.
+
+Restrict the file permissions:
+
+```sh
+chmod 600 /opt/atproto-tailnet/.env
+```
+
+Federation is off by default. Its data plane needs Docker (Headscale mode), and the coordinator stack does not send traffic between instances.
+
+Generate `ATPROTO_PRIVATE_KEY` on the server, after `.env` exists. Production sign-in fails without it. The command uses the `jose` dependency in the app image:
+
+```sh
+cd /opt/atproto-tailnet
+KEY=$(docker compose -f docker-compose.coordinator.yml run --rm --no-deps --entrypoint node app \
+  --input-type=module -e "import {generateKeyPair,exportJWK} from 'jose'; const {privateKey}=await generateKeyPair('ES256',{extractable:true}); console.log(JSON.stringify({...await exportJWK(privateKey),alg:'ES256'}))")
+echo "ATPROTO_PRIVATE_KEY='${KEY}'" >> .env
+```
+
+The value is a one-line ES256 (P-256) private JWK in single quotes: `ATPROTO_PRIVATE_KEY='{"kty":"EC",...}'`. A PKCS8 PEM also works, but it has many lines, so use the JWK.
 
 ### Step 7: Start Services
 
@@ -221,7 +261,7 @@ ssh root@${SERVER_IP} "cd /opt/atproto-tailnet && docker compose -f docker-compo
 
 ```sh
 # Health check
-curl -sf https://tailnets.example.com/health
+curl -f https://tailnets.example.com/health
 
 # Check all containers are running
 ssh root@${SERVER_IP} "cd /opt/atproto-tailnet && docker compose -f docker-compose.coordinator.yml ps"
@@ -232,6 +272,14 @@ ssh root@${SERVER_IP} "cd /opt/atproto-tailnet && docker compose -f docker-compo
 # Verify TLS certificate (should be Let's Encrypt, not self-signed)
 echo | openssl s_client -connect tailnets.example.com:443 -servername tailnets.example.com 2>/dev/null | openssl x509 -noout -issuer -subject -dates
 ```
+
+### Step 9: Sign In as the Operator
+
+The operator must sign in first after the deploy. Open `https://tailnets.example.com` and sign in with the Bluesky account in `OPERATOR_DIDS`. Then create the first tailnet. This tailnet becomes the default tailnet and accepts join requests. A sign-in does not create a tailnet automatically.
+
+To connect Claude, add a custom connector with the URL `https://tailnets.example.com/mcp`. The connector uses OAuth sign-in with Bluesky. See [docs/site/guides/mcp.md](../../docs/site/guides/mcp.md).
+
+Caddy sets HSTS on `APP_DOMAIN`. Tenant subdomains (`<slug>.BASE_DOMAIN`) expose only `/key`, `/ts2021`, and `/health` from the coordinator. The compose file does not publish the coordinator port (9443) or Postgres.
 
 ## DNS API Reference
 
@@ -257,13 +305,15 @@ For authentication, send the `Auth-API-Token` header with the DNS API token.
 [ ] TLS certificate is issued by Let's Encrypt (not self-signed)
 [ ] docker compose ps shows all 4 services healthy (coordinator, app, postgres, caddy)
 [ ] docker compose logs caddy shows successful ACME certificate issuance
-[ ] docker compose logs coordinator shows "listening on 0.0.0.0:9443"
+[ ] docker compose logs coordinator shows "listening" with listen_addr=0.0.0.0:9443
+[ ] docker compose logs app does not show "OPERATOR_DIDS IS EMPTY"
+[ ] The operator can sign in and create the first tailnet
 ```
 
 ## Teardown
 
 ```sh
-# Stop services
+# Stop services (-v deletes all volumes, including pgdata and coord_data)
 ssh root@${SERVER_IP} "cd /opt/atproto-tailnet && docker compose -f docker-compose.coordinator.yml down -v"
 
 # Delete server
@@ -363,6 +413,10 @@ ssh root@${SERVER_IP} "cd /opt/atproto-tailnet && docker compose -f docker-compo
 # Crontab entry (add via: ssh root@... crontab -e)
 0 3 * * * cd /opt/atproto-tailnet && docker compose -f docker-compose.coordinator.yml exec -T postgres pg_dump -U atproto_tailnet atproto_tailnet | gzip > /opt/backups/db-$(date +\%Y\%m\%d).sql.gz
 ```
+
+### Volumes
+
+Back up the `pgdata` and `coord_data` volumes. `coord_data` holds the coordinator Noise control key (`COORD_CONTROL_KEY_PATH=/var/lib/coordinator/control.key`). If you lose it, all devices must register and connect again. A server snapshot includes both volumes.
 
 ### Server Snapshot
 

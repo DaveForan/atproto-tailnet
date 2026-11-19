@@ -39,7 +39,9 @@ Track ADRs like stories on a board. Each ADR moves through these lifecycle state
 
 ### Accepted
 
-(empty)
+| ID | Title | Date | Supersedes | Depends On |
+|----|-------|------|------------|------------|
+| 0025 | Instance operators and MCP access | 2026-11-19 | — | 0003, 0005, 0023 |
 
 ### Proposed
 

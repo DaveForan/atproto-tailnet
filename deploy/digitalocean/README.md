@@ -1,19 +1,26 @@
 # Deploying atproto-tailnet on DigitalOcean
 
 DigitalOcean has two deployment options. The Droplet approach is
-**recommended** because it gives Docker socket access. The app needs this access
-to manage the Headscale container of each tenant.
+**recommended**. One Droplet runs the full coordinator-mode stack
+(`docker-compose.coordinator.yml`): the TypeScript service, the Rust
+coordinator, PostgreSQL and Caddy. The coordinator mode does not need the
+Docker socket.
 
 ## Option 1: Droplet (recommended)
 
-A single Droplet runs the full stack with Docker Compose. You get Docker
-socket access, persistent volumes, and full control of the host.
+For the full procedure, see
+[First deployment on DigitalOcean](../../docs/deployment.md#first-deployment-on-digitalocean)
+and [Droplet hardening](../../docs/deployment.md#droplet-hardening). For
+commands that an agent can run without help, see [`AGENT.md`](AGENT.md).
 
 ### Prerequisites
 
-- DigitalOcean account
-- A domain with DNS pointed to DigitalOcean (or Cloudflare)
-- Wildcard DNS record: `*.ts.yourdomain.com` pointing to the Droplet IP
+- A DigitalOcean account
+- A domain in DigitalOcean DNS
+- An A record for `APP_DOMAIN` (for example `tailnets.example.com`) that points to the Droplet IP
+- A wildcard A record `*.ts.example.com` that points to the Droplet IP
+- A DigitalOcean API token for Caddy. If possible, limit it to the `domain` scopes
+- Your Bluesky DID for `OPERATOR_DIDS`
 
 ### Create the Droplet
 
@@ -27,59 +34,76 @@ doctl compute droplet create atproto-tailnet \
   --ssh-keys <your-ssh-key-id>
 ```
 
-Or use the DigitalOcean dashboard. Choose Ubuntu 22.04 and a minimum of 2 GB RAM.
+Or use the DigitalOcean dashboard. Choose Ubuntu 22.04 and a minimum of 2 GB RAM. Use an SSH key, not a password.
 
 ### Bootstrap
 
 ```sh
 # From your local machine:
-ssh root@<droplet-ip> 'bash -s' < deploy/digitalocean/droplet-setup.sh
+ssh root@<droplet-ip> "REPO_URL=https://github.com/<you>/atproto-tailnet.git bash -s" < deploy/digitalocean/droplet-setup.sh
 ```
 
-The script does these steps:
-1. Install Docker and Docker Compose
-2. Clone the repository
-3. Create `.env` from the example (you must edit it)
-4. Build and start the production stack
+On the first run, the script does these steps:
 
-After the script finishes, SSH in and edit `.env`:
+1. It installs Docker, the Compose plugin and git.
+2. It clones the repository to `/opt/atproto-tailnet`.
+3. It creates `.env` from `.env.coordinator.example`.
+4. It generates `SESSION_SECRET`, `POSTGRES_PASSWORD`, `COORDINATOR_API_KEY` and `FEDERATION_KEY_ENCRYPTION_KEY`, and it sets the file mode to `600`.
+5. It stops, so that you can edit `.env`.
+
+Then SSH in and edit `.env`:
 
 ```sh
 ssh root@<droplet-ip>
 cd /opt/atproto-tailnet
 nano .env
-
-# Then start:
-docker compose -f docker-compose.production.yml up -d
 ```
+
+Generate `ATPROTO_PRIVATE_KEY` as described in the
+[deployment guide](../../docs/deployment.md#5-generate-the-oauth-key). Then
+start the stack:
+
+```sh
+docker compose -f docker-compose.coordinator.yml up -d
+```
+
+Open `https://<APP_DOMAIN>` and sign in as the operator before anyone else.
 
 ### Required environment variables
 
 | Variable | Description |
 |----------|-------------|
-| `SESSION_SECRET` | Random string >= 32 characters (`openssl rand -hex 32`) |
-| `POSTGRES_PASSWORD` | PostgreSQL password |
+| `OPERATOR_DIDS` | Your DID (`did:plc:...`). Only operators get a tailnet. Set it before the first sign-in |
 | `PUBLIC_URL` | `https://tailnets.yourdomain.com` |
+| `APP_DOMAIN` | `tailnets.yourdomain.com` |
 | `BASE_DOMAIN` | `ts.yourdomain.com` |
-| `CF_API_TOKEN` | Cloudflare API token for DNS-01 TLS challenges |
-| `ATPROTO_PRIVATE_KEY` | ES256 JWK for AT Proto OAuth (production) |
+| `TLS_STRATEGY` | `digitalocean` |
+| `DO_AUTH_TOKEN` | DigitalOcean API token for DNS-01 TLS challenges |
+| `CADDY_DNS_PLUGINS` | `github.com/caddy-dns/digitalocean` |
+| `ATPROTO_PRIVATE_KEY` | ES256 JWK for AT Proto OAuth, between single quotes |
+| `SESSION_SECRET`, `POSTGRES_PASSWORD`, `COORDINATOR_API_KEY`, `FEDERATION_KEY_ENCRYPTION_KEY` | The setup script generates them |
+
+Keep `FEDERATION_ENABLED` unset. Federation is off by default.
 
 ### Firewall
 
-```sh
-ufw allow 22/tcp          # SSH
-ufw allow 80/tcp          # HTTP redirect
-ufw allow 443/tcp         # HTTPS
-ufw allow 443/udp         # HTTP/3
-ufw allow 10001:10100/tcp # Headscale tenant ports
-ufw --force enable
-```
+Docker-published ports (80 and 443) bypass `ufw`. Use a DigitalOcean Cloud
+Firewall with these inbound rules:
+
+- TCP 22 from your IP address only
+- TCP 80
+- TCP 443
+- UDP 443
+
+The coordinator (9443), the app (3000) and PostgreSQL are not published. For
+the `doctl` command, see
+[Droplet hardening](../../docs/deployment.md#cloud-firewall).
 
 ### Monitoring
 
 ```sh
 # Logs
-docker compose -f docker-compose.production.yml logs -f
+docker compose -f docker-compose.coordinator.yml logs -f
 
 # Health check
 curl https://tailnets.yourdomain.com/health
@@ -90,15 +114,19 @@ docker stats
 
 ### Backups
 
-Enable DigitalOcean Droplet backups ($1/month). Then set up regular Postgres
-dumps:
+Enable DigitalOcean Droplet backups. Also back up the `pgdata` and
+`coord_data` volumes. `coord_data` holds the coordinator control key. If you
+lose it, every device must register again.
 
 ```sh
-# Add to crontab:
-0 3 * * * docker compose -f /opt/atproto-tailnet/docker-compose.production.yml \
+# Add to crontab (create /opt/backups first):
+0 3 * * * docker compose -f /opt/atproto-tailnet/docker-compose.coordinator.yml \
   exec -T postgres pg_dump -U atproto_tailnet atproto_tailnet | \
   gzip > /opt/backups/db-$(date +\%Y\%m\%d).sql.gz
 ```
+
+To copy the control key, see
+[Backups](../../docs/deployment.md#backups).
 
 ### Cost estimate
 
@@ -111,11 +139,15 @@ dumps:
 ## Option 2: App Platform (limited)
 
 DigitalOcean App Platform gives managed deployments with built-in Postgres,
-but it **does not give Docker socket access**. Because of this, Headscale
-container management does not work natively.
+but it **does not give Docker socket access**. The spec in
+`deploy/digitalocean/.do/app.yaml` deploys only the web tier in legacy
+Headscale mode. Because of this, Headscale container management does not work
+natively. The spec does not run the coordinator, and it does not set
+`OPERATOR_DIDS` or `TRUST_PROXY`. Add them before you use it.
 
-Use this option only if you plan to run Headscale containers on a separate host
-and connect with a remote Docker daemon.
+Use the Droplet option for a working instance. A remote Docker daemon
+(`DOCKER_HOST`) does not work, because the app gives Docker host paths for the
+tenant data.
 
 ### Deploy
 
@@ -130,16 +162,8 @@ doctl apps create --spec deploy/digitalocean/.do/app.yaml
 - No wildcard TLS: you need an external proxy for `*.ts.yourdomain.com`
 - No persistent filesystem: the Headscale data directory needs external storage
 
-### Hybrid approach
-
-1. Deploy the web tier on App Platform (app + managed Postgres)
-2. Run a small Droplet for the Headscale containers
-3. Set `DOCKER_HOST=tcp://<droplet-ip>:2376` on the App Platform service
-4. Secure the remote Docker socket with TLS client certificates
-
 ### Cost estimate
 
 - **App Platform basic**: $5/month
 - **Managed Postgres (dev)**: $7/month
-- **Companion Droplet**: $6/month
-- **Total**: ~$18/month
+- **Total**: ~$12/month (web tier only)

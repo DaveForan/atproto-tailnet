@@ -4,70 +4,95 @@ title: Managing Your Network
 
 # Managing Your Network
 
-After the system provisions your tailnet, the dashboard gives you tools to manage devices, members, permissions, security, and networking. This guide describes the daily operations.
+This guide describes the daily operations in the dashboard: devices, members, permissions, security, and networking.
+
+## Who gets a tailnet
+
+The instance is invite-only:
+
+- An instance operator (a DID in `OPERATOR_DIDS`) gets a tailnet at the first sign-in.
+- A "tailnet creator" that an operator designates can create one tailnet.
+- Each other person who signs in gets a "no access" view. The view shows their pending invitations. If the instance has a default tailnet that accepts join requests, the view also shows **Request to join**.
+
+When an operator designates you as a tailnet creator, you can create your tailnet in one of these ways:
+
+- If you are not a member of a tailnet, sign out and sign in again. The service then creates your tailnet.
+- Use the API (`POST /api/tenants/mine`) or the MCP tool `create_tailnet`.
 
 ## Dashboard overview
 
-The dashboard is a React 19 single-page application. It is served at the root URL of your instance. It has 20 lazy-loaded tabs. Your permissions control which tabs you see:
+The dashboard is a React 19 single-page application. It is served at the root URL of your instance. Your permissions control which tabs you see.
 
-**Status** -- Network health, node count, member count, provisioning status
+**Network**
 
-**Devices** -- Connected nodes, online status, auth key generation
+- **Status** -- Network health, node count, member count, provisioning status
+- **DERP Relays** -- Custom relay configuration
+- **IP Ranges** -- IPv4/IPv6 prefix configuration
+- **Routes** -- Exit nodes and subnet routers
+- **Devices** -- Connected nodes, online status, auth keys
+- **Members** -- Current members and their roles
+- **Add Device** -- Generate an auth key and connect a new device
 
-**Members** -- Current members and their roles
+**Manage**
 
-**Connect** -- Generate auth keys and connect new devices
+- **Invite** -- Invite people by handle or DID
+- **Services** -- Service registry and approval
+- **Board** -- Public service board
+- **Sub-Collectives** -- Sub-collective hierarchy management
+- **Federation** and **Traversal Policy** -- Shown only when `FEDERATION_ENABLED=true`
 
-**Invite** -- Send invitations by AT Protocol handle
+**Access Control**
 
-**Roles** -- Custom role definitions and permission assignments
+- **Roles** -- Custom role definitions and permission assignments
+- **Agents** -- API token management for automation
+- **ACL** -- Access control lists
+- **Credentials** -- Verifiable credential issuance and verification
 
-**ACL** -- Access control lists (groups, hosts, tag owners, firewall rules)
+**Admin**
 
-**Routes** -- Exit nodes and subnet routers
+- **Usage** -- Live counts, limits, snapshot history
+- **Security** -- Tenant settings, lockdown, approval toggles, notification webhook
+- **Audit Log** -- Audit log of security-relevant actions
 
-**DERP** -- Custom relay configuration
+**Account**
 
-**IP Ranges** -- IPv4/IPv6 prefix configuration
+- **Connect Claude** -- Connector URL and your MCP connections. See [Connect Claude (MCP)](mcp).
 
-**Services** -- Service registry and approval
+**Operator** (instance operators only)
 
-**Board** -- Public service board
+- **Instance** -- Tailnets, users, settings, tailnet creators, activity log. See [Instance administration](#instance-administration).
 
-**Federation** -- Federation links and posture management
-
-**Collectives** -- Sub-collective hierarchy management
-
-**Traversal** -- Cross-network traversal policy editor
-
-**Agents** -- API token management for automation
-
-**Credentials** -- Verifiable credential issuance and verification
-
-**Usage** -- Metering, plan limits, snapshot history
-
-**Security** -- Tenant settings, lockdown, device approval toggles
-
-**Audit** -- Complete audit log of security-relevant actions
+The header has a notification bell. It shows approval requests and limit hits for the current tailnet.
 
 ## Inviting members
 
-Members join your network with their AT Protocol handle:
+An invitation is the allow-list entry for one person. The service does not send anything. You share the link.
 
 1. Go to the **Invite** tab.
-2. Enter the handle (for example, `alice.bsky.social`).
-3. The invitee receives an invitation. The invitee can accept it in the web UI.
-4. After acceptance, the invitee becomes a member with the "citizen" role.
+2. Enter a handle (for example, `alice.bsky.social`) or a DID (`did:plc:...` or `did:web:...`).
+3. Copy the invitation link (`https://<APP_DOMAIN>/invite/<id>`).
+4. Send the link to the invitee by any channel.
+5. The invitee opens the link and signs in. The invitee then accepts or declines.
 
-You can revoke an invitation before the invitee accepts it. The **Join Requests** feature is an alternative. You enable it with a toggle in the Security tab. It provides a public `/join/<slug>` URL where users can request to join. An operator must approve each request.
+After acceptance, the invitee becomes a member with the default role ("citizen"). Only the invitee can see the invitation. Other users get "not found". Pending invitations also show in the no-access view of the invitee.
+
+You can revoke an invitation before the invitee accepts it. Lockdown mode blocks new invitations and acceptances. If the tailnet has a member limit, acceptance fails when the tailnet is full.
 
 ### Join requests
 
-When `allowJoinRequests` is enabled:
+Join requests are an alternative to invitations. Turn on `allowJoinRequests` in the Security tab. Then:
 
-- Anyone can visit `https://yourdomain.com/join/<your-slug>` and submit a join request.
-- Requests appear in the dashboard for approval (the `approve_joins` permission is necessary).
+- A signed-in person can visit `https://<APP_DOMAIN>/join/<your-slug>` and submit a request.
+- Requests appear in the dashboard for approval (the `approve_joins` permission is necessary). Approvers get a notification.
 - Lockdown mode blocks new join requests.
+
+The default tailnet of the instance accepts join requests automatically. People with no access see its **Request to join** button.
+
+Join requests have these limits:
+
+- A tailnet can have 50 pending requests.
+- A person can have one pending request for each tailnet.
+- After a rejection, the person must wait 24 hours before a new request.
 
 ## Roles and permissions
 
@@ -78,7 +103,7 @@ Every network has two built-in roles:
 
 ### Custom roles
 
-Create custom roles with any combination of 16 permissions:
+Create custom roles with any combination of 17 permissions:
 
 | Permission | Description |
 |-----------|-------------|
@@ -98,6 +123,7 @@ Create custom roles with any combination of 16 permissions:
 | `create_agent_tokens` | Generate API tokens |
 | `manage_agent_tokens` | Revoke the API tokens of any member |
 | `manage_acl` | Edit ACL policy and DERP configuration |
+| `manage_sub_collectives` | Create and manage sub-collectives |
 
 Assign roles to members in the **Members** tab. The effective permissions of a member are the union of the permissions of the role of that member.
 
@@ -105,20 +131,44 @@ Assign roles to members in the **Members** tab. The effective permissions of a m
 
 ### Connecting devices
 
-Members generate **pre-authentication keys** in the Devices tab. Each key is a one-time-use token. The token authorizes a Tailscale client to join the network:
+Members generate **pre-authentication keys** in the **Add Device** tab. A key authorizes a Tailscale client to join the network:
 
 ```bash
 tailscale up --login-server=https://<slug>.ts.yourdomain.com \
              --authkey=tskey-auth-XXXXX
 ```
 
+The device belongs to the member who made the key.
+
+### Auth keys
+
+The service records each key that it issues. The **Devices** tab lists the keys:
+
+- A member sees the keys that the member made.
+- A member with `manage_devices` (and the originator) sees all keys.
+- You can revoke a key that is not used yet.
+
 ### Device approval
 
-When `requireDeviceApproval` is enabled (Security tab):
+By default, devices connect without approval. When you turn on `requireDeviceApproval` (Security tab):
 
-- A new device connection creates a pending approval entry.
-- A user with the `approve_devices` permission must approve the entry before the device receives a key.
-- Rejected devices cannot connect.
+- A request for an auth key creates a pending approval. The originator does not need approval.
+- The service notifies the users with the `approve_devices` permission.
+- An approver approves the request. The service then makes the key for the member.
+- A rejected request gives no key.
+
+### Device and member limits
+
+The originator can set `maxDevices` and `maxMembers` in the **Usage** tab (0 = unlimited). There are no plans. The service enforces the limits:
+
+- Devices: when it issues a key and when it approves a device.
+- Members: when an invitee accepts and when an approver approves a join request.
+
+When a limit stops an action, the service notifies the originator. A sub-collective cannot have higher limits than its parent.
+
+### Removing a member
+
+When you remove (kick) a member, the service also revokes the auth keys of the member and deletes the devices of the member. You need the `kick` permission. Nobody can remove the originator.
 
 ### Device locking
 
@@ -130,15 +180,55 @@ Device locks bind a membership to specific machine keys:
 
 ### Node operations
 
-In the Devices tab, operators with the `manage_devices` permission can do these tasks:
+In the Devices tab, members with the `manage_devices` permission can do these tasks:
 
 - View all connected devices and their online status
-- Rename devices
 - Remove devices from the network
+
+Each member can remove their own devices.
+
+## Notifications
+
+The service makes a notification for these events:
+
+- A device approval request
+- A join request
+- A service approval request
+- A limit hit
+
+The recipients are the originator and the members with the matching `approve_*` permission. The bell in the header shows them.
+
+### Webhook
+
+You can also send each notification to a webhook, for example a self-hosted ntfy, Gotify, or a Matrix bridge. In the **Security** tab, set the webhook URL and a secret (the `manage_settings` permission is necessary). Then:
+
+- Each request has an HMAC-SHA256 signature of the body in the `X-Atproto-Tailnet-Signature` header. Use the secret to check it.
+- The URL must use `https` and resolve to a public address. The instance operator can allow private addresses with `WEBHOOK_ALLOW_PRIVATE=true` (single-organisation instances only).
+- The service does not follow redirects.
+- Use **Send test** to check the webhook.
 
 ## Access control (ACL)
 
-The ACL tab provides a policy editor. The policy controls which devices can talk to each other. The policy uses the Tailscale ACL format:
+The ACL tab provides a policy editor. The policy controls which devices can talk to each other. The policy uses the Tailscale ACL format.
+
+In **coordinator mode** (the default), the coordinator has no users, groups or tags. The service accepts only `accept` rules with `*`, IP addresses, CIDRs or host aliases. It refuses `groups`, `tagOwners` and `autoApprovers`:
+
+```json
+{
+  "hosts": {
+    "server1": "100.64.0.1"
+  },
+  "acls": [
+    {
+      "action": "accept",
+      "src": ["100.64.0.0/10"],
+      "dst": ["server1:80,443"]
+    }
+  ]
+}
+```
+
+In **legacy Headscale mode**, the full Headscale policy is available:
 
 ```json
 {
@@ -172,11 +262,11 @@ Changes take effect immediately when you save them.
 
 ### Exit nodes
 
-An **exit node** routes all internet traffic of a device through another device on the network. Devices advertise the exit node capability. The network operator approves or denies the capability in the Routes tab.
+An **exit node** routes all internet traffic of a device through another device on the network. Devices advertise the exit node capability. A member with `manage_devices` approves or withdraws the capability in the Routes tab.
 
 ### Subnet routers
 
-**Subnet routers** advertise access to physical network subnets (for example, `192.168.1.0/24`). Network members can then reach devices on a LAN. You do not install Tailscale on each device. As with exit nodes, an operator must approve subnet routes.
+**Subnet routers** advertise access to physical network subnets (for example, `192.168.1.0/24`). Network members can then reach devices on a LAN. You do not install Tailscale on each device. As with exit nodes, a member with `manage_devices` must approve subnet routes. Until then, the route has no effect.
 
 ### IP ranges
 
@@ -190,11 +280,13 @@ When you change IP ranges, you must restart the control plane. You must also reg
 
 ### DERP relays
 
-DERP relays provide encrypted relay connectivity when direct peer-to-peer connections fail (for example, behind restrictive NATs). By default, the network uses the public Tailscale relays. In the DERP tab you can do these tasks:
+DERP relays provide encrypted relay connectivity when direct peer-to-peer connections fail (for example, behind restrictive NATs). By default, the network uses the public Tailscale relays. In the DERP Relays tab you can do these tasks:
 
 - Add custom relay regions (IDs 900-999)
-- Toggle the embedded DERP server
 - Enable or disable public Tailscale relays
+- Toggle the embedded DERP server (legacy Headscale mode only)
+
+The settings apply to your tailnet only. In coordinator mode, connected devices get the new relay map at once.
 
 ## Agent tokens
 
@@ -210,11 +302,13 @@ Create tokens in the **Agents** tab. The dashboard shows the token value once, w
 ### Using agent tokens
 
 ```bash
-curl https://yourdomain.com/api/tenants/<id>/nodes \
+curl https://yourdomain.com/api/tenants/<id>/devices \
   -H "Authorization: Bearer at_XXXXX"
 ```
 
-An agent token can access each endpoint that its permission scope allows. The token is restricted to its tenant.
+An agent token can access each endpoint that its permission scope allows. The token is restricted to its tenant. It never gives instance operator powers.
+
+To use the API from Claude, use the MCP server, not an agent token. See [Connect Claude (MCP)](mcp).
 
 ## Security settings
 
@@ -225,10 +319,11 @@ The **Security** tab controls the security toggles for the whole tenant:
 | `requireDeviceApproval` | off | Gate new device connections behind approval |
 | `requireServiceDeviceApproval` | off | Gate service device registrations |
 | `requireServiceApproval` | off | Gate service registrations |
-| `allowJoinRequests` | off | Enable public join request page |
+| `allowJoinRequests` | off | Enable public join request page (on for the default tailnet) |
 | `allowAgentTokens` | off | Enable API token creation |
 | `allowMemberAgentTokens` | off | Allow non-originators to create tokens |
 | `boardEnabled` | off | Enable the public service board |
+| `notificationWebhookUrl` | --- | Webhook for notifications. See [Webhook](#webhook) |
 
 ### Lockdown mode
 
@@ -264,7 +359,7 @@ Each audit entry includes the user ID of the actor, the timestamp, the action ty
 The **Usage** tab shows these items:
 
 - **Live counts**: Current devices, members, and services
-- **Plan limits**: Maximum devices and members (you can configure them with the API)
+- **Limits**: Maximum devices and members. The originator sets them. See [Device and member limits](#device-and-member-limits)
 - **7-day history**: 168 data points (the health monitor samples every 5 minutes)
 
 The system stores usage snapshots in the `usage_snapshots` table. The dashboard shows them as a sparkline chart.
@@ -276,4 +371,39 @@ To save resources, the system can stop idle networks automatically:
 - Set `hibernateAfterDays` in the Security tab (0 = disabled).
 - The system updates `lastActivityAt` on API access (debounced to avoid write amplification).
 - The health monitor sweeps all tenants. It stops each tenant that is idle longer than the threshold.
-- A hibernated network restarts on the next API access.
+- To start a stopped network again, the originator uses **Start** (`POST /api/tenants/:id/start`).
+
+## Instance administration
+
+The **Instance** tab is visible only to instance operators. It has these functions:
+
+- **Tailnets**: All tailnets on the instance. An operator can suspend, unsuspend or delete a tailnet.
+- **Users**: All users who signed in. An operator can disable or enable a user.
+- **Settings**: The default tailnet and single-tailnet mode.
+- **Tailnet creators**: Add or remove the people (handle or DID) who can create a tailnet.
+- **Activity log**: The instance-level audit trail.
+
+### Suspend a tailnet
+
+Suspension stops a tailnet without deleting it:
+
+- The suspension also applies to all sub-tailnets of the tailnet.
+- In coordinator mode, the coordinator enforces it. Devices cannot register or get map updates.
+- Members get an error (`tenant_suspended`) on each request to the tailnet.
+- **Unsuspend** restores the tailnet and the sub-tailnets that the suspension included.
+
+### Disable a user
+
+A disabled user cannot sign in. Each credential of the user stops working, including agent tokens and MCP connections. The service also does these steps:
+
+- It removes the user from each tailnet where the user is a member, with their devices and keys.
+- In the tailnets that the user owns, it deletes the devices and keys of the user. The tailnets stay.
+- It cancels the pending join requests and invitations of the user.
+
+**Enable** lets the user sign in again. The removed memberships do not come back.
+
+### Default tailnet and single-tailnet mode
+
+The first tailnet that an operator creates becomes the default tailnet. It accepts join requests. When you select a different default tailnet, the service turns on join requests for it. Select **None** to have no default tailnet. People with no access then see only their invitations.
+
+In single-tailnet mode, the instance has only one top-level tailnet. Nobody can create a second one, and nobody can create sub-collectives. You cannot turn on this mode when more than one top-level tailnet exists.

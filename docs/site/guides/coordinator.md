@@ -15,10 +15,10 @@ Tailscale clients ──► Caddy (TLS termination)
                          │      Noise IK handshake
                          │      Node registration
                          │      Streaming map updates
-                         │      Federation broker
+                         │      (tenant subdomains: /key, /ts2021, /health)
                          │
                          └──► TypeScript service (port 3000)
-                                Web UI / API
+                                Web UI / API / MCP
                                 OAuth
                                 Orchestration
                                 │
@@ -38,7 +38,7 @@ The coordinator uses the `Noise_IK_25519_ChaChaPoly_BLAKE2s` handshake protocol.
 docker compose -f docker-compose.coordinator.dev.yml up -d
 ```
 
-This command starts the coordinator, PostgreSQL, and Caddy. Docker builds the coordinator from `coordinator/Dockerfile`. The coordinator starts with `COORD_ADMIN_KEY=dev-coordinator-key`.
+This command starts the coordinator, PostgreSQL, and Caddy. Docker builds the coordinator from `coordinator/Dockerfile`. The coordinator starts with `COORD_ADMIN_KEY=dev-coordinator-key-local-only-0000000000`.
 
 </li>
 <li>
@@ -49,7 +49,7 @@ Add these lines to your `.env`:
 
 ```ini
 COORDINATOR_URL=http://localhost:9443
-COORDINATOR_API_KEY=dev-coordinator-key
+COORDINATOR_API_KEY=dev-coordinator-key-local-only-0000000000
 ```
 
 When you set `COORDINATOR_URL`, the service uses the `CoordinatorApiClient` and not the `HeadscaleApiClient`. Tenant provisioning creates tenants through the coordinator REST API. It does not launch Docker containers.
@@ -91,17 +91,22 @@ cp .env.coordinator.example .env
 Edit `.env` with your production values:
 
 ```ini
-DATABASE_URL=postgresql://coord:secure-password@postgres:5432/coordinator
+POSTGRES_PASSWORD=<random-string>
 SESSION_SECRET=<random-string-at-least-32-chars>
 PUBLIC_URL=https://yourdomain.com
 BASE_DOMAIN=ts.yourdomain.com
 COORDINATOR_URL=http://coordinator:9443
 COORDINATOR_API_KEY=<generate-a-strong-key>
-COORD_ADMIN_KEY=<same-key-as-above>
 FEDERATION_KEY_ENCRYPTION_KEY=<64-hex-chars>
 APP_DOMAIN=yourdomain.com
 TLS_STRATEGY=on-demand
+OPERATOR_DIDS=did:plc:your-own-did
+ATPROTO_PRIVATE_KEY='{"kty":"EC","crv":"P-256",...}'
 ```
+
+The compose file passes `COORDINATOR_API_KEY` to the coordinator as `COORD_ADMIN_KEY`. It also builds `DATABASE_URL` from the `POSTGRES_*` values, and it sets `TRUST_PROXY=1`. The app and the coordinator refuse keys that are shorter than 32 characters or that contain `change-me`.
+
+For `ATPROTO_PRIVATE_KEY`, see [Authentication](../reference/configuration#authentication). For a full walkthrough, see [First deployment on DigitalOcean](https://github.com/DaveForan/atproto-tailnet/blob/master/docs/deployment.md#first-deployment-on-digitalocean).
 
 Generate the keys:
 
@@ -136,10 +141,11 @@ docker compose -f docker-compose.coordinator.yml up -d
 ```
 
 This command starts these services:
-- **coordinator** --- Rust binary on port 9443 (internal)
-- **app** --- TypeScript service on port 3000 (internal)
-- **postgres** --- PostgreSQL 17 with health checks
-- **caddy** --- TLS termination and routing on ports 80/443
+
+- **coordinator** --- Rust binary on port 9443 (internal, non-root)
+- **app** --- TypeScript service on port 3000 (internal, non-root)
+- **postgres** --- PostgreSQL 17 with health checks, on the `internal` network only
+- **caddy** --- TLS termination and routing on ports 80/443, on the `edge` network only
 
 </li>
 <li>
@@ -147,14 +153,15 @@ This command starts these services:
 **Verify**
 
 ```bash
-# Coordinator health
+# Service health (dashboard domain)
 curl https://yourdomain.com/health
-# {"status":"ok"}
 
-# Key endpoint (public, needed by Tailscale clients)
-curl https://yourdomain.com/key
+# Key endpoint of the coordinator on a tenant subdomain (needed by Tailscale clients)
+curl https://<slug>.ts.yourdomain.com/key
 # {"publicKey":"mkey:...","legacyPublicKey":"mkey:..."}
 ```
+
+Sign in as the operator before anyone else. Only operators get a tailnet at sign-in. The `/key` check works after your tailnet exists.
 
 </li>
 </ol>
@@ -168,7 +175,9 @@ The coordinator reads its configuration from a TOML file and from environment va
 | Listen address | `listen` | `COORD_LISTEN` | `127.0.0.1:9443` |
 | Mesh domain | `domain` | --- | `mesh.local` |
 | Storage backend | `store_backend` | `COORD_STORE_BACKEND` | *(required)* |
-| Admin API key | --- | `COORD_ADMIN_KEY` | *(none --- auth disabled)* |
+| Admin API key | --- | `COORD_ADMIN_KEY` | *(none --- admin API disabled, 503)* |
+| Control key file | --- | `COORD_CONTROL_KEY_PATH` | *(none --- new key at each start)* |
+| Rust federation endpoints | --- | `COORD_FEDERATION_ENABLED` | `false` |
 | SQLite path | `sqlite_path` | `COORD_SQLITE_PATH` | `coordinator.db` |
 | PostgreSQL URL | `database_url` | `DATABASE_URL` | *(required when backend = postgres)* |
 | DERP map file | `derp_map_file` | `COORD_DERP_MAP` | *(built-in Tailscale DERP)* |
@@ -183,11 +192,40 @@ You must set `store_backend` explicitly (TOML key or `COORD_STORE_BACKEND` env v
 
 All three backends support the core node/tenant store and the federation store (links, broker sessions, collective DIDs).
 
+### Control key
+
+Tailscale clients pin the Noise public key of the control server. The coordinator must keep the same key after a restart.
+
+- Set `COORD_CONTROL_KEY_PATH` to a file on persistent storage. The coordinator creates the file at first start (32 bytes as hex).
+- The Docker stack uses `/var/lib/coordinator/control.key` on the `coord_data` volume.
+- Back up this file. If you lose it, every device must connect again.
+- Without `COORD_CONTROL_KEY_PATH`, the coordinator makes a new key at each start and logs a warning.
+
+### Tenant subdomains
+
+Each tenant has the subdomain `<slug>.<BASE_DOMAIN>`. On a tenant subdomain, Caddy sends only these paths to the coordinator:
+
+- `/key`
+- `/ts2021`
+- `/health`
+
+Caddy returns 404 for all other paths and for unknown names. The admin API (`/api/*`) is never reachable through a tenant subdomain.
+
+### Suspension
+
+An instance operator can suspend a tailnet in the **Instance** tab. The service then calls `PUT /api/tenants/{id}/suspended` on the coordinator. The suspension also applies to the sub-tailnets. While a tenant is suspended, its nodes cannot register or poll the map, and the coordinator ends their open map streams.
+
 ### DERP map
 
 DERP (Designated Encrypted Relay for Packets) relays give fallback connectivity when direct peer-to-peer connections fail. By default, the coordinator uses the public DERP infrastructure of Tailscale (region 1, `derp1.tailscale.com`).
 
-To use self-hosted DERP relays, create a JSON file:
+DERP configuration applies to one tenant at a time. There is no global DERP endpoint.
+
+- Each tenant can add its own relay regions (IDs 900-999) in the **DERP Relays** tab. The service sends them to `PUT /api/tenants/{id}/derp` for that tenant only. Connected devices of that tenant get the new map at once.
+- A tenant can also turn off the default map.
+- The service database is the source of truth. The coordinator keeps the maps in memory. The service sends them again after a coordinator restart.
+
+To change the default map for all tenants, create a JSON file:
 
 ```json
 {
@@ -210,6 +248,28 @@ To use self-hosted DERP relays, create a JSON file:
 
 Set `derp_map_file` in the TOML or the `COORD_DERP_MAP` env var to the path of this file.
 
+### Subnet routes and exit nodes
+
+A device advertises routes with `tailscale up --advertise-routes=...` or `--advertise-exit-node`. The coordinator reads them from `Hostinfo.RoutableIPs`. A route has no effect until somebody approves it:
+
+1. Open the **Routes** tab (the `manage_devices` permission is necessary).
+2. Find the advertised route.
+3. Select **Enable**. The service calls `POST /api/tenants/{id}/nodes/{node_id}/routes`.
+
+**Disable** or **Delete** withdraws the approval. The device keeps the advertisement.
+
+The coordinator also supports tag-based auto-approvers (`PUT /api/tenants/{id}/auto-approvers`). The service uses them only for federated routes. ACL `autoApprovers` are refused in coordinator mode.
+
+### ACL limits
+
+The coordinator has no users, groups or tags. In coordinator mode, the service accepts only these ACL items:
+
+- `accept` rules
+- Sources and destinations that are `*`, an IP address, a CIDR, or a host alias
+- `hosts` entries that are IP addresses or CIDRs
+
+The service refuses a policy with `groups`, `tagOwners`, `autoApprovers` or user sources. It does not drop them without notice.
+
 ## Disconnect detection
 
 The coordinator sends HTTP/2 PING frames to detect dead client sessions:
@@ -223,6 +283,10 @@ A graceful `tailscale down` keeps the Noise session open but the client stops it
 
 ## Admin API
 
-When you set `COORD_ADMIN_KEY`, all `/api/*` endpoints need the header `Authorization: Bearer <key>`. The health (`/health`) and key (`/key`) endpoints are always public.
+When you set `COORD_ADMIN_KEY`, all `/api/*` endpoints need the header `Authorization: Bearer <key>`. The key must have 32 characters or more, and it must not contain `change-me`. When you do not set it, the admin API is disabled and returns 503. The health (`/health`), key (`/key`) and `/ts2021` endpoints are always public.
+
+Only the TypeScript service must reach the admin API. The Docker stack does not publish port 9443.
+
+The Rust federation endpoints (`/api/federation/messages/*`) exist only when `COORD_FEDERATION_ENABLED=true`. Keep it off. See [Federation](federation).
 
 For the full endpoint list, see the [API reference](../reference/api).

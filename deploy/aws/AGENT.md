@@ -34,6 +34,16 @@ This guide uses coordinator mode with Route53 DNS-01 wildcard TLS.
 | `INSTANCE_TYPE` | Your choice | Default: `t3.medium` |
 | `REPO_URL` | Git remote | Repository URL to clone |
 | `BRANCH` | Your choice | Default: `main` |
+| `OPERATOR_DIDS` | Your Bluesky DID | Comma-separated DIDs of the instance operators. You must set it before the first sign-in |
+| `ADMIN_IP` | Your workstation | Public IP address that can connect with SSH |
+
+To find the DID of a Bluesky account, use this command:
+
+```sh
+curl "https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle?handle=you.bsky.social"
+```
+
+Only operators, and the "tailnet creators" that an operator designates, get a tailnet. All other users who sign in see a "no access" view. This view shows their pending invitations and a "Request to join" button for the default tailnet. The first tailnet that an operator creates becomes the default tailnet. If `OPERATOR_DIDS` is empty, the app logs a loud warning and nobody can create a tailnet.
 
 ### Secrets to Generate
 
@@ -44,11 +54,17 @@ COORDINATOR_API_KEY=$(openssl rand -hex 32)
 FEDERATION_KEY_ENCRYPTION_KEY=$(openssl rand -hex 32)
 ```
 
+The app does not start in production if `SESSION_SECRET` or `COORDINATOR_API_KEY` has fewer than 32 characters. It also does not start if the value contains `change-me` or `changeme`. The coordinator applies the same rule to its admin key.
+
+You also need `ATPROTO_PRIVATE_KEY`. Generate it on the instance (Path A, step 6).
+
 ## Deployment Steps
 
-### Path A: Minimal (EC2 + SQLite/Postgres in a container, no RDS)
+### Path A: Minimal (EC2 + Postgres in a container, no RDS)
 
 #### 1. Create Security Group
+
+Docker-published ports (80, 443) bypass `ufw`. `ufw` alone does not protect these ports. Use the security group. Allow SSH from your IP only. Do not open the coordinator port (9443) or Postgres. The compose file does not publish them.
 
 ```sh
 SG_ID=$(aws ec2 create-security-group \
@@ -57,7 +73,7 @@ SG_ID=$(aws ec2 create-security-group \
   --vpc-id "$VPC_ID" \
   --query 'GroupId' --output text)
 
-aws ec2 authorize-security-group-ingress --group-id "$SG_ID" --protocol tcp --port 22 --cidr 0.0.0.0/0
+aws ec2 authorize-security-group-ingress --group-id "$SG_ID" --protocol tcp --port 22 --cidr "${ADMIN_IP}/32"
 aws ec2 authorize-security-group-ingress --group-id "$SG_ID" --protocol tcp --port 80 --cidr 0.0.0.0/0
 aws ec2 authorize-security-group-ingress --group-id "$SG_ID" --protocol tcp --port 443 --cidr 0.0.0.0/0
 aws ec2 authorize-security-group-ingress --group-id "$SG_ID" --protocol udp --port 443 --cidr 0.0.0.0/0
@@ -167,12 +183,30 @@ CADDY_DNS_PLUGINS=github.com/caddy-dns/route53
 AWS_REGION=${AWS_REGION}
 AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
 AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+OPERATOR_DIDS=${OPERATOR_DIDS}
 ENVEOF
+
+ssh -i ~/.ssh/"$KEY_PAIR_NAME".pem ubuntu@"$EIP" "sudo chmod 600 /opt/atproto-tailnet/.env"
 ```
 
 If you use an EC2 instance role instead of access keys, leave `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` empty.
 
+Do not set `FEDERATION_ENABLED`. Federation is off by default. Its data plane needs Docker (Headscale mode), and the coordinator stack does not send traffic between instances. The app still uses `FEDERATION_KEY_ENCRYPTION_KEY` for collective signing keys and credentials.
+
+Generate `ATPROTO_PRIVATE_KEY` on the instance, after `.env` exists. Production sign-in fails without it. The command uses the `jose` dependency in the app image:
+
+```sh
+cd /opt/atproto-tailnet
+KEY=$(sudo docker compose -f docker-compose.coordinator.yml run --rm --no-deps --entrypoint node app \
+  --input-type=module -e "import {generateKeyPair,exportJWK} from 'jose'; const {privateKey}=await generateKeyPair('ES256',{extractable:true}); console.log(JSON.stringify({...await exportJWK(privateKey),alg:'ES256'}))")
+echo "ATPROTO_PRIVATE_KEY='${KEY}'" | sudo tee -a .env > /dev/null
+```
+
+The value is a one-line ES256 (P-256) private JWK in single quotes: `ATPROTO_PRIVATE_KEY='{"kty":"EC",...}'`. A PKCS8 PEM also works, but it has many lines, so use the JWK.
+
 #### 7. Start Services
+
+Run these commands on the instance:
 
 ```sh
 cd /opt/atproto-tailnet
@@ -182,16 +216,33 @@ sudo docker compose -f docker-compose.coordinator.yml up -d
 #### 8. Verify
 
 ```sh
-curl -s https://${APP_DOMAIN}/health
-# Expected: {"status":"ok",...}
+curl -f https://${APP_DOMAIN}/health
+# Expected: {"status":"ok"}
 
 sudo docker compose -f docker-compose.coordinator.yml logs caddy | tail -20
 # Look for: "certificate obtained successfully"
 ```
 
+#### 9. Sign In as the Operator
+
+The operator must sign in first after the deploy. Open `https://${APP_DOMAIN}` and sign in with the Bluesky account in `OPERATOR_DIDS`. Then create the first tailnet. This tailnet becomes the default tailnet and accepts join requests. A sign-in does not create a tailnet automatically.
+
+To connect Claude, add a custom connector with the URL `https://<APP_DOMAIN>/mcp`. The connector uses OAuth sign-in with Bluesky. See [docs/site/guides/mcp.md](../../docs/site/guides/mcp.md).
+
+#### 10. Back Up the Volumes
+
+Back up the `pgdata` and `coord_data` Docker volumes. `coord_data` holds the coordinator Noise control key (`COORD_CONTROL_KEY_PATH=/var/lib/coordinator/control.key`). If you lose it, all devices must register and connect again.
+
 ### Path B: CloudFormation (EC2 + RDS)
 
-This path uses the existing `cloudformation.yaml` template. Pass `TLS_STRATEGY=route53` and the AWS credentials. Do not pass the Cloudflare token.
+This path uses the existing `cloudformation.yaml` template. Read these limits before you use it:
+
+- The template deploys the legacy Headscale mode with `docker-compose.production.yml`. It does not deploy coordinator mode. For coordinator mode, use Path A.
+- The security group opens SSH (22) to `0.0.0.0/0` and the Headscale ports 10001-10100.
+- The template creates an RDS instance. `docker-compose.production.yml` sets `DATABASE_URL` to the `postgres` container, so the app does not use RDS.
+- The generated `.env` has no `APP_DOMAIN`, `OPERATOR_DIDS`, or `ATPROTO_PRIVATE_KEY`. You must add them.
+
+Do not pass the Cloudflare token. You set the Route53 TLS strategy after the stack is created.
 
 ```sh
 aws cloudformation create-stack \
@@ -212,28 +263,38 @@ aws cloudformation create-stack \
 aws cloudformation wait stack-create-complete --stack-name atproto-tailnet
 ```
 
-After the stack is created, SSH in and update `.env` to set the TLS strategy variables:
+After the stack is created, SSH in and update `.env`. Set the TLS strategy variables, the app domain, and the operators:
 
 ```sh
 EIP=$(aws cloudformation describe-stacks --stack-name atproto-tailnet \
-  --query 'Stacks[0].Outputs[?OutputKey==`ElasticIP`].OutputValue' --output text)
+  --query 'Stacks[0].Outputs[?OutputKey==`AppPublicIP`].OutputValue' --output text)
 
 ssh -i ~/.ssh/"$KEY_PAIR_NAME".pem ubuntu@"$EIP"
 
-# Append TLS strategy config
+# Append TLS strategy, app domain, and operator config
 cd /opt/atproto-tailnet
 sudo tee -a .env > /dev/null <<EOF
+APP_DOMAIN=$APP_DOMAIN
+OPERATOR_DIDS=$OPERATOR_DIDS
 TLS_STRATEGY=route53
 CADDY_DNS_PLUGINS=github.com/caddy-dns/route53
 AWS_REGION=$AWS_REGION
 AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID
 AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY
 EOF
+sudo chmod 600 .env
+
+# Generate the AT Protocol OAuth key (one-line ES256 JWK)
+KEY=$(sudo docker compose -f docker-compose.production.yml run --rm --no-deps --entrypoint node app \
+  --input-type=module -e "import {generateKeyPair,exportJWK} from 'jose'; const {privateKey}=await generateKeyPair('ES256',{extractable:true}); console.log(JSON.stringify({...await exportJWK(privateKey),alg:'ES256'}))")
+echo "ATPROTO_PRIVATE_KEY='${KEY}'" | sudo tee -a .env > /dev/null
 
 # Rebuild Caddy with Route53 plugin and restart
-sudo docker compose -f docker-compose.coordinator.yml build caddy
-sudo docker compose -f docker-compose.coordinator.yml up -d
+sudo docker compose -f docker-compose.production.yml build caddy
+sudo docker compose -f docker-compose.production.yml up -d
 ```
+
+These commands run in the shell on the instance. Set `APP_DOMAIN`, `OPERATOR_DIDS`, and the `AWS_*` variables in that shell first, or type the values into `.env`. After the restart, the operator must sign in first.
 
 ## IAM Policy for Route53 TLS
 
@@ -392,5 +453,7 @@ aws cloudformation wait stack-delete-complete --stack-name atproto-tailnet
 | `curl: connection refused` on 443 | The security group has no 443/tcp rule | `aws ec2 authorize-security-group-ingress --group-id $SG_ID --protocol tcp --port 443 --cidr 0.0.0.0/0` |
 | DNS not resolving | The records do not exist or are still propagating | Wait 5 minutes. Verify with `dig +short $APP_DOMAIN` |
 | Health returns unhealthy | Postgres is not ready or the coordinator failed | Check `docker compose logs postgres coordinator` |
-| Certificate shows staging issuer | Caddy used staging by default | Check that `.env` has `TLS_STRATEGY=route53` and `CADDY_DNS_PLUGINS=github.com/caddy-dns/route53`. Rebuild the Caddy image |
+| No wildcard certificate for tenant subdomains | `TLS_STRATEGY` is not set, so Caddy uses the default `on-demand` strategy | Check that `.env` has `TLS_STRATEGY=route53` and `CADDY_DNS_PLUGINS=github.com/caddy-dns/route53`. Rebuild the Caddy image |
+| Sign-in fails | `ATPROTO_PRIVATE_KEY` is missing or has more than one line | Generate a one-line ES256 JWK (Path A, step 6). Restart the app |
+| The operator sees the "no access" view | `OPERATOR_DIDS` is empty or has a different DID | Set the correct DID in `.env`. Restart the app |
 | `AWS_REGION` required error | The region is missing in `.env` | Add `AWS_REGION=us-east-1` (or your region) to `.env` |

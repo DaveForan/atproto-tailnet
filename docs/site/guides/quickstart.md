@@ -10,8 +10,9 @@ Start a local atproto-tailnet instance on your machine. This guide uses **coordi
 
 - **Node.js 22+** and npm
 - **Docker** and Docker Compose
-- **Rust 1.85+** and Cargo (for the coordinator)
 - A **Bluesky account** (or any AT Protocol identity) to test the login
+
+You do not need Rust. Docker builds the coordinator.
 
 ## Steps
 
@@ -34,10 +35,13 @@ SESSION_SECRET=change-me-to-something-random-at-least-32-chars
 PUBLIC_URL=http://127.0.0.1:3000
 BASE_DOMAIN=ts.localhost
 COORDINATOR_URL=http://127.0.0.1:9443
-COORDINATOR_API_KEY=dev-coordinator-key
+COORDINATOR_API_KEY=dev-coordinator-key-local-only-0000000000
+OPERATOR_DIDS=did:plc:your-own-did
 ```
 
 > `PUBLIC_URL` must use `127.0.0.1`, not `localhost`. The AT Protocol OAuth specification requires an IP address or a public domain.
+
+> `OPERATOR_DIDS` must contain your own DID. Only operators get a tailnet at sign-in. To find your DID, run `curl "https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle?handle=you.bsky.social"`.
 
 </li>
 <li>
@@ -91,14 +95,16 @@ The service starts on `http://127.0.0.1:3000`. The output shows this line:
 
 Open `http://127.0.0.1:3000` in your browser. Enter your AT Protocol handle (for example, `you.bsky.social`) and click **Sign In**. The browser redirects you to your PDS for OAuth authorization. Then it returns you to your new dashboard.
 
-On first login, the platform provisions a tenant (your private mesh network) automatically. The dashboard shows the status change from "provisioning" to "running."
+You are an operator, so the platform provisions a tenant (your private mesh network) at the first sign-in. The dashboard shows the status change from "provisioning" to "running." This tailnet also becomes the default tailnet of the instance.
+
+If you see "you aren't a member of any tailnet", your DID is not in `OPERATOR_DIDS`. Fix `.env`, restart `npm run dev`, then sign out and sign in again.
 
 </li>
 <li>
 
 **Connect a device**
 
-In the **Devices** tab of the dashboard, click **Generate Auth Key** to receive a pre-authentication key. Then run this command on the device that you want to connect:
+In the **Add Device** tab of the dashboard, generate a pre-authentication key. Then run this command on the device that you want to connect:
 
 ```bash
 tailscale up --login-server=http://<your-tenant-slug>.ts.localhost:8180 \
@@ -124,6 +130,7 @@ After these steps, these components run:
 ## Next steps
 
 - [Deploy to production](coordinator) with TLS and a public domain
-- [Set up federation](federation) to connect networks
+- [Invite people](managing-your-network#inviting-members) by handle or DID
+- [Connect Claude](mcp) to manage your tailnet from Claude
 - [Manage your network](managing-your-network) --- roles, ACLs, devices
 - [Configuration reference](../reference/configuration) for all options

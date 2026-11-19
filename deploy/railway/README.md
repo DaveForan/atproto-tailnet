@@ -4,26 +4,20 @@
 
 **Docker socket access is not available on Railway.** Railway runs containers in
 an isolated environment. The containers cannot access the host Docker daemon.
-atproto-tailnet manages the Headscale container of each tenant through the
-Docker socket. Because of this, the core orchestration function does not work on
-Railway alone.
+In the legacy Headscale mode, atproto-tailnet manages the Headscale container
+of each tenant through the Docker socket. Headscale mode does not work on
+Railway.
 
-### Workarounds
+A remote Docker host (`DOCKER_HOST`) does not solve this. The app writes tenant
+configs to a local directory, and the Docker host must bind-mount that
+directory at the same path.
 
-1. **External Docker host** -- Run the Headscale containers on a separate VPS.
-   Configure the app to connect to a remote Docker daemon over TCP/TLS. You must
-   change `src/orchestrator/headscale.ts` so that it accepts a `DOCKER_HOST`
-   environment variable instead of the local socket.
+Coordinator mode (`COORDINATOR_URL`) does not need the Docker socket. But it
+needs the Rust coordinator and a proxy for the tenant wildcard subdomains.
+This guide does not set them up.
 
-2. **Railway + companion VPS** -- Deploy the app and Postgres on Railway for the
-   web tier. Point `DOCKER_HOST` at a low-cost VPS (Hetzner or DigitalOcean
-   Droplet) that runs the Headscale containers.
-
-3. **Docker-in-Docker** -- Railway does not officially support DinD. If Railway
-   adds support in the future, mount the inner socket to the app container.
-
-If none of these options work for your setup, deploy to a DigitalOcean Droplet
-or an AWS EC2 instance instead (see `deploy/digitalocean/` and `deploy/aws/`).
+The recommended path is a single VPS with `docker-compose.coordinator.yml`. See
+`deploy/digitalocean/`, `deploy/hetzner/`, `deploy/vultr/`, or `deploy/aws/`.
 
 ## Setup (web tier only)
 
@@ -58,13 +52,36 @@ railway variables set HEADSCALE_PORT_RANGE_START="10001"
 railway variables set HEADSCALE_PORT_RANGE_END="10100"
 railway variables set LOG_LEVEL="info"
 
-# If using external Docker host:
-# railway variables set DOCKER_HOST="tcp://your-vps-ip:2376"
-# railway variables set DOCKER_TLS_VERIFY="1"
+# The Railway platform proxy is in front of the app
+railway variables set TRUST_PROXY="1"
 
-# AT Proto OAuth (production)
-# railway variables set ATPROTO_PRIVATE_KEY='<ES256 JWK>'
+# Instance operators (comma-separated DIDs); set before the first sign-in
+railway variables set OPERATOR_DIDS="did:plc:your-own-did"
+
+# AT Proto OAuth (production sign-in fails without it)
+railway variables set ATPROTO_PRIVATE_KEY='<one-line ES256 JWK>'
 ```
+
+Notes on these variables:
+
+- `TRUST_PROXY=1` is necessary because the Railway proxy is in front of the app. Sign-in needs it for the secure session cookie.
+- `SESSION_SECRET` must have 32 or more characters and must not contain `change-me` or `changeme`. If it does, the app does not start.
+- `OPERATOR_DIDS` controls who gets a tailnet. Only operators, and the "tailnet creators" that an operator designates, get one. All other users see a "no access" view with their invitations and "Request to join" for the default tailnet. If `OPERATOR_DIDS` is empty, nobody can create a tailnet.
+- Do not set `FEDERATION_ENABLED`. Federation is off by default.
+
+To find your DID, use this command:
+
+```sh
+curl "https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle?handle=you.bsky.social"
+```
+
+To generate `ATPROTO_PRIVATE_KEY`, run this command in a checkout after `npm install` (Node 22):
+
+```sh
+node --input-type=module -e "import {generateKeyPair,exportJWK} from 'jose'; const {privateKey}=await generateKeyPair('ES256',{extractable:true}); console.log(JSON.stringify({...await exportJWK(privateKey),alg:'ES256'}))"
+```
+
+The output is a one-line ES256 (P-256) private JWK that starts with `{`. A PKCS8 PEM also works, but it has many lines, so use the JWK.
 
 ### 4. Deploy
 
@@ -103,3 +120,5 @@ tenant subdomains, you need one of these options:
 
 The app has a `GET /health` endpoint. It returns `200 OK` when the service is ready.
 Railway uses this endpoint for deploys without downtime.
+
+After the first deploy, the operator must sign in first.

@@ -28,10 +28,22 @@ A single Vultr Cloud Compute instance runs atproto-tailnet in **coordinator mode
 | `region` | Vultr region slug | `ewr` (New Jersey), `ord` (Chicago), `lax` (Los Angeles) |
 | `REPO_URL` | Git clone URL | `https://github.com/your-org/atproto-tailnet.git` |
 | `BRANCH` | Git branch | `main` |
+| `APP_SUBDOMAIN` | Subdomain for the web UI | `tailnets` |
+| `TS_SUBDOMAIN` | Subdomain prefix for the tenant wildcard | `ts` |
+| `OPERATOR_DIDS` | Comma-separated DIDs of the instance operators. You must set it before the first sign-in | `did:plc:abc123...` |
+| `ADMIN_IP` | Public IP address that can connect with SSH | `203.0.113.10` |
+
+To find the DID of a Bluesky account, use this command:
+
+```sh
+curl "https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle?handle=you.bsky.social"
+```
+
+Only operators, and the "tailnet creators" that an operator designates, get a tailnet. All other users who sign in see a "no access" view. This view shows their pending invitations and a "Request to join" button for the default tailnet. The first tailnet that an operator creates becomes the default tailnet. If `OPERATOR_DIDS` is empty, the app logs a loud warning and nobody can create a tailnet.
 
 ### Secrets to Generate
 
-Generate these secrets before deployment. Do not reuse values.
+The bootstrap script (step 5) generates these secrets in `.env`. To make them yourself, use these commands. Do not reuse values.
 
 ```sh
 SESSION_SECRET=$(openssl rand -hex 32)
@@ -40,9 +52,26 @@ COORDINATOR_API_KEY=$(openssl rand -hex 32)
 FEDERATION_KEY_ENCRYPTION_KEY=$(openssl rand -hex 32)
 ```
 
+The app does not start in production if `SESSION_SECRET` or `COORDINATOR_API_KEY` has fewer than 32 characters. It also does not start if the value contains `change-me` or `changeme`. The coordinator applies the same rule to its admin key.
+
 ## Deployment Steps
 
-### 1. Create the instance
+### 1. Create the firewall group
+
+Docker-published ports (80, 443) bypass `ufw`. The bootstrap script enables `ufw` on its second run, but `ufw` alone does not protect these ports. Use a Vultr firewall group:
+
+```sh
+vultr-cli firewall group create --description atproto-tailnet
+# Note the firewall group ID
+vultr-cli firewall rule create --id <firewall-group-id> --protocol tcp --port 22 --subnet "$ADMIN_IP" --size 32 --ip-type v4
+vultr-cli firewall rule create --id <firewall-group-id> --protocol tcp --port 80 --subnet 0.0.0.0 --size 0 --ip-type v4
+vultr-cli firewall rule create --id <firewall-group-id> --protocol tcp --port 443 --subnet 0.0.0.0 --size 0 --ip-type v4
+vultr-cli firewall rule create --id <firewall-group-id> --protocol udp --port 443 --subnet 0.0.0.0 --size 0 --ip-type v4
+```
+
+Add the same rules with `--ip-type v6 --subnet :: --size 0` if the instance has IPv6. Do not open the coordinator port (9443) or Postgres. The compose file does not publish them.
+
+### 2. Create the instance
 
 ```sh
 vultr-cli instance create \
@@ -50,14 +79,17 @@ vultr-cli instance create \
   --region ewr \
   --os 2284 \
   --ssh-keys <ssh_key_id> \
+  --firewall-group <firewall-group-id> \
   --label atproto-tailnet
 ```
+
+You can also attach the firewall group to the instance in the Vultr web console.
 
 OS `2284` = Ubuntu 24.04 LTS x64. Use `387` for Ubuntu 22.04 x64.
 
 To list the available OS IDs: `vultr-cli os list | grep -i ubuntu`
 
-### 2. Wait for the instance and obtain the IP
+### 3. Wait for the instance and obtain the IP
 
 ```sh
 vultr-cli instance list
@@ -71,7 +103,7 @@ To poll the instance:
 vultr-cli instance get <instance-id>
 ```
 
-### 3. Create DNS records
+### 4. Create DNS records
 
 If the domain is not on Vultr DNS yet, add it:
 
@@ -107,7 +139,7 @@ Verify:
 vultr-cli dns record list --domain yourdomain.com
 ```
 
-### 4. SSH in and run the bootstrap script
+### 5. SSH in and run the bootstrap script
 
 ```sh
 ssh root@<ip> 'bash -s' < deploy/vultr/server-setup.sh
@@ -119,9 +151,9 @@ Or set the repository and branch explicitly:
 ssh root@<ip> 'REPO_URL=https://github.com/your-org/atproto-tailnet.git BRANCH=main bash -s' < deploy/vultr/server-setup.sh
 ```
 
-### 5. Configure environment
+### 6. Configure environment
 
-The bootstrap script generates the secrets and sets `TLS_STRATEGY=vultr`. Set the remaining values over SSH:
+On the first run, the bootstrap script generates the secrets, sets `TLS_STRATEGY=vultr`, and exits. Set the remaining values over SSH:
 
 ```sh
 ssh root@<ip> bash -c "
@@ -130,17 +162,47 @@ sed -i 's|^PUBLIC_URL=.*|PUBLIC_URL=https://${APP_SUBDOMAIN}.${domain}|' .env
 sed -i 's|^BASE_DOMAIN=.*|BASE_DOMAIN=${TS_SUBDOMAIN}.${domain}|' .env
 sed -i 's|^# APP_DOMAIN=.*|APP_DOMAIN=${APP_SUBDOMAIN}.${domain}|' .env
 sed -i 's|^VULTR_API_KEY=.*|VULTR_API_KEY=${VULTR_API_KEY}|' .env
+sed -i 's|^# OPERATOR_DIDS=.*|OPERATOR_DIDS=${OPERATOR_DIDS}|' .env
+chmod 600 .env
 "
 ```
 
-### 6. Start the stack
+Do not set `FEDERATION_ENABLED`. Federation is off by default. Its data plane needs Docker (Headscale mode), and the coordinator stack does not send traffic between instances. The app still uses `FEDERATION_KEY_ENCRYPTION_KEY` for collective signing keys and credentials.
+
+### 7. Generate the AT Protocol OAuth key
+
+Production sign-in fails without `ATPROTO_PRIVATE_KEY`. Use a one-line ES256 (P-256) private JWK. A PKCS8 PEM also works, but it has many lines, so use the JWK. Run this on the instance after `.env` exists. It uses the `jose` dependency in the app image:
+
+```sh
+cd /opt/atproto-tailnet
+KEY=$(docker compose -f docker-compose.coordinator.yml run --rm --no-deps --entrypoint node app \
+  --input-type=module -e "import {generateKeyPair,exportJWK} from 'jose'; const {privateKey}=await generateKeyPair('ES256',{extractable:true}); console.log(JSON.stringify({...await exportJWK(privateKey),alg:'ES256'}))")
+echo "ATPROTO_PRIVATE_KEY='${KEY}'" >> .env
+```
+
+The result is one line in single quotes: `ATPROTO_PRIVATE_KEY='{"kty":"EC",...}'`.
+
+### 8. Start the stack
+
+Run the bootstrap script again. When `.env` exists, the script does these steps:
+
+- It creates the backup directory `/opt/backups`.
+- It adds 2 GB of swap.
+- It builds the images and starts the stack.
+- It enables `ufw`.
+
+```sh
+ssh root@<ip> 'bash -s' < deploy/vultr/server-setup.sh
+```
+
+To start only the stack, run these commands on the instance:
 
 ```sh
 cd /opt/atproto-tailnet
 docker compose -f docker-compose.coordinator.yml up -d
 ```
 
-### 7. Wait for HTTPS readiness
+### 9. Wait for HTTPS readiness
 
 DNS propagation and TLS certificate issuance take time. Poll until the service responds over HTTPS:
 
@@ -155,15 +217,23 @@ for i in $(seq 1 90); do
 done
 ```
 
+### 10. Sign in as the operator
+
+The operator must sign in first after the deploy. Open `https://tailnets.yourdomain.com` and sign in with the Bluesky account in `OPERATOR_DIDS`. Then create the first tailnet. This tailnet becomes the default tailnet and accepts join requests. A sign-in does not create a tailnet automatically.
+
+To connect Claude, add a custom connector with the URL `https://tailnets.yourdomain.com/mcp`. The connector uses OAuth sign-in with Bluesky. See [docs/site/guides/mcp.md](../../docs/site/guides/mcp.md).
+
 ## Verification
 
 ### Health check
 
 ```sh
-curl -sf https://tailnets.yourdomain.com/health
+curl -f https://tailnets.yourdomain.com/health
 ```
 
 Expected: `{"status":"ok"}`
+
+Caddy sets HSTS on `APP_DOMAIN`. Tenant subdomains (`<slug>.BASE_DOMAIN`) expose only `/key`, `/ts2021`, and `/health` from the coordinator.
 
 ### DNS resolution
 
@@ -219,6 +289,8 @@ Enable automatic Vultr backups on the instance ($1.20/mo for vc2-1c-2gb):
 vultr-cli instance update <instance-id> --backups enable
 ```
 
+Back up the `pgdata` and `coord_data` Docker volumes. `coord_data` holds the coordinator Noise control key (`COORD_CONTROL_KEY_PATH=/var/lib/coordinator/control.key`). If you lose it, all devices must register and connect again. Vultr instance backups include both volumes.
+
 Set up regular Postgres dumps:
 
 ```sh
@@ -228,7 +300,7 @@ Set up regular Postgres dumps:
   gzip > /opt/backups/db-$(date +\%Y\%m\%d).sql.gz
 ```
 
-Create the backup directory:
+The second run of the bootstrap script creates the backup directory `/opt/backups`. If you did not run it again, create the directory:
 
 ```sh
 mkdir -p /opt/backups
@@ -250,7 +322,7 @@ vultr-cli dns record list --domain yourdomain.com
 vultr-cli dns record delete --domain yourdomain.com --record-id <record-id>
 ```
 
-### Remove firewall group (if created)
+### Remove the firewall group
 
 ```sh
 vultr-cli firewall group delete --id <firewall-group-id>
@@ -308,7 +380,7 @@ Vultr instances use password authentication by default if you did not attach an 
 
 ### Out of memory (vc2-1c-2gb)
 
-If the 2 GB plan runs out of memory during Docker builds, add swap:
+The second run of the bootstrap script adds 2 GB of swap. If the 2 GB plan still runs out of memory during Docker builds, make sure that the swap is active (`swapon --show`). If no swap is active, add it:
 
 ```sh
 # Add swap

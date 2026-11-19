@@ -4,6 +4,13 @@ title: Federation
 
 # Federation
 
+> **Status: off by default.** Federation is not available on a standard instance. The code exists, but the service hides it unless you set `FEDERATION_ENABLED=true`. Keep it off for these reasons:
+>
+> - The federation data plane needs Docker. Only the legacy Headscale mode has it.
+> - Cross-instance traffic is not implemented. In the coordinator stack, links carry no traffic.
+>
+> When federation is off, the federation and traversal API paths return 404. The broker does not start. The dashboard hides the **Federation** and **Traversal Policy** tabs. The Rust federation endpoints also need `COORD_FEDERATION_ENABLED=true`. The rest of this guide describes the design and the code.
+
 Federation connects separate mesh networks (collectives). Devices in one network can then reach devices in another network. Each side keeps full control of the routes it shares and of the users who can connect. Each side also decides to accept or reject link proposals.
 
 ## Concepts
@@ -140,13 +147,15 @@ When more than one path exists to the same prefix, the coordinator selects the b
 - Two running atproto-tailnet instances (the instances can be on the same server or on different servers)
 - A public HTTPS URL for each instance (federation messages travel over the internet)
 - `FEDERATION_KEY_ENCRYPTION_KEY` in `.env` (64 hex characters)
+- `FEDERATION_ENABLED=true` in `.env` on each instance
+- The legacy Headscale mode, if you need traffic across links (see the status note above)
 
 ### Configure posture
 
 Set the federation posture of your collective in the **Federation** tab of the dashboard or with the API:
 
 ```bash
-curl -X PUT https://yourdomain.com/api/tenants/<tenant-id>/posture \
+curl -X PUT https://yourdomain.com/api/tenants/<tenant-id>/federation/posture \
   -H "Authorization: Bearer <key>" \
   -H "Content-Type: application/json" \
   -d '{"posture": "selective"}'

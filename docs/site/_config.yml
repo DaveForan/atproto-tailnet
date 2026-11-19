@@ -1,5 +1,5 @@
 title: atproto-tailnet
-description: Private mesh networks with AT Protocol identity and cross-network federation
+description: Private mesh networks with AT Protocol identity, invite-only access, and Claude (MCP) management
 baseurl: /atproto-tailnet
 url: https://daveforan.github.io
 remote_theme: pages-themes/minimal@v0.2.0

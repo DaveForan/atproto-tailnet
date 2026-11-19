@@ -17,6 +17,19 @@ You can deploy atproto-tailnet on any server with Docker. Four cloud providers h
 
 All providers deploy in **coordinator mode** and use `docker-compose.coordinator.yml`. Each provider has an `AGENT.md` in its `deploy/<provider>/` directory. The file contains the exact CLI commands for autonomous deployment.
 
+For a first deployment by hand, follow [First deployment on DigitalOcean](https://github.com/DaveForan/atproto-tailnet/blob/master/docs/deployment.md#first-deployment-on-digitalocean). The steps also apply to other providers. Then do the steps in [Droplet hardening](https://github.com/DaveForan/atproto-tailnet/blob/master/docs/deployment.md#droplet-hardening).
+
+## Before you start
+
+Prepare these values for `.env`:
+
+- `OPERATOR_DIDS`: your own DID. Only operators and the tailnet creators that they designate get a tailnet. Set it before the first sign-in.
+- `ATPROTO_PRIVATE_KEY`: an ES256 JWK. Production sign-in needs it. See [Authentication](../reference/configuration#authentication).
+- `PUBLIC_URL`, `APP_DOMAIN` and `BASE_DOMAIN`.
+- The DNS token for your TLS strategy.
+
+The setup scripts generate the other secrets, or the `AGENT.md` files show how to generate them.
+
 ## What the stack contains
 
 ```
@@ -43,6 +56,8 @@ All providers deploy in **coordinator mode** and use `docker-compose.coordinator
 ```
 
 All four services run as Docker containers when you use a single `docker compose up -d` command. The coordinator handles the Tailscale control protocol natively. You do not need a Docker socket mount.
+
+Only Caddy publishes ports (80 and 443). PostgreSQL is on an internal network that Caddy cannot reach. On tenant subdomains, Caddy sends only `/key`, `/ts2021` and `/health` to the coordinator.
 
 ## TLS strategies
 
@@ -145,10 +160,13 @@ The AGENT.md file of each provider contains the exact CLI commands to create the
 
 When the stack runs, do these steps:
 
-1. **Verify health**: `curl https://tailnets.yourdomain.com/health`
-2. **Check TLS**: `curl -vI https://tailnets.yourdomain.com 2>&1 | grep issuer`
-3. **View logs**: `docker compose -f docker-compose.coordinator.yml logs -f`
-4. **Sign in**: Go to `https://tailnets.yourdomain.com` and authenticate with your AT Protocol handle
+1. **Sign in first**: Go to `https://tailnets.yourdomain.com` and sign in with the account in `OPERATOR_DIDS`. Your tailnet becomes the default tailnet of the instance and accepts join requests.
+2. **Verify health**: `curl https://tailnets.yourdomain.com/health`
+3. **Check TLS**: `curl -vI https://tailnets.yourdomain.com 2>&1 | grep issuer`
+4. **View logs**: `docker compose -f docker-compose.coordinator.yml logs -f`
+5. **Connect Claude (optional)**: Add a custom connector with the URL `https://tailnets.yourdomain.com/mcp`. See [Connect Claude (MCP)](mcp).
+
+Other people who sign in get no tailnet. They see their invitations, or they can request to join the default tailnet. Use the **Invite** tab to invite people, and the **Instance** tab to manage the instance.
 
 ## Updating
 
@@ -161,10 +179,14 @@ docker compose -f docker-compose.coordinator.yml up -d
 
 ## Security checklist
 
-- `SESSION_SECRET` is a unique random string (32+ characters)
-- `COORDINATOR_API_KEY` is a strong random value
-- `FEDERATION_KEY_ENCRYPTION_KEY` is 64 random hex characters (if you use federation)
+- `OPERATOR_DIDS` contains your DID, and you signed in first
+- `SESSION_SECRET` is a unique random string (32+ characters). The app refuses weak values
+- `COORDINATOR_API_KEY` is a strong random value (32+ characters)
+- `FEDERATION_KEY_ENCRYPTION_KEY` is 64 random hex characters
 - `ATPROTO_PRIVATE_KEY` is set for production AT Proto OAuth
+- `FEDERATION_ENABLED` is not set (federation is off by default)
+- `.env` has mode `600`
 - The PostgreSQL password is strong, and the internet cannot reach PostgreSQL
-- The firewall opens only ports 22, 80, 443, and 443/udp
+- The cloud firewall of the provider opens only ports 22 (your IP only), 80, 443, and 443/udp. Docker-published ports bypass `ufw`
 - Port 9443 (coordinator) is **not** exposed. It is internal to Docker
+- You back up the `pgdata` and `coord_data` volumes
