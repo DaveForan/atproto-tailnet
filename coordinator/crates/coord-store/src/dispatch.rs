@@ -132,6 +132,90 @@ impl Store {
         }
     }
 
+    /// Events from other replicas (never fires for single-process backends).
+    pub fn subscribe_remote(&self) -> broadcast::Receiver<crate::RemoteEvent> {
+        match self {
+            Store::Memory(m) => m.subscribe_remote(),
+            Store::Pg(p) => p.subscribe_remote(),
+            Store::Sqlite(s) => s.subscribe_remote(),
+        }
+    }
+
+    /// Tell the other replicas about an event. The caller handles it locally.
+    pub async fn publish(&self, event: crate::RemoteEvent) {
+        if let Store::Pg(p) = self {
+            p.publish(event).await;
+        }
+    }
+
+    /// Every stored configuration value of a tenant, as (kind, value).
+    pub async fn get_tenant_configs(&self, tenant_id: TenantId) -> Vec<(String, serde_json::Value)> {
+        match self {
+            Store::Memory(m) => m.get_tenant_configs(tenant_id),
+            Store::Pg(p) => p.get_tenant_configs(tenant_id).await,
+            Store::Sqlite(s) => s.get_tenant_configs(tenant_id).await,
+        }
+    }
+
+    /// Every stored configuration value of every tenant.
+    pub async fn list_tenant_configs(&self) -> Vec<(TenantId, String, serde_json::Value)> {
+        match self {
+            Store::Memory(m) => m.list_tenant_configs(),
+            Store::Pg(p) => p.list_tenant_configs().await,
+            Store::Sqlite(s) => s.list_tenant_configs().await,
+        }
+    }
+
+    /// Set or (with `None`) remove one configuration value of a tenant.
+    pub async fn set_tenant_config(
+        &self,
+        tenant_id: TenantId,
+        kind: &str,
+        value: Option<serde_json::Value>,
+    ) -> Result<(), CoordError> {
+        match self {
+            Store::Memory(m) => m.set_tenant_config(tenant_id, kind, value),
+            Store::Pg(p) => p.set_tenant_config(tenant_id, kind, value).await,
+            Store::Sqlite(s) => s.set_tenant_config(tenant_id, kind, value).await,
+        }
+    }
+
+    /// Start a pending sign-in; replaces any other pending sign-in of the machine.
+    pub async fn sign_in_start(&self, id: &str, machine_key: &[u8; 32], hostname: &str, os: &str) -> Result<(), CoordError> {
+        match self {
+            Store::Memory(m) => m.sign_in_start(id, machine_key, hostname, os),
+            Store::Pg(p) => p.sign_in_start(id, machine_key, hostname, os).await,
+            Store::Sqlite(s) => s.sign_in_start(id, machine_key, hostname, os).await,
+        }
+    }
+
+    /// The sign-in with this id, unless it expired.
+    pub async fn sign_in_get(&self, id: &str) -> Option<coord_core::PendingSignIn> {
+        match self {
+            Store::Memory(m) => m.sign_in_get(id),
+            Store::Pg(p) => p.sign_in_get(id).await,
+            Store::Sqlite(s) => s.sign_in_get(id).await,
+        }
+    }
+
+    /// Record the decision. False when unknown, expired or already decided.
+    pub async fn sign_in_decide(&self, id: &str, decision: &coord_core::SignInDecision) -> bool {
+        match self {
+            Store::Memory(m) => m.sign_in_decide(id, decision),
+            Store::Pg(p) => p.sign_in_decide(id, decision).await,
+            Store::Sqlite(s) => s.sign_in_decide(id, decision).await,
+        }
+    }
+
+    /// Remove a decided sign-in and return its decision; one caller wins.
+    pub async fn sign_in_take(&self, id: &str) -> Option<coord_core::SignInDecision> {
+        match self {
+            Store::Memory(m) => m.sign_in_take(id),
+            Store::Pg(p) => p.sign_in_take(id).await,
+            Store::Sqlite(s) => s.sign_in_take(id).await,
+        }
+    }
+
     /// The machine lock of an owner in a tenant (ADR-0035), if any.
     pub async fn get_owner_lock(&self, tenant_id: TenantId, owner: &str) -> Option<coord_core::OwnerLock> {
         match self {

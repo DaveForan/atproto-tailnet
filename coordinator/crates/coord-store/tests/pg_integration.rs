@@ -400,17 +400,17 @@ async fn pg_peer_event_on_register() {
         .await
         .unwrap();
 
-    let event = rx.try_recv().unwrap();
-    match event {
-        coord_store::PeerEvent::NodeJoined {
-            tenant_id,
-            node_id: nid,
-        } => {
-            assert_eq!(tenant_id, tenant.id);
-            assert_eq!(nid, node_id);
+    // The channel also carries events of other replicas (other tests on the
+    // same database): find the event of this tenant.
+    let mut joined = None;
+    while let Ok(event) = rx.try_recv() {
+        if let coord_store::PeerEvent::NodeJoined { tenant_id, node_id: nid } = event {
+            if tenant_id == tenant.id {
+                joined = Some(nid);
+            }
         }
-        _ => panic!("expected NodeJoined, got {:?}", event),
     }
+    assert_eq!(joined, Some(node_id));
 }
 
 // ── Route snapshot ────────────────────────────────────────────────────────────
@@ -437,4 +437,57 @@ async fn pg_tenant_route_snapshot() {
     let snapshot = store.get_tenant_route_snapshot(parent.id).await.unwrap();
     assert_eq!(snapshot.own_nodes.len(), 1);
     assert_eq!(snapshot.children.len(), 1);
+}
+
+// ── Two replicas on one database (ADR-0034) ──
+
+#[tokio::test]
+async fn pg_events_reach_the_other_replica_but_not_twice_the_sender() {
+    use coord_store::{PeerEvent, RemoteEvent};
+    use std::time::Duration;
+    skip_without_db!(a);
+    let b = setup().await.unwrap();
+    let tenant = a.create_tenant(unique("bus"), None, None).await.unwrap();
+    let mut a_peers = a.subscribe();
+    let mut b_peers = b.subscribe();
+    let mut b_remote = b.subscribe_remote();
+    let mut a_remote = a.subscribe_remote();
+
+    // The listeners connect in the background: publish until replica B hears it
+    let mut heard = false;
+    for _ in 0..50 {
+        a.publish(RemoteEvent::TenantChanged(tenant.id)).await;
+        if let Ok(Ok(e)) = tokio::time::timeout(Duration::from_millis(100), b_remote.recv()).await {
+            assert_eq!(e, RemoteEvent::TenantChanged(tenant.id));
+            heard = true;
+            break;
+        }
+    }
+    assert!(heard, "replica B never received the tenant-changed event");
+    assert!(a_remote.try_recv().is_err(), "a replica does not receive its own remote events");
+
+    // A node that registers at replica A appears as an event at replica B
+    let mut mkey = [0u8; 32];
+    rand::rng().fill_bytes(&mut mkey);
+    let (node_id, _, _) = a.register_node(tenant.id, mkey, make_info("bus-node")).await.unwrap();
+    let want = |e: &PeerEvent| matches!(e, PeerEvent::NodeJoined { node_id: n, .. } if *n == node_id);
+    let got = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if want(&b_peers.recv().await.unwrap()) {
+                return;
+            }
+        }
+    })
+    .await;
+    assert!(got.is_ok(), "replica B never saw the node join");
+
+    // Replica A delivered it locally exactly once
+    let mut local = 0;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    while let Ok(e) = a_peers.try_recv() {
+        if want(&e) {
+            local += 1;
+        }
+    }
+    assert_eq!(local, 1);
 }

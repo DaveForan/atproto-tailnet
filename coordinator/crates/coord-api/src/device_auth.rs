@@ -5,23 +5,23 @@
 //! service then tells the coordinator which tenant and owner the device
 //! belongs to. Meanwhile the device waits on a follow-up register request.
 //!
-//! Pending sign-ins live in memory: they are short-lived, and a device simply
-//! starts again after a coordinator restart.
+//! Pending sign-ins live in the store, so the device, the approval and the
+//! follow-up can each reach a different coordinator replica (ADR-0034). This
+//! registry only wakes the waiting requests of this process.
 
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Duration;
 
-use coord_core::TenantId;
+use coord_core::{PendingSignIn, SignInDecision, TenantId};
+use coord_store::{RemoteEvent, Store};
 use rand::RngCore;
 use tokio::sync::Notify;
 
-/// How long a sign-in link stays valid.
-pub const PENDING_TTL: Duration = Duration::from_secs(10 * 60);
-/// Pending sign-ins kept at once; the oldest are dropped beyond this.
-pub const MAX_PENDING: usize = 10_000;
 /// Longest a device's follow-up request waits before it is told to ask again.
 pub const FOLLOWUP_WAIT: Duration = Duration::from_secs(120);
+/// A waiting request looks at the store at least this often, in case the
+/// notification of a decision made on another replica was lost.
+const RECHECK: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
@@ -30,18 +30,17 @@ pub enum Decision {
     Denied,
 }
 
-#[derive(Debug, Clone)]
-pub struct PendingDevice {
-    pub machine_key: [u8; 32],
-    pub hostname: String,
-    pub os: String,
-    pub created: Instant,
-    pub decision: Decision,
+impl From<SignInDecision> for Decision {
+    fn from(d: SignInDecision) -> Self {
+        match d {
+            SignInDecision::Approved { tenant_id, owner } => Decision::Approved { tenant_id, owner },
+            SignInDecision::Denied => Decision::Denied,
+        }
+    }
 }
 
 #[derive(Default)]
 pub struct DeviceAuthRegistry {
-    pending: Mutex<HashMap<String, PendingDevice>>,
     changed: Notify,
 }
 
@@ -50,70 +49,62 @@ impl DeviceAuthRegistry {
         Arc::new(Self::default())
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, PendingDevice>> {
-        self.pending.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
     /// Start a sign-in for a machine and return its id (128 random bits, hex).
     /// A machine has one pending sign-in at a time: a new one replaces the old.
-    pub fn start(&self, machine_key: [u8; 32], hostname: String, os: String) -> String {
+    pub async fn start(&self, store: &Store, machine_key: [u8; 32], hostname: &str, os: &str) -> Option<String> {
         let mut id_bytes = [0u8; 16];
         rand::rng().fill_bytes(&mut id_bytes);
         let id = hex::encode(id_bytes);
-        let mut pending = self.lock();
-        let now = Instant::now();
-        pending.retain(|_, p| p.machine_key != machine_key && now.duration_since(p.created) < PENDING_TTL);
-        if pending.len() >= MAX_PENDING {
-            if let Some(oldest) = pending.iter().min_by_key(|(_, p)| p.created).map(|(k, _)| k.clone()) {
-                pending.remove(&oldest);
+        match store.sign_in_start(&id, &machine_key, hostname, os).await {
+            Ok(()) => Some(id),
+            Err(e) => {
+                tracing::warn!(error = %e, "could not store a pending device sign-in");
+                None
             }
         }
-        pending.insert(id.clone(), PendingDevice { machine_key, hostname, os, created: now, decision: Decision::Pending });
-        id
     }
 
-    /// The pending sign-in with this id, unless it expired.
-    pub fn get(&self, id: &str) -> Option<PendingDevice> {
-        let pending = self.lock();
-        let p = pending.get(id)?;
-        (p.created.elapsed() < PENDING_TTL).then(|| p.clone())
+    /// The sign-in with this id, unless it expired.
+    pub async fn get(&self, store: &Store, id: &str) -> Option<PendingSignIn> {
+        store.sign_in_get(id).await
     }
 
     /// Record the user's decision. Returns false when the id is unknown,
     /// expired or already decided (a link works once).
-    pub fn decide(&self, id: &str, decision: Decision) -> bool {
-        {
-            let mut pending = self.lock();
-            let Some(p) = pending.get_mut(id) else { return false };
-            if p.created.elapsed() >= PENDING_TTL || p.decision != Decision::Pending {
-                return false;
-            }
-            p.decision = decision;
+    pub async fn decide(&self, store: &Store, id: &str, decision: SignInDecision) -> bool {
+        if !store.sign_in_decide(id, &decision).await {
+            return false;
         }
-        self.changed.notify_waiters();
+        self.wake();
+        store.publish(RemoteEvent::SignInDecided(id.to_string())).await;
         true
+    }
+
+    /// A sign-in was decided (here or on another replica): waiting requests look again.
+    pub fn wake(&self) {
+        self.changed.notify_waiters();
     }
 
     /// Wait until the sign-in of `machine_key` with this id is decided, or the
     /// wait ends. A decided sign-in is consumed. `None` = unknown, expired, or
     /// the id belongs to another machine.
-    pub async fn wait(&self, id: &str, machine_key: &[u8; 32], max_wait: Duration) -> Option<Decision> {
+    pub async fn wait(&self, store: &Store, id: &str, machine_key: &[u8; 32], max_wait: Duration) -> Option<Decision> {
         let deadline = tokio::time::Instant::now() + max_wait;
         loop {
             let notified = self.changed.notified();
-            {
-                let mut pending = self.lock();
-                let p = pending.get(id)?;
-                if &p.machine_key != machine_key || p.created.elapsed() >= PENDING_TTL {
-                    return None;
-                }
-                if p.decision != Decision::Pending {
-                    return pending.remove(id).map(|p| p.decision);
-                }
+            let p = store.sign_in_get(id).await?;
+            if &p.machine_key != machine_key {
+                return None;
             }
-            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+            if p.decision.is_some() {
+                // One waiting request wins; a loser reports "unknown" and the device starts again
+                return store.sign_in_take(id).await.map(Decision::from);
+            }
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
                 return Some(Decision::Pending);
             }
+            let _ = tokio::time::timeout_at(deadline.min(now + RECHECK), notified).await;
         }
     }
 }
@@ -134,43 +125,67 @@ pub fn fingerprint(machine_key: &[u8; 32]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use coord_store::MemoryStore;
+
+    fn store() -> Arc<Store> {
+        Arc::new(Store::Memory(Box::new(MemoryStore::new())))
+    }
 
     #[tokio::test]
     async fn approve_wakes_the_waiting_device_once() {
         let reg = DeviceAuthRegistry::new();
-        let id = reg.start([1; 32], "phone".into(), "iOS".into());
+        let store = store();
+        let id = reg.start(&store, [1; 32], "phone", "iOS").await.unwrap();
         let waiter = {
-            let reg = reg.clone();
-            let id = id.clone();
-            tokio::spawn(async move { reg.wait(&id, &[1; 32], Duration::from_secs(5)).await })
+            let (reg, store, id) = (reg.clone(), store.clone(), id.clone());
+            tokio::spawn(async move { reg.wait(&store, &id, &[1; 32], Duration::from_secs(5)).await })
         };
         tokio::task::yield_now().await;
         let tenant = TenantId::generate();
-        assert!(reg.decide(&id, Decision::Approved { tenant_id: tenant, owner: "alice".into() }));
+        let started = std::time::Instant::now();
+        assert!(reg.decide(&store, &id, SignInDecision::Approved { tenant_id: tenant, owner: "alice".into() }).await);
         assert_eq!(waiter.await.unwrap(), Some(Decision::Approved { tenant_id: tenant, owner: "alice".into() }));
+        assert!(started.elapsed() < RECHECK, "the waiter was woken, not polled");
         // Consumed: the link works once
-        assert!(!reg.decide(&id, Decision::Denied));
-        assert!(reg.get(&id).is_none());
+        assert!(!reg.decide(&store, &id, SignInDecision::Denied).await);
+        assert!(reg.get(&store, &id).await.is_none());
     }
 
     #[tokio::test]
     async fn wait_times_out_as_pending_and_rejects_other_machines() {
         let reg = DeviceAuthRegistry::new();
-        let id = reg.start([1; 32], "phone".into(), "iOS".into());
-        assert_eq!(reg.wait(&id, &[1; 32], Duration::from_millis(20)).await, Some(Decision::Pending));
-        assert_eq!(reg.wait(&id, &[2; 32], Duration::from_millis(20)).await, None, "another machine cannot claim the id");
-        assert_eq!(reg.wait("00000000000000000000000000000000", &[1; 32], Duration::from_millis(20)).await, None);
+        let store = store();
+        let id = reg.start(&store, [1; 32], "phone", "iOS").await.unwrap();
+        assert_eq!(reg.wait(&store, &id, &[1; 32], Duration::from_millis(20)).await, Some(Decision::Pending));
+        assert_eq!(reg.wait(&store, &id, &[2; 32], Duration::from_millis(20)).await, None, "another machine cannot claim the id");
+        assert_eq!(reg.wait(&store, "00000000000000000000000000000000", &[1; 32], Duration::from_millis(20)).await, None);
     }
 
-    #[test]
-    fn a_machine_has_one_pending_sign_in_and_a_decision_is_final() {
+    #[tokio::test]
+    async fn a_decision_made_without_a_wake_up_is_found_by_the_recheck() {
+        // As if another replica decided and its notification was lost
         let reg = DeviceAuthRegistry::new();
-        let first = reg.start([1; 32], "a".into(), "linux".into());
-        let second = reg.start([1; 32], "a".into(), "linux".into());
-        assert!(reg.get(&first).is_none());
-        assert!(reg.get(&second).is_some());
-        assert!(reg.decide(&second, Decision::Denied));
-        assert!(!reg.decide(&second, Decision::Approved { tenant_id: TenantId::generate(), owner: "x".into() }));
+        let store = store();
+        let id = reg.start(&store, [1; 32], "phone", "iOS").await.unwrap();
+        let waiter = {
+            let (reg, store, id) = (reg.clone(), store.clone(), id.clone());
+            tokio::spawn(async move { reg.wait(&store, &id, &[1; 32], Duration::from_secs(10)).await })
+        };
+        tokio::task::yield_now().await;
+        assert!(store.sign_in_decide(&id, &SignInDecision::Denied).await);
+        assert_eq!(waiter.await.unwrap(), Some(Decision::Denied));
+    }
+
+    #[tokio::test]
+    async fn a_machine_has_one_pending_sign_in_and_a_decision_is_final() {
+        let reg = DeviceAuthRegistry::new();
+        let store = store();
+        let first = reg.start(&store, [1; 32], "a", "linux").await.unwrap();
+        let second = reg.start(&store, [1; 32], "a", "linux").await.unwrap();
+        assert!(reg.get(&store, &first).await.is_none());
+        assert!(reg.get(&store, &second).await.is_some());
+        assert!(reg.decide(&store, &second, SignInDecision::Denied).await);
+        assert!(!reg.decide(&store, &second, SignInDecision::Approved { tenant_id: TenantId::generate(), owner: "x".into() }).await);
     }
 
     #[test]

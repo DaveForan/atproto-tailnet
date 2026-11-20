@@ -11,7 +11,7 @@ use coord_core::{
 
 use crate::{generate_auth_key, generate_random_id};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeerEvent {
     NodeJoined { tenant_id: TenantId, node_id: NodeId },
     NodeUpdated { tenant_id: TenantId, node_id: NodeId },
@@ -53,6 +53,10 @@ pub struct MemoryStore {
     access: Mutex<HashMap<TenantId, coord_core::TenantAccess>>,
     dns: Mutex<HashMap<TenantId, coord_core::TenantDns>>,
     owner_locks: Mutex<HashMap<(TenantId, String), coord_core::OwnerLock>>,
+    tenant_config: Mutex<HashMap<(TenantId, String), serde_json::Value>>,
+    /// id -> (sign-in, expiry in unix seconds)
+    sign_ins: Mutex<HashMap<String, (coord_core::PendingSignIn, i64)>>,
+    remote_tx: broadcast::Sender<crate::RemoteEvent>,
     nodes: Mutex<HashMap<NodeId, StoredNode>>,
     machine_key_index: Mutex<HashMap<[u8; 32], NodeId>>,
     preauth_keys: Mutex<HashMap<String, PreAuthKey>>,
@@ -68,6 +72,9 @@ impl MemoryStore {
             access: Mutex::new(HashMap::new()),
             dns: Mutex::new(HashMap::new()),
             owner_locks: Mutex::new(HashMap::new()),
+            tenant_config: Mutex::new(HashMap::new()),
+            sign_ins: Mutex::new(HashMap::new()),
+            remote_tx: broadcast::channel(16).0,
             nodes: Mutex::new(HashMap::new()),
             machine_key_index: Mutex::new(HashMap::new()),
             preauth_keys: Mutex::new(HashMap::new()),
@@ -145,6 +152,68 @@ impl MemoryStore {
         Ok(())
     }
 
+    pub fn subscribe_remote(&self) -> broadcast::Receiver<crate::RemoteEvent> {
+        self.remote_tx.subscribe()
+    }
+
+    pub fn get_tenant_configs(&self, tenant_id: TenantId) -> Vec<(String, serde_json::Value)> {
+        let cfg = self.tenant_config.lock().unwrap_or_else(|e| e.into_inner());
+        cfg.iter().filter(|((t, _), _)| *t == tenant_id).map(|((_, k), v)| (k.clone(), v.clone())).collect()
+    }
+
+    pub fn list_tenant_configs(&self) -> Vec<(TenantId, String, serde_json::Value)> {
+        let cfg = self.tenant_config.lock().unwrap_or_else(|e| e.into_inner());
+        cfg.iter().map(|((t, k), v)| (*t, k.clone(), v.clone())).collect()
+    }
+
+    pub fn set_tenant_config(&self, tenant_id: TenantId, kind: &str, value: Option<serde_json::Value>) -> Result<(), CoordError> {
+        if self.get_tenant(tenant_id).is_none() {
+            return Err(CoordError::TenantNotFound(tenant_id));
+        }
+        let mut cfg = self.tenant_config.lock().unwrap_or_else(|e| e.into_inner());
+        match value {
+            Some(v) => cfg.insert((tenant_id, kind.to_string()), v),
+            None => cfg.remove(&(tenant_id, kind.to_string())),
+        };
+        Ok(())
+    }
+
+    pub fn sign_in_start(&self, id: &str, machine_key: &[u8; 32], hostname: &str, os: &str) -> Result<(), CoordError> {
+        let now = crate::now_secs();
+        let mut all = self.sign_ins.lock().unwrap_or_else(|e| e.into_inner());
+        all.retain(|_, (p, exp)| &p.machine_key != machine_key && *exp > now);
+        if all.len() as i64 >= coord_core::signin::MAX_PENDING_SIGN_INS {
+            if let Some(oldest) = all.iter().min_by_key(|(_, (_, exp))| *exp).map(|(k, _)| k.clone()) {
+                all.remove(&oldest);
+            }
+        }
+        let p = coord_core::PendingSignIn { machine_key: *machine_key, hostname: hostname.to_string(), os: os.to_string(), decision: None };
+        all.insert(id.to_string(), (p, now + coord_core::signin::SIGN_IN_TTL_SECS));
+        Ok(())
+    }
+
+    pub fn sign_in_get(&self, id: &str) -> Option<coord_core::PendingSignIn> {
+        let all = self.sign_ins.lock().unwrap_or_else(|e| e.into_inner());
+        all.get(id).filter(|(_, exp)| *exp > crate::now_secs()).map(|(p, _)| p.clone())
+    }
+
+    pub fn sign_in_decide(&self, id: &str, decision: &coord_core::SignInDecision) -> bool {
+        let mut all = self.sign_ins.lock().unwrap_or_else(|e| e.into_inner());
+        match all.get_mut(id) {
+            Some((p, exp)) if *exp > crate::now_secs() && p.decision.is_none() => {
+                p.decision = Some(decision.clone());
+                true
+            }
+            _ => false,
+        }
+    }
+
+    pub fn sign_in_take(&self, id: &str) -> Option<coord_core::SignInDecision> {
+        let mut all = self.sign_ins.lock().unwrap_or_else(|e| e.into_inner());
+        all.get(id)?.0.decision.as_ref()?;
+        all.remove(id).and_then(|(p, _)| p.decision)
+    }
+
     pub fn get_owner_lock(&self, tenant_id: TenantId, owner: &str) -> Option<coord_core::OwnerLock> {
         self.owner_locks.lock().unwrap_or_else(|e| e.into_inner()).get(&(tenant_id, owner.to_string())).cloned()
     }
@@ -208,6 +277,9 @@ impl MemoryStore {
                 machine_index.remove(mkey);
             }
         }
+
+        self.owner_locks.lock().unwrap_or_else(|e| e.into_inner()).retain(|(t, _), _| *t != tenant_id);
+        self.tenant_config.lock().unwrap_or_else(|e| e.into_inner()).retain(|(t, _), _| *t != tenant_id);
 
         // Remove preauth keys for this tenant
         let mut keys = self.preauth_keys.lock().unwrap_or_else(|e| e.into_inner());

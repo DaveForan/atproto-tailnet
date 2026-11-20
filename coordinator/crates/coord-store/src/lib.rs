@@ -12,6 +12,34 @@ pub use dispatch::Store;
 
 const PEER_EVENT_CHANNEL_CAPACITY: usize = 256;
 
+/// Something that happened on another coordinator replica (ADR-0034). Only
+/// the PostgreSQL backend has other replicas; the others never emit these.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RemoteEvent {
+    /// A tenant's configuration, access rules, DNS or suspension changed.
+    TenantChanged(coord_core::TenantId),
+    /// A pending device sign-in was decided.
+    SignInDecided(String),
+}
+
+pub(crate) fn now_secs() -> i64 {
+    chrono::Utc::now().timestamp()
+}
+
+/// Shared row decoding for pending sign-ins (PostgreSQL and SQLite).
+pub(crate) fn sign_in_from_row(
+    row: (String, String, String, Option<String>),
+) -> Option<coord_core::PendingSignIn> {
+    let (machine_key, hostname, os, decision) = row;
+    let machine_key: [u8; 32] = hex::decode(machine_key).ok()?.try_into().ok()?;
+    Some(coord_core::PendingSignIn {
+        machine_key,
+        hostname,
+        os,
+        decision: decision.and_then(|d| serde_json::from_str(&d).ok()),
+    })
+}
+
 /// Pre-auth keys are bearer credentials, so they get 256 bits of entropy.
 pub(crate) fn generate_auth_key() -> String {
     use rand::RngCore;

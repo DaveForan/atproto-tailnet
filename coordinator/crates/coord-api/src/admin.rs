@@ -170,10 +170,9 @@ pub async fn delete_tenant(
     match state.store.delete_tenant(tenant_id).await {
         Ok(()) => {
             // Clean up any ACL policy for the deleted tenant
-            state.acl.remove_policy(tenant_id);
-            state.derp.remove_tenant(tenant_id);
-            state.auto_approvers.remove_tenant(tenant_id);
-            state.identity.remove_tenant(tenant_id);
+            // The stored configuration went with the tenant row; drop the caches here and on other replicas
+            state.forget_tenant_config(tenant_id);
+            state.notify_tenant_changed(tenant_id);
             (
                 StatusCode::OK,
                 Json(serde_json::json!({"status": "deleted", "tenant_id": id})),
@@ -582,6 +581,9 @@ pub async fn set_tenant_identity(
         Err(e) => return bad_request(e.to_string()),
     };
     let changed = state.identity.get_tenant(tenant_id) != identity;
+    if let Err(r) = state.save_config(tenant_id, crate::state::CONFIG_IDENTITY, &identity).await {
+        return r;
+    }
     state.identity.set_tenant(tenant_id, identity.clone());
     if changed {
         state.notify_tenant_changed(tenant_id);
@@ -771,13 +773,13 @@ pub async fn get_device_auth(
     State(state): State<Arc<CoordinatorState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    match state.device_auth.get(&id) {
+    match state.device_auth.get(&state.store, &id).await {
         Some(p) => Json(serde_json::json!({
             "id": id,
             "hostname": p.hostname,
             "os": p.os,
             "fingerprint": crate::device_auth::fingerprint(&p.machine_key),
-            "pending": p.decision == crate::device_auth::Decision::Pending,
+            "pending": p.decision.is_none(),
             // Set when this machine is already registered (to refuse moving it between tailnets)
             "registered_tenant_id": match state.store.get_node_by_machine_key(&p.machine_key).await {
                 Some(n) => state.store.get_node_tenant(n).await.map(|t| t.to_string()),
@@ -805,8 +807,8 @@ pub async fn approve_device_auth(
     if state.store.is_tenant_suspended(tenant_id).await {
         return bad_request("tenant is suspended".to_string());
     }
-    let decision = crate::device_auth::Decision::Approved { tenant_id, owner: body.owner };
-    if !state.device_auth.decide(&id, decision) {
+    let decision = coord_core::SignInDecision::Approved { tenant_id, owner: body.owner };
+    if !state.device_auth.decide(&state.store, &id, decision).await {
         return not_found("device sign-in not found, expired or already answered");
     }
     Json(serde_json::json!({ "status": "approved" })).into_response()
@@ -817,7 +819,7 @@ pub async fn deny_device_auth(
     State(state): State<Arc<CoordinatorState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if !state.device_auth.decide(&id, crate::device_auth::Decision::Denied) {
+    if !state.device_auth.decide(&state.store, &id, coord_core::SignInDecision::Denied).await {
         return not_found("device sign-in not found, expired or already answered");
     }
     Json(serde_json::json!({ "status": "denied" })).into_response()
@@ -907,6 +909,9 @@ pub async fn set_auto_approvers(
         Err(e) => return bad_request(e),
     };
     let policy = coord_netmap::AutoApprovers { routes, exit_node };
+    if let Err(r) = state.save_config(tenant_id, crate::state::CONFIG_AUTO_APPROVERS, &policy).await {
+        return r;
+    }
     state.auto_approvers.set_tenant(tenant_id, policy.clone());
 
     let mut changed = false;
@@ -1007,6 +1012,9 @@ pub async fn set_acl(
             .into_response();
     }
 
+    if let Err(r) = state.save_config(tenant_id, crate::state::CONFIG_ACL, &body.policy).await {
+        return r;
+    }
     state.acl.set_policy(tenant_id, body.policy);
     state.notify_tenant_changed(tenant_id);
 
@@ -1153,6 +1161,9 @@ pub async fn set_acl_for_tenant(
     // Verify tenant exists before storing a policy
     if state.store.get_tenant(tenant_id).await.is_none() {
         return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "tenant not found"}))).into_response();
+    }
+    if let Err(r) = state.save_config(tenant_id, crate::state::CONFIG_ACL, &body).await {
+        return r;
     }
     state.acl.set_policy(tenant_id, body);
     state.notify_tenant_changed(tenant_id);
@@ -1316,10 +1327,11 @@ pub async fn set_tenant_derp(
     }
 
     let region_count = custom_regions.len();
-    state.derp.set_tenant(
-        tenant_id,
-        coord_netmap::TenantDerp { custom_regions, include_default: body.include_default },
-    );
+    let derp = coord_netmap::TenantDerp { custom_regions, include_default: body.include_default };
+    if let Err(r) = state.save_config(tenant_id, crate::state::CONFIG_DERP, &derp).await {
+        return r;
+    }
+    state.derp.set_tenant(tenant_id, derp);
     state.notify_tenant_changed(tenant_id);
     tracing::info!(tenant = %tenant_id, custom_regions = region_count, "tenant DERP config updated");
 

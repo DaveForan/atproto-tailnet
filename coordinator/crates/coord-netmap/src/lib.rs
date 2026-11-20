@@ -11,7 +11,7 @@ use coord_core::{MachineKey, TenantId};
 use coord_proto::map::{DerpMap, DerpRegion, DnsConfig, DnsExtraRecord, DnsResolver, FilterRule, MapNode, MapResponse, NetPortRange, PortRange, UserProfile};
 use coord_store::{PeerEvent, Store};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TenantDerp {
     pub custom_regions: HashMap<i32, DerpRegion>,
     pub include_default: bool,

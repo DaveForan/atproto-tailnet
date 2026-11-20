@@ -10,6 +10,7 @@ use coord_core::{
 use chrono::{DateTime, Utc};
 use serde_json::Value as Json;
 use crate::memory::PeerEvent;
+use crate::RemoteEvent;
 use crate::{generate_auth_key, generate_random_id};
 
 /// pg_advisory_xact_lock key serializing node registration / IPv4 allocation.
@@ -22,6 +23,97 @@ fn db(e: sqlx::Error) -> StorageError {
 pub struct PgStore {
     pool: PgPool,
     peer_tx: broadcast::Sender<PeerEvent>,
+    /// Events that other replicas published (ADR-0034).
+    remote_tx: broadcast::Sender<RemoteEvent>,
+    /// Random id of this process, so it can ignore its own notifications.
+    replica: String,
+}
+
+/// PostgreSQL NOTIFY channel shared by all coordinator replicas.
+const EVENT_CHANNEL: &str = "coord_events";
+
+/// One notification: `<replica>|<kind>|<tenant or sign-in id>|<node id>`.
+fn encode_peer(replica: &str, event: PeerEvent) -> String {
+    let (kind, tenant_id, node_id) = match event {
+        PeerEvent::NodeJoined { tenant_id, node_id } => ('j', tenant_id, node_id),
+        PeerEvent::NodeUpdated { tenant_id, node_id } => ('u', tenant_id, node_id),
+        PeerEvent::NodeOffline { tenant_id, node_id } => ('o', tenant_id, node_id),
+    };
+    format!("{replica}|{kind}|{}|{}", tenant_id.as_uuid(), node_id.as_i64())
+}
+
+fn encode_remote(replica: &str, event: &RemoteEvent) -> String {
+    match event {
+        RemoteEvent::TenantChanged(t) => format!("{replica}|t|{}|", t.as_uuid()),
+        RemoteEvent::SignInDecided(id) => format!("{replica}|d|{id}|"),
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Decoded {
+    Peer(PeerEvent),
+    Remote(RemoteEvent),
+}
+
+/// Parse a notification. `None` for our own notifications and for anything malformed.
+fn decode_event(payload: &str, own_replica: &str) -> Option<Decoded> {
+    let mut parts = payload.splitn(4, '|');
+    let (replica, kind, subject, arg) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+    if replica == own_replica {
+        return None;
+    }
+    if kind == "d" {
+        return Some(Decoded::Remote(RemoteEvent::SignInDecided(subject.to_string())));
+    }
+    let tenant_id = TenantId::new(subject.parse().ok()?);
+    if kind == "t" {
+        return Some(Decoded::Remote(RemoteEvent::TenantChanged(tenant_id)));
+    }
+    let node_id = NodeId::new(arg.parse().ok()?);
+    Some(Decoded::Peer(match kind {
+        "j" => PeerEvent::NodeJoined { tenant_id, node_id },
+        "u" => PeerEvent::NodeUpdated { tenant_id, node_id },
+        "o" => PeerEvent::NodeOffline { tenant_id, node_id },
+        _ => return None,
+    }))
+}
+
+/// Feed notifications of other replicas into this process's channels. Runs
+/// until the process ends; reconnects when the connection drops.
+async fn listen_for_events(
+    pool: PgPool,
+    replica: String,
+    peer_tx: broadcast::Sender<PeerEvent>,
+    remote_tx: broadcast::Sender<RemoteEvent>,
+) {
+    loop {
+        let listener = async {
+            let mut l = sqlx::postgres::PgListener::connect_with(&pool).await?;
+            l.listen(EVENT_CHANNEL).await?;
+            Ok::<_, sqlx::Error>(l)
+        };
+        match listener.await {
+            Ok(mut l) => loop {
+                match l.recv().await {
+                    Ok(n) => match decode_event(n.payload(), &replica) {
+                        Some(Decoded::Peer(e)) => {
+                            let _ = peer_tx.send(e);
+                        }
+                        Some(Decoded::Remote(e)) => {
+                            let _ = remote_tx.send(e);
+                        }
+                        None => {}
+                    },
+                    Err(e) => {
+                        tracing::warn!(error = %e, "event listener lost its connection");
+                        break;
+                    }
+                }
+            },
+            Err(e) => tracing::warn!(error = %e, "event listener could not connect"),
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    }
 }
 
 impl PgStore {
@@ -32,11 +124,41 @@ impl PgStore {
             .map_err(StorageError::new)?;
 
         let (peer_tx, _) = broadcast::channel(crate::PEER_EVENT_CHANNEL_CAPACITY);
-        Ok(Self { pool, peer_tx })
+        let (remote_tx, _) = broadcast::channel(crate::PEER_EVENT_CHANNEL_CAPACITY);
+        let replica = generate_random_id();
+        tokio::spawn(listen_for_events(pool.clone(), replica.clone(), peer_tx.clone(), remote_tx.clone()));
+        Ok(Self { pool, peer_tx, remote_tx, replica })
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<PeerEvent> {
         self.peer_tx.subscribe()
+    }
+
+    pub fn subscribe_remote(&self) -> broadcast::Receiver<RemoteEvent> {
+        self.remote_tx.subscribe()
+    }
+
+    /// Deliver a peer event to this process and to the other replicas.
+    async fn emit(&self, event: PeerEvent) {
+        let _ = self.peer_tx.send(event);
+        self.notify(encode_peer(&self.replica, event)).await;
+    }
+
+    pub async fn publish(&self, event: RemoteEvent) {
+        self.notify(encode_remote(&self.replica, &event)).await;
+    }
+
+    /// Best effort: a lost notification delays an update on another replica
+    /// until that device's next keep-alive snapshot.
+    async fn notify(&self, payload: String) {
+        if let Err(e) = sqlx::query("SELECT pg_notify($1, $2)")
+            .bind(EVENT_CHANNEL)
+            .bind(payload)
+            .execute(&self.pool)
+            .await
+        {
+            tracing::warn!(error = %e, "failed to publish an event to other replicas");
+        }
     }
 
     pub async fn create_tenant(
@@ -158,6 +280,115 @@ impl PgStore {
         Ok(())
     }
 
+    pub async fn get_tenant_configs(&self, tenant_id: TenantId) -> Vec<(String, serde_json::Value)> {
+        let rows: Vec<(String, Json)> = sqlx::query_as("SELECT kind, value FROM coord_tenant_config WHERE tenant_id = $1")
+            .bind(tenant_id.as_uuid())
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default();
+        rows
+    }
+
+    pub async fn list_tenant_configs(&self) -> Vec<(TenantId, String, serde_json::Value)> {
+        let rows: Vec<(uuid::Uuid, String, Json)> = sqlx::query_as("SELECT tenant_id, kind, value FROM coord_tenant_config")
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default();
+        rows.into_iter().map(|(t, k, v)| (TenantId::new(t), k, v)).collect()
+    }
+
+    pub async fn set_tenant_config(&self, tenant_id: TenantId, kind: &str, value: Option<serde_json::Value>) -> Result<(), CoordError> {
+        if self.get_tenant(tenant_id).await.is_none() {
+            return Err(CoordError::TenantNotFound(tenant_id));
+        }
+        match value {
+            Some(v) => sqlx::query(
+                "INSERT INTO coord_tenant_config (tenant_id, kind, value) VALUES ($1, $2, $3) \
+                 ON CONFLICT (tenant_id, kind) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()"
+            )
+                .bind(tenant_id.as_uuid())
+                .bind(kind)
+                .bind(v)
+                .execute(&self.pool)
+                .await
+                .map_err(db)?,
+            None => sqlx::query("DELETE FROM coord_tenant_config WHERE tenant_id = $1 AND kind = $2")
+                .bind(tenant_id.as_uuid())
+                .bind(kind)
+                .execute(&self.pool)
+                .await
+                .map_err(db)?,
+        };
+        Ok(())
+    }
+
+    pub async fn sign_in_start(&self, id: &str, machine_key: &[u8; 32], hostname: &str, os: &str) -> Result<(), CoordError> {
+        let now = crate::now_secs();
+        let machine = hex::encode(machine_key);
+        sqlx::query("DELETE FROM coord_sign_ins WHERE machine_key = $1 OR expires_at <= $2")
+            .bind(&machine)
+            .bind(now)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        sqlx::query("INSERT INTO coord_sign_ins (id, machine_key, hostname, os, expires_at) VALUES ($1, $2, $3, $4, $5)")
+            .bind(id)
+            .bind(&machine)
+            .bind(hostname)
+            .bind(os)
+            .bind(now + coord_core::signin::SIGN_IN_TTL_SECS)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        // Bound the table: drop the oldest beyond the cap
+        sqlx::query(
+            "DELETE FROM coord_sign_ins WHERE id IN \
+             (SELECT id FROM coord_sign_ins ORDER BY expires_at DESC OFFSET $1)"
+        )
+            .bind(coord_core::signin::MAX_PENDING_SIGN_INS)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+
+    pub async fn sign_in_get(&self, id: &str) -> Option<coord_core::PendingSignIn> {
+        let row: Option<(String, String, String, Option<String>)> = sqlx::query_as(
+            "SELECT machine_key, hostname, os, decision FROM coord_sign_ins WHERE id = $1 AND expires_at > $2"
+        )
+            .bind(id)
+            .bind(crate::now_secs())
+            .fetch_optional(&self.pool)
+            .await
+            .ok()
+            .flatten();
+        row.and_then(crate::sign_in_from_row)
+    }
+
+    pub async fn sign_in_decide(&self, id: &str, decision: &coord_core::SignInDecision) -> bool {
+        let Ok(text) = serde_json::to_string(decision) else { return false };
+        sqlx::query("UPDATE coord_sign_ins SET decision = $1 WHERE id = $2 AND decision IS NULL AND expires_at > $3")
+            .bind(text)
+            .bind(id)
+            .bind(crate::now_secs())
+            .execute(&self.pool)
+            .await
+            .map(|r| r.rows_affected() == 1)
+            .unwrap_or(false)
+    }
+
+    pub async fn sign_in_take(&self, id: &str) -> Option<coord_core::SignInDecision> {
+        let row: Option<Option<String>> = sqlx::query_scalar(
+            "DELETE FROM coord_sign_ins WHERE id = $1 AND decision IS NOT NULL RETURNING decision"
+        )
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .ok()
+            .flatten();
+        row.flatten().and_then(|d| serde_json::from_str(&d).ok())
+    }
+
     pub async fn get_owner_lock(&self, tenant_id: TenantId, owner: &str) -> Option<coord_core::OwnerLock> {
         let row: Option<Json> = sqlx::query_scalar("SELECT lock FROM coord_owner_locks WHERE tenant_id = $1 AND owner = $2")
             .bind(tenant_id.as_uuid())
@@ -258,10 +489,10 @@ impl PgStore {
         tx.commit().await.map_err(db)?;
 
         for nid in node_ids {
-            let _ = self.peer_tx.send(PeerEvent::NodeOffline {
+            self.emit(PeerEvent::NodeOffline {
                 tenant_id,
                 node_id: NodeId::new(nid),
-            });
+            }).await;
         }
 
         Ok(())
@@ -525,10 +756,10 @@ impl PgStore {
 
             let ipv4: Ipv4Addr = ip_str.parse().map_err(|_| CoordError::Protocol("invalid stored IPv4".into()))?;
             let node_id = NodeId::new(id);
-            let _ = self.peer_tx.send(PeerEvent::NodeUpdated {
+            self.emit(PeerEvent::NodeUpdated {
                 tenant_id,
                 node_id,
-            });
+            }).await;
             return Ok((node_id, ipv4, new_gen as u64));
         }
 
@@ -565,10 +796,10 @@ impl PgStore {
 
         let (id, generation) = row;
         let node_id = NodeId::new(id);
-        let _ = self.peer_tx.send(PeerEvent::NodeJoined {
+        self.emit(PeerEvent::NodeJoined {
             tenant_id,
             node_id,
-        });
+        }).await;
 
         Ok((node_id, new_ipv4, generation as u64))
     }
@@ -589,10 +820,10 @@ impl PgStore {
             .map_err(db)?;
 
         if let Some((id, tenant_uuid)) = result {
-            let _ = self.peer_tx.send(PeerEvent::NodeUpdated {
+            self.emit(PeerEvent::NodeUpdated {
                 tenant_id: TenantId::new(tenant_uuid),
                 node_id: NodeId::new(id),
-            });
+            }).await;
         }
         Ok(())
     }
@@ -635,10 +866,10 @@ impl PgStore {
                 .map_err(db)?;
 
             if let Some(tenant_uuid) = tenant_uuid {
-                let _ = self.peer_tx.send(PeerEvent::NodeUpdated {
+                self.emit(PeerEvent::NodeUpdated {
                     tenant_id: TenantId::new(tenant_uuid),
                     node_id,
-                });
+                }).await;
             }
         }
         Ok(())
@@ -824,7 +1055,7 @@ impl PgStore {
         match tenant_uuid {
             Some(uuid) => {
                 let tid = TenantId::new(uuid);
-                let _ = self.peer_tx.send(PeerEvent::NodeOffline { tenant_id: tid, node_id });
+                self.emit(PeerEvent::NodeOffline { tenant_id: tid, node_id }).await;
                 Ok(tid)
             }
             None => Err(CoordError::Protocol("node not found".into())),
@@ -842,9 +1073,9 @@ impl PgStore {
             .map_err(db)?;
         match result {
             Some((uuid,)) => {
-                let _ = self.peer_tx.send(PeerEvent::NodeUpdated {
+                self.emit(PeerEvent::NodeUpdated {
                     tenant_id: TenantId::new(uuid), node_id,
-                });
+                }).await;
                 Ok(())
             }
             None => Err(CoordError::Protocol("node not found".into())),
@@ -863,15 +1094,15 @@ impl PgStore {
 
         if let Some(tenant_uuid) = result {
             if online {
-                let _ = self.peer_tx.send(PeerEvent::NodeUpdated {
+                self.emit(PeerEvent::NodeUpdated {
                     tenant_id: TenantId::new(tenant_uuid),
                     node_id,
-                });
+                }).await;
             } else {
-                let _ = self.peer_tx.send(PeerEvent::NodeOffline {
+                self.emit(PeerEvent::NodeOffline {
                     tenant_id: TenantId::new(tenant_uuid),
                     node_id,
-                });
+                }).await;
             }
         }
         Ok(())
@@ -890,10 +1121,10 @@ impl PgStore {
             .map_err(db)?;
 
         if let Some(tenant_uuid) = result {
-            let _ = self.peer_tx.send(PeerEvent::NodeOffline {
+            self.emit(PeerEvent::NodeOffline {
                 tenant_id: TenantId::new(tenant_uuid),
                 node_id,
-            });
+            }).await;
         }
         Ok(())
     }
@@ -918,7 +1149,7 @@ impl PgStore {
             .map_err(db)?;
         match changed {
             Some(tenant_uuid) => {
-                let _ = self.peer_tx.send(PeerEvent::NodeUpdated { tenant_id: TenantId::new(tenant_uuid), node_id });
+                self.emit(PeerEvent::NodeUpdated { tenant_id: TenantId::new(tenant_uuid), node_id }).await;
                 Ok(true)
             }
             None => {
@@ -942,7 +1173,7 @@ impl PgStore {
         ids.sort_unstable();
         let ids: Vec<NodeId> = ids.into_iter().map(NodeId::new).collect();
         for node_id in &ids {
-            let _ = self.peer_tx.send(PeerEvent::NodeOffline { tenant_id, node_id: *node_id });
+            self.emit(PeerEvent::NodeOffline { tenant_id, node_id: *node_id }).await;
         }
         Ok(ids)
     }
@@ -966,7 +1197,7 @@ impl PgStore {
             .map(|(id, t)| (TenantId::new(t), NodeId::new(id)))
             .collect();
         for (tenant_id, node_id) in &removed {
-            let _ = self.peer_tx.send(PeerEvent::NodeOffline { tenant_id: *tenant_id, node_id: *node_id });
+            self.emit(PeerEvent::NodeOffline { tenant_id: *tenant_id, node_id: *node_id }).await;
         }
         Ok(removed)
     }
@@ -1125,4 +1356,36 @@ fn parse_posture(s: &str) -> FederationPosture {
         tracing::warn!(value = s, "unknown federation posture, defaulting to Closed");
         FederationPosture::Closed
     })
+}
+
+#[cfg(test)]
+mod event_tests {
+    use super::*;
+
+    fn tenant() -> TenantId {
+        TenantId::new("11111111-2222-4333-8444-555555555555".parse().unwrap())
+    }
+
+    #[test]
+    fn peer_and_remote_events_round_trip_between_replicas() {
+        for e in [
+            PeerEvent::NodeJoined { tenant_id: tenant(), node_id: NodeId::new(7) },
+            PeerEvent::NodeUpdated { tenant_id: tenant(), node_id: NodeId::new(8) },
+            PeerEvent::NodeOffline { tenant_id: tenant(), node_id: NodeId::new(9) },
+        ] {
+            assert_eq!(decode_event(&encode_peer("a", e), "b"), Some(Decoded::Peer(e)));
+        }
+        for e in [RemoteEvent::TenantChanged(tenant()), RemoteEvent::SignInDecided("ab12".into())] {
+            assert_eq!(decode_event(&encode_remote("a", &e), "b"), Some(Decoded::Remote(e)));
+        }
+    }
+
+    #[test]
+    fn own_and_malformed_notifications_are_ignored() {
+        let own = encode_peer("a", PeerEvent::NodeJoined { tenant_id: tenant(), node_id: NodeId::new(1) });
+        assert_eq!(decode_event(&own, "a"), None);
+        for bad in ["", "b|j", "b|j|not-a-uuid|1", "b|j|11111111-2222-4333-8444-555555555555|x", "b|z|11111111-2222-4333-8444-555555555555|1"] {
+            assert_eq!(decode_event(bad, "a"), None, "{bad}");
+        }
+    }
 }

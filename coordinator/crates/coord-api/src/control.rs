@@ -215,7 +215,7 @@ async fn interactive_sign_in(
     };
 
     if let Some(id) = req.followup.as_deref().and_then(device_auth::id_from_url) {
-        match state.device_auth.wait(id, machine_key, state.device_auth_wait).await {
+        match state.device_auth.wait(&state.store, id, machine_key, state.device_auth_wait).await {
             Some(Decision::Approved { tenant_id, owner }) => {
                 if state.store.is_tenant_suspended(tenant_id).await {
                     return Err(error_response(TENANT_SUSPENDED_MSG));
@@ -240,8 +240,10 @@ async fn interactive_sign_in(
         .and_then(sanitize::dns_label)
         .unwrap_or_else(|| HOSTNAME_PLACEHOLDER.into());
     let os = sanitize::os(hostinfo.and_then(|h| h.os.as_deref()));
-    let id = state.device_auth.start(*machine_key, hostname, os);
-    Err(sign_in_url(&id))
+    match state.device_auth.start(&state.store, *machine_key, &hostname, &os).await {
+        Some(id) => Err(sign_in_url(&id)),
+        None => Err(error_response("sign-in is not available right now; try again")),
+    }
 }
 
 /// Stored briefly when a client sends no usable hostname; replaced by node-<id>.

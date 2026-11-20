@@ -303,9 +303,12 @@ async fn delete_nodes_by_owner_scoped_to_tenant_and_owner() {
 
         let mut offline = Vec::new();
         while let Ok(ev) = rx.try_recv() {
+            // On PostgreSQL the channel also carries events of other replicas
+            // (other tests on the same database): look at this tenant only.
             if let PeerEvent::NodeOffline { node_id, tenant_id } = ev {
-                assert_eq!(tenant_id, t);
-                offline.push(node_id);
+                if tenant_id == t {
+                    offline.push(node_id);
+                }
             }
         }
         assert_eq!(offline, bob_nodes, "{}", b.name);
@@ -577,5 +580,56 @@ async fn owner_lock_round_trip_and_removal() {
         assert_eq!(s.get_owner_lock(t, "bob").await, None, "locks are per owner ({})", b.name);
         s.set_owner_lock(t, "alice", None).await.unwrap();
         assert_eq!(s.get_owner_lock(t, "alice").await, None, "{}", b.name);
+    }
+}
+
+#[tokio::test]
+async fn tenant_config_round_trip_list_and_removal() {
+    for b in backends().await {
+        let s = &b.store;
+        let t = tenant(s, "cfg").await;
+        assert!(s.get_tenant_configs(t).await.is_empty(), "{}", b.name);
+        s.set_tenant_config(t, "acl", Some(serde_json::json!({"rules": [1, 2]}))).await.unwrap();
+        s.set_tenant_config(t, "identity", Some(serde_json::json!({"tailnet_name": "x"}))).await.unwrap();
+        s.set_tenant_config(t, "acl", Some(serde_json::json!({"rules": [3]}))).await.unwrap();
+        let mut got = s.get_tenant_configs(t).await;
+        got.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(got, vec![
+            ("acl".to_string(), serde_json::json!({"rules": [3]})),
+            ("identity".to_string(), serde_json::json!({"tailnet_name": "x"})),
+        ], "{}", b.name);
+        assert!(s.list_tenant_configs().await.iter().any(|(tid, k, _)| *tid == t && k == "acl"), "{}", b.name);
+        s.set_tenant_config(t, "acl", None).await.unwrap();
+        assert_eq!(s.get_tenant_configs(t).await.len(), 1, "{}", b.name);
+        s.delete_tenant(t).await.unwrap();
+        assert!(s.get_tenant_configs(t).await.is_empty(), "config goes with the tenant ({})", b.name);
+    }
+}
+
+#[tokio::test]
+async fn sign_in_is_decided_once_and_taken_once() {
+    use coord_core::SignInDecision;
+    for b in backends().await {
+        let s = &b.store;
+        let t = tenant(s, "signin").await;
+        let key = [7u8; 32];
+        let id = format!("{}-first", b.name);
+        s.sign_in_start(&id, &key, "phone", "iOS").await.unwrap();
+        let p = s.sign_in_get(&id).await.unwrap();
+        assert_eq!((p.machine_key, p.hostname.as_str(), p.decision), (key, "phone", None), "{}", b.name);
+        assert_eq!(s.sign_in_take(&id).await, None, "a pending sign-in cannot be taken ({})", b.name);
+
+        // A new sign-in of the same machine replaces the old one
+        let id2 = format!("{}-second", b.name);
+        s.sign_in_start(&id2, &key, "phone", "iOS").await.unwrap();
+        assert!(s.sign_in_get(&id).await.is_none(), "{}", b.name);
+
+        let yes = SignInDecision::Approved { tenant_id: t, owner: "alice".into() };
+        assert!(s.sign_in_decide(&id2, &yes).await, "{}", b.name);
+        assert!(!s.sign_in_decide(&id2, &SignInDecision::Denied).await, "decided once ({})", b.name);
+        assert!(!s.sign_in_decide("unknown", &yes).await, "{}", b.name);
+        assert_eq!(s.sign_in_get(&id2).await.unwrap().decision, Some(yes.clone()), "{}", b.name);
+        assert_eq!(s.sign_in_take(&id2).await, Some(yes), "{}", b.name);
+        assert_eq!(s.sign_in_take(&id2).await, None, "taken once ({})", b.name);
     }
 }

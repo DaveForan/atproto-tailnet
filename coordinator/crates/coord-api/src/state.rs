@@ -46,6 +46,12 @@ pub struct CoordinatorState {
     pub(crate) noise_body_reads: Arc<Semaphore>,
 }
 
+/// Kinds of per-tenant configuration kept in the store (`coord_tenant_config`).
+pub const CONFIG_ACL: &str = "acl";
+pub const CONFIG_DERP: &str = "derp";
+pub const CONFIG_AUTO_APPROVERS: &str = "auto_approvers";
+pub const CONFIG_IDENTITY: &str = "identity";
+
 /// Default instance-wide cap on concurrent Noise connections.
 pub const DEFAULT_MAX_NOISE_CONNECTIONS: usize = 4096;
 /// Concurrent control request bodies being read (256 x 256 KiB = 64 MiB max).
@@ -176,8 +182,94 @@ impl CoordinatorState {
         self
     }
 
+    /// Something about a tenant changed: live map streams of this process
+    /// send a new snapshot, and the other replicas are told to do the same.
     pub fn notify_tenant_changed(&self, tenant: TenantId) {
         let _ = self.config_changed.send(tenant);
+        if matches!(*self.store, Store::Pg(_)) {
+            let store = self.store.clone();
+            tokio::spawn(async move { store.publish(coord_store::RemoteEvent::TenantChanged(tenant)).await });
+        }
+    }
+
+    /// Persist one configuration value of a tenant (ADR-0034). The registries
+    /// in this process are caches of what the store holds.
+    pub(crate) async fn save_config<T: serde::Serialize>(
+        &self,
+        tenant: TenantId,
+        kind: &str,
+        value: &T,
+    ) -> Result<(), axum::response::Response> {
+        use axum::response::IntoResponse;
+        let json = serde_json::to_value(value).unwrap_or_default();
+        self.store.set_tenant_config(tenant, kind, Some(json)).await.map_err(|e| {
+            let status = match e {
+                coord_core::CoordError::TenantNotFound(_) => axum::http::StatusCode::NOT_FOUND,
+                _ => axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            };
+            tracing::error!(error = %e, kind, "failed to store tenant configuration");
+            (status, axum::Json(serde_json::json!({ "error": "could not store the configuration" }))).into_response()
+        })
+    }
+
+    pub(crate) fn forget_tenant_config(&self, tenant: TenantId) {
+        self.acl.remove_policy(tenant);
+        self.derp.remove_tenant(tenant);
+        self.auto_approvers.remove_tenant(tenant);
+        self.identity.remove_tenant(tenant);
+    }
+
+    fn apply_config(&self, tenant: TenantId, kind: &str, value: serde_json::Value) {
+        let ok = match kind {
+            CONFIG_ACL => serde_json::from_value(value).map(|v| self.acl.set_policy(tenant, v)).is_ok(),
+            CONFIG_DERP => serde_json::from_value(value).map(|v| self.derp.set_tenant(tenant, v)).is_ok(),
+            CONFIG_AUTO_APPROVERS => serde_json::from_value(value).map(|v| self.auto_approvers.set_tenant(tenant, v)).is_ok(),
+            CONFIG_IDENTITY => serde_json::from_value(value).map(|v| self.identity.set_tenant(tenant, v)).is_ok(),
+            _ => true, // a kind written by a newer version: ignore
+        };
+        if !ok {
+            tracing::warn!(tenant = %tenant, kind, "stored tenant configuration could not be read");
+        }
+    }
+
+    /// Fill the caches from the store. Call once at startup.
+    pub async fn load_config(&self) {
+        let all = self.store.list_tenant_configs().await;
+        let count = all.len();
+        for (tenant, kind, value) in all {
+            self.apply_config(tenant, &kind, value);
+        }
+        tracing::info!(count, "tenant configuration loaded from the store");
+    }
+
+    /// Replace the cached configuration of one tenant with what the store holds.
+    pub async fn reload_tenant_config(&self, tenant: TenantId) {
+        let stored = self.store.get_tenant_configs(tenant).await;
+        self.forget_tenant_config(tenant);
+        for (kind, value) in stored {
+            self.apply_config(tenant, &kind, value);
+        }
+    }
+
+    /// React to what other replicas did (ADR-0034). Call once at startup.
+    pub fn spawn_replica_listener(self: &Arc<Self>) {
+        let state = self.clone();
+        let mut events = self.store.subscribe_remote();
+        tokio::spawn(async move {
+            use tokio::sync::broadcast::error::RecvError;
+            loop {
+                match events.recv().await {
+                    Ok(coord_store::RemoteEvent::TenantChanged(tenant)) => {
+                        state.reload_tenant_config(tenant).await;
+                        let _ = state.config_changed.send(tenant);
+                    }
+                    Ok(coord_store::RemoteEvent::SignInDecided(_)) => state.device_auth.wake(),
+                    // Missed events: every cached tenant may be stale
+                    Err(RecvError::Lagged(_)) => state.load_config().await,
+                    Err(RecvError::Closed) => return,
+                }
+            }
+        });
     }
 
     pub fn control_key(&self) -> &ControlKey {

@@ -205,6 +205,9 @@ async fn main() -> anyhow::Result<()> {
     coordinator = coordinator.with_federation_enabled(federation_enabled);
 
     let state = Arc::new(coordinator);
+    // Per-tenant configuration lives in the store; other replicas report changes (ADR-0034)
+    state.load_config().await;
+    state.spawn_replica_listener();
 
     if federation_enabled {
         // Spawn the federation broker background loop.

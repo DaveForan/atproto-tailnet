@@ -21,6 +21,8 @@ fn db_migrate(e: sqlx::migrate::MigrateError) -> StorageError {
 pub struct SqliteStore {
     pool: SqlitePool,
     peer_tx: broadcast::Sender<PeerEvent>,
+    /// Never fires: SQLite serves one process (ADR-0034).
+    remote_tx: broadcast::Sender<crate::RemoteEvent>,
 }
 
 impl SqliteStore {
@@ -31,11 +33,15 @@ impl SqliteStore {
             .map_err(db_migrate)?;
 
         let (peer_tx, _) = broadcast::channel(crate::PEER_EVENT_CHANNEL_CAPACITY);
-        Ok(Self { pool, peer_tx })
+        Ok(Self { pool, peer_tx, remote_tx: broadcast::channel(16).0 })
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<PeerEvent> {
         self.peer_tx.subscribe()
+    }
+
+    pub fn subscribe_remote(&self) -> broadcast::Receiver<crate::RemoteEvent> {
+        self.remote_tx.subscribe()
     }
 
     pub async fn create_tenant(
@@ -167,6 +173,117 @@ impl SqliteStore {
             .await
             .map_err(db)?;
         Ok(())
+    }
+
+    pub async fn get_tenant_configs(&self, tenant_id: TenantId) -> Vec<(String, serde_json::Value)> {
+        let rows: Vec<(String, String)> = sqlx::query_as("SELECT kind, value FROM coord_tenant_config WHERE tenant_id = ?1")
+            .bind(tenant_id.as_uuid().to_string())
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default();
+        rows.into_iter().filter_map(|(k, v)| Some((k, serde_json::from_str(&v).ok()?))).collect()
+    }
+
+    pub async fn list_tenant_configs(&self) -> Vec<(TenantId, String, serde_json::Value)> {
+        let rows: Vec<(String, String, String)> = sqlx::query_as("SELECT tenant_id, kind, value FROM coord_tenant_config")
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default();
+        rows.into_iter()
+            .filter_map(|(t, k, v)| Some((TenantId::new(t.parse().ok()?), k, serde_json::from_str(&v).ok()?)))
+            .collect()
+    }
+
+    pub async fn set_tenant_config(&self, tenant_id: TenantId, kind: &str, value: Option<serde_json::Value>) -> Result<(), CoordError> {
+        if self.get_tenant(tenant_id).await.is_none() {
+            return Err(CoordError::TenantNotFound(tenant_id));
+        }
+        match value {
+            Some(v) => sqlx::query(
+                "INSERT INTO coord_tenant_config (tenant_id, kind, value) VALUES (?1, ?2, ?3) \
+                 ON CONFLICT (tenant_id, kind) DO UPDATE SET value = excluded.value, updated_at = datetime('now')"
+            )
+                .bind(tenant_id.as_uuid().to_string())
+                .bind(kind)
+                .bind(v.to_string())
+                .execute(&self.pool)
+                .await
+                .map_err(db)?,
+            None => sqlx::query("DELETE FROM coord_tenant_config WHERE tenant_id = ?1 AND kind = ?2")
+                .bind(tenant_id.as_uuid().to_string())
+                .bind(kind)
+                .execute(&self.pool)
+                .await
+                .map_err(db)?,
+        };
+        Ok(())
+    }
+
+    pub async fn sign_in_start(&self, id: &str, machine_key: &[u8; 32], hostname: &str, os: &str) -> Result<(), CoordError> {
+        let now = crate::now_secs();
+        let machine = hex::encode(machine_key);
+        sqlx::query("DELETE FROM coord_sign_ins WHERE machine_key = ?1 OR expires_at <= ?2")
+            .bind(&machine)
+            .bind(now)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        sqlx::query("INSERT INTO coord_sign_ins (id, machine_key, hostname, os, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)")
+            .bind(id)
+            .bind(&machine)
+            .bind(hostname)
+            .bind(os)
+            .bind(now + coord_core::signin::SIGN_IN_TTL_SECS)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        // Bound the table: drop the oldest beyond the cap
+        sqlx::query(
+            "DELETE FROM coord_sign_ins WHERE id IN \
+             (SELECT id FROM coord_sign_ins ORDER BY expires_at DESC LIMIT -1 OFFSET ?1)"
+        )
+            .bind(coord_core::signin::MAX_PENDING_SIGN_INS)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+
+    pub async fn sign_in_get(&self, id: &str) -> Option<coord_core::PendingSignIn> {
+        let row: Option<(String, String, String, Option<String>)> = sqlx::query_as(
+            "SELECT machine_key, hostname, os, decision FROM coord_sign_ins WHERE id = ?1 AND expires_at > ?2"
+        )
+            .bind(id)
+            .bind(crate::now_secs())
+            .fetch_optional(&self.pool)
+            .await
+            .ok()
+            .flatten();
+        row.and_then(crate::sign_in_from_row)
+    }
+
+    pub async fn sign_in_decide(&self, id: &str, decision: &coord_core::SignInDecision) -> bool {
+        let Ok(text) = serde_json::to_string(decision) else { return false };
+        sqlx::query("UPDATE coord_sign_ins SET decision = ?1 WHERE id = ?2 AND decision IS NULL AND expires_at > ?3")
+            .bind(text)
+            .bind(id)
+            .bind(crate::now_secs())
+            .execute(&self.pool)
+            .await
+            .map(|r| r.rows_affected() == 1)
+            .unwrap_or(false)
+    }
+
+    pub async fn sign_in_take(&self, id: &str) -> Option<coord_core::SignInDecision> {
+        let row: Option<Option<String>> = sqlx::query_scalar(
+            "DELETE FROM coord_sign_ins WHERE id = ?1 AND decision IS NOT NULL RETURNING decision"
+        )
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .ok()
+            .flatten();
+        row.flatten().and_then(|d| serde_json::from_str(&d).ok())
     }
 
     pub async fn get_owner_lock(&self, tenant_id: TenantId, owner: &str) -> Option<coord_core::OwnerLock> {
