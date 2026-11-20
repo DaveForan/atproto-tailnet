@@ -571,6 +571,17 @@ impl SqliteStore {
         id.map(NodeId::new)
     }
 
+    pub async fn get_node_by_node_key(&self, node_key: &[u8; 32]) -> Option<NodeId> {
+        let id: Option<i64> = sqlx::query_scalar(
+            "SELECT id FROM coord_nodes WHERE node_key = ?1 LIMIT 1"
+        )
+            .bind(&node_key[..])
+            .fetch_optional(&self.pool)
+            .await
+            .ok()?;
+        id.map(NodeId::new)
+    }
+
     pub async fn get_peers(&self, tenant_id: TenantId, exclude_node: NodeId) -> Vec<PeerInfo> {
         let rows = sqlx::query_as::<_, PeerRow>(
             "SELECT id, node_key, machine_key, disco_key, endpoints, ipv4, hostname, online, last_seen, advertised_routes, approved_routes, owner \

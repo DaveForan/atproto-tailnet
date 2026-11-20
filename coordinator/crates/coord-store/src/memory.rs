@@ -493,6 +493,11 @@ impl MemoryStore {
         index.get(machine_key).copied()
     }
 
+    pub fn get_node_by_node_key(&self, node_key: &[u8; 32]) -> Option<NodeId> {
+        let nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner());
+        nodes.values().find(|n| n.info.node_key.as_slice() == node_key).map(|n| n.id)
+    }
+
     pub fn get_peers(&self, tenant_id: TenantId, exclude_node: NodeId) -> Vec<PeerInfo> {
         let nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner());
         nodes

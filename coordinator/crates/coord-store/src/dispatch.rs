@@ -242,6 +242,15 @@ impl Store {
         }
     }
 
+    /// The node currently registered with this node (WireGuard) public key.
+    pub async fn get_node_by_node_key(&self, node_key: &[u8; 32]) -> Option<NodeId> {
+        match self {
+            Store::Memory(m) => m.get_node_by_node_key(node_key),
+            Store::Pg(p) => p.get_node_by_node_key(node_key).await,
+            Store::Sqlite(s) => s.get_node_by_node_key(node_key).await,
+        }
+    }
+
     pub async fn get_peers(&self, tenant_id: TenantId, exclude_node: NodeId) -> Vec<PeerInfo> {
         match self {
             Store::Memory(m) => m.get_peers(tenant_id, exclude_node),

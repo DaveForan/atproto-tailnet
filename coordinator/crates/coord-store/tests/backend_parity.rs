@@ -496,3 +496,20 @@ async fn ipv4_addresses_reused_after_delete_and_never_duplicated() {
         }
     }
 }
+
+#[tokio::test]
+async fn node_lookup_by_node_key() {
+    for b in backends().await {
+        let s = &b.store;
+        let t = tenant(s, "nodekey").await;
+        let mk = rand_bytes::<32>();
+        let node_info = info("relay-client", mk);
+        let node_key: [u8; 32] = node_info.node_key.clone().try_into().unwrap();
+        let (id, _, _) = s
+            .register_node_with(t, mk, node_info, NodeRegistration::default())
+            .await
+            .unwrap();
+        assert_eq!(s.get_node_by_node_key(&node_key).await, Some(id), "{}", b.name);
+        assert_eq!(s.get_node_by_node_key(&rand_bytes::<32>()).await, None, "{}", b.name);
+    }
+}
