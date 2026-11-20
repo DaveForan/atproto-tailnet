@@ -458,6 +458,11 @@ export class CoordinatorApiClient {
     await this.pushAutoApprovers(value);
   }
 
+  /** Device access mode and rules (ADR-0036); stored and enforced by the coordinator. */
+  async setAccess(access: { mode: "open" | "member"; rules: unknown[] }): Promise<void> {
+    await this.request("PUT", `/api/tenants/${this.tenantId}/access`, access);
+  }
+
   /** Tailnet + member names shown in Tailscale clients (see coordinator-identity.ts). */
   async setIdentity(identity: {
     tailnet_name: string | null;
