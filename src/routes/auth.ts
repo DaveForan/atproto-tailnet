@@ -26,6 +26,7 @@ import {
   DEFAULT_CITIZEN_PERMISSIONS,
 } from "./permissions.js";
 import { logger } from "../logger.js";
+import { syncTenantAccess } from "../access/sync.js";
 import { canCreateTailnet, claimDefaultTailnet, withTailnetCreationLock } from "../operator/policy.js";
 import {
   generateAvailableFriendlyName,
@@ -166,6 +167,7 @@ export async function provisionTenant(
           port,
           apiKey: "",
           status: "provisioning",
+          accessMode: useCoordinator ? "member" : "open",
           ipv4Prefix: prefixes.ipv4Prefix,
           ipv6Prefix: prefixes.ipv6Prefix,
         })
@@ -316,6 +318,9 @@ async function provisionViaCoordinator(
         updatedAt: new Date(),
       })
       .where(eq(tenants.id, tenantId));
+
+  // Own devices only by default (ADR-0036); the coordinator stores the mode
+  await syncTenantAccess(tenantId);
 
     const client = getControlClient({
       port: 0,

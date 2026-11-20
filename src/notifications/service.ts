@@ -159,6 +159,17 @@ export async function createNotification(
 }
 
 /** Fire-and-forget wrapper for route handlers — never blocks or throws. */
+/**
+ * Notify one member (friend requests, shares, review outcomes). Fire and
+ * forget: a failed notification never fails the action that caused it.
+ */
+export function notifyUser(tenantId: string, userId: string, type: string, content: NotificationContent): void {
+  void db
+    .insert(notifications)
+    .values({ tenantId, userId, type, title: content.title, body: content.body ?? "", link: content.link ?? null })
+    .catch((err: unknown) => logger.warn({ tenantId, type, err }, "failed to create notification"));
+}
+
 export function notify(
   tenantId: string,
   type: NotificationType,

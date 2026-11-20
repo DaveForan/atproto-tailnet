@@ -250,6 +250,7 @@ collectivesRouter.post(
               port: await allocateTenantPort(!useCoordinator),
               apiKey: "",
               status: "provisioning",
+              accessMode: useCoordinator ? "member" : "open",
               parentId: tenantId,
               path: childPath,
               depth: childDepth,

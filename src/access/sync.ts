@@ -5,7 +5,7 @@
  * every change to posts, connections, shares or the access mode.
  */
 
-import { eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, lt } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { tenants, servicePosts, serviceConnections, deviceShares } from "../db/schema.js";
 import { config } from "../config.js";
@@ -47,4 +47,21 @@ export async function syncTenantAccess(tenantId: string): Promise<boolean> {
     logger.error({ tenantSlug: tenant.slug, err }, "failed to push access rules to the coordinator");
     return false;
   }
+}
+
+/**
+ * End shares whose expiry passed and push the affected tailnets' rules, so
+ * access closes on time (the compiler already ignores expired shares; this
+ * makes the coordinator's stored rules match). Called by the monitor.
+ */
+export async function endExpiredShares(now = new Date()): Promise<number> {
+  const ended = await db
+    .update(deviceShares)
+    .set({ status: "ended", endedAt: now })
+    .where(and(inArray(deviceShares.status, ["requested", "offered", "active"]), lt(deviceShares.expiresAt, now)))
+    .returning({ tenantId: deviceShares.tenantId });
+  for (const tenantId of new Set(ended.map((e) => e.tenantId))) {
+    await syncTenantAccess(tenantId);
+  }
+  return ended.length;
 }

@@ -34,6 +34,8 @@ import {
   DEVICE_LOCKED_ERROR,
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
+import { removeMemberAccessState } from "../access/devices.js";
+import { syncTenantAccess } from "../access/sync.js";
 import { logger } from "../logger.js";
 import { tenantLoginServerFor } from "../orchestrator/hostnames.js";
 import { notify } from "../notifications/service.js";
@@ -601,6 +603,10 @@ export async function removeMemberCascade(
   await db
     .delete(serviceDevices)
     .where(and(eq(serviceDevices.tenantId, tenantId), eq(serviceDevices.ownerId, removedUserId)));
+
+  // Posts, connections, friendships and shares of the member (ADR-0036)
+  await removeMemberAccessState(tenantId, removedUserId);
+  await syncTenantAccess(tenantId);
 
   await db
     .delete(memberships)

@@ -111,7 +111,7 @@ import {
 import { collectivesRouter } from "../routes/collectives.js";
 import { invitationsRouter, normalizeAccountDid, resolveHandleToDid } from "../routes/invitations.js";
 import { dashboardRouter } from "../routes/dashboard.js";
-import { boardRouter, findPublicBoardTenant } from "../routes/board.js";
+import { boardsRouter, publicControllerBoard } from "../routes/boards.js";
 import { federationRouter } from "../routes/federation.js";
 
 beforeEach(() => {
@@ -141,7 +141,7 @@ app.use(apiRouter);
 app.use(collectivesRouter);
 app.use(invitationsRouter);
 app.use(dashboardRouter);
-app.use(boardRouter);
+app.use(boardsRouter);
 app.use(federationRouter);
 const server = app.listen(0);
 const base = () => `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -430,22 +430,30 @@ describe("GET /invite/:id", () => {
 
 // ── 7. Suspended / deleted tenants on public endpoints ──
 describe("public board and DID endpoints", () => {
-  it("board lookup filters deleted and suspended tenants", async () => {
-    results.push([]);
-    expect(await findPublicBoardTenant("acme")).toBeNull();
-    const sql = lastWhereSql("tenants");
-    expect(sql).toContain('"tenants"."status" <> $');
-    expect(sql).toContain('"tenants"."suspended" = $');
+  it("the controller board is not served for deleted or suspended tenants", async () => {
+    expect(await publicControllerBoard(null)).toBeNull();
+    results.push([{ name: "Acme", text: "hi", status: "deleted", suspended: false }]);
+    expect(await publicControllerBoard(TENANT)).toBeNull();
+    results.push([{ name: "Acme", text: "hi", status: "running", suspended: true }]);
+    expect(await publicControllerBoard(TENANT)).toBeNull();
   });
 
-  it("/board/:slug and the board API are 404 when the tenant isn't public", async () => {
-    results.push([]);
+  it("/board/:name is 404 for an unknown name and shows only the name and text otherwise", async () => {
+    results.push([]); // not a live public name
     expect((await call("GET", "/board/acme")).status).toBe(404);
     results.push([]);
-    expect((await call("GET", "/api/tenants/by-slug/acme/board")).status).toBe(404);
+    expect((await call("GET", "/api/public/board/acme")).status).toBe(404);
 
-    results.push([{ tenantId: TENANT }], [{ ...tenantRow(), boardEnabled: true, maxBoardPostsDisplayed: 10 }]);
-    expect((await call("GET", "/board/acme")).status).toBe(200);
+    results.push(
+      [{ tenantId: TENANT }],
+      [{ name: "Acme <b>", text: "# Hello\n\n<script>alert(1)</script> [docs](https://example.com)", status: "running", suspended: false }],
+    );
+    const r = await call("GET", "/board/acme");
+    expect(r.status).toBe(200);
+    expect(r.text).toContain("Acme &lt;b&gt;");
+    expect(r.text).toContain("<h2>Hello</h2>");
+    expect(r.text).not.toContain("<script>alert");
+    expect(r.text).toContain('rel="noopener noreferrer nofollow"');
   });
 
   it("collective DID document is not served for suspended or deleted tenants", async () => {

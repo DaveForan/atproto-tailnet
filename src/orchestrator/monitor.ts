@@ -21,6 +21,7 @@ import { pushTenantIdentity, syncAllTenantIdentities } from "./coordinator-ident
 import { sweepExpiredJtis } from "../credentials/service-auth.js";
 import { sweepExpiredOAuthStates } from "../auth/atproto.js";
 import { logAudit } from "../routes/audit.js";
+import { endExpiredShares } from "../access/sync.js";
 import { logger } from "../logger.js";
 
 /** Boot id of the coordinator process whose in-memory state is in sync (null = not synced). */
@@ -330,6 +331,9 @@ export function startHealthMonitor(intervalMs = 60_000): void {
         );
         await sweepExpiredOAuthStates().catch((err) =>
           logger.warn({ err }, "failed to sweep expired OAuth states"),
+        );
+        await endExpiredShares().catch((err) =>
+          logger.warn({ err }, "failed to end expired device shares"),
         );
       }
     } catch (err) {
