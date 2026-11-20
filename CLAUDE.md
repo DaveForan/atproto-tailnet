@@ -63,7 +63,7 @@ docker compose -f docker-compose.coordinator.yml up -d
 - Tenant provisioning is async (setImmediate) — dashboard polls until status flips from "provisioning" to "running"
 - Headscale bootstrap via `docker exec` (API key + initial user), all runtime operations via REST `HeadscaleApiClient`
 - Dashboard HTML-escapes all user-controlled data via `esc()` and validates avatar URLs via `safeUrl()`
-- Session cookie uses `sameSite: "lax"` for CSRF protection
+- Session cookie: `sessionCookieName()` — `__Host-tailnet-session` over HTTPS (host-only, so no subdomain can set or replace it), `sameSite: "lax"`, httpOnly, 7 days
 - AT Proto handle validation: `HANDLE_RE` regex rejects non-handle input before any HTTP/DNS resolution
 - Handle resolution: DNS TXT → HTTP .well-known → Bluesky public API
 - Auth state/session stores are DB-backed (`oauth_states`, `oauth_sessions` tables via Drizzle upsert)

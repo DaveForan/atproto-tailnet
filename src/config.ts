@@ -197,5 +197,16 @@ if (config.controlDomain) {
   }
 }
 
+/**
+ * Name of the dashboard session cookie. Over HTTPS it carries the `__Host-`
+ * prefix: browsers then only accept it from this exact host, with `Secure`,
+ * `Path=/` and no `Domain`, so content on another subdomain (for example a
+ * member's service) can never set or replace it. Plain-HTTP development
+ * cannot use the prefix.
+ */
+export function sessionCookieName(publicUrl: string = config.publicUrl): string {
+  return publicUrl.startsWith("https") ? "__Host-tailnet-session" : "tailnet-session";
+}
+
 /** TypeScript type inferred from the validated config object. */
 export type Config = typeof config;

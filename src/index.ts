@@ -22,7 +22,7 @@ import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import rateLimit from "express-rate-limit";
 import { randomBytes } from "node:crypto";
-import { config } from "./config.js";
+import { config, sessionCookieName } from "./config.js";
 import { db, pool } from "./db/index.js";
 import { tenants } from "./db/schema.js";
 import { and, eq, ne } from "drizzle-orm";
@@ -115,6 +115,7 @@ app.use(
       pool,
       createTableIfMissing: true,
     }),
+    name: sessionCookieName(),
     secret: config.sessionSecret,
     resave: false,
     saveUninitialized: false,

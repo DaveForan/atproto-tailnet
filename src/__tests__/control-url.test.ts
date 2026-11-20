@@ -12,7 +12,7 @@ vi.hoisted(() => {
 
 vi.mock("../db/index.js", () => ({ db: {}, pool: {} }));
 
-import { sharedControlUrl } from "../config.js";
+import { sessionCookieName, sharedControlUrl } from "../config.js";
 import { tenantLoginServerFor, usesSharedControlUrl } from "../orchestrator/hostnames.js";
 
 describe("shared control URL", () => {
@@ -33,5 +33,15 @@ describe("CONTROL_DOMAIN validation", () => {
     process.env.CONTROL_DOMAIN = "control.ts.example.com";
     await expect(import("../config.js")).rejects.toThrow(/must not be BASE_DOMAIN/);
     process.env.CONTROL_DOMAIN = "control.example.com";
+  });
+});
+
+describe("session cookie name", () => {
+  it("uses the __Host- prefix over HTTPS so subdomains cannot set it", () => {
+    expect(sessionCookieName("https://tailnets.example.com")).toBe("__Host-tailnet-session");
+    expect(sessionCookieName()).toMatch(/^__Host-/);
+  });
+  it("has no prefix over plain HTTP (browsers would refuse it)", () => {
+    expect(sessionCookieName("http://127.0.0.1:3000")).toBe("tailnet-session");
   });
 });
