@@ -3,7 +3,7 @@ import { describe, it, expect, vi } from "vitest";
 
 vi.mock("../db/index.js", () => ({ db: {}, pool: {} }));
 
-import { handleFromDidDocument } from "../routes/invitations.js";
+import { handleFromDidDocument } from "../identity/handles.js";
 
 describe("handleFromDidDocument", () => {
   it("reads the at:// entry of alsoKnownAs", () => {

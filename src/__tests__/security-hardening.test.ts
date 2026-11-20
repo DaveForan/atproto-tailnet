@@ -81,7 +81,7 @@ vi.mock("node:dns/promises", async (orig) => ({
     throw new Error("ENOTFOUND");
   }),
 }));
-vi.mock("../routes/audit.js", () => ({ logAudit: vi.fn() }));
+vi.mock("../audit/log.js", () => ({ logAudit: vi.fn() }));
 vi.mock("../orchestrator/headscale.js", () => ({
   startInstance: vi.fn(),
   stopInstance: vi.fn(),
@@ -111,7 +111,8 @@ import {
   MAX_PENDING_JOIN_REQUESTS,
 } from "../routes/api.js";
 import { collectivesRouter } from "../routes/collectives.js";
-import { invitationsRouter, normalizeAccountDid, resolveHandleToDid } from "../routes/invitations.js";
+import { invitationsRouter } from "../routes/invitations.js";
+import { normalizeAccountDid, resolveHandleToDid } from "../identity/handles.js";
 import { dashboardRouter } from "../routes/dashboard.js";
 import { boardsRouter, publicControllerBoard } from "../routes/boards.js";
 import { federationRouter } from "../routes/federation.js";

@@ -3,7 +3,8 @@
  * Unified interface for control-plane operations. Abstracts whether the
  * backend is a per-tenant Headscale container or the shared Rust coordinator.
  *
- * All call sites should use {@link getControlClient} instead of directly
+ * All call sites should use {@link getControlClient} (either mode) or
+ * {@link getCoordinatorClient} (coordinator-only calls) instead of directly
  * constructing HeadscaleApiClient or CoordinatorApiClient.
  */
 
@@ -77,16 +78,32 @@ export function getControlClient(tenant: {
   coordinatorTenantId?: string | null;
 }): ControlClient {
   if (useCoordinator && config.coordinatorUrl) {
-    if (!tenant.coordinatorTenantId) {
-      throw new Error(
-        "Tenant has no coordinatorTenantId but coordinator mode is active",
-      );
-    }
-    return new CoordinatorApiClient(
-      config.coordinatorUrl,
-      tenant.coordinatorTenantId,
-      config.coordinatorApiKey,
-    );
+    return getCoordinatorClient(tenant);
   }
   return new HeadscaleApiClient(tenant.port, tenant.apiKey);
+}
+
+/**
+ * The Rust coordinator's admin client. With a tenant: scoped to the tenant's
+ * coordinator-side id (throws when the tenant has none). Without one: an
+ * instance-level client for calls that are not tenant-scoped (health probe,
+ * device sign-in, refused-machine log).
+ *
+ * Coordinator mode only — throws when `COORDINATOR_URL` is not set. Callers
+ * that run in both modes check {@link useCoordinator} first.
+ */
+export function getCoordinatorClient(
+  tenant?: { coordinatorTenantId?: string | null } | null,
+): CoordinatorApiClient {
+  if (!useCoordinator || !config.coordinatorUrl) {
+    throw new Error("Coordinator client requested but coordinator mode is not active (COORDINATOR_URL unset)");
+  }
+  let tenantId = "";
+  if (tenant) {
+    if (!tenant.coordinatorTenantId) {
+      throw new Error("Tenant has no coordinatorTenantId but coordinator mode is active");
+    }
+    tenantId = tenant.coordinatorTenantId;
+  }
+  return new CoordinatorApiClient(config.coordinatorUrl, tenantId, config.coordinatorApiKey);
 }

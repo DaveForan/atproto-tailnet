@@ -27,7 +27,7 @@ vi.mock("../routes/helpers.js", () => ({
   getTenantForUser: async () =>
     h.member ? { tenant: { id: "t-1", coordinatorTenantId: h.coordinatorTenantId }, membership: {} } : null,
 }));
-vi.mock("../routes/audit.js", () => ({ logAudit: h.audit }));
+vi.mock("../audit/log.js", () => ({ logAudit: h.audit }));
 vi.mock("../logger.js", () => ({ logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() } }));
 vi.mock("../orchestrator/coordinator-api.js", () => ({
   CoordinatorApiClient: class {

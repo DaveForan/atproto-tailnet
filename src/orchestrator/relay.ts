@@ -8,7 +8,6 @@
 import Docker from "dockerode";
 import { logger } from "../logger.js";
 import { config, tenantPublicUrl } from "../config.js";
-import { FEDERATION_RELAY_TAG } from "./federation-broker.js";
 
 const docker = new Docker();
 

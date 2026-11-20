@@ -16,9 +16,9 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import type { Request, Response, NextFunction } from "express";
 import { eq, and, ne } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { tenants, memberships, roles, agentTokens, users, deviceLocks } from "../db/schema.js";
+import { tenants, memberships, roles, agentTokens, deviceLocks } from "../db/schema.js";
 import { tenantPublicUrl } from "../config.js";
-import type { Permission } from "./permissions.js";
+import type { Permission } from "../members/permissions.js";
 import { oauthProvider, isMcpToken, MCP_RESOURCE_URL } from "../oauth/index.js";
 import { sameResource } from "../oauth/provider.js";
 import { InvalidTokenError } from "@modelcontextprotocol/sdk/server/auth/errors.js";
@@ -249,28 +249,9 @@ export function requireSession(req: Request, res: Response, next: NextFunction) 
   next();
 }
 
-/**
- * Returns the authenticated user's ID from the agent token, the MCP OAuth
- * token or the session (a Bearer credential wins over a cookie).
- * Must be called after {@link requireAuth}.
- */
-export function authUserId(req: Request): string {
-  return req.agentToken?.userId ?? req.mcpAuth?.userId ?? req.session.userId!;
-}
-
-/**
- * Returns the authenticated user's DID. For session-based auth, reads from
- * the session. For agent/MCP tokens, looks up the DID from the users table.
- */
-export async function authUserDid(req: Request): Promise<string | null> {
-  if (req.session.did && !req.agentToken && !req.mcpAuth) return req.session.did;
-  const userId = authUserId(req);
-  const [user] = await db
-    .select({ did: users.did })
-    .from(users)
-    .where(eq(users.id, userId));
-  return user?.did ?? null;
-}
+// authUserId / authUserDid live in auth/request-user.ts (also used by the
+// operator guard); re-exported here for route handlers.
+export { authUserId, authUserDid } from "../auth/request-user.js";
 
 /**
  * Extracts a named route param, normalising Express 5's
@@ -403,13 +384,8 @@ export function isLockedDown(
   return tenant.lockdownMode;
 }
 
-/** Converts an AT Proto handle to a Headscale-safe username (lowercase alphanumeric + hyphens). */
-export function toHsUsername(handle: string): string {
-  return handle
-    .replace(/[^a-z0-9]+/gi, "-")
-    .replace(/^-|-$/g, "")
-    .toLowerCase();
-}
+/** Re-exported for route handlers; lives in identity/handles.ts. */
+export { toHsUsername } from "../identity/handles.js";
 
 /** Builds the login-server URL for a tenant slug (e.g. `https://my-tenant.ts.example.com`). */
 export function tenantLoginServer(slug: string): string {

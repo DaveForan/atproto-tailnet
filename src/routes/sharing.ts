@@ -15,7 +15,7 @@ import { and, eq, inArray, or } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { users, memberships, friendships, memberBlocks, deviceShares, type AccessPortSpec } from "../db/schema.js";
 import { requireAuth, param, getTenantForUser, isLockedDown, authUserId } from "./helpers.js";
-import { logAudit } from "./audit.js";
+import { logAudit } from "../audit/log.js";
 import { notifyUser } from "../notifications/service.js";
 import { listUserDevices } from "../access/devices.js";
 import { syncTenantAccess } from "../access/sync.js";

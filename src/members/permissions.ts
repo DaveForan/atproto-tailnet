@@ -1,11 +1,11 @@
 /**
- * @module permissions
+ * @module members/permissions
  *
  * Every discrete permission that can be granted via a role.
  *
  * Permissions are stored as a JSONB string array on each role row. The
  * originator membership bypasses this array entirely — see
- * {@link hasPermission} in `helpers.ts`. When adding a new permission,
+ * `hasPermission` in `routes/helpers.ts`. When adding a new permission,
  * append it here **and** add a label in {@link PERMISSION_LABELS}.
  */
 export const ALL_PERMISSIONS = [

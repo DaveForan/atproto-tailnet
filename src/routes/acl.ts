@@ -13,8 +13,7 @@ import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { tenants } from "../db/schema.js";
-import { getControlClient, useCoordinator } from "../orchestrator/control-client.js";
-import { CoordinatorApiClient } from "../orchestrator/coordinator-api.js";
+import { getControlClient, getCoordinatorClient, useCoordinator } from "../orchestrator/control-client.js";
 import { AclTranslationError } from "../orchestrator/coordinator-acl.js";
 import {
   requireAuth,
@@ -23,7 +22,7 @@ import {
   hasPermission,
   authUserId,
 } from "./helpers.js";
-import { logAudit } from "./audit.js";
+import { logAudit } from "../audit/log.js";
 import { stepUpForSession } from "../auth/step-up.js";
 import { logger } from "../logger.js";
 
@@ -90,10 +89,9 @@ aclRouter.get(
       const client = getControlClient(result.tenant);
       // Coordinator stores {default_deny, rules}; render it in the Headscale
       // shape the dashboard understands.
-      const policy =
-        client instanceof CoordinatorApiClient
-          ? await client.getHeadscalePolicy()
-          : await client.getPolicy();
+      const policy = useCoordinator
+        ? await getCoordinatorClient(result.tenant).getHeadscalePolicy()
+        : await client.getPolicy();
 
       const users = await client.listUsers();
       const userNames = users.map((u) => u.name);
@@ -138,10 +136,10 @@ aclRouter.put(
 
     try {
       const client = getControlClient(result.tenant);
-      if (client instanceof CoordinatorApiClient) {
+      if (useCoordinator) {
         // Translate to the coordinator model; constructs it can't express
         // (groups, tags, autoApprovers, user sources) are rejected below.
-        await client.setHeadscalePolicy(parsed.data);
+        await getCoordinatorClient(result.tenant).setHeadscalePolicy(parsed.data);
         await db
           .update(tenants)
           .set({ coordinatorAclPolicy: parsed.data, updatedAt: new Date() })

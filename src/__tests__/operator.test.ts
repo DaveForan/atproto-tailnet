@@ -67,9 +67,9 @@ const { removeMemberCascade, revokeMemberAccess, oauthCallback } = vi.hoisted(()
   revokeMemberAccess: vi.fn(async (..._a: unknown[]) => ({ devicesDeleted: 1, keysRevoked: 0, errors: [] as string[] })),
   oauthCallback: vi.fn(),
 }));
-vi.mock("../routes/devices.js", () => ({ removeMemberCascade }));
-vi.mock("../routes/access.js", async (orig) => ({
-  ...(await orig<typeof import("../routes/access.js")>()),
+vi.mock("../members/cascade.js", () => ({ removeMemberCascade }));
+vi.mock("../access/keys.js", async (orig) => ({
+  ...(await orig<typeof import("../access/keys.js")>()),
   revokeMemberAccess,
 }));
 vi.mock("../orchestrator/headscale.js", () => ({

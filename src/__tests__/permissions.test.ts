@@ -11,7 +11,7 @@ import {
   PERMISSION_LABELS,
   ORIGINATOR_PERMISSIONS,
   DEFAULT_CITIZEN_PERMISSIONS,
-} from "../routes/permissions.js";
+} from "../members/permissions.js";
 
 describe("ALL_PERMISSIONS", () => {
   it("contains exactly 17 permissions", () => {

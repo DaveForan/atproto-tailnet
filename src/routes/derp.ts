@@ -22,11 +22,9 @@ import {
   hasPermission,
   authUserId,
 } from "./helpers.js";
-import { logAudit } from "./audit.js";
+import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
-import { useCoordinator } from "../orchestrator/control-client.js";
-import { CoordinatorApiClient } from "../orchestrator/coordinator-api.js";
-import { config } from "../config.js";
+import { getCoordinatorClient, useCoordinator } from "../orchestrator/control-client.js";
 
 export const derpRouter = Router();
 
@@ -93,7 +91,7 @@ derpRouter.put(
       return;
     }
 
-    if (useCoordinator && config.coordinatorUrl) {
+    if (useCoordinator) {
       const parsed = derpConfigBody.safeParse(req.body);
       if (!parsed.success) {
         res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
@@ -112,11 +110,7 @@ derpRouter.put(
         return;
       }
       try {
-        const client = new CoordinatorApiClient(
-          config.coordinatorUrl,
-          tenant.coordinatorTenantId,
-          config.coordinatorApiKey,
-        );
+        const client = getCoordinatorClient(tenant);
         await client.setDerp(regions, usePublicDerp);
         await db
           .update(tenants)

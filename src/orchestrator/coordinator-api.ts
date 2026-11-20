@@ -138,6 +138,19 @@ export class CoordinatorApiClient {
 
   // ── Tenant lifecycle ──
 
+  /**
+   * Create a tenant on the coordinator (`POST /api/tenants`); instance-level
+   * call, the client's own tenant id is not used. Sub-collectives pass the
+   * parent's coordinator tenant id. Returns the coordinator-side tenant id.
+   */
+  async createTenant(slug: string, parentId?: string | null): Promise<{ id: string }> {
+    return (await this.request(
+      "POST",
+      "/api/tenants",
+      parentId ? { slug, parent_id: parentId } : { slug },
+    )) as { id: string };
+  }
+
   async deleteTenant(): Promise<void> {
     await this.request("DELETE", `/api/tenants/${this.tenantId}`);
   }

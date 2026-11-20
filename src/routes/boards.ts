@@ -22,7 +22,7 @@ import {
   isLockedDown,
   authUserId,
 } from "./helpers.js";
-import { logAudit } from "./audit.js";
+import { logAudit } from "../audit/log.js";
 import { httpsServicesAvailable } from "../orchestrator/gateway.js";
 import { notify, notifyUser } from "../notifications/service.js";
 import { listTenantDevices, listUserDevices } from "../access/devices.js";

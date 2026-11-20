@@ -12,12 +12,12 @@
 
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
-import { config } from "../config.js";
 import type { tenants } from "../db/schema.js";
 import { requireSession, param, getTenantForUser } from "./helpers.js";
-import { logAudit } from "./audit.js";
+import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
-import { CoordinatorApiClient, type OwnerLockView } from "../orchestrator/coordinator-api.js";
+import type { CoordinatorApiClient, OwnerLockView } from "../orchestrator/coordinator-api.js";
+import { getCoordinatorClient, useCoordinator } from "../orchestrator/control-client.js";
 import { listUserDevices } from "../access/devices.js";
 import { syncTenantAccess } from "../access/sync.js";
 import { requireFreshDeviceProof } from "./device-trust.js";
@@ -36,9 +36,7 @@ const lockSchema = z.object({
 type Tenant = typeof tenants.$inferSelect;
 
 function coordinatorFor(tenant: Tenant): CoordinatorApiClient | null {
-  return config.coordinatorUrl && tenant.coordinatorTenantId
-    ? new CoordinatorApiClient(config.coordinatorUrl, tenant.coordinatorTenantId, config.coordinatorApiKey)
-    : null;
+  return useCoordinator && tenant.coordinatorTenantId ? getCoordinatorClient(tenant) : null;
 }
 
 /** The caller's membership and the coordinator client, or a response and null. */

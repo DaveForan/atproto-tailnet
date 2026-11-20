@@ -13,7 +13,7 @@ import { and, eq, inArray, isNotNull } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { tenants, memberships, users } from "../db/schema.js";
 import { config } from "../config.js";
-import { CoordinatorApiClient } from "./coordinator-api.js";
+import { getCoordinatorClient } from "./control-client.js";
 import { logger } from "../logger.js";
 
 /** Matches the coordinator's MAX_IDENTITY_TEXT. */
@@ -59,7 +59,7 @@ export async function pushTenantIdentity(tenantId: string, coordinatorTenantId: 
   if (!config.coordinatorUrl) return;
   const identity = await buildTenantIdentity(tenantId);
   if (!identity) return;
-  const client = new CoordinatorApiClient(config.coordinatorUrl, coordinatorTenantId, config.coordinatorApiKey);
+  const client = getCoordinatorClient({ coordinatorTenantId });
   await client.setIdentity(identity);
 }
 

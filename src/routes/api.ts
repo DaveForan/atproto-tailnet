@@ -18,10 +18,9 @@ import {
 } from "../orchestrator/headscale.js";
 import { syncTenantRoutes } from "../orchestrator/caddy.js";
 import { releaseTenantPort } from "../orchestrator/ports.js";
-import { getControlClient, useCoordinator } from "../orchestrator/control-client.js";
-import { CoordinatorApiClient } from "../orchestrator/coordinator-api.js";
+import { getCoordinatorClient, useCoordinator } from "../orchestrator/control-client.js";
 import { requireAuth, param, getTenantForUser, authUserId } from "./helpers.js";
-import { logAudit } from "./audit.js";
+import { logAudit } from "../audit/log.js";
 import { stepUpForSession } from "../auth/step-up.js";
 import { checkTenantHealth } from "../orchestrator/monitor.js";
 import { logger } from "../logger.js";
@@ -41,7 +40,7 @@ import {
   getInstanceSettings,
   isOperatorDid,
 } from "../operator/policy.js";
-import { provisionTenant } from "./auth.js";
+import { provisionTenant } from "../orchestrator/tenant-provisioning.js";
 
 /**
  * Router for /health, /api/me, /api/tenants (list, detail, delete,
@@ -476,10 +475,7 @@ export async function deleteTenantInstance(tenant: typeof tenants.$inferSelect):
   }
 
   if (useCoordinator && tenant.coordinatorTenantId) {
-    const client = getControlClient(tenant);
-    if (client instanceof CoordinatorApiClient) {
-      await client.deleteTenant();
-    }
+    await getCoordinatorClient(tenant).deleteTenant();
   }
 
   await db

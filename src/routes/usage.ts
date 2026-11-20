@@ -18,7 +18,7 @@ import {
   authUserId,
 } from "./helpers.js";
 import { MAX_LIMIT, checkChildLimit, countMembers, isOverLimit } from "./limits.js";
-import { logAudit } from "./audit.js";
+import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
 
 export const usageRouter = Router();

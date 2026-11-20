@@ -16,7 +16,7 @@ import {
   authUserId,
   isLockedDown,
 } from "./helpers.js";
-import { logAudit } from "./audit.js";
+import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
 import { parsePolicy } from "../policy-engine/parser.js";
 import { evaluateTraversal } from "../policy-engine/evaluator.js";

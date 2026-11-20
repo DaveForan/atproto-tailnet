@@ -26,8 +26,8 @@ import {
   isLockedDown,
   missingPermissions,
 } from "./helpers.js";
-import { ALL_PERMISSIONS } from "./permissions.js";
-import { logAudit } from "./audit.js";
+import { ALL_PERMISSIONS } from "../members/permissions.js";
+import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
 import {
   issueMembershipCredential,

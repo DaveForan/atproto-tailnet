@@ -22,7 +22,7 @@ import {
   revokeAllTenantKeys,
   MEMBER_MAX_KEY_HOURS,
   type AuthKeyView,
-} from "../routes/access.js";
+} from "../access/keys.js";
 import { CoordinatorApiClient } from "../orchestrator/coordinator-api.js";
 import { HeadscaleApiClient } from "../orchestrator/headscale-api.js";
 

@@ -48,24 +48,25 @@ docker compose -f docker-compose.coordinator.yml up -d
 - **Dashboard client**: React 19 SPA built by esbuild (`esbuild.config.ts`). ESM build with code splitting: entry points `src/client/main.tsx` → `public/js/dashboard.js` and `src/client/join.tsx` → `public/js/join.js`, shared/lazy chunks in `public/js/chunks/`; HTML shells load them with `<script type="module">` (src/routes/dashboard.ts). CSP: `script-src 'self'; style-src 'self'`
 - **Tab architecture**: lazy-loaded tabs via `React.lazy` + `Suspense`. Tab registry in `components/registry.ts` gates visibility by permission. `useAppState` context provides global state; `useTenantData` hook handles load-on-mount; `useTenantMutation` handles mutations with toast + busy state
 - **Service layer (client)**: typed modules in `services/`, one per API domain. Tabs must not call `fetch()` directly; `useTenantData`/`useTenantMutation` still take raw tenant-relative paths in places (known duplication with the service modules — prefer service functions in new code). `api.ts` is the low-level wrapper; domain modules re-export typed functions
-- **Control client abstraction**: `getControlClient(tenant)` from `orchestrator/control-client.ts` — returns either `HeadscaleApiClient` or `CoordinatorApiClient` based on `COORDINATOR_URL` env var. All route handlers and orchestrator modules use this factory, never `new HeadscaleApiClient(...)` directly. The `ControlClient` interface matches the Headscale API surface; coordinator operations that aren't implemented yet are graceful no-ops
-- **Coordinator mode** (`COORDINATOR_URL`): when set, tenant provisioning creates tenants via the coordinator REST API (`POST /api/tenants`), stores the coordinator-side UUID in `tenants.coordinatorTenantId`, and skips Docker container lifecycle. Caddy routes all tenant subdomains to the single coordinator. Health monitor skips Docker restarts
+- **Control client abstraction**: `getControlClient(tenant)` from `orchestrator/control-client.ts` — returns either `HeadscaleApiClient` or `CoordinatorApiClient` based on `COORDINATOR_URL` env var. All route handlers and orchestrator modules use this factory, never `new HeadscaleApiClient(...)` directly. Coordinator-only calls use `getCoordinatorClient(tenant?)` from the same module (throws outside coordinator mode; no argument = instance-level client) — never `new CoordinatorApiClient(...)`; branch on `useCoordinator`, not `instanceof`. The `ControlClient` interface matches the Headscale API surface; coordinator operations that aren't implemented yet are graceful no-ops
+- **Layering**: non-route code (orchestrator, operator, identity, access, members, audit, federation…) never imports from `src/routes/`; shared logic lives in a domain module and routes import it
+- **Coordinator mode** (`COORDINATOR_URL`): when set, tenant provisioning (`orchestrator/tenant-provisioning.ts`) creates tenants via the coordinator REST API (`POST /api/tenants`), stores the coordinator-side UUID in `tenants.coordinatorTenantId`, and skips Docker container lifecycle. Caddy routes all tenant subdomains to the single coordinator. Health monitor skips Docker restarts
 - `req.params` values are `string | string[]` in Express 5 — use `param(req, "name")` from `routes/helpers.ts`
 - `getTenantForUser(tenantId, userId)` in `routes/helpers.ts` — shared membership+tenant lookup for all protected routes
 - `hasPermission(membership, role, permission, req)` — originators always pass, others check role's JSONB permissions array; `req` param is required to enforce agent token scope intersection (omitting it would bypass token scoping)
-- `Permission` type and `ALL_PERMISSIONS` constant live in `routes/permissions.ts`
+- `Permission` type and `ALL_PERMISSIONS` constant live in `members/permissions.ts`
 - Two system roles per tenant: "originator" (all perms) and "citizen" (default for new members, customizable)
 - `membership.isOriginator` is the hard source of truth for originator identity (overrides role)
 - `isLockedDown(tenant)` — blocks invitations, acceptances, auth key generation, and agent token creation when true
-- `toHsUsername(handle)` / `tenantLoginServer(slug)` — shared helpers in `routes/helpers.ts`
-- `logAudit(...)` in `routes/audit.ts` — fire-and-forget append to `audit_logs` table
+- `toHsUsername(handle)` (`identity/handles.ts`, re-exported by `routes/helpers.ts`) / `tenantLoginServer(slug)` (`routes/helpers.ts`)
+- `logAudit(...)` in `audit/log.ts` — fire-and-forget append to `audit_logs` table
 - Originator protection: `isOriginator` membership can never be deleted or role-changed (hard 403 in route)
 - Tenant provisioning is async (setImmediate) — dashboard polls until status flips from "provisioning" to "running"
 - Headscale bootstrap via `docker exec` (API key + initial user), all runtime operations via REST `HeadscaleApiClient`
 - Dashboard HTML-escapes all user-controlled data via `esc()` and validates avatar URLs via `safeUrl()`
 - Session cookie: `sessionCookieName()` — `__Host-tailnet-session` over HTTPS (host-only, so no subdomain can set or replace it), `sameSite: "lax"`, httpOnly, 7 days
 - AT Proto handle validation: `HANDLE_RE` regex rejects non-handle input before any HTTP/DNS resolution
-- Handle resolution: DNS TXT → HTTP .well-known → Bluesky public API
+- Handle resolution (`identity/handles.ts`: `resolveHandleToDid`, `lookupVerifiedHandle`, `normalizeAccountDid`): DNS TXT → HTTP .well-known → Bluesky public API
 - Auth state/session stores are DB-backed (`oauth_states`, `oauth_sessions` tables via Drizzle upsert)
 - Express sessions stored in PostgreSQL via `connect-pg-simple`
 - Rate limiting (`express-rate-limit`): auth + `.well-known` routes 10 req/min per address; API routes 300 req/min per signed-in user (keyed by user id) and 60 req/min per address for callers without a dashboard session (anonymous, agent tokens). One dashboard page costs about ten requests
@@ -73,7 +74,7 @@ docker compose -f docker-compose.coordinator.yml up -d
 - Port allocation retries on unique constraint violation (PG error 23505) up to 3 times
 - Port range 10001-10100 allocated from DB; excludes every row's port and reclaims ports held by deleted tenants (deleted rows move to a unique negative placeholder). Coordinator tenants and sub-collectives get negative placeholders — they never consume the Headscale range
 - All config flows through Zod-validated `src/config.ts` (including caddyAdminUrl, databaseUrl, atprotoPrivateKey, federationKeyEncryptionKey, tenantPublicPort, headscale.network)
-- Instance operators: `OPERATOR_DIDS` (env, comma-separated DIDs; `config.operatorDids`). Only operators — and DIDs an operator designates in `tailnet_creators` — get a tailnet; everyone else signs in to a no-access view (pending invitations + "request to join" the default tailnet via the existing join-request API). Single entry point `canCreateTailnet(user)` in `src/operator/policy.ts`, wrapped with `withTailnetCreationLock` (in-process; the service runs as one app process). `instance_settings` singleton: `singleTailnet` (also refuses sub-collectives, 409 `single_tailnet`), `defaultTailnetId` (first operator tailnet claims it and gets `allowJoinRequests=true`; setting a new default enables join requests). Operator API `/api/operator/*` (`requireOperator`: session or MCP token, never agent tokens): overview, settings, tailnet creators, suspend/unsuspend (`tenants.suspended`, coordinator `PUT /api/tenants/{id}/suspended`; members get 403 `tenant_suspended`; suspended children are hidden from parents), operator delete, user disable/enable (`users.disabled_at`; disable runs the kick cascade `removeMemberCascade`). Enforcement middleware `enforceOperatorState` (`src/operator/access.ts`). Public `GET /api/instance`. `POST /api/tenants/mine` creates your tailnet if allowed
+- Instance operators: `OPERATOR_DIDS` (env, comma-separated DIDs; `config.operatorDids`). Only operators — and DIDs an operator designates in `tailnet_creators` — get a tailnet; everyone else signs in to a no-access view (pending invitations + "request to join" the default tailnet via the existing join-request API). Single entry point `canCreateTailnet(user)` in `src/operator/policy.ts`, wrapped with `withTailnetCreationLock` (in-process; the service runs as one app process). `instance_settings` singleton: `singleTailnet` (also refuses sub-collectives, 409 `single_tailnet`), `defaultTailnetId` (first operator tailnet claims it and gets `allowJoinRequests=true`; setting a new default enables join requests). Operator API `/api/operator/*` (`requireOperator`: session or MCP token, never agent tokens): overview, settings, tailnet creators, suspend/unsuspend (`tenants.suspended`, coordinator `PUT /api/tenants/{id}/suspended`; members get 403 `tenant_suspended`; suspended children are hidden from parents), operator delete, user disable/enable (`users.disabled_at`; disable runs the kick cascade `removeMemberCascade` in `members/cascade.ts`). Enforcement middleware `enforceOperatorState` (`src/operator/access.ts`). Public `GET /api/instance`. `POST /api/tenants/mine` creates your tailnet if allowed
 - Invitations are the per-tailnet allow-list: invite by handle or DID; responses carry `inviteUrl` (`/invite/:id`, served by the dashboard, sign-in redirect for anonymous visitors). Nothing is sent automatically — admins share the link
 - Device approval: devices connect freely by default; when `requireDeviceApproval` is true, auth-key requests create pending `device_approvals` and notify approvers; an approver approves to generate the key. `maxDevices` is enforced at key issuance and approval
 - Auth keys: every issued key is tracked in `auth_keys` (both modes). `GET /api/tenants/:id/auth-keys` (manage_devices/originator see all, others own), `DELETE .../auth-keys/:keyId`. Coordinator keys carry `owner` (our user id) and `tags`; the node inherits them, which is how device ownership works in coordinator mode. Kicking a member revokes their keys and deletes their devices in both modes
@@ -181,8 +182,15 @@ src/
     issuer.ts              — VC-JWT issuance (membership, role, capability), bundle assembly, challenge generation
     service-auth.ts        — AT Proto service-auth JWT verification (ES256K/ES256 via @atproto/crypto), JTI replay cache
     types.ts               — Credential type definitions
+  audit/log.ts             — logAudit: fire-and-forget audit log writer
+  auth/request-user.ts     — authUserId / authUserDid (re-exported by routes/helpers.ts)
+  members/
+    permissions.ts         — ALL_PERMISSIONS constant, Permission type, role defaults
+    cascade.ts             — removeMemberCascade (kick / operator disable)
+  access/keys.ts           — Auth-key issuance tracking, key revocation, revokeMemberAccess
   identity/
     keys.ts                — Collective key encryption at rest + detached-JWS sign/verify
+    handles.ts             — Handle ↔ DID resolution, normalizeAccountDid, toHsUsername
     account.ts             — Public profile lookup (verified handle, display name, avatar) with no account access
     resolver.ts            — did:web / did:plc resolver (local-collective lookup, SSRF guard, typed multikey decoding, cache)
   federation/
@@ -191,17 +199,18 @@ src/
     handshake.ts, protocol.ts, session.ts, route-engine.ts, scoping.ts — CFP state machines and types
   orchestrator/
     federation-broker.ts   — Broker loop, per-link sessions, outbound handshake, collective DID lifecycle, ACL route install
+    tenant-provisioning.ts — provisionTenant / provisionTenantInstance (coordinator or Headscale control plane)
+    control-client.ts      — getControlClient (both modes) / getCoordinatorClient (coordinator only)
     headscale.ts           — Docker lifecycle (create/start/stop/destroy), CLI exec, DERP config writer
     headscale-api.ts       — REST client for running Headscale instances (includes getPolicy/setPolicy)
     caddy.ts               — Caddy admin API: one managed tenant route synced from the DB
     ports.ts               — Port allocator
     monitor.ts             — Background health-check loop + per-tenant health probe
   routes/
-    auth.ts                — /auth/login, /auth/callback, /auth/logout, /.well-known/* + tenant provisioning
+    auth.ts                — /auth/login, /auth/callback, /auth/logout, /.well-known/*
     api.ts                 — /api/me, /api/tenants, /health, public tenant lookup, join request submit/status
     invitations.ts         — Create/accept/decline/revoke invitations (permission-gated)
     devices.ts             — Node listing, auth key generation, member management (permission-gated)
-    permissions.ts         — ALL_PERMISSIONS constant, Permission type, role defaults
     security.ts            — Tenant settings, role CRUD, role assignment, device approvals/locks, join request management, audit log
     boards.ts              — Controller board, public board (service posts, approval, Connect), private board, access mode
     sharing.ts             — Friends, blocks and device shares between members
@@ -216,7 +225,6 @@ src/
     credentials.ts         — VC-JWT issuance, public verify, holder-binding challenges, revocation, service-auth presentation
     dashboard.ts           — HTML shell serving React SPA bundles (dashboard + join page)
     helpers.ts             — Shared middleware, param(), permission checks, agent token resolution, hs username/URL helpers
-    audit.ts               — Fire-and-forget audit log writer
 docs/adr/                  — Architecture Decision Records (0001-0036)
 BUILD_PLAN.md              — Phased build tracker
 coordinator/               — Rust mesh coordinator workspace

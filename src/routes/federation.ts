@@ -21,7 +21,7 @@ import {
   authUserId,
   isLockedDown,
 } from "./helpers.js";
-import { logAudit } from "./audit.js";
+import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
 import { randomUUID } from "node:crypto";
 import {
@@ -41,8 +41,7 @@ import {
 } from "../orchestrator/federation-broker.js";
 import { collectiveDids } from "../db/schema.js";
 import { config } from "../config.js";
-import { getControlClient, useCoordinator } from "../orchestrator/control-client.js";
-import { CoordinatorApiClient } from "../orchestrator/coordinator-api.js";
+import { getCoordinatorClient, useCoordinator } from "../orchestrator/control-client.js";
 import { CFP_VERSION } from "../federation/protocol.js";
 import { scopeDeclarationSchema } from "../federation/scoping.js";
 import { signedPayload } from "../federation/auth.js";
@@ -1184,10 +1183,7 @@ federationRouter.put(
     }
 
     if (useCoordinator) {
-      const client = getControlClient(result.tenant);
-      if (client instanceof CoordinatorApiClient) {
-        await client.setPosture(parsed.data.posture);
-      }
+      await getCoordinatorClient(result.tenant).setPosture(parsed.data.posture);
     }
 
     await db

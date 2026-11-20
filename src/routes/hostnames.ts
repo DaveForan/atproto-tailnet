@@ -9,7 +9,7 @@
 import { Router } from "express";
 import { config } from "../config.js";
 import { requireAuth, param, getTenantForUser, authUserId } from "./helpers.js";
-import { logAudit } from "./audit.js";
+import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
 import { syncTenantRoutes } from "../orchestrator/caddy.js";
 import { syncTenantAccess } from "../access/sync.js";

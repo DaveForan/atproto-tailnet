@@ -33,9 +33,9 @@ import {
   setTenantSuspendedCascade,
 } from "../operator/lifecycle.js";
 import { authUserId, param } from "./helpers.js";
-import { logAudit } from "./audit.js";
+import { logAudit } from "../audit/log.js";
 import { deleteTenantInstance } from "./api.js";
-import { ACCOUNT_DID_RE, normalizeAccountDid, resolveDidToHandle, resolveHandleToDid } from "./invitations.js";
+import { ACCOUNT_DID_RE, normalizeAccountDid, resolveDidToHandle, resolveHandleToDid } from "../identity/handles.js";
 import { logger } from "../logger.js";
 import { primaryHostname } from "../orchestrator/hostnames.js";
 import { stepUpForSession } from "../auth/step-up.js";

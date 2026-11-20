@@ -9,13 +9,12 @@ import { and, eq, inArray, ne } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { agentTokens, invitations, joinRequests, memberships, tenants, users } from "../db/schema.js";
 import { oauthProvider } from "../oauth/index.js";
-import { getControlClient, useCoordinator } from "../orchestrator/control-client.js";
-import { CoordinatorApiClient } from "../orchestrator/coordinator-api.js";
+import { getControlClient, getCoordinatorClient, useCoordinator } from "../orchestrator/control-client.js";
 import { startInstance, stopInstance } from "../orchestrator/headscale.js";
-import { removeMemberCascade } from "../routes/devices.js";
-import { revokeMemberAccess } from "../routes/access.js";
-import { toHsUsername } from "../routes/helpers.js";
-import { logAudit } from "../routes/audit.js";
+import { removeMemberCascade } from "../members/cascade.js";
+import { revokeMemberAccess } from "../access/keys.js";
+import { toHsUsername } from "../identity/handles.js";
+import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
 
 type Tenant = typeof tenants.$inferSelect;
@@ -55,10 +54,7 @@ export async function setTenantSuspended(
   let status = tenant.status;
   if (useCoordinator) {
     if (tenant.coordinatorTenantId) {
-      const client = getControlClient(tenant);
-      if (client instanceof CoordinatorApiClient) {
-        await client.setSuspended(suspended);
-      }
+      await getCoordinatorClient(tenant).setSuspended(suspended);
     } else if (!opts.lenient) {
       throw new OperatorActionError("Tenant is not provisioned on the coordinator yet", 409);
     }

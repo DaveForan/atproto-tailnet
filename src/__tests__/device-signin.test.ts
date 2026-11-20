@@ -38,11 +38,19 @@ vi.mock("../orchestrator/coordinator-api.js", () => ({
     denyDeviceAuth = coord.denyDeviceAuth;
   },
 }));
-vi.mock("../orchestrator/control-client.js", () => ({ useCoordinator: true, getControlClient: () => ({}) }));
+vi.mock("../orchestrator/control-client.js", () => ({
+  useCoordinator: true,
+  getControlClient: () => ({}),
+  getCoordinatorClient: () => ({
+    getDeviceAuth: coord.getDeviceAuth,
+    approveDeviceAuth: coord.approveDeviceAuth,
+    denyDeviceAuth: coord.denyDeviceAuth,
+  }),
+}));
 vi.mock("../orchestrator/coordinator-identity.js", () => ({ pushTenantIdentity: vi.fn(async () => {}) }));
 vi.mock("../routes/limits.js", () => ({ enforceDeviceLimit }));
 const { logAudit } = vi.hoisted(() => ({ logAudit: vi.fn() }));
-vi.mock("../routes/audit.js", () => ({ logAudit }));
+vi.mock("../audit/log.js", () => ({ logAudit }));
 
 import express from "express";
 import type { Request, Response, NextFunction } from "express";

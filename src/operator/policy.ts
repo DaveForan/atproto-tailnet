@@ -10,6 +10,7 @@ import { db, pool } from "../db/index.js";
 import { instanceSettings, memberships, tailnetCreators, tenants } from "../db/schema.js";
 import { config } from "../config.js";
 import { withAdvisoryLock, LOCK_TAILNET_CREATION } from "../db/locks.js";
+import { normalizeAccountDid } from "../identity/handles.js";
 
 /** Operator-managed instance settings. */
 export interface InstanceSettings {
@@ -71,8 +72,6 @@ async function countTopLevelTenants(): Promise<number> {
 /** True when an operator designated `did` as a tailnet creator. */
 export async function isTailnetCreator(did: string): Promise<boolean> {
   // did:web host case must not matter (creators are stored normalized).
-  // Dynamic import: routes/invitations → helpers → oauth → policy would cycle.
-  const { normalizeAccountDid } = await import("../routes/invitations.js");
   const normalized = normalizeAccountDid(did);
   const rows = await db
     .select({ id: tailnetCreators.id })

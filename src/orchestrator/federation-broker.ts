@@ -26,7 +26,9 @@ import {
   collectiveDids,
   tenants,
 } from "../db/schema.js";
-import { config } from "../config.js";
+import { config, tenantPublicUrl } from "../config.js";
+import { getControlClient, getCoordinatorClient, useCoordinator } from "./control-client.js";
+import { createRelayHalf, destroyRelayHalf, isRelayHalfRunning } from "./relay.js";
 import { logger } from "../logger.js";
 import { sendMessage, sendKeepalive, sendRevoke } from "../federation/transport.js";
 import { isAllowedBrokerUrl } from "../federation/discovery.js";
@@ -40,7 +42,7 @@ import {
   type OutboxEntry,
   type UnsignedLinkMessage,
 } from "../federation/outbox.js";
-import { logAudit } from "../routes/audit.js";
+import { logAudit } from "../audit/log.js";
 import {
   createHandshake,
   initiateHello,
@@ -312,7 +314,6 @@ async function provisionRelayNode(
     .returning();
 
   try {
-    const { getControlClient } = await import("./control-client.js");
     const [tenant] = await db
       .select({ slug: tenants.slug, port: tenants.port, apiKey: tenants.apiKey, status: tenants.status, coordinatorTenantId: tenants.coordinatorTenantId })
       .from(tenants)
@@ -330,8 +331,6 @@ async function provisionRelayNode(
       expirationSeconds: 300,
     });
 
-    const { createRelayHalf } = await import("./relay.js");
-    const { tenantPublicUrl } = await import("../config.js");
 
     const containerId = await createRelayHalf({
       tenantSlug: tenant.slug,
@@ -406,11 +405,9 @@ async function teardownBrokerSession(stale: BrokerSession): Promise<void> {
   for (const relay of relays) {
     try {
       if (relay.containerId) {
-        const { destroyRelayHalf } = await import("./relay.js");
         await destroyRelayHalf(relay.containerId);
       }
       if (relay.headscaleNodeId) {
-        const { getControlClient } = await import("./control-client.js");
         const [tenant] = await db
           .select({ port: tenants.port, apiKey: tenants.apiKey, status: tenants.status, coordinatorTenantId: tenants.coordinatorTenantId })
           .from(tenants)
@@ -506,7 +503,6 @@ async function checkRelayHealth(): Promise<void> {
     if (!relay.containerId) continue;
 
     try {
-      const { isRelayHalfRunning } = await import("./relay.js");
       const running = await isRelayHalfRunning(relay.containerId);
 
       if (running && relay.status !== "active") {
@@ -1119,17 +1115,12 @@ async function updateRouteApprovals(
   cidrs: string[],
   mode: "add" | "remove",
 ): Promise<boolean> {
-  const { getControlClient, useCoordinator } = await import("./control-client.js");
   const tenant = await loadControlTenant(tenantId);
   if (!tenant || tenant.status !== "running") return false;
 
   if (useCoordinator) {
     if (!tenant.coordinatorTenantId) return false;
-    const client = getControlClient({
-      port: tenant.port ?? 0,
-      apiKey: tenant.apiKey ?? "",
-      coordinatorTenantId: tenant.coordinatorTenantId,
-    }) as unknown as AutoApproverApi;
+    const client = getCoordinatorClient(tenant) as unknown as AutoApproverApi;
     const current = normalizeAutoApprovers(await client.getAutoApprovers());
     const next =
       mode === "add"
@@ -1197,7 +1188,6 @@ export async function withdrawFederatedRoutes(
  * exactly the prefixes its live sessions import.
  */
 async function reconcileCoordinatorAutoApprovers(): Promise<void> {
-  const { getControlClient, useCoordinator } = await import("./control-client.js");
   if (!useCoordinator) return;
 
   const rows = await db
@@ -1218,11 +1208,7 @@ async function reconcileCoordinatorAutoApprovers(): Promise<void> {
     try {
       const tenant = await loadControlTenant(tenantId);
       if (!tenant || tenant.status !== "running" || !tenant.coordinatorTenantId) continue;
-      const client = getControlClient({
-        port: tenant.port ?? 0,
-        apiKey: tenant.apiKey ?? "",
-        coordinatorTenantId: tenant.coordinatorTenantId,
-      }) as unknown as AutoApproverApi;
+      const client = getCoordinatorClient(tenant) as unknown as AutoApproverApi;
       const current = normalizeAutoApprovers(await client.getAutoApprovers());
       const next = reconcileFederatedAutoApprovers(current, [...imported]);
       if (!sameAutoApprovers(current, next)) {
@@ -1250,7 +1236,6 @@ async function approvedSubnetRoutes(tenantId: string): Promise<string[]> {
       .where(eq(tenants.id, tenantId))
       .limit(1);
     if (!tenant?.port || !tenant.apiKey || tenant.status !== "running") return [];
-    const { getControlClient } = await import("./control-client.js");
     const routes = await getControlClient({ ...tenant, port: tenant.port, apiKey: tenant.apiKey }).listRoutes();
     const imported = (await getRouteTable(tenantId)).imported;
     return routes

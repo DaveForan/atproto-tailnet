@@ -8,10 +8,10 @@
 import { eq, inArray } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { instanceSettings, tenants } from "../db/schema.js";
-import { config } from "../config.js";
 import { logger } from "../logger.js";
 import { notifyUser } from "../notifications/service.js";
-import { CoordinatorApiClient, type RefusedMachine } from "./coordinator-api.js";
+import type { RefusedMachine } from "./coordinator-api.js";
+import { getCoordinatorClient } from "./control-client.js";
 
 /** Most notifications written in one round (a flood of attempts is one story). */
 export const MAX_REFUSALS_PER_ROUND = 50;
@@ -37,7 +37,7 @@ async function setWatermark(at: Date): Promise<void> {
  */
 export async function notifyRefusedMachines(
   list: (since: Date) => Promise<RefusedMachine[]> = (since) =>
-    new CoordinatorApiClient(config.coordinatorUrl!, "", config.coordinatorApiKey).listRefusedMachines(since),
+    getCoordinatorClient().listRefusedMachines(since),
   now: Date = new Date(),
 ): Promise<number> {
   const since = await watermark();

@@ -1,5 +1,5 @@
 /**
- * @module routes/access
+ * @module access/keys
  * Key issuance tracking and access revocation shared by the device, approval,
  * service-device and member routes. Works in both control-plane modes:
  *

@@ -29,7 +29,7 @@ vi.mock("../db/index.js", () => {
   };
   return { db: { select: () => chain(), insert: () => chain(), update: () => chain(), delete: () => chain() }, pool: {} };
 });
-vi.mock("../routes/audit.js", () => ({ logAudit: vi.fn() }));
+vi.mock("../audit/log.js", () => ({ logAudit: vi.fn() }));
 vi.mock("../orchestrator/headscale.js", () => ({
   startInstance: vi.fn(),
   stopInstance: vi.fn(),

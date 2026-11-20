@@ -9,7 +9,7 @@ import { and, eq, inArray, lt, ne } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { tenants, servicePosts, serviceConnections, deviceShares } from "../db/schema.js";
 import { config } from "../config.js";
-import { CoordinatorApiClient } from "../orchestrator/coordinator-api.js";
+import { getCoordinatorClient } from "../orchestrator/control-client.js";
 import { logger } from "../logger.js";
 import {
   compileAccess,
@@ -156,7 +156,7 @@ export async function syncTenantAccess(tenantId: string): Promise<boolean> {
   if (!tenant?.coordinatorTenantId) return true;
   try {
     const mode: AccessMode = tenant.accessMode === "member" ? "member" : "open";
-    const client = new CoordinatorApiClient(config.coordinatorUrl, tenant.coordinatorTenantId, config.coordinatorApiKey);
+    const client = getCoordinatorClient(tenant);
     // Ownership is checked against the control plane on every push: a device
     // that registered again under another member keeps its node id
     const nodeOwners = new Map<string, string>();

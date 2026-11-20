@@ -14,13 +14,12 @@ import { z } from "zod";
 import { and, eq, ne } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { tenants, memberships } from "../db/schema.js";
-import { config } from "../config.js";
 import { requireSession, param, getTenantForUser, isLockedDown, isDeviceLocked, DEVICE_LOCKED_ERROR } from "./helpers.js";
-import { logAudit } from "./audit.js";
+import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
 import { enforceDeviceLimit } from "./limits.js";
-import { CoordinatorApiClient } from "../orchestrator/coordinator-api.js";
-import { getControlClient } from "../orchestrator/control-client.js";
+import type { CoordinatorApiClient } from "../orchestrator/coordinator-api.js";
+import { getControlClient, getCoordinatorClient, useCoordinator } from "../orchestrator/control-client.js";
 import { pushTenantIdentity } from "../orchestrator/coordinator-identity.js";
 import { stepUpForSession } from "../auth/step-up.js";
 
@@ -64,7 +63,7 @@ const approveLimiter = perUser(DEVICE_SIGNIN_APPROVE_LIMIT);
 
 /** Admin client for calls that are not scoped to one tenant. */
 function coordinator(): CoordinatorApiClient | null {
-  return config.coordinatorUrl ? new CoordinatorApiClient(config.coordinatorUrl, "", config.coordinatorApiKey) : null;
+  return useCoordinator ? getCoordinatorClient() : null;
 }
 
 /** The pending sign-in and the tailnets the caller could add the device to. */

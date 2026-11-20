@@ -5,7 +5,7 @@
  */
 
 import { config } from "../config.js";
-import { CoordinatorApiClient } from "./coordinator-api.js";
+import { getCoordinatorClient } from "./control-client.js";
 
 const TTL_MS = 60_000;
 let cached: { at: number; value: boolean } | null = null;
@@ -13,7 +13,7 @@ let cached: { at: number; value: boolean } | null = null;
 export async function httpsServicesAvailable(now: number = Date.now()): Promise<boolean> {
   if (!config.coordinatorUrl) return false;
   if (cached && now - cached.at < TTL_MS) return cached.value;
-  const health = await new CoordinatorApiClient(config.coordinatorUrl, "", config.coordinatorApiKey).probeHealth(5_000);
+  const health = await getCoordinatorClient().probeHealth(5_000);
   // An unreachable coordinator is not remembered: ask again next time
   if (!health) return cached?.value ?? false;
   cached = { at: now, value: health.gateway };

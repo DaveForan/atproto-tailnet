@@ -32,16 +32,16 @@ import {
   toHsUsername,
   authUserId,
 } from "./helpers.js";
-import { logAudit } from "./audit.js";
+import { logAudit } from "../audit/log.js";
 import { stepUpForSession } from "../auth/step-up.js";
 import { logger } from "../logger.js";
 import { tenantLoginServerFor } from "../orchestrator/hostnames.js";
-import { ALL_PERMISSIONS, type Permission } from "./permissions.js";
+import { ALL_PERMISSIONS, type Permission } from "../members/permissions.js";
 import { config } from "../config.js";
 import { validateWebhookUrl } from "../notifications/webhook.js";
 import { notificationsRouter } from "./notifications.js";
 import { enforceDeviceLimit, enforceMemberLimit } from "./limits.js";
-import { issueMemberKey, revokeAllTenantKeys } from "./access.js";
+import { issueMemberKey, revokeAllTenantKeys } from "../access/keys.js";
 
 /**
  * Router for tenant settings, roles CRUD, role assignment, device approvals/locks,

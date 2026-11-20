@@ -50,8 +50,8 @@ import {
   authUserId,
   isLockedDown,
 } from "./helpers.js";
-import { logAudit } from "./audit.js";
-import { ALL_PERMISSIONS } from "./permissions.js";
+import { logAudit } from "../audit/log.js";
+import { ALL_PERMISSIONS } from "../members/permissions.js";
 import { stepUpForSession } from "../auth/step-up.js";
 
 export const agentsRouter = Router();

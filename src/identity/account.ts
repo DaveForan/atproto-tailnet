@@ -5,7 +5,7 @@
  * handle and display details come from public sources.
  */
 
-import { lookupVerifiedHandle } from "../routes/invitations.js";
+import { lookupVerifiedHandle } from "./handles.js";
 import { safeUrl } from "./safe-url.js";
 
 const PROFILE_TIMEOUT_MS = 5_000;

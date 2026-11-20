@@ -9,7 +9,7 @@
  */
 
 import type { Request, Response, NextFunction } from "express";
-import { authUserId, authUserDid } from "../routes/helpers.js";
+import { authUserId, authUserDid } from "../auth/request-user.js";
 import { isOperatorDid } from "./policy.js";
 
 /** The authenticated user's id, or null for anonymous requests. */

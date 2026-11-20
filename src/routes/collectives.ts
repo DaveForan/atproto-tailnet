@@ -17,11 +17,13 @@ import {
   authUserId,
   authUserDid,
 } from "./helpers.js";
-import { logAudit } from "./audit.js";
+import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
 import { allocateTenantPort } from "../orchestrator/ports.js";
+import { allocateTenantPrefixes } from "../orchestrator/prefix-allocator.js";
+import { ALL_PERMISSIONS } from "../members/permissions.js";
 import { useCoordinator } from "../orchestrator/control-client.js";
-import { provisionTenantInstance } from "./auth.js";
+import { provisionTenantInstance } from "../orchestrator/tenant-provisioning.js";
 import { hostnameAvailableFor, registerInitialHostname, validateHostname } from "../orchestrator/hostnames.js";
 import { MAX_LIMIT, checkChildLimit } from "./limits.js";
 import {
@@ -233,7 +235,6 @@ collectivesRouter.post(
 
     const childPath = tenant.path ? `${tenant.path}.${slug}` : slug;
     const childDepth = tenant.depth + 1;
-    const { allocateTenantPrefixes } = await import("../orchestrator/prefix-allocator.js");
     const prefixes = await allocateTenantPrefixes();
 
     try {
@@ -276,7 +277,7 @@ collectivesRouter.post(
         .values({
           tenantId: child.id,
           name: "originator",
-          permissions: (await import("./permissions.js")).ALL_PERMISSIONS as unknown as string[],
+          permissions: ALL_PERMISSIONS as unknown as string[],
           isSystem: true,
         })
         .returning();

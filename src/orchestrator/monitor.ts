@@ -13,14 +13,14 @@ import { eq, and, isNotNull, gt, inArray, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { tenants, memberships, usageSnapshots, type DerpRegion } from "../db/schema.js";
 import { config } from "../config.js";
-import { getControlClient, useCoordinator } from "./control-client.js";
-import { CoordinatorApiClient } from "./coordinator-api.js";
+import { getControlClient, getCoordinatorClient, useCoordinator } from "./control-client.js";
+import type { CoordinatorApiClient } from "./coordinator-api.js";
 import { startInstance, stopInstance } from "./headscale.js";
 import { syncTenantRoutes } from "./caddy.js";
 import { pushTenantIdentity, syncAllTenantIdentities } from "./coordinator-identity.js";
 import { sweepExpiredJtis } from "../credentials/service-auth.js";
 import { sweepExpiredOAuthStates } from "../auth/atproto.js";
-import { logAudit } from "../routes/audit.js";
+import { logAudit } from "../audit/log.js";
 import { endExpiredShares, syncTenantAccess } from "../access/sync.js";
 import { logger } from "../logger.js";
 import { isLeader } from "./leader.js";
@@ -89,7 +89,7 @@ export async function checkAllTenants(): Promise<void> {
  */
 async function checkCoordinator(): Promise<void> {
   if (!config.coordinatorUrl) return;
-  const probe = new CoordinatorApiClient(config.coordinatorUrl, "", config.coordinatorApiKey);
+  const probe = getCoordinatorClient();
   const bootId = await probe.probeBootId();
 
   if (bootId === null) {
@@ -140,11 +140,7 @@ export async function resyncCoordinatorState(): Promise<boolean> {
 
   let allOk = true;
   for (const t of rows) {
-    const client = new CoordinatorApiClient(
-      config.coordinatorUrl,
-      t.coordinatorTenantId!,
-      config.coordinatorApiKey,
-    );
+    const client = getCoordinatorClient(t);
     try {
       if (t.status === "error") {
         // Only recover tenants the coordinator actually has; a provisioning
