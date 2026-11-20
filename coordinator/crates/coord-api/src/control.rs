@@ -131,6 +131,29 @@ pub async fn handle_register(
 
     let tenant_id = grant.tenant_id;
     let owner = grant.owner.clone();
+
+    // Machine lock (ADR-0035): an owner locked to a set of machines cannot add
+    // another one, whatever credential it presents.
+    if let Some(owner_id) = owner.as_deref() {
+        if let Some(mut lock) = state.store.get_owner_lock(tenant_id, owner_id).await {
+            let outcome = lock.check(
+                &hex::encode(machine_key),
+                chrono::Utc::now(),
+                &node_info.hostname,
+                &node_info.os,
+                &crate::device_auth::fingerprint(machine_key),
+            );
+            if outcome != coord_core::LockOutcome::Allowed {
+                if let Err(e) = state.store.set_owner_lock(tenant_id, owner_id, Some(lock)).await {
+                    warn!(error = %e, "failed to update owner lock");
+                }
+            }
+            if outcome == coord_core::LockOutcome::Refused {
+                warn!(tenant = %tenant_id, "register refused: owner is locked to other machines");
+                return Ok((serde_json::to_string(&error_response(MACHINE_LOCKED_MSG))?, None));
+            }
+        }
+    }
     let registration = NodeRegistration {
         owner: grant.owner,
         tags: grant.tags,
@@ -223,6 +246,9 @@ async fn interactive_sign_in(
 
 /// Stored briefly when a client sends no usable hostname; replaced by node-<id>.
 const HOSTNAME_PLACEHOLDER: &str = "node";
+
+pub(crate) const MACHINE_LOCKED_MSG: &str =
+    "this account only allows its current devices; allow a new device in the dashboard first";
 
 pub(crate) const TENANT_SUSPENDED_MSG: &str = "this tailnet is suspended by the instance operator";
 

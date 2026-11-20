@@ -86,6 +86,11 @@ pub fn router(state: Arc<CoordinatorState>) -> Router {
             get(admin::get_auto_approvers).put(admin::set_auto_approvers),
         )
         .route("/tenants/{id}/derp", get(admin::get_tenant_derp).put(admin::set_tenant_derp))
+        .route(
+            "/tenants/{id}/owner-locks/{owner}",
+            get(admin::get_owner_lock).put(admin::set_owner_lock).delete(admin::delete_owner_lock),
+        )
+        .route("/tenants/{id}/owner-locks/{owner}/allow-one", post(admin::allow_one_machine))
         .route("/device-auth/{id}", get(admin::get_device_auth))
         .route("/device-auth/{id}/approve", post(admin::approve_device_auth))
         .route("/device-auth/{id}/deny", post(admin::deny_device_auth))

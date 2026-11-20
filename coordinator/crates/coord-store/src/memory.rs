@@ -52,6 +52,7 @@ pub struct MemoryStore {
     tenants: Mutex<HashMap<TenantId, Tenant>>,
     access: Mutex<HashMap<TenantId, coord_core::TenantAccess>>,
     dns: Mutex<HashMap<TenantId, coord_core::TenantDns>>,
+    owner_locks: Mutex<HashMap<(TenantId, String), coord_core::OwnerLock>>,
     nodes: Mutex<HashMap<NodeId, StoredNode>>,
     machine_key_index: Mutex<HashMap<[u8; 32], NodeId>>,
     preauth_keys: Mutex<HashMap<String, PreAuthKey>>,
@@ -66,6 +67,7 @@ impl MemoryStore {
             tenants: Mutex::new(HashMap::new()),
             access: Mutex::new(HashMap::new()),
             dns: Mutex::new(HashMap::new()),
+            owner_locks: Mutex::new(HashMap::new()),
             nodes: Mutex::new(HashMap::new()),
             machine_key_index: Mutex::new(HashMap::new()),
             preauth_keys: Mutex::new(HashMap::new()),
@@ -140,6 +142,22 @@ impl MemoryStore {
             return Err(CoordError::TenantNotFound(tenant_id));
         }
         self.dns.lock().unwrap_or_else(|e| e.into_inner()).insert(tenant_id, dns);
+        Ok(())
+    }
+
+    pub fn get_owner_lock(&self, tenant_id: TenantId, owner: &str) -> Option<coord_core::OwnerLock> {
+        self.owner_locks.lock().unwrap_or_else(|e| e.into_inner()).get(&(tenant_id, owner.to_string())).cloned()
+    }
+
+    pub fn set_owner_lock(&self, tenant_id: TenantId, owner: &str, lock: Option<coord_core::OwnerLock>) -> Result<(), CoordError> {
+        if self.get_tenant(tenant_id).is_none() {
+            return Err(CoordError::TenantNotFound(tenant_id));
+        }
+        let mut locks = self.owner_locks.lock().unwrap_or_else(|e| e.into_inner());
+        match lock {
+            Some(l) => locks.insert((tenant_id, owner.to_string()), l),
+            None => locks.remove(&(tenant_id, owner.to_string())),
+        };
         Ok(())
     }
 

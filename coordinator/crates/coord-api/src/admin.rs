@@ -626,6 +626,141 @@ pub async fn set_tenant_access(
 }
 
 #[derive(serde::Deserialize)]
+pub struct OwnerLockBody {
+    /// Nodes of the owner that stay allowed.
+    pub node_ids: Vec<i64>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct AllowOneBody {
+    pub seconds: i64,
+}
+
+fn valid_owner(owner: &str) -> bool {
+    !owner.is_empty() && owner.len() <= 128
+}
+
+async fn owner_lock_view(state: &CoordinatorState, tenant_id: TenantId, owner: &str) -> serde_json::Value {
+    let lock = state.store.get_owner_lock(tenant_id, owner).await;
+    let nodes = state.store.list_tenant_nodes(tenant_id).await;
+    let allowed: Vec<i64> = match &lock {
+        Some(l) => nodes
+            .iter()
+            .filter(|n| n.owner.as_deref() == Some(owner) && l.allows(&hex::encode(&n.machine_key)))
+            .map(|n| n.node_id.as_i64())
+            .collect(),
+        None => vec![],
+    };
+    serde_json::json!({
+        "locked": lock.is_some(),
+        "node_ids": allowed,
+        "allow_one_until": lock.as_ref().and_then(|l| l.allow_one_until),
+        "refused": lock.map(|l| l.refused).unwrap_or_default(),
+    })
+}
+
+/// GET /api/tenants/{id}/owner-locks/{owner}
+pub async fn get_owner_lock(
+    State(state): State<Arc<CoordinatorState>>,
+    Path((id, owner)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let tenant_id = match existing_tenant(&state, &id).await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    Json(owner_lock_view(&state, tenant_id, &owner).await).into_response()
+}
+
+/// PUT /api/tenants/{id}/owner-locks/{owner} — lock the owner to the machines
+/// of the given nodes. The owner's other nodes are removed from the tenant:
+/// a lock that left them connected would not mean what it says.
+pub async fn set_owner_lock(
+    State(state): State<Arc<CoordinatorState>>,
+    Path((id, owner)): Path<(String, String)>,
+    Json(body): Json<OwnerLockBody>,
+) -> impl IntoResponse {
+    let tenant_id = match existing_tenant(&state, &id).await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    if !valid_owner(&owner) || body.node_ids.len() > coord_core::lock::MAX_LOCK_MACHINES {
+        return bad_request("invalid owner or too many devices".to_string());
+    }
+    let owned: Vec<_> = state
+        .store
+        .list_tenant_nodes(tenant_id)
+        .await
+        .into_iter()
+        .filter(|n| n.owner.as_deref() == Some(owner.as_str()))
+        .collect();
+    if let Some(bad) = body.node_ids.iter().find(|id| !owned.iter().any(|n| n.node_id.as_i64() == **id)) {
+        return bad_request(format!("node {bad} is not a device of this owner in this tenant"));
+    }
+    let machines: Vec<String> = owned
+        .iter()
+        .filter(|n| body.node_ids.contains(&n.node_id.as_i64()))
+        .map(|n| hex::encode(&n.machine_key))
+        .collect();
+    let previous = state.store.get_owner_lock(tenant_id, &owner).await;
+    let lock = coord_core::OwnerLock {
+        machines,
+        allow_one_until: None,
+        refused: previous.map(|l| l.refused).unwrap_or_default(),
+    };
+    if let Err(e) = state.store.set_owner_lock(tenant_id, &owner, Some(lock)).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response();
+    }
+    let mut removed = 0;
+    for n in owned.iter().filter(|n| !body.node_ids.contains(&n.node_id.as_i64())) {
+        if state.store.delete_node(n.node_id).await.is_ok() {
+            removed += 1;
+        }
+    }
+    let mut view = owner_lock_view(&state, tenant_id, &owner).await;
+    view["removed_nodes"] = serde_json::json!(removed);
+    Json(view).into_response()
+}
+
+/// POST /api/tenants/{id}/owner-locks/{owner}/allow-one — for a short time,
+/// the next new machine of the owner is added to the lock.
+pub async fn allow_one_machine(
+    State(state): State<Arc<CoordinatorState>>,
+    Path((id, owner)): Path<(String, String)>,
+    Json(body): Json<AllowOneBody>,
+) -> impl IntoResponse {
+    let tenant_id = match existing_tenant(&state, &id).await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    if body.seconds < 1 || body.seconds > coord_core::lock::MAX_ALLOW_WINDOW_SECS {
+        return bad_request("seconds must be 1 to 1800".to_string());
+    }
+    let Some(mut lock) = state.store.get_owner_lock(tenant_id, &owner).await else {
+        return not_found("this owner has no machine lock");
+    };
+    lock.allow_one_until = Some(chrono::Utc::now() + chrono::Duration::seconds(body.seconds));
+    if let Err(e) = state.store.set_owner_lock(tenant_id, &owner, Some(lock)).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response();
+    }
+    Json(owner_lock_view(&state, tenant_id, &owner).await).into_response()
+}
+
+/// DELETE /api/tenants/{id}/owner-locks/{owner}
+pub async fn delete_owner_lock(
+    State(state): State<Arc<CoordinatorState>>,
+    Path((id, owner)): Path<(String, String)>,
+) -> impl IntoResponse {
+    let tenant_id = match existing_tenant(&state, &id).await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    if let Err(e) = state.store.set_owner_lock(tenant_id, &owner, None).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response();
+    }
+    Json(serde_json::json!({ "locked": false })).into_response()
+}
+
+#[derive(serde::Deserialize)]
 pub struct DeviceAuthApproval {
     pub tenant_id: String,
     pub owner: String,

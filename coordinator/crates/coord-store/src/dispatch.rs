@@ -132,6 +132,29 @@ impl Store {
         }
     }
 
+    /// The machine lock of an owner in a tenant (ADR-0035), if any.
+    pub async fn get_owner_lock(&self, tenant_id: TenantId, owner: &str) -> Option<coord_core::OwnerLock> {
+        match self {
+            Store::Memory(m) => m.get_owner_lock(tenant_id, owner),
+            Store::Pg(p) => p.get_owner_lock(tenant_id, owner).await,
+            Store::Sqlite(s) => s.get_owner_lock(tenant_id, owner).await,
+        }
+    }
+
+    /// Set or (with `None`) remove an owner's machine lock.
+    pub async fn set_owner_lock(
+        &self,
+        tenant_id: TenantId,
+        owner: &str,
+        lock: Option<coord_core::OwnerLock>,
+    ) -> Result<(), CoordError> {
+        match self {
+            Store::Memory(m) => m.set_owner_lock(tenant_id, owner, lock),
+            Store::Pg(p) => p.set_owner_lock(tenant_id, owner, lock).await,
+            Store::Sqlite(s) => s.set_owner_lock(tenant_id, owner, lock).await,
+        }
+    }
+
     pub async fn is_tenant_suspended(&self, tenant_id: TenantId) -> bool {
         self.get_tenant(tenant_id).await.is_some_and(|t| t.suspended)
     }

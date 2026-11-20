@@ -169,6 +169,42 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub async fn get_owner_lock(&self, tenant_id: TenantId, owner: &str) -> Option<coord_core::OwnerLock> {
+        let row: Option<String> = sqlx::query_scalar("SELECT lock FROM coord_owner_locks WHERE tenant_id = ?1 AND owner = ?2")
+            .bind(tenant_id.as_uuid().to_string())
+            .bind(owner)
+            .fetch_optional(&self.pool)
+            .await
+            .ok()
+            .flatten();
+        row.and_then(|v| serde_json::from_str(&v).ok())
+    }
+
+    pub async fn set_owner_lock(&self, tenant_id: TenantId, owner: &str, lock: Option<coord_core::OwnerLock>) -> Result<(), CoordError> {
+        if self.get_tenant(tenant_id).await.is_none() {
+            return Err(CoordError::TenantNotFound(tenant_id));
+        }
+        match lock {
+            Some(l) => sqlx::query(
+                "INSERT INTO coord_owner_locks (tenant_id, owner, lock) VALUES (?1, ?2, ?3) \
+                 ON CONFLICT (tenant_id, owner) DO UPDATE SET lock = excluded.lock, updated_at = datetime('now')"
+            )
+                .bind(tenant_id.as_uuid().to_string())
+                .bind(owner)
+                .bind(serde_json::to_string(&l).unwrap_or_default())
+                .execute(&self.pool)
+                .await
+                .map_err(db)?,
+            None => sqlx::query("DELETE FROM coord_owner_locks WHERE tenant_id = ?1 AND owner = ?2")
+                .bind(tenant_id.as_uuid().to_string())
+                .bind(owner)
+                .execute(&self.pool)
+                .await
+                .map_err(db)?,
+        };
+        Ok(())
+    }
+
     pub async fn list_tenants(&self) -> Vec<Tenant> {
         let rows = sqlx::query_as::<_, TenantRow>(
             "SELECT id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix, created_at, suspended \

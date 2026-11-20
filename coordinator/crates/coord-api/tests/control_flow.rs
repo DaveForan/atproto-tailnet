@@ -3483,3 +3483,107 @@ async fn interactive_sign_in_denied_or_stolen_link() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
+
+// ── Owner machine locks (ADR-0035) ──
+
+#[tokio::test]
+async fn machine_lock_refuses_new_machines_even_with_a_valid_key() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "machine-lock").await;
+    let key = |reusable: bool| serde_json::json!({ "tenant_id": t.to_string(), "owner": "alice", "reusable": reusable });
+    let k = api_key(&app, key(true)).await;
+    let k = k["key"].as_str().unwrap();
+    register_routes(&state, 220, k, "alice-mac", None).await;
+    register_routes(&state, 222, k, "alice-old-laptop", None).await;
+    let mac_id = member_map(&state, 220).await["Node"]["ID"].as_i64().unwrap();
+
+    // Lock alice to the Mac only: the other device is removed from the tailnet
+    let (status, lock) = api_call(
+        &app,
+        "PUT",
+        format!("/api/tenants/{t}/owner-locks/alice"),
+        Some(serde_json::json!({ "node_ids": [mac_id] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{lock}");
+    assert_eq!(lock["locked"], true);
+    assert_eq!(lock["node_ids"], serde_json::json!([mac_id]));
+    assert_eq!(lock["removed_nodes"], 1);
+    let (_, nodes) = api_call(&app, "GET", format!("/api/tenants/{t}/nodes"), None).await;
+    assert_eq!(nodes["nodes"].as_array().unwrap().len(), 1);
+
+    // A new machine with alice's valid reusable key is refused and recorded
+    let refused = register_routes(&state, 224, k, "attacker-box", None).await;
+    assert_eq!(refused["MachineAuthorized"], false);
+    assert!(refused["Error"].as_str().unwrap().contains("current devices"));
+    let (_, lock) = api_call(&app, "GET", format!("/api/tenants/{t}/owner-locks/alice"), None).await;
+    assert_eq!(lock["refused"][0]["hostname"], "attacker-box");
+    let (_, nodes) = api_call(&app, "GET", format!("/api/tenants/{t}/nodes"), None).await;
+    assert_eq!(nodes["nodes"].as_array().unwrap().len(), 1);
+
+    // The locked machine itself can register again (for example after a re-auth)
+    let again = register_routes(&state, 220, k, "alice-mac", None).await;
+    assert_eq!(again["MachineAuthorized"], true);
+
+    // Another owner in the same tenant is not affected
+    let bob = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "owner": "bob" })).await;
+    let ok = register_routes(&state, 226, bob["key"].as_str().unwrap(), "bob-phone", None).await;
+    assert_eq!(ok["MachineAuthorized"], true);
+
+    // "Allow one new device": exactly one machine gets in, then the lock is closed again
+    let (status, _) = api_call(
+        &app,
+        "POST",
+        format!("/api/tenants/{t}/owner-locks/alice/allow-one"),
+        Some(serde_json::json!({ "seconds": 600 })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(register_routes(&state, 228, k, "alice-phone", None).await["MachineAuthorized"], true);
+    assert_eq!(register_routes(&state, 230, k, "second-new", None).await["MachineAuthorized"], false);
+    let (_, lock) = api_call(&app, "GET", format!("/api/tenants/{t}/owner-locks/alice"), None).await;
+    assert_eq!(lock["node_ids"].as_array().unwrap().len(), 2);
+    assert!(lock["allow_one_until"].is_null());
+
+    // Unlock: new machines register again
+    let (status, _) = api_call(&app, "DELETE", format!("/api/tenants/{t}/owner-locks/alice"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(register_routes(&state, 232, k, "after-unlock", None).await["MachineAuthorized"], true);
+}
+
+#[tokio::test]
+async fn machine_lock_cannot_name_another_owners_device_and_covers_sign_in() {
+    let (app, state) = sign_in_state();
+    let t = create_test_tenant(&state, "machine-lock-2").await;
+    let alice = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "owner": "alice" })).await;
+    let bob = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "owner": "bob" })).await;
+    register_routes(&state, 240, alice["key"].as_str().unwrap(), "alice-mac", None).await;
+    register_routes(&state, 242, bob["key"].as_str().unwrap(), "bob-mac", None).await;
+    let alice_id = member_map(&state, 240).await["Node"]["ID"].as_i64().unwrap();
+    let bob_id = member_map(&state, 242).await["Node"]["ID"].as_i64().unwrap();
+
+    let (status, _) = api_call(
+        &app,
+        "PUT",
+        format!("/api/tenants/{t}/owner-locks/alice"),
+        Some(serde_json::json!({ "node_ids": [alice_id, bob_id] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "a lock can only hold the owner's own devices");
+
+    api_call(&app, "PUT", format!("/api/tenants/{t}/owner-locks/alice"), Some(serde_json::json!({ "node_ids": [alice_id] }))).await;
+
+    // An approved interactive sign-in for alice from a new machine is refused too
+    let url = register_no_key(&state, 244, None).await["AuthURL"].as_str().unwrap().to_string();
+    let id = url.rsplit('/').next().unwrap().to_string();
+    api_call(
+        &app,
+        "POST",
+        format!("/api/device-auth/{id}/approve"),
+        Some(serde_json::json!({ "tenant_id": t.to_string(), "owner": "alice" })),
+    )
+    .await;
+    let resp = register_no_key(&state, 244, Some(&url)).await;
+    assert_eq!(resp["MachineAuthorized"], false);
+    assert!(resp["Error"].as_str().unwrap().contains("current devices"));
+}
