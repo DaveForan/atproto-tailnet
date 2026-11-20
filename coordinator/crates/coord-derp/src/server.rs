@@ -99,6 +99,55 @@ pub enum DerpError {
     Io(#[from] std::io::Error),
 }
 
+/// Packets queued for an in-process client (it serves many peers at once).
+const LOCAL_QUEUE_DEPTH: usize = 2048;
+
+/// A relay client inside this process. Detaches when dropped.
+pub struct LocalClient {
+    server: Arc<DerpServer>,
+    client: Arc<Client>,
+    not_here: Mutex<NoticeLimiter>,
+}
+
+impl LocalClient {
+    pub fn key(&self) -> [u8; 32] {
+        self.client.key
+    }
+
+    /// The next packet sent to this client: (sender key, payload). `None`
+    /// after the client was replaced by another with the same key.
+    pub async fn recv(&self) -> Option<([u8; 32], Bytes)> {
+        loop {
+            // Register for a wake-up before looking, so a packet that arrives
+            // between the look and the wait is not missed.
+            let notified = self.client.queue.notify.notified();
+            while let Some(item) = self.client.queue.pop() {
+                if let Outbound::Packet { src, data } = item {
+                    return Some((src, data));
+                }
+            }
+            if self.client.queue.closed.load(Ordering::Acquire) {
+                return None;
+            }
+            notified.await;
+        }
+    }
+
+    /// Send a packet to a peer in this client's scope. Dropped without a
+    /// trace when the peer is not connected (WireGuard retransmits).
+    pub fn send(&self, dst: [u8; 32], data: Bytes) {
+        let mut not_here = self.not_here.lock().unwrap_or_else(|e| e.into_inner());
+        self.server.forward(&self.client, dst, data, &mut not_here);
+    }
+}
+
+impl Drop for LocalClient {
+    fn drop(&mut self) {
+        self.client.queue.close();
+        self.server.unregister(&self.client);
+    }
+}
+
 enum Outbound {
     Packet { src: [u8; 32], data: Bytes },
     PeerGone { key: [u8; 32], reason: u8 },
@@ -179,6 +228,31 @@ impl DerpServer {
 
     pub fn connected_clients(&self) -> usize {
         self.clients.read().unwrap_or_else(|e| e.into_inner()).len()
+    }
+
+    /// Attach a client that lives in this process (the gateway, ADR-0029). It
+    /// is a relay client like any other: peers in its scope send to its key
+    /// and receive from it. It needs no connection and no handshake, because
+    /// the caller is trusted code that states its own key and scope.
+    pub fn attach_local(self: &Arc<Self>, key: [u8; 32], scope: Scope) -> LocalClient {
+        let client = Arc::new(Client {
+            id: self.next_id.fetch_add(1, Ordering::Relaxed),
+            key,
+            scope,
+            queue: SendQueue {
+                items: Mutex::new(VecDeque::new()),
+                notify: Notify::new(),
+                closed: AtomicBool::new(false),
+                depth: LOCAL_QUEUE_DEPTH,
+            },
+            senders: Mutex::new(HashSet::new()),
+        });
+        self.clients
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(key, client.clone());
+        debug!(node = %hex::encode(&key[..8]), "local derp client attached");
+        LocalClient { server: self.clone(), client, not_here: Mutex::new(NoticeLimiter::new()) }
     }
 
     /// Serve one client over `io` (the stream after the HTTP upgrade) until
@@ -765,5 +839,49 @@ mod tests {
         adm.0.store(false, Ordering::Relaxed);
         tokio::time::sleep(KEEP_ALIVE + Duration::from_secs(10)).await;
         wait_for_clients(&s, 0).await;
+    }
+}
+
+#[cfg(test)]
+mod local_client_tests {
+    use super::*;
+
+    fn scope(t: u8) -> Scope {
+        Scope { tenant: [t; 16], parent: None }
+    }
+
+    #[tokio::test]
+    async fn local_clients_exchange_packets_inside_a_scope_only() {
+        let server = Arc::new(DerpServer::new([7; 32], Arc::new(AllowAll), DerpConfig::default()));
+        let a = server.attach_local([1; 32], scope(1));
+        let b = server.attach_local([2; 32], scope(1));
+        let other = server.attach_local([3; 32], scope(2));
+        assert_eq!(server.connected_clients(), 3);
+
+        a.send([2; 32], Bytes::from_static(b"hello"));
+        assert_eq!(b.recv().await, Some(([1; 32], Bytes::from_static(b"hello"))));
+
+        // Another tenant's client is unreachable, like an unknown key
+        a.send([3; 32], Bytes::from_static(b"nope"));
+        b.send([1; 32], Bytes::from_static(b"reply"));
+        assert_eq!(a.recv().await, Some(([2; 32], Bytes::from_static(b"reply"))));
+        assert!(tokio::time::timeout(Duration::from_millis(30), other.recv()).await.is_err());
+
+        drop(b);
+        assert_eq!(server.connected_clients(), 2);
+    }
+
+    #[tokio::test]
+    async fn a_waiting_local_client_wakes_when_a_packet_arrives() {
+        let server = Arc::new(DerpServer::new([7; 32], Arc::new(AllowAll), DerpConfig::default()));
+        let a = server.attach_local([1; 32], scope(1));
+        let b = Arc::new(server.attach_local([2; 32], scope(1)));
+        let waiter = {
+            let b = b.clone();
+            tokio::spawn(async move { b.recv().await })
+        };
+        tokio::task::yield_now().await;
+        a.send([2; 32], Bytes::from_static(b"late"));
+        assert_eq!(waiter.await.unwrap(), Some(([1; 32], Bytes::from_static(b"late"))));
     }
 }

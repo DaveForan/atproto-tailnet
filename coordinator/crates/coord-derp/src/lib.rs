@@ -14,4 +14,4 @@ pub mod frame;
 pub mod server;
 pub mod stun;
 
-pub use server::{Admission, AllowAll, DerpConfig, DerpError, DerpServer, Scope};
+pub use server::{Admission, AllowAll, DerpConfig, DerpError, DerpServer, LocalClient, Scope};

@@ -9,6 +9,7 @@ members = [
     "crates/coord-store",
     "crates/coord-netmap",
     "crates/coord-derp",
+    "crates/coord-gateway",
     "crates/coord-api",
     "crates/coord-federation",
     "crates/coord-server",
@@ -62,6 +63,7 @@ coord-acl = { path = "crates/coord-acl" }
 coord-store = { path = "crates/coord-store" }
 coord-netmap = { path = "crates/coord-netmap" }
 coord-derp = { path = "crates/coord-derp" }
+coord-gateway = { path = "crates/coord-gateway" }
 coord-api = { path = "crates/coord-api" }
 coord-federation = { path = "crates/coord-federation" }
 coord-server = { path = "crates/coord-server" }
