@@ -357,7 +357,9 @@ Order matters: each stage gives value alone and unblocks the next.
 - [ ] Coordinator: tenant access mode, per-device packet filter and peer list, persisted access rules + admin API
 - [ ] TS service: board solicitations bound to one device + port; Connect with a choice of own devices; shares (request/offer, accept, scope per device, port and protocol, expiry, role shares, block list, limits)
 - [ ] Administrators control solicitations only (remove, approve); access mode per tailnet; audit and notifications
-- [ ] Dashboard: publish, share and review screens
+- [ ] Controller board: operator template (HTML/CSS/JS) in a sandboxed frame with its own CSP; our page chrome with sign-in and join
+- [ ] Public board (members only) and private board (own devices, private DNS names) as the publish interface
+- [ ] Dashboard: share and review screens
 - [ ] Verify with two members and two devices
 
 ### 6.10 Device-bound access (ADR-0035)

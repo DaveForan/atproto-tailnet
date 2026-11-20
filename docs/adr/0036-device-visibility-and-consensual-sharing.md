@@ -41,21 +41,50 @@ it. A tailnet with a custom ACL policy stays in the `custom` mode.
 
 ### 2. Boards
 
-A board holds solicitations only. It is not a place for general posts. There
-are two kinds of board.
+The boards are the interface where members create and expose services. There
+are three boards, with three audiences.
 
-**The public board of the tailnet.** It lists the services that members offer
-to other members. Each member of the tailnet can see it on the tailnet
-website.
+| Board | Audience | Content | Who writes |
+|---|---|---|---|
+| Controller board | The internet (WAN, public) | Information about the tailnet | The operator of the tailnet |
+| Public board | Members of the tailnet | Solicitations: services offered to members | Each member |
+| Private board | The devices of one member | Services of that member for their own devices | That member |
 
-**The private board of each member.** It lists the services that a member runs
-for their own devices. Only that member sees it. Each entry is one device, one
-port and a name. The devices of the member reach the service at a private DNS
-name, `<name>.<BASE_DOMAIN>` (for example `notes.ts.mesotechnics.cloud`). The
-coordinator sends the DNS record only to the devices of that member (ADR-0028),
-so the name does not resolve for other members or on the internet. Two members
-can use the same private name. A member moves an entry to the public board to
-offer it to other members; the name must then be free in the tailnet.
+**Controller board (WAN, public).** The public page of the tailnet. The
+operator of the tailnet (the originator) uses it for administrative
+information: the purpose of the tailnet, how to join, contact data, or any
+other message. It contains no solicitations, no devices and no ports.
+
+- The operator writes the page as a template in the dashboard, with HTML, CSS
+  and JavaScript. The template has variables (name of the tailnet, number of
+  members, link to join).
+- The content of an operator is not trusted by the service. It runs in a
+  sandbox: a frame with a unique origin (`sandbox` without same-origin), served
+  with its own content security policy. The script cannot read cookies or the
+  session of the dashboard, cannot call the API, cannot send data to other
+  hosts and cannot submit forms. Images load over HTTPS only.
+- The page around the frame is ours. It shows the name of the tailnet, a label
+  that the content comes from the operator of the tailnet, and the real sign-in
+  and join buttons. The operator content cannot draw over them.
+- Size limit for the template. The instance operator can turn off scripts, or
+  the controller board, for the instance.
+
+**Public board (tailnet, public).** Visible only to members of the tailnet,
+after sign-in. It lists solicitations: services that members offer to other
+members.
+
+**Private board (tailnet, private).** One for each member. It lists the
+services that the member runs for their own devices. Only that member sees it.
+Each entry is one device, one port and a name. The devices of the member reach
+the service at a private DNS name, `<name>.<BASE_DOMAIN>` (for example
+`notes.ts.mesotechnics.cloud`). The coordinator sends the DNS record only to
+the devices of that member (ADR-0028), so the name does not resolve for other
+members or on the internet. Two members can use the same private name. A member
+moves an entry to the public board to offer it to other members; the name must
+then be free in the tailnet.
+
+The public board and the private board hold solicitations only. Each entry is
+bound to a device and a port.
 
 Rules for a solicitation on the public board:
 
@@ -98,8 +127,8 @@ member. It has a direction: the *owner* exposes, the *guest* connects.
 
 ### 4. Controls of administrators
 
-Administrators control solicitations, because solicitations are public to the
-tailnet. They do not control private shares between members.
+Administrators control solicitations, because all members of the tailnet see
+them. The originator also writes the controller board. They do not control private shares between members.
 
 - Holders of `manage_board` can remove a solicitation. If the tailnet requires
   service approval (`requireServiceApproval`), a solicitation is visible only
@@ -157,7 +186,11 @@ confirm on a trusted device to accept or widen a share.
 - A puts `notes` on port 8080 on their private board. On the devices of A,
   `notes.<BASE_DOMAIN>` resolves to that device. On the devices of B the name
   does not resolve, and B cannot see the entry.
-- The board accepts no post that is not bound to a device and a port.
+- The public and private boards accept no entry that is not bound to a device
+  and a port.
+- The controller board is readable without sign-in and shows no device, port
+  or member. A script in its template cannot read `document.cookie` of the
+  dashboard or call `/api`.
 - An administrator cannot list or change a share between A and B.
 - A requests access to a device of B. Before B accepts, nothing changes. After
   B accepts ports 22 and 443 only, A reaches those two ports only.
