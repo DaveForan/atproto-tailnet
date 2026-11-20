@@ -1,6 +1,6 @@
 # ADR-0036: Device visibility and consensual sharing
 
-**Status:** Proposed
+**Status:** In Progress
 **Date:** 2026-11-20
 **Priority:** P0
 **Depends On:** ADR-0005 (security management), ADR-0023 (Rust mesh coordinator)
@@ -219,3 +219,22 @@ confirm on a trusted device to accept or widen a share.
   B accepts ports 22 and 443 only, A reaches those two ports only.
 - B ends the share. A loses access in less than 5 seconds.
 - A device of A that is not in the share cannot connect.
+
+## Implementation notes
+
+Built: member mode in the coordinator (per-device filter and peer list, stored
+rules, live updates), the data model, the rule compiler, the routes for the
+three boards, Connect, friends, blocks and shares, and the dashboard screens.
+
+Not yet built:
+
+- Private DNS names do not resolve yet (ADR-0028). The private board shows the
+  name and the tailnet address of the device.
+- Enrolling a new device inside the "add a service" form. The member adds the
+  device in the Add Device tab first.
+- The interface for the guest to select devices when they accept an offer, and
+  for the owner to narrow ports when they accept a request (the API supports
+  both).
+- The per-device "who can reach this" screen (the API has "stop all sharing").
+- Confirmation on a trusted device (ADR-0035).
+- A test with two real devices of two members.

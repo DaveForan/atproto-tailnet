@@ -133,6 +133,46 @@ Create custom roles with any combination of 17 permissions:
 
 Assign roles to members in the **Members** tab. The effective permissions of a member are the union of the permissions of the role of that member.
 
+## Boards and sharing
+
+A tailnet has three boards.
+
+| Board | Who sees it | What it contains |
+|---|---|---|
+| Controller board | Anybody on the internet | Text from the originator about the tailnet |
+| Public board | Members of the tailnet | Services that members offer |
+| Private board | You only | Services that you run for your own devices |
+
+### Device access
+
+In a new tailnet, a device can reach only the other devices of its owner. Two things open more access: a service on the public board, and a share between friends. The originator, or a member with the `manage_acl` permission, can change the tailnet to open access (each device reaches each other device) in the **Boards** tab.
+
+### Offer a service
+
+1. Open the **Boards** tab and go to **Add a service**.
+2. Select the board, one of your devices, and one port. Give a title.
+3. A service on the private board is active at once. A service on the public board needs an approval from an operator of the tailnet (the originator, or a member with `approve_services`).
+
+A service offers only its one port. Other ports of the device stay private.
+
+### Connect to a service
+
+On the public board, select **Connect** next to a service and select one or more of your devices. Those devices can then reach that one port. You can disconnect at any time. If the author removes the service, or an operator withdraws the approval, all devices lose the access at once.
+
+### Friends and shares
+
+Use the **Friends & Sharing** tab to share a device with one member.
+
+1. Send a friend request. The other member accepts it.
+2. Offer one of your devices, or ask for a device of your friend. Give the ports and how long the share lasts.
+3. The share is active only after the other member accepts it. Until then nothing is open.
+
+Each of you can end a share at any time. If you remove a friend, all shares between you end. You can block a member; a blocked member cannot send you friend requests. Operators cannot see or change the shares of other members.
+
+### Controller board
+
+The originator writes the public page of the tailnet in the **Boards** tab. The text can have headings, lists, bold, italic and `https://` links. HTML and scripts are shown as text. The page is at `/board/<tailnet-address>`. The sign-in page shows the controller board of the default tailnet.
+
 ## Device management
 
 ### Connecting devices

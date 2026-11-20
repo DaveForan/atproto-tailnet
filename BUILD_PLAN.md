@@ -356,12 +356,12 @@ Order matters: each stage gives value alone and unblocks the next.
 ### 6.9b Device visibility and consensual sharing (ADR-0036)
 - [x] Coordinator: access mode, per-device filter and peer list, stored rules, admin API (0594e66)
 - [x] TS service: data model (migration 0031), access rule compiler and coordinator sync
-- [ ] TS service routes: service posts (create with device + port, enroll a new device, operator approval, Connect with a choice of own devices); friends; shares between friends (request/offer, accept, scope per device, port and protocol, expiry, block list, limits)
-- [ ] Administrators control solicitations only (remove, approve); access mode per tailnet; audit and notifications
-- [ ] Controller board: originator's text (Markdown subset, linted, https links only) on the landing page and `/board/<address>`
-- [ ] Public board (members only) and private board (own devices, private DNS names) as the publish interface
-- [ ] Dashboard: share and review screens
-- [ ] Verify with two members and two devices
+- [x] TS service routes: service posts with approval and Connect, friends, blocks, shares, access mode, controller board text
+- [x] Dashboard: Boards and Friends & Sharing screens; controller board on the landing page
+- [x] Migrations 0030 and 0031 dry-run against a copy of the live database
+- [ ] Missing interface parts: choose guest devices on accept, narrow ports on accept, per-device "who can reach this"
+- [ ] Private DNS names (needs 6.4); enroll a new device inside the add-service form
+- [ ] Verify with two members and two real devices
 
 ### 6.10 Device-bound access (ADR-0035)
 - [ ] WebAuthn verification (node:crypto + CBOR), challenge store, trusted-device table

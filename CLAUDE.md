@@ -81,9 +81,9 @@ docker compose -f docker-compose.coordinator.yml up -d
 - Device locks: `device_locks` table binds a membership to specific Headscale `machineKey` values — blocks new key generation until unlocked
 - Join requests: `allowJoinRequests` toggle + public `/join/:slug` page; gated by `approve_joins` permission; lockdown blocks requests
 - Post-login redirect: `req.session.postLoginRedirect` stores destination (validated as local path) through OAuth flow
-- Service devices: distinct from regular devices; `requireServiceDeviceApproval` toggle; originators auto-approve; gated by `manage_services` and `approve_services`
-- Services: registered on approved service devices; `requireServiceApproval` toggle; must be active to appear on board
-- Board posts: public message board at `/board/:slug`; `boardEnabled` toggle; `maxBoardPosts`/`maxBoardPostsDisplayed` limits; linked to active services
+- Device access (ADR-0036): `tenants.accessMode` is `open` (allow-all or the ACL policy) or `member` (default for new coordinator tailnets: a device reaches only its owner's devices). Everything else is opened by rules compiled in `access/compiler.ts` (pure) from approved public service posts + their connections and active, unexpired shares, pushed by `syncTenantAccess(tenantId)` (`access/sync.ts`) to the coordinator's `PUT /api/tenants/{id}/access`, which persists them and builds a per-device packet filter and peer list (`member_view` in coord-netmap). Call `syncTenantAccess` after any change to posts, connections, shares or the mode. Coordinator mode only
+- Boards (`routes/boards.ts`): three audiences. Controller board = the originator's public text (`tenants.controllerBoardText`, Markdown subset in `shared/board-text.ts`, linted, rendered by our own code, never HTML/JS; public at `/board/<address>` and on the landing page). Public board = `service_posts` with one device + one port, visible to members only after `approve_services` approval (originator's own posts skip it); members Connect chosen devices of their own (`service_connections`), which opens that one port. Private board = a member's services for their own devices with private names. Changing a public post's device/port drops connections and needs a new approval. Operators control public posts only (`manage_board` removes)
+- Friends and shares (`routes/sharing.ts`): only accepted friends can share; a share exposes one device of the owner on listed ports/protocols to the guest's devices and is active only after the side that did not start it accepts (an owner who narrows ports sends it back to the guest). Either side ends it. Blocks stop friend requests. No agent tokens, no operator access to share scope
 - Agent tokens: `at_`-prefixed Bearer tokens for AI agents; SHA-256 hashed storage; scoped to single tenant + permission subset; mandatory expiry (max 365 days)
 - Agent middleware chain: `resolveAgentToken` (Bearer → hash lookup + tenant toggle check → req.agentToken) → `enforceAgentScope` (tenant UUID match + non-tenant route allowlist) → `requireAuth` → route handlers
 - Agent token settings: `allowAgentTokens` master toggle, `allowMemberAgentTokens` member toggle; checked at token resolution time (not just creation)
@@ -190,8 +190,8 @@ src/
     devices.ts             — Node listing, auth key generation, member management (permission-gated)
     permissions.ts         — ALL_PERMISSIONS constant, Permission type, role defaults
     security.ts            — Tenant settings, role CRUD, role assignment, device approvals/locks, join request management, audit log
-    services.ts            — Service device registration/approval, service CRUD/approval
-    board.ts               — Board posts CRUD, public board API + /board/:slug page
+    boards.ts              — Controller board, public board (service posts, approval, Connect), private board, access mode
+    sharing.ts             — Friends, blocks and device shares between members
     agents.ts              — Agent token CRUD (create, list, revoke)
     acl.ts                 — ACL policy GET/PUT (manage_acl permission, Zod-validated)
     derp.ts                — Custom DERP relay management (regions, embedded toggle, public relay toggle)
