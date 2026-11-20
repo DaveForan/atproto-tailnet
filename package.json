@@ -15,7 +15,6 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@atproto/api": "^0.13.0",
     "@atproto/crypto": "^0.5.7",
     "@atproto/oauth-client-node": "^0.3.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
