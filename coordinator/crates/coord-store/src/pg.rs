@@ -105,6 +105,33 @@ impl PgStore {
         Some(tenant_from_row(row))
     }
 
+    pub async fn get_tenant_access(&self, tenant_id: TenantId) -> coord_core::TenantAccess {
+        let row: Option<Json> = sqlx::query_scalar("SELECT access FROM coord_tenant_access WHERE tenant_id = $1")
+            .bind(tenant_id.as_uuid())
+            .fetch_optional(&self.pool)
+            .await
+            .ok()
+            .flatten();
+        row.and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
+    }
+
+    pub async fn set_tenant_access(&self, tenant_id: TenantId, access: coord_core::TenantAccess) -> Result<(), CoordError> {
+        if self.get_tenant(tenant_id).await.is_none() {
+            return Err(CoordError::TenantNotFound(tenant_id));
+        }
+        let value = serde_json::to_value(&access).unwrap_or_default();
+        sqlx::query(
+            "INSERT INTO coord_tenant_access (tenant_id, access) VALUES ($1, $2) \
+             ON CONFLICT (tenant_id) DO UPDATE SET access = EXCLUDED.access, updated_at = NOW()"
+        )
+            .bind(tenant_id.as_uuid())
+            .bind(value)
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+
     pub async fn list_tenants(&self) -> Vec<Tenant> {
         let rows = sqlx::query_as::<_, TenantRow>(
             "SELECT id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix, created_at, suspended \

@@ -94,6 +94,27 @@ impl Store {
     }
 
     /// True when the tenant exists and is suspended by the instance operator.
+    /// The tenant's device access mode and rules (ADR-0036). Defaults to open.
+    pub async fn get_tenant_access(&self, tenant_id: TenantId) -> coord_core::TenantAccess {
+        match self {
+            Store::Memory(m) => m.get_tenant_access(tenant_id),
+            Store::Pg(p) => p.get_tenant_access(tenant_id).await,
+            Store::Sqlite(s) => s.get_tenant_access(tenant_id).await,
+        }
+    }
+
+    pub async fn set_tenant_access(
+        &self,
+        tenant_id: TenantId,
+        access: coord_core::TenantAccess,
+    ) -> Result<(), CoordError> {
+        match self {
+            Store::Memory(m) => m.set_tenant_access(tenant_id, access),
+            Store::Pg(p) => p.set_tenant_access(tenant_id, access).await,
+            Store::Sqlite(s) => s.set_tenant_access(tenant_id, access).await,
+        }
+    }
+
     pub async fn is_tenant_suspended(&self, tenant_id: TenantId) -> bool {
         self.get_tenant(tenant_id).await.is_some_and(|t| t.suspended)
     }

@@ -50,6 +50,7 @@ struct PreAuthKey {
 
 pub struct MemoryStore {
     tenants: Mutex<HashMap<TenantId, Tenant>>,
+    access: Mutex<HashMap<TenantId, coord_core::TenantAccess>>,
     nodes: Mutex<HashMap<NodeId, StoredNode>>,
     machine_key_index: Mutex<HashMap<[u8; 32], NodeId>>,
     preauth_keys: Mutex<HashMap<String, PreAuthKey>>,
@@ -62,6 +63,7 @@ impl MemoryStore {
         let (peer_tx, _) = broadcast::channel(crate::PEER_EVENT_CHANNEL_CAPACITY);
         Self {
             tenants: Mutex::new(HashMap::new()),
+            access: Mutex::new(HashMap::new()),
             nodes: Mutex::new(HashMap::new()),
             machine_key_index: Mutex::new(HashMap::new()),
             preauth_keys: Mutex::new(HashMap::new()),
@@ -113,6 +115,18 @@ impl MemoryStore {
     pub fn get_tenant(&self, tenant_id: TenantId) -> Option<Tenant> {
         let tenants = self.tenants.lock().unwrap_or_else(|e| e.into_inner());
         tenants.get(&tenant_id).cloned()
+    }
+
+    pub fn get_tenant_access(&self, tenant_id: TenantId) -> coord_core::TenantAccess {
+        self.access.lock().unwrap_or_else(|e| e.into_inner()).get(&tenant_id).cloned().unwrap_or_default()
+    }
+
+    pub fn set_tenant_access(&self, tenant_id: TenantId, access: coord_core::TenantAccess) -> Result<(), CoordError> {
+        if self.get_tenant(tenant_id).is_none() {
+            return Err(CoordError::TenantNotFound(tenant_id));
+        }
+        self.access.lock().unwrap_or_else(|e| e.into_inner()).insert(tenant_id, access);
+        Ok(())
     }
 
     pub fn list_tenants(&self) -> Vec<Tenant> {

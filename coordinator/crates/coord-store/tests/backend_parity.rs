@@ -513,3 +513,32 @@ async fn node_lookup_by_node_key() {
         assert_eq!(s.get_node_by_node_key(&rand_bytes::<32>()).await, None, "{}", b.name);
     }
 }
+
+#[tokio::test]
+async fn tenant_access_round_trip_and_default() {
+    use coord_core::{AccessMode, AccessPort, AccessProto, AccessRule, TenantAccess};
+    for b in backends().await {
+        let s = &b.store;
+        let t = tenant(s, "access").await;
+        assert_eq!(s.get_tenant_access(t).await, TenantAccess::default(), "{}", b.name);
+
+        let access = TenantAccess {
+            mode: AccessMode::Member,
+            rules: vec![AccessRule {
+                src_owner: Some("alice".into()),
+                src_nodes: vec![],
+                dst_node: 7,
+                ports: vec![AccessPort { proto: AccessProto::Tcp, first: 3000, last: 3000 }],
+            }],
+        };
+        s.set_tenant_access(t, access.clone()).await.unwrap();
+        assert_eq!(s.get_tenant_access(t).await, access, "{}", b.name);
+
+        // Replaced, not merged
+        s.set_tenant_access(t, TenantAccess { mode: AccessMode::Member, rules: vec![] }).await.unwrap();
+        assert!(s.get_tenant_access(t).await.rules.is_empty(), "{}", b.name);
+
+        let missing = TenantId::new(uuid::Uuid::new_v4());
+        assert!(s.set_tenant_access(missing, TenantAccess::default()).await.is_err(), "{}", b.name);
+    }
+}
