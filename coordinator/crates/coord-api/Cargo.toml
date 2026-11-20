@@ -13,6 +13,8 @@ coord-noise = { workspace = true }
 coord-proto = { workspace = true }
 coord-store = { workspace = true }
 coord-netmap = { workspace = true }
+coord-derp = { workspace = true }
+rand = { workspace = true }
 coord-federation = { workspace = true }
 async-trait = "0.1"
 axum = { workspace = true }
@@ -33,6 +35,7 @@ zstd = { workspace = true }
 tokio-stream = { workspace = true }
 
 [dev-dependencies]
+crypto_box = { version = "0.9", features = ["salsa20"] }
 reqwest = { version = "0.12", features = ["json"] }
 h2 = "0.4"
 serde_json = { workspace = true }

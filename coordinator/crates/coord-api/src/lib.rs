@@ -1,5 +1,6 @@
 mod state;
 mod key_handler;
+pub mod derp_handler;
 mod noise_handler;
 mod control;
 mod admin;
@@ -109,6 +110,11 @@ pub fn router(state: Arc<CoordinatorState>) -> Router {
         .route("/health", get(health))
         .route("/key", get(key_handler::key_handler))
         .route("/ts2021", post(noise_handler::ts2021_handler))
+        // Built-in DERP relay (ADR-0027)
+        .route("/derp", get(derp_handler::derp_handler))
+        .route("/derp/probe", get(derp_handler::probe_handler))
+        .route("/derp/latency-check", get(derp_handler::probe_handler))
+        .route("/generate_204", get(derp_handler::generate_204_handler))
         .nest("/api", admin_routes);
     if state.federation_enabled() {
         app = app.nest("/api/federation/messages", federation_routes);

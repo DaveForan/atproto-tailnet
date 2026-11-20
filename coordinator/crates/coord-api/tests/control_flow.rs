@@ -51,6 +51,17 @@ fn setup_with_callbacks() -> (axum::Router, Arc<CoordinatorState>) {
     (app, state)
 }
 
+/// Like `setup`, with the built-in relay as the default DERP region (region 1).
+fn setup_with_relay_region() -> (axum::Router, Arc<CoordinatorState>) {
+    let key = coord_noise::generate_control_key();
+    let state = Arc::new(
+        CoordinatorState::new(key)
+            .with_admin_api_key(Some(TEST_ADMIN_KEY.to_string()))
+            .with_builtin_relay_region("derp.example.com", 3478),
+    );
+    (coord_api::router(state.clone()), state)
+}
+
 fn admin_req() -> axum::http::request::Builder {
     Request::builder().header("authorization", format!("Bearer {}", TEST_ADMIN_KEY))
 }
@@ -492,7 +503,8 @@ async fn node_key_rotation() {
 
 #[tokio::test]
 async fn map_includes_home_derp() {
-    let (_, state) = setup();
+    let key = coord_noise::generate_control_key();
+    let state = Arc::new(CoordinatorState::new(key).with_builtin_relay_region("derp.example.com", 3478));
     let tenant_id = create_test_tenant(&state, "home-derp").await;
     let auth_key = state.store().create_preauth_key(tenant_id, false).await.unwrap();
     let machine_key = [140u8; 32];
@@ -1915,7 +1927,7 @@ fn put_tenant_derp(tenant_id: coord_core::TenantId, body: serde_json::Value) -> 
 
 #[tokio::test]
 async fn tenant_derp_override_is_isolated() {
-    let (app, state) = setup();
+    let (app, state) = setup_with_relay_region();
     let a = create_test_tenant(&state, "derp-a").await;
     let b = create_test_tenant(&state, "derp-b").await;
 
@@ -1947,7 +1959,7 @@ async fn tenant_derp_override_is_isolated() {
 
 #[tokio::test]
 async fn tenant_derp_include_default_merges() {
-    let (app, state) = setup();
+    let (app, state) = setup_with_relay_region();
     let t = create_test_tenant(&state, "derp-merge").await;
     let resp = app
         .oneshot(put_tenant_derp(t, serde_json::json!({
@@ -3063,4 +3075,76 @@ async fn identity_rejects_bad_input_and_needs_admin_auth() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+// ── Built-in DERP relay (ADR-0027) ──
+
+#[tokio::test]
+async fn default_derp_map_has_no_third_party_relays() {
+    let (_, state) = setup();
+    assert!(state.derp().default_map().regions.is_empty());
+
+    let key = coord_noise::generate_control_key();
+    let state = CoordinatorState::new(key).with_builtin_relay_region("derp.example.com", 3478);
+    let map = state.derp().default_map().clone();
+    assert_eq!(map.regions.len(), 1);
+    let node = &map.regions[&1].nodes[0];
+    assert_eq!((node.host_name.as_str(), node.stun_port, node.derp_port), ("derp.example.com", 3478, 443));
+}
+
+#[tokio::test]
+async fn derp_http_endpoints() {
+    let (app, _) = setup();
+
+    // Without an upgrade the relay endpoint refuses
+    let resp = app.clone().oneshot(Request::builder().uri("/derp").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::UPGRADE_REQUIRED);
+
+    for path in ["/derp/probe", "/derp/latency-check"] {
+        let resp = app.clone().oneshot(Request::builder().uri(path).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers()["access-control-allow-origin"], "*");
+    }
+
+    // Captive-portal check echoes a well-formed challenge and nothing else
+    let resp = app
+        .clone()
+        .oneshot(Request::builder().uri("/generate_204").header("X-Tailscale-Challenge", "abc-123:x").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    assert_eq!(resp.headers()["x-tailscale-response"], "response abc-123:x");
+    let resp = app
+        .clone()
+        .oneshot(Request::builder().uri("/generate_204").header("X-Tailscale-Challenge", "bad value!").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    assert!(resp.headers().get("x-tailscale-response").is_none());
+}
+
+#[tokio::test]
+async fn relay_admits_registered_nodes_of_live_tenants_only() {
+    use coord_derp::Admission;
+    let (app, state) = setup();
+    let parent = create_test_tenant(&state, "relay-parent").await;
+    let child = state.store().create_tenant("relay-child".into(), Some(parent), None).await.unwrap().id;
+    let other = create_test_tenant(&state, "relay-other").await;
+
+    let mut scopes = vec![];
+    for (i, t) in [parent, child, other].into_iter().enumerate() {
+        let k = api_key(&app, serde_json::json!({ "tenant_id": t.to_string() })).await;
+        let mkey = 200 + i as u8;
+        register_routes(&state, mkey, k["key"].as_str().unwrap(), "relay-node", None).await;
+        let adm = coord_api::derp_handler::StoreAdmission::for_state(&state);
+        scopes.push(adm.admit(&[mkey.wrapping_add(1); 32]).await.expect("registered node is admitted"));
+    }
+    assert!(scopes[0].can_reach(&scopes[1]), "parent and child reach each other");
+    assert!(!scopes[0].can_reach(&scopes[2]), "unrelated tenants do not");
+
+    let adm = coord_api::derp_handler::StoreAdmission::for_state(&state);
+    assert!(adm.admit(&[9u8; 32]).await.is_none(), "unknown key refused");
+
+    state.store().set_tenant_suspended(other, true).await.unwrap();
+    assert!(adm.admit(&[203u8; 32]).await.is_none(), "suspended tenant refused");
 }

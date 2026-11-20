@@ -7,7 +7,8 @@ use coord_federation::{
     HandshakeCallbacks, InboundHandler,
 };
 use coord_netmap::{AutoApproverRegistry, DerpRegistry, IdentityRegistry, NetmapService};
-use coord_proto::map::DerpMap;
+use coord_derp::{DerpConfig, DerpServer};
+use coord_proto::map::{DerpMap, DerpNode, DerpRegion};
 use coord_store::{MemoryStore, Store};
 
 pub struct CoordinatorState {
@@ -19,6 +20,10 @@ pub struct CoordinatorState {
     pub(crate) auto_approvers: Arc<AutoApproverRegistry>,
     /// Per-tenant tailnet/user names shown in clients (in-memory; TS service replays them).
     pub(crate) identity: Arc<IdentityRegistry>,
+    /// Built-in DERP relay (ADR-0027). Always present; it only carries traffic
+    /// when a DERP map points clients at this server.
+    pub(crate) relay: Arc<DerpServer>,
+    relay_secret: [u8; 32],
     pub(crate) admin_api_key: Option<String>,
     pub(crate) netmap: NetmapService,
     /// Fires when a tenant's ACL or DERP config changes so live map streams resend a snapshot.
@@ -51,8 +56,12 @@ impl CoordinatorState {
         let identity = Arc::new(IdentityRegistry::new());
         let netmap = NetmapService::with_identity(store.clone(), acl.clone(), derp.clone(), identity.clone());
         let (config_changed, _) = broadcast::channel(256);
+        let relay_secret = random_secret();
+        let relay = build_relay(relay_secret, &store);
         Self {
             control_key,
+            relay,
+            relay_secret,
             store,
             acl,
             derp,
@@ -86,6 +95,7 @@ impl CoordinatorState {
 
     pub fn with_store(mut self, store: Store) -> Self {
         self.store = Arc::new(store);
+        self.relay = build_relay(self.relay_secret, &self.store);
         self.netmap = NetmapService::with_identity(self.store.clone(), self.acl.clone(), self.derp.clone(), self.identity.clone());
         self
     }
@@ -94,6 +104,24 @@ impl CoordinatorState {
         self.derp = Arc::new(DerpRegistry::new(derp_map));
         self.netmap = NetmapService::with_identity(self.store.clone(), self.acl.clone(), self.derp.clone(), self.identity.clone());
         self
+    }
+
+    /// Use a persistent relay key so clients see the same relay identity
+    /// after a restart (the default is a fresh random key per process).
+    pub fn with_relay_secret(mut self, secret: [u8; 32]) -> Self {
+        self.relay_secret = secret;
+        self.relay = build_relay(secret, &self.store);
+        self
+    }
+
+    /// Make the built-in relay the default DERP region for every tenant:
+    /// clients reach it at `https://<hostname>/derp` and STUN on `stun_port`.
+    pub fn with_builtin_relay_region(self, hostname: &str, stun_port: u16) -> Self {
+        self.with_derp_map(builtin_relay_map(hostname, stun_port))
+    }
+
+    pub fn relay(&self) -> &Arc<DerpServer> {
+        &self.relay
     }
 
     /// Override the instance-wide concurrent Noise connection cap.
@@ -164,31 +192,50 @@ impl CoordinatorState {
     }
 }
 
+/// Region id of the built-in relay in the default DERP map.
+pub const BUILTIN_RELAY_REGION_ID: i32 = 1;
+
+/// The default DERP map has no regions: nothing is relayed through third
+/// parties. Deployments enable the built-in relay
+/// ([`CoordinatorState::with_builtin_relay_region`]) or load their own map.
 fn default_derp_map() -> DerpMap {
-    use coord_proto::map::{DerpRegion, DerpNode};
+    DerpMap { regions: std::collections::HashMap::new(), omit_default_regions: Some(true) }
+}
+
+/// A DERP map whose only region is this coordinator's built-in relay.
+pub fn builtin_relay_map(hostname: &str, stun_port: u16) -> DerpMap {
     let mut regions = std::collections::HashMap::new();
     regions.insert(
-        1,
+        BUILTIN_RELAY_REGION_ID,
         DerpRegion {
-            region_id: 1,
-            region_code: "default".into(),
-            region_name: "Default".into(),
+            region_id: BUILTIN_RELAY_REGION_ID,
+            region_code: "home".into(),
+            region_name: "Built-in relay".into(),
             nodes: vec![DerpNode {
                 name: "1a".into(),
-                region_id: 1,
-                host_name: "derp1.tailscale.com".into(),
+                region_id: BUILTIN_RELAY_REGION_ID,
+                host_name: hostname.into(),
                 cert_name: None,
                 ipv4: None,
                 ipv6: None,
-                stun_port: 3478,
+                stun_port,
                 derp_port: 443,
                 stun_only: None,
                 insecure_for_tests: None,
             }],
         },
     );
-    DerpMap {
-        regions,
-        omit_default_regions: Some(true),
-    }
+    DerpMap { regions, omit_default_regions: Some(true) }
+}
+
+fn random_secret() -> [u8; 32] {
+    use rand::RngCore;
+    let mut secret = [0u8; 32];
+    rand::rng().fill_bytes(&mut secret);
+    secret
+}
+
+fn build_relay(secret: [u8; 32], store: &Arc<Store>) -> Arc<DerpServer> {
+    let admission = Arc::new(crate::derp_handler::StoreAdmission { store: store.clone() });
+    Arc::new(DerpServer::new(secret, admission, DerpConfig::default()))
 }
