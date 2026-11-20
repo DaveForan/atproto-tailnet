@@ -84,6 +84,7 @@ apiRouter.get("/api/me", requireAuth, async (req, res) => {
     handle: user.handle,
     displayName: user.displayName,
     avatarUrl: user.avatarUrl,
+    mustEnrollDevice: Boolean(req.session.mustEnrollDevice),
     isOperator: !viaAgentToken && isOperatorDid(user.did),
     canCreateTailnet: !viaAgentToken && (await canCreateTailnet(user)),
     access: membership ? await memberAccess(user.id) : "no_access",

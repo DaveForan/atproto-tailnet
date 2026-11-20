@@ -27,6 +27,7 @@ import {
 } from "./permissions.js";
 import { logger } from "../logger.js";
 import { syncTenantAccess } from "../access/sync.js";
+import { establishPendingSession, establishSession, trustedDeviceCount } from "./device-trust.js";
 import { canCreateTailnet, claimDefaultTailnet, withTailnetCreationLock } from "../operator/policy.js";
 import {
   generateAvailableFriendlyName,
@@ -500,22 +501,16 @@ authRouter.get("/auth/callback", async (req, res) => {
     });
 
     const dest = req.session.postLoginRedirect || "/";
-    req.session.regenerate((err) => {
-      if (err) {
-        logger.error({ err }, "session regeneration failed");
-        res.status(500).json({ error: "Authentication failed" });
-        return;
-      }
-      req.session.userId = user.id;
-      req.session.did = did;
-      req.session.save((err) => {
-        if (err) {
-          res.status(500).json({ error: "Session save failed" });
-          return;
-        }
-        res.redirect(dest);
-      });
-    });
+    // Device lock (ADR-0035): with trusted devices, the account is only
+    // identified here. The session stays pending until this browser proves a
+    // trusted device; until then it has no access.
+    if ((await trustedDeviceCount(user.id)) > 0) {
+      await establishPendingSession(req, { userId: user.id, did, redirect: dest });
+      res.redirect("/verify-device");
+      return;
+    }
+    await establishSession(req, { userId: user.id, did });
+    res.redirect(dest);
   } catch (err) {
     logger.error({ err }, "OAuth callback failed");
     res.status(500).json({ error: "Authentication failed" });

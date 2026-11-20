@@ -69,3 +69,8 @@ dashboardRouter.get("/device/:id", (req, res) => {
   }
   res.type("html").send(DASHBOARD_HTML);
 });
+
+/** Second step of sign-in when the account has trusted devices (ADR-0035). */
+dashboardRouter.get("/verify-device", (_req, res) => {
+  res.type("html").send(DASHBOARD_HTML);
+});

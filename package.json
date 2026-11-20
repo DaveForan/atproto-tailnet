@@ -12,7 +12,8 @@
     "db:studio": "drizzle-kit studio",
     "build:client": "tsx esbuild.config.ts",
     "dev:client": "tsx esbuild.config.ts --watch",
-    "test": "vitest run"
+    "test": "vitest run",
+    "reset-device-lock": "tsx --env-file=.env src/scripts/reset-device-lock.ts"
   },
   "dependencies": {
     "@atproto/crypto": "^0.5.7",

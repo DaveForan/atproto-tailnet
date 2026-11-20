@@ -35,6 +35,7 @@ import { securityRouter } from "./routes/security.js";
 import { boardsRouter } from "./routes/boards.js";
 import { sharingRouter } from "./routes/sharing.js";
 import { deviceSignInRouter } from "./routes/device-signin.js";
+import { deviceTrustRouter, enforceDeviceEnrollment } from "./routes/device-trust.js";
 import { agentsRouter } from "./routes/agents.js";
 import { aclRouter } from "./routes/acl.js";
 import { derpRouter } from "./routes/derp.js";
@@ -155,6 +156,9 @@ const federationLimiter = rateLimit({
   message: { error: "Too many requests, try again later" },
 });
 
+// After a recovery-code sign-in, only device enrolment is allowed (ADR-0035)
+app.use(enforceDeviceEnrollment);
+
 // ── CSRF token endpoint ───────────────────────────────────────────────
 app.get("/api/csrf-token", (req: Request, res: Response) => {
   if (!req.session.userId) {
@@ -242,6 +246,7 @@ app.use(apiRouter);
 app.use(invitationsRouter);
 app.use(devicesRouter);
 app.use(securityRouter);
+app.use(deviceTrustRouter);
 app.use(deviceSignInRouter);
 app.use(boardsRouter);
 app.use(sharingRouter);
