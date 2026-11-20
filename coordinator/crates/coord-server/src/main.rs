@@ -99,11 +99,34 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .or(config.derp_map_file);
 
-    if let Some(hostname) = &derp_hostname {
+    // Which parts this process serves: all (default), control, or relay (ADR-0034)
+    let role: coord_api::Role = std::env::var("COORD_ROLE")
+        .unwrap_or_default()
+        .parse()
+        .map_err(|e: String| anyhow::anyhow!("invalid COORD_ROLE: {e}"))?;
+    coordinator = coordinator.with_role(role);
+    // Each relay process has its own DERP region. Region 1 is the default;
+    // further relay replicas set COORD_DERP_REGION_ID (2-899).
+    let region_id: i32 = match std::env::var("COORD_DERP_REGION_ID") {
+        Ok(v) => v.parse().map_err(|e| anyhow::anyhow!("invalid COORD_DERP_REGION_ID {v:?}: {e}"))?,
+        Err(_) => 1,
+    };
+    if !(coord_core::relay::RELAY_REGION_MIN..=coord_core::relay::RELAY_REGION_MAX).contains(&region_id) {
+        anyhow::bail!("COORD_DERP_REGION_ID must be {}-{}", coord_core::relay::RELAY_REGION_MIN, coord_core::relay::RELAY_REGION_MAX);
+    }
+    if role == coord_api::Role::Relay && derp_hostname.is_none() {
+        anyhow::bail!("COORD_ROLE=relay needs COORD_DERP_HOSTNAME (the public hostname of this relay)");
+    }
+
+    if let Some(hostname) = derp_hostname.as_ref().filter(|_| role.serves_relay()) {
         let stun_port = stun_addr.map(|a| a.port()).unwrap_or(0);
-        coordinator = coordinator.with_builtin_relay_region(hostname, stun_port);
-        tracing::info!(hostname = %hostname, stun_port, "built-in DERP relay is the default region");
-    } else if derp_path.is_none() {
+        coordinator = coordinator.with_relay_identity(coord_core::RelayInfo {
+            region_id,
+            hostname: hostname.clone(),
+            stun_port,
+        });
+        tracing::info!(hostname = %hostname, region_id, stun_port, "this process is a DERP relay");
+    } else if derp_path.is_none() && role == coord_api::Role::All {
         tracing::warn!(
             "no DERP relay configured (COORD_DERP_HOSTNAME / COORD_DERP_MAP): devices that cannot connect directly will not reach each other"
         );
@@ -206,10 +229,15 @@ async fn main() -> anyhow::Result<()> {
 
     let state = Arc::new(coordinator);
     // Per-tenant configuration lives in the store; other replicas report changes (ADR-0034)
-    state.load_config().await;
-    state.spawn_replica_listener();
+    if role.serves_control() {
+        state.load_config().await;
+        state.spawn_replica_listener();
+    }
+    // Relay discovery: report this relay, and build the DERP map from the live relays
+    state.refresh_relays().await;
+    state.spawn_relay_tasks();
 
-    if federation_enabled {
+    if federation_enabled && role.serves_control() {
         // Spawn the federation broker background loop.
         let broker = state.federation_broker().clone();
         let tick_interval = broker.config().tick_interval;
@@ -231,7 +259,7 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("Rust federation endpoints disabled (COORD_FEDERATION_ENABLED not set)");
     }
 
-    if let (Some(_), Some(addr)) = (&derp_hostname, stun_addr) {
+    if let (Some(_), Some(addr), true) = (&derp_hostname, stun_addr, role.serves_relay()) {
         let socket = tokio::net::UdpSocket::bind(addr).await
             .map_err(|e| anyhow::anyhow!("cannot bind STUN on {addr}: {e}"))?;
         tracing::info!(%addr, "STUN server listening");
@@ -242,8 +270,10 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    coord_api::spawn_ephemeral_sweeper(state.clone());
-    tracing::info!("ephemeral node sweeper started");
+    if role.serves_control() {
+        coord_api::spawn_ephemeral_sweeper(state.clone());
+        tracing::info!("ephemeral node sweeper started");
+    }
 
     let app = coord_api::router(state);
 

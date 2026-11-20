@@ -30,6 +30,10 @@ pub struct CoordinatorState {
     pub(crate) device_auth_url: Option<String>,
     pub(crate) device_auth_wait: std::time::Duration,
     pub(crate) admin_api_key: Option<String>,
+    /// Which parts this process serves (ADR-0034).
+    pub(crate) role: Role,
+    /// This process's relay region, when it is a relay with a public hostname.
+    pub(crate) own_relay: Option<coord_core::RelayInfo>,
     pub(crate) netmap: NetmapService,
     /// Fires when a tenant's ACL or DERP config changes so live map streams resend a snapshot.
     pub(crate) config_changed: broadcast::Sender<TenantId>,
@@ -82,6 +86,8 @@ impl CoordinatorState {
             auto_approvers: Arc::new(AutoApproverRegistry::new()),
             identity,
             admin_api_key: None,
+            role: Role::All,
+            own_relay: None,
             netmap,
             config_changed,
             federation_inbound: Arc::new(InboundHandler::new(
@@ -148,7 +154,66 @@ impl CoordinatorState {
     /// Make the built-in relay the default DERP region for every tenant:
     /// clients reach it at `https://<hostname>/derp` and STUN on `stun_port`.
     pub fn with_builtin_relay_region(self, hostname: &str, stun_port: u16) -> Self {
-        self.with_derp_map(builtin_relay_map(hostname, stun_port))
+        self.with_relay_identity(coord_core::RelayInfo {
+            region_id: BUILTIN_RELAY_REGION_ID,
+            hostname: hostname.into(),
+            stun_port,
+        })
+    }
+
+    /// This process is a relay with a public hostname and its own DERP
+    /// region. It is in the default map of this process at once, and other
+    /// control replicas find it in the store (`spawn_relay_tasks`).
+    pub fn with_relay_identity(mut self, relay: coord_core::RelayInfo) -> Self {
+        let mut regions = std::collections::HashMap::new();
+        regions.insert(relay.region_id, relay_region(&relay));
+        self.own_relay = Some(relay);
+        self.with_derp_map(DerpMap { regions, omit_default_regions: Some(true) })
+    }
+
+    #[doc(hidden)]
+    pub fn __test_config_changes(&self) -> broadcast::Receiver<TenantId> {
+        self.config_changed.subscribe()
+    }
+
+    pub fn with_role(mut self, role: Role) -> Self {
+        self.role = role;
+        self
+    }
+
+    pub fn role(&self) -> Role {
+        self.role
+    }
+
+    /// One round of relay discovery: report this relay as alive, and (on a
+    /// control process) rebuild the default DERP map from the live relays.
+    /// Devices get the new map when it changed.
+    pub async fn refresh_relays(&self) {
+        if let Some(relay) = self.own_relay.as_ref().filter(|_| self.role.serves_relay()) {
+            if let Err(e) = self.store.relay_heartbeat(relay).await {
+                tracing::warn!(error = %e, "relay heartbeat failed");
+            }
+        }
+        if self.role.serves_control() {
+            let live = self.store.list_relays(coord_core::relay::RELAY_STALE_SECS).await;
+            if self.derp.set_relay_regions(live.iter().map(relay_region).collect()) {
+                tracing::info!(relays = live.len(), "default DERP map changed");
+                let _ = self.config_changed.send(all_tenants());
+            }
+        }
+    }
+
+    /// Keep relay discovery running. Call once at startup, after a first `refresh_relays`.
+    pub fn spawn_relay_tasks(self: &Arc<Self>) {
+        let state = self.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(coord_core::relay::RELAY_HEARTBEAT_SECS));
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                state.refresh_relays().await;
+            }
+        });
     }
 
     pub fn relay(&self) -> &Arc<DerpServer> {
@@ -319,30 +384,65 @@ fn default_derp_map() -> DerpMap {
     DerpMap { regions: std::collections::HashMap::new(), omit_default_regions: Some(true) }
 }
 
-/// A DERP map whose only region is this coordinator's built-in relay.
-pub fn builtin_relay_map(hostname: &str, stun_port: u16) -> DerpMap {
-    let mut regions = std::collections::HashMap::new();
-    regions.insert(
-        BUILTIN_RELAY_REGION_ID,
-        DerpRegion {
-            region_id: BUILTIN_RELAY_REGION_ID,
-            region_code: "home".into(),
-            region_name: "Built-in relay".into(),
-            nodes: vec![DerpNode {
-                name: "1a".into(),
-                region_id: BUILTIN_RELAY_REGION_ID,
-                host_name: hostname.into(),
-                cert_name: None,
-                ipv4: None,
-                ipv6: None,
-                stun_port,
-                derp_port: 443,
-                stun_only: None,
-                insecure_for_tests: None,
-            }],
-        },
-    );
-    DerpMap { regions, omit_default_regions: Some(true) }
+/// Sent on the tenant-changed channel when something changed for every tenant.
+pub fn all_tenants() -> TenantId {
+    TenantId::new(uuid::Uuid::nil())
+}
+
+/// Which parts of the coordinator a process serves (ADR-0034). Splitting the
+/// roles lets control and relay replicas scale and fail separately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Role {
+    /// Control protocol, admin API and relay in one process (the default).
+    #[default]
+    All,
+    /// Control protocol and admin API only.
+    Control,
+    /// DERP relay (and STUN) only.
+    Relay,
+}
+
+impl Role {
+    pub fn serves_control(self) -> bool {
+        self != Role::Relay
+    }
+
+    pub fn serves_relay(self) -> bool {
+        self != Role::Control
+    }
+}
+
+impl std::str::FromStr for Role {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "all" | "" => Ok(Role::All),
+            "control" => Ok(Role::Control),
+            "relay" => Ok(Role::Relay),
+            other => Err(format!("unknown role {other:?} (use all, control or relay)")),
+        }
+    }
+}
+
+/// The DERP region of one relay process.
+pub fn relay_region(relay: &coord_core::RelayInfo) -> DerpRegion {
+    DerpRegion {
+        region_id: relay.region_id,
+        region_code: if relay.region_id == BUILTIN_RELAY_REGION_ID { "home".into() } else { format!("relay-{}", relay.region_id) },
+        region_name: if relay.region_id == BUILTIN_RELAY_REGION_ID { "Built-in relay".into() } else { format!("Relay {}", relay.region_id) },
+        nodes: vec![DerpNode {
+            name: format!("{}a", relay.region_id),
+            region_id: relay.region_id,
+            host_name: relay.hostname.clone(),
+            cert_name: None,
+            ipv4: None,
+            ipv6: None,
+            stun_port: relay.stun_port.into(),
+            derp_port: 443,
+            stun_only: None,
+            insecure_for_tests: None,
+        }],
+    }
 }
 
 fn random_secret() -> [u8; 32] {

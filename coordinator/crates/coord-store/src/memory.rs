@@ -57,6 +57,9 @@ pub struct MemoryStore {
     /// id -> (sign-in, expiry in unix seconds)
     sign_ins: Mutex<HashMap<String, (coord_core::PendingSignIn, i64)>>,
     remote_tx: broadcast::Sender<crate::RemoteEvent>,
+    /// region id -> (relay, last seen in unix seconds)
+    relays: Mutex<HashMap<i32, (coord_core::RelayInfo, i64)>>,
+    home_relays: Mutex<HashMap<NodeId, i32>>,
     nodes: Mutex<HashMap<NodeId, StoredNode>>,
     machine_key_index: Mutex<HashMap<[u8; 32], NodeId>>,
     preauth_keys: Mutex<HashMap<String, PreAuthKey>>,
@@ -75,6 +78,8 @@ impl MemoryStore {
             tenant_config: Mutex::new(HashMap::new()),
             sign_ins: Mutex::new(HashMap::new()),
             remote_tx: broadcast::channel(16).0,
+            relays: Mutex::new(HashMap::new()),
+            home_relays: Mutex::new(HashMap::new()),
             nodes: Mutex::new(HashMap::new()),
             machine_key_index: Mutex::new(HashMap::new()),
             preauth_keys: Mutex::new(HashMap::new()),
@@ -212,6 +217,38 @@ impl MemoryStore {
         let mut all = self.sign_ins.lock().unwrap_or_else(|e| e.into_inner());
         all.get(id)?.0.decision.as_ref()?;
         all.remove(id).and_then(|(p, _)| p.decision)
+    }
+
+    pub fn relay_heartbeat(&self, relay: &coord_core::RelayInfo) -> Result<(), CoordError> {
+        let mut relays = self.relays.lock().unwrap_or_else(|e| e.into_inner());
+        relays.insert(relay.region_id, (relay.clone(), crate::now_secs()));
+        Ok(())
+    }
+
+    pub fn list_relays(&self, max_age_secs: i64) -> Vec<coord_core::RelayInfo> {
+        let oldest = crate::now_secs() - max_age_secs;
+        let relays = self.relays.lock().unwrap_or_else(|e| e.into_inner());
+        relays.values().filter(|(_, seen)| *seen >= oldest).map(|(r, _)| r.clone()).collect()
+    }
+
+    pub fn set_home_relay(&self, node_id: NodeId, region: i32) -> Result<bool, CoordError> {
+        let tenant_id = {
+            let nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner());
+            match nodes.get(&node_id) {
+                Some(n) => n.tenant_id,
+                None => return Ok(false),
+            }
+        };
+        let changed = self.home_relays.lock().unwrap_or_else(|e| e.into_inner()).insert(node_id, region) != Some(region);
+        if changed {
+            let _ = self.peer_tx.send(PeerEvent::NodeUpdated { tenant_id, node_id });
+        }
+        Ok(changed)
+    }
+
+    pub fn home_relays(&self, node_ids: &[NodeId]) -> HashMap<NodeId, i32> {
+        let all = self.home_relays.lock().unwrap_or_else(|e| e.into_inner());
+        node_ids.iter().filter_map(|id| all.get(id).map(|r| (*id, *r))).collect()
     }
 
     pub fn get_owner_lock(&self, tenant_id: TenantId, owner: &str) -> Option<coord_core::OwnerLock> {

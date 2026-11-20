@@ -633,3 +633,41 @@ async fn sign_in_is_decided_once_and_taken_once() {
         assert_eq!(s.sign_in_take(&id2).await, None, "taken once ({})", b.name);
     }
 }
+
+#[tokio::test]
+async fn relays_are_listed_while_fresh_and_home_relays_are_recorded() {
+    use coord_core::RelayInfo;
+    for b in backends().await {
+        let s = &b.store;
+        // Region ids are instance-wide: use ids that other tests do not use
+        let base = 300 + (rand_bytes::<1>()[0] as i32) * 2;
+        let one = RelayInfo { region_id: base, hostname: format!("relay-{base}.example.com"), stun_port: 3478 };
+        let two = RelayInfo { region_id: base + 1, hostname: "old-name.example.com".into(), stun_port: 0 };
+        s.relay_heartbeat(&one).await.unwrap();
+        s.relay_heartbeat(&two).await.unwrap();
+        let renamed = RelayInfo { hostname: "new-name.example.com".into(), ..two.clone() };
+        s.relay_heartbeat(&renamed).await.unwrap();
+        let mine: Vec<_> = s.list_relays(60).await.into_iter().filter(|r| r.region_id == base || r.region_id == base + 1).collect();
+        assert_eq!(mine, vec![one.clone(), renamed], "{}", b.name);
+        assert!(s.list_relays(-1).await.iter().all(|r| r.region_id != base), "a stale relay is not listed ({})", b.name);
+
+        let t = tenant(s, "home-relay").await;
+        let mk = rand_bytes::<32>();
+        let (node, _, _) = s.register_node_with(t, mk, info("homer", mk), NodeRegistration::default()).await.unwrap();
+        let mk2 = rand_bytes::<32>();
+        let (other, _, _) = s.register_node_with(t, mk2, info("no-home", mk2), NodeRegistration::default()).await.unwrap();
+        assert!(s.home_relays(&[node, other]).await.is_empty(), "{}", b.name);
+        let mut rx = s.subscribe();
+        assert!(s.set_home_relay(node, 7).await.unwrap(), "{}", b.name);
+        assert!(!s.set_home_relay(node, 7).await.unwrap(), "the same region again is not a change ({})", b.name);
+        assert!(s.set_home_relay(node, 9).await.unwrap(), "{}", b.name);
+        assert_eq!(s.home_relays(&[node, other]).await, std::collections::HashMap::from([(node, 9)]), "{}", b.name);
+        let mut updates = 0;
+        while let Ok(ev) = rx.try_recv() {
+            if matches!(ev, PeerEvent::NodeUpdated { node_id, .. } if node_id == node) {
+                updates += 1;
+            }
+        }
+        assert_eq!(updates, 2, "peers hear about each change once ({})", b.name);
+    }
+}

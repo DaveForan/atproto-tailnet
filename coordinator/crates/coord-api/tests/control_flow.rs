@@ -3587,3 +3587,108 @@ async fn machine_lock_cannot_name_another_owners_device_and_covers_sign_in() {
     assert_eq!(resp["MachineAuthorized"], false);
     assert!(resp["Error"].as_str().unwrap().contains("current devices"));
 }
+
+// ── Roles and relay regions (ADR-0034) ──
+
+async fn status_of(app: &axum::Router, uri: &str) -> StatusCode {
+    app.clone().oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap()).await.unwrap().status()
+}
+
+#[tokio::test]
+async fn a_process_serves_only_the_parts_of_its_role() {
+    let make = |role| {
+        let state = Arc::new(
+            CoordinatorState::new(coord_noise::generate_control_key())
+                .with_admin_api_key(Some(TEST_ADMIN_KEY.to_string()))
+                .with_role(role),
+        );
+        coord_api::router(state)
+    };
+    let relay = make(coord_api::Role::Relay);
+    assert_eq!(status_of(&relay, "/health").await, StatusCode::OK);
+    assert_eq!(status_of(&relay, "/derp/probe").await, StatusCode::OK);
+    assert_eq!(status_of(&relay, "/key").await, StatusCode::NOT_FOUND);
+    assert_eq!(api_call(&relay, "GET", "/api/nodes".into(), None).await.0, StatusCode::NOT_FOUND);
+
+    let control = make(coord_api::Role::Control);
+    assert_eq!(status_of(&control, "/key").await, StatusCode::OK);
+    assert_eq!(api_call(&control, "GET", "/api/nodes".into(), None).await.0, StatusCode::OK);
+    assert_eq!(status_of(&control, "/derp/probe").await, StatusCode::NOT_FOUND);
+    assert_eq!(status_of(&control, "/derp").await, StatusCode::NOT_FOUND);
+
+    let all = make(coord_api::Role::All);
+    assert_eq!(status_of(&all, "/key").await, StatusCode::OK);
+    assert_eq!(status_of(&all, "/derp/probe").await, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn control_builds_the_derp_map_from_live_relays_and_tells_devices() {
+    let (_, state) = setup();
+    assert!(state.derp().default_map().regions.is_empty());
+    let mut changes = state.__test_config_changes();
+
+    let relay = |region_id: i32| coord_core::RelayInfo { region_id, hostname: format!("relay-{region_id}.example.com"), stun_port: 3478 };
+    state.store().relay_heartbeat(&relay(2)).await.unwrap();
+    state.store().relay_heartbeat(&relay(3)).await.unwrap();
+    state.refresh_relays().await;
+
+    let map = state.derp().default_map();
+    let mut ids: Vec<_> = map.regions.keys().copied().collect();
+    ids.sort();
+    assert_eq!(ids, vec![2, 3]);
+    assert_eq!(map.regions[&3].nodes[0].host_name, "relay-3.example.com");
+    assert_eq!(map.regions[&3].nodes[0].stun_port, 3478);
+    assert!(changes.try_recv().unwrap().as_uuid().is_nil(), "every tenant's streams are told");
+
+    // Nothing changed: devices are not disturbed again
+    state.refresh_relays().await;
+    assert!(changes.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn a_relay_process_reports_itself_and_a_control_process_does_not() {
+    let state = |role| {
+        Arc::new(
+            CoordinatorState::new(coord_noise::generate_control_key())
+                .with_relay_identity(coord_core::RelayInfo { region_id: 5, hostname: "relay-5.example.com".into(), stun_port: 0 })
+                .with_role(role),
+        )
+    };
+    let control = state(coord_api::Role::Control);
+    control.refresh_relays().await;
+    assert!(control.store().list_relays(60).await.is_empty());
+
+    let relay = state(coord_api::Role::Relay);
+    relay.refresh_relays().await;
+    assert_eq!(relay.store().list_relays(60).await.len(), 1);
+}
+
+#[tokio::test]
+async fn peers_learn_the_home_relay_that_a_device_reports() {
+    let (app, state) = setup();
+    for region in [2, 3] {
+        let relay = coord_core::RelayInfo { region_id: region, hostname: format!("relay-{region}.example.com"), stun_port: 0 };
+        state.store().relay_heartbeat(&relay).await.unwrap();
+    }
+    state.refresh_relays().await;
+    let t = create_test_tenant(&state, "home-relay").await;
+    let key = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "reusable": true })).await;
+    let key = key["key"].as_str().unwrap();
+    register_routes(&state, 250, key, "one", None).await;
+    register_routes(&state, 252, key, "two", None).await;
+
+    // Before a report, a peer is shown at the map's default region
+    let before = map_of(&state, 250, None).await;
+    assert_eq!(before["Peers"][0]["HomeDERP"], 2);
+
+    // Device two reports relay 3 as its home; device one then sees it there
+    map_of(&state, 252, Some(serde_json::json!({ "Hostname": "two", "NetInfo": { "PreferredDERP": 3 } }))).await;
+    let after = map_of(&state, 250, None).await;
+    assert_eq!(after["Peers"][0]["HomeDERP"], 3);
+    assert_eq!(after["Peers"][0]["DERP"], "127.3.3.40:3");
+    assert_eq!(map_of(&state, 252, None).await["Node"]["HomeDERP"], 3);
+
+    // A region that is not in the map is not passed on
+    map_of(&state, 252, Some(serde_json::json!({ "Hostname": "two", "NetInfo": { "PreferredDERP": 77 } }))).await;
+    assert_eq!(map_of(&state, 250, None).await["Peers"][0]["HomeDERP"], 2);
+}

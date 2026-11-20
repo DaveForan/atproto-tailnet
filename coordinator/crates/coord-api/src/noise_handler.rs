@@ -415,7 +415,8 @@ async fn handle_streaming_map(
                 }
                 changed = config_rx.recv() => {
                     let affected = match changed {
-                        Ok(t) => t == tenant_id,
+                        // The nil id means every tenant (the default DERP map changed)
+                        Ok(t) => t == tenant_id || t.as_uuid().is_nil(),
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => true,
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     };

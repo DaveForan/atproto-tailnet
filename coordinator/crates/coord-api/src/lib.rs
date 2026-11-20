@@ -7,7 +7,7 @@ mod control;
 mod admin;
 mod federation;
 
-pub use state::CoordinatorState;
+pub use state::{CoordinatorState, Role};
 
 use axum::{
     Router,
@@ -120,18 +120,25 @@ pub fn router(state: Arc<CoordinatorState>) -> Router {
         .route("/link-reject", post(federation::handle_link_reject))
         .route("/link-revoke", post(federation::handle_link_revoke));
 
-    let mut app = Router::new()
-        .route("/health", get(health))
-        .route("/key", get(key_handler::key_handler))
-        .route("/ts2021", post(noise_handler::ts2021_handler))
+    // A process serves the parts of its role (ADR-0034)
+    let role = state.role();
+    let mut app = Router::new().route("/health", get(health));
+    if role.serves_relay() {
         // Built-in DERP relay (ADR-0027)
-        .route("/derp", get(derp_handler::derp_handler))
-        .route("/derp/probe", get(derp_handler::probe_handler))
-        .route("/derp/latency-check", get(derp_handler::probe_handler))
-        .route("/generate_204", get(derp_handler::generate_204_handler))
-        .nest("/api", admin_routes);
-    if state.federation_enabled() {
-        app = app.nest("/api/federation/messages", federation_routes);
+        app = app
+            .route("/derp", get(derp_handler::derp_handler))
+            .route("/derp/probe", get(derp_handler::probe_handler))
+            .route("/derp/latency-check", get(derp_handler::probe_handler))
+            .route("/generate_204", get(derp_handler::generate_204_handler));
+    }
+    if role.serves_control() {
+        app = app
+            .route("/key", get(key_handler::key_handler))
+            .route("/ts2021", post(noise_handler::ts2021_handler))
+            .nest("/api", admin_routes);
+        if state.federation_enabled() {
+            app = app.nest("/api/federation/messages", federation_routes);
+        }
     }
     app.layer(DefaultBodyLimit::max(2 * 1024 * 1024))
         .with_state(state)

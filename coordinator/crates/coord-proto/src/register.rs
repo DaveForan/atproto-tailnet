@@ -42,6 +42,17 @@ pub struct Hostinfo {
     /// Subnet routes / exit routes the node wants to advertise.
     #[serde(rename = "RoutableIPs", default, skip_serializing_if = "Option::is_none")]
     pub routable_ips: Option<Vec<String>>,
+    /// Network facts the client measured; only the home relay is used.
+    #[serde(rename = "NetInfo", default, skip_serializing_if = "Option::is_none")]
+    pub net_info: Option<NetInfo>,
+}
+
+/// Matches the part of tailcfg.NetInfo that the coordinator uses.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NetInfo {
+    /// The DERP region the client chose as its home (0 = none yet).
+    #[serde(rename = "PreferredDERP", default)]
+    pub preferred_derp: i32,
 }
 
 /// Matches tailcfg.RegisterResponse

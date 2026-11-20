@@ -18,18 +18,35 @@ pub struct TenantDerp {
 }
 
 /// Operator-wide default DERP map plus per-tenant overrides.
+///
+/// The default map is the configured base map plus one region for each live
+/// relay process that control replicas discover in the store (ADR-0034).
 pub struct DerpRegistry {
-    default: DerpMap,
+    base: DerpMap,
+    default: RwLock<DerpMap>,
     tenants: RwLock<HashMap<TenantId, TenantDerp>>,
 }
 
 impl DerpRegistry {
     pub fn new(default: DerpMap) -> Self {
-        Self { default, tenants: RwLock::new(HashMap::new()) }
+        Self { base: default.clone(), default: RwLock::new(default), tenants: RwLock::new(HashMap::new()) }
     }
 
-    pub fn default_map(&self) -> &DerpMap {
-        &self.default
+    pub fn default_map(&self) -> DerpMap {
+        self.default.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Set the regions of the discovered relays. A discovered region replaces
+    /// a base region with the same id. Returns true when the default map changed.
+    pub fn set_relay_regions(&self, regions: Vec<DerpRegion>) -> bool {
+        let mut next = self.base.clone();
+        for region in regions {
+            next.regions.insert(region.region_id, region);
+        }
+        let mut current = self.default.write().unwrap_or_else(|e| e.into_inner());
+        let same = serde_json::to_value(&*current).ok() == serde_json::to_value(&next).ok();
+        *current = next;
+        !same
     }
 
     pub fn set_tenant(&self, tenant: TenantId, cfg: TenantDerp) {
@@ -45,11 +62,12 @@ impl DerpRegistry {
     }
 
     pub fn map_for(&self, tenant: TenantId) -> DerpMap {
+        let default = self.default_map();
         let Some(cfg) = self.get_tenant(tenant) else {
-            return self.default.clone();
+            return default;
         };
         let mut regions = if cfg.include_default {
-            self.default.regions.clone()
+            default.regions
         } else {
             HashMap::new()
         };
@@ -455,10 +473,18 @@ impl NetmapService {
             None => (all_peers, None),
         };
         let derp_map = self.derp.map_for(tenant_id);
-        let home_region = derp_map.regions.keys().min().copied().unwrap_or(1);
+        let default_region = derp_map.regions.keys().min().copied().unwrap_or(1);
+        // Each device's own home relay, when it reported one that is in this map.
+        // A peer sends to a device through the device's home relay, so relays
+        // in different regions need no link between them (ADR-0034).
+        let mut ids: Vec<coord_core::NodeId> = peers.iter().map(|p| p.node_id).collect();
+        ids.push(node_id);
+        let reported = self.store.home_relays(&ids).await;
+        let region_of = |id: coord_core::NodeId| home_region_for(reported.get(&id).copied(), &derp_map, default_region);
+        let home_region = region_of(node_id);
         let peer_nodes: Vec<MapNode> = peers
             .iter()
-            .map(|p| peer_info_to_map_node(p, home_region, &dns))
+            .map(|p| peer_info_to_map_node(p, region_of(p.node_id), &dns))
             .collect();
         let self_owner = detail.attrs.owner.as_deref();
         let user_profiles = self.profiles_for(
@@ -525,14 +551,10 @@ impl NetmapService {
                     String::new()
                 };
 
-                let home_region = self
-                    .derp
-                    .map_for(detail.tenant_id)
-                    .regions
-                    .keys()
-                    .min()
-                    .copied()
-                    .unwrap_or(1);
+                let derp_map = self.derp.map_for(detail.tenant_id);
+                let default_region = derp_map.regions.keys().min().copied().unwrap_or(1);
+                let reported = self.store.home_relays(&[*node_id]).await.get(node_id).copied();
+                let home_region = home_region_for(reported, &derp_map, default_region);
                 let (addresses, allowed_ips, primary_routes) = coord_core::node_route_sets(
                     &detail.ipv4.to_string(),
                     &detail.attrs.advertised_routes,
@@ -599,6 +621,7 @@ fn minimal_hostinfo(hostname: &str) -> Option<coord_proto::register::Hostinfo> {
         backend_log_id: None,
         request_tags: None,
         routable_ips: None,
+        net_info: None,
     })
 }
 
@@ -612,6 +635,12 @@ fn format_key_bytes(key: &[u8]) -> String {
     }
 }
 
+/// The home relay region to tell peers: the one the device reported when it
+/// is a region of this map, otherwise the map's default region.
+pub fn home_region_for(reported: Option<i32>, map: &DerpMap, default_region: i32) -> i32 {
+    reported.filter(|r| map.regions.contains_key(r)).unwrap_or(default_region)
+}
+
 fn peer_info_to_map_node(p: &coord_core::PeerInfo, home_region: i32, dns: &coord_core::TenantDns) -> MapNode {
     let peer_key = format_key_bytes(&p.node_key);
     let machine_key_str = if p.machine_key.len() == 32 {
@@ -619,7 +648,6 @@ fn peer_info_to_map_node(p: &coord_core::PeerInfo, home_region: i32, dns: &coord
     } else {
         String::new()
     };
-    // Stores don't track a peer's real home DERP yet; use the tenant map's home region.
     let derp_region = home_region;
 
     MapNode {

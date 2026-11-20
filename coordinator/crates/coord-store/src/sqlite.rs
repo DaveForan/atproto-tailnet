@@ -286,6 +286,66 @@ impl SqliteStore {
         row.flatten().and_then(|d| serde_json::from_str(&d).ok())
     }
 
+    pub async fn relay_heartbeat(&self, relay: &coord_core::RelayInfo) -> Result<(), CoordError> {
+        sqlx::query(
+            "INSERT INTO coord_relays (region_id, hostname, stun_port, last_seen) VALUES (?1, ?2, ?3, ?4) \
+             ON CONFLICT (region_id) DO UPDATE SET hostname = excluded.hostname, stun_port = excluded.stun_port, last_seen = excluded.last_seen"
+        )
+            .bind(relay.region_id)
+            .bind(&relay.hostname)
+            .bind(i32::from(relay.stun_port))
+            .bind(crate::now_secs())
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+
+    pub async fn list_relays(&self, max_age_secs: i64) -> Vec<coord_core::RelayInfo> {
+        let rows: Vec<(i32, String, i32)> = sqlx::query_as(
+            "SELECT region_id, hostname, stun_port FROM coord_relays WHERE last_seen >= ?1"
+        )
+            .bind(crate::now_secs() - max_age_secs)
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default();
+        rows.into_iter()
+            .map(|(region_id, hostname, stun_port)| coord_core::RelayInfo {
+                region_id,
+                hostname,
+                stun_port: u16::try_from(stun_port).unwrap_or(0),
+            })
+            .collect()
+    }
+
+    pub async fn set_home_relay(&self, node_id: NodeId, region: i32) -> Result<bool, CoordError> {
+        let row: Option<String> = sqlx::query_scalar(
+            "UPDATE coord_nodes SET home_derp = ?1 WHERE id = ?2 AND home_derp IS NOT ?1 RETURNING tenant_id"
+        )
+            .bind(region)
+            .bind(node_id.as_i64())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db)?;
+        let Some(tenant_text) = row else { return Ok(false) };
+        let Ok(tenant_uuid) = tenant_text.parse::<uuid::Uuid>() else { return Ok(false) };
+        let tenant_id = TenantId::new(tenant_uuid);
+        let _ = self.peer_tx.send(PeerEvent::NodeUpdated { tenant_id, node_id });
+        Ok(true)
+    }
+
+    pub async fn home_relays(&self, node_ids: &[NodeId]) -> std::collections::HashMap<NodeId, i32> {
+        // Node ids are integers, so the list can be written into the statement
+        let list = node_ids.iter().map(|n| n.as_i64().to_string()).collect::<Vec<_>>().join(",");
+        let rows: Vec<(i64, i32)> = sqlx::query_as(&format!(
+            "SELECT id, home_derp FROM coord_nodes WHERE id IN ({list}) AND home_derp IS NOT NULL"
+        ))
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default();
+        rows.into_iter().map(|(id, region)| (NodeId::new(id), region)).collect()
+    }
+
     pub async fn get_owner_lock(&self, tenant_id: TenantId, owner: &str) -> Option<coord_core::OwnerLock> {
         let row: Option<String> = sqlx::query_scalar("SELECT lock FROM coord_owner_locks WHERE tenant_id = ?1 AND owner = ?2")
             .bind(tenant_id.as_uuid().to_string())

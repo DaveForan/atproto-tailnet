@@ -216,6 +216,48 @@ impl Store {
         }
     }
 
+    /// A relay process reports that it is alive.
+    pub async fn relay_heartbeat(&self, relay: &coord_core::RelayInfo) -> Result<(), CoordError> {
+        match self {
+            Store::Memory(m) => m.relay_heartbeat(relay),
+            Store::Pg(p) => p.relay_heartbeat(relay).await,
+            Store::Sqlite(s) => s.relay_heartbeat(relay).await,
+        }
+    }
+
+    /// Relays seen in the last `max_age_secs` seconds, by region id.
+    pub async fn list_relays(&self, max_age_secs: i64) -> Vec<coord_core::RelayInfo> {
+        let mut relays = match self {
+            Store::Memory(m) => m.list_relays(max_age_secs),
+            Store::Pg(p) => p.list_relays(max_age_secs).await,
+            Store::Sqlite(s) => s.list_relays(max_age_secs).await,
+        };
+        relays.sort_by_key(|r| r.region_id);
+        relays
+    }
+
+    /// Record the relay region a node reports as its home. True when it
+    /// changed (peers are then told with a node-updated event).
+    pub async fn set_home_relay(&self, node_id: NodeId, region: i32) -> Result<bool, CoordError> {
+        match self {
+            Store::Memory(m) => m.set_home_relay(node_id, region),
+            Store::Pg(p) => p.set_home_relay(node_id, region).await,
+            Store::Sqlite(s) => s.set_home_relay(node_id, region).await,
+        }
+    }
+
+    /// The reported home relay region of each of these nodes that has one.
+    pub async fn home_relays(&self, node_ids: &[NodeId]) -> std::collections::HashMap<NodeId, i32> {
+        if node_ids.is_empty() {
+            return Default::default();
+        }
+        match self {
+            Store::Memory(m) => m.home_relays(node_ids),
+            Store::Pg(p) => p.home_relays(node_ids).await,
+            Store::Sqlite(s) => s.home_relays(node_ids).await,
+        }
+    }
+
     /// The machine lock of an owner in a tenant (ADR-0035), if any.
     pub async fn get_owner_lock(&self, tenant_id: TenantId, owner: &str) -> Option<coord_core::OwnerLock> {
         match self {

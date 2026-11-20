@@ -300,6 +300,13 @@ pub async fn handle_map(
         if req.hostinfo.is_some() {
             sync_node_routes(state, node_id, advertised_routes_from(req.hostinfo.as_ref())).await;
         }
+        // The relay region the device chose as its home; peers reach it there
+        let preferred = req.hostinfo.as_ref().and_then(|h| h.net_info.as_ref()).map(|n| n.preferred_derp);
+        if let Some(region) = preferred.filter(|r| (1..=999).contains(r)) {
+            if let Err(e) = state.store.set_home_relay(node_id, region).await {
+                tracing::warn!(error = %e, "set_home_relay failed");
+            }
+        }
         // Endpoints and disco key are relayed verbatim to every peer: bound them.
         let endpoints = sanitize::endpoints(req.endpoints.as_deref().unwrap_or_default());
         let disco_key = req.disco_key.as_deref().and_then(sanitize::disco_key);
