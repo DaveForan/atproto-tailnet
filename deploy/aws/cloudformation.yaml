@@ -186,14 +186,25 @@ Resources:
           echo "$DEVICE $MOUNT ext4 defaults,nofail 0 2" >> /etc/fstab
           mkdir -p $MOUNT/headscale
 
-          # Install Docker
+          # Install Docker from Docker's signed apt repository (not the
+          # get.docker.com script). The key fingerprint is checked first.
+          # (No braces around shell variables: !Sub would read them.)
           apt-get update -y
-          apt-get install -y apt-transport-https ca-certificates curl gnupg
-          curl -fsSL https://get.docker.com | sh
+          apt-get install -y ca-certificates curl gnupg
+          DOCKER_OS="$(. /etc/os-release && echo "$ID")"
+          DOCKER_CODENAME="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+          install -m 0755 -d /etc/apt/keyrings
+          curl -fsSL "https://download.docker.com/linux/$DOCKER_OS/gpg" -o /etc/apt/keyrings/docker.asc
+          DOCKER_KEY_FPR="$(gpg --show-keys --with-colons /etc/apt/keyrings/docker.asc | awk -F: '$1 == "fpr" { print $10; exit }')"
+          if [ "$DOCKER_KEY_FPR" != "9DC858229FC7DD38854AE2D88D81803C0EBFCD88" ]; then
+            echo "ERROR: unexpected Docker apt key fingerprint: $DOCKER_KEY_FPR" >&2
+            exit 1
+          fi
+          chmod a+r /etc/apt/keyrings/docker.asc
+          echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$DOCKER_OS $DOCKER_CODENAME stable" > /etc/apt/sources.list.d/docker.list
+          apt-get update -y
+          apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
           systemctl enable --now docker
-
-          # Install Docker Compose plugin
-          apt-get install -y docker-compose-plugin
 
           # Clone and configure
           apt-get install -y git

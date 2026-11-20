@@ -3,8 +3,9 @@
 # volume that the gateway reads (ADR-0030). Caddy's files are readable by
 # root only; the copies belong to the coordinator's user.
 #
-# Runs for ever: it looks once an hour and copies only when the certificate
-# changed. A new file is written next to the old one and then moved over
+# Runs for ever: it looks every 30 s until the first copy (Caddy issues the
+# certificate only after it starts, which is after this service), then once
+# an hour, and copies only when the certificate changed. A new file is written next to the old one and then moved over
 # it, so the gateway never reads a half-written file.
 
 set -u
@@ -32,5 +33,5 @@ copy_once() {
 
 while true; do
   copy_once
-  sleep 3600
+  if [ -f "$OUT_DIR/tls.crt" ]; then sleep 3600; else sleep 30; fi
 done

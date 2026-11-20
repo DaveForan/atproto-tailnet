@@ -27,7 +27,8 @@ services:
       PORT: "3000"
       PUBLIC_URL: ${PUBLIC_URL}
       BASE_DOMAIN: ${BASE_DOMAIN}
-      CADDY_ADMIN_URL: http://caddy:2019
+      # Caddy admin lives on the private caddy_admin network (app only)
+      CADDY_ADMIN_URL: http://10.250.250.2:2019
       HEADSCALE_IMAGE: ${HEADSCALE_IMAGE:-headscale/headscale:0.29.1}
       HEADSCALE_PORT_RANGE_START: ${HEADSCALE_PORT_RANGE_START:-10001}
       HEADSCALE_PORT_RANGE_END: ${HEADSCALE_PORT_RANGE_END:-10100}
@@ -54,13 +55,16 @@ services:
       #   mkdir -p /srv/atproto-tailnet/headscale
       - ${HEADSCALE_HOST_DATA_DIR:-/srv/atproto-tailnet/headscale}:${HEADSCALE_HOST_DATA_DIR:-/srv/atproto-tailnet/headscale}
     networks:
-      - internal
+      internal:
+      # Fixed address so it can never take Caddy's (10.250.250.2)
+      caddy_admin:
+        ipv4_address: 10.250.250.3
     expose:
       - "3000"
 
   # ---------- PostgreSQL --------------------------------------------------
   postgres:
-    image: postgres:17-alpine
+    image: postgres:17-alpine@sha256:526f86d93c6ea08fd3f1fe5605650cacc781b2c6013169a0ad8f42c7d3d84f32
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-atproto_tailnet}
@@ -79,7 +83,7 @@ services:
   # ---------- Caddy reverse proxy ----------------------------------------
   caddy:
     # For on-demand or manual TLS: use stock image (no DNS plugins needed)
-    #   image: caddy:2-alpine
+    #   image: caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
     # For DNS-01 strategies: build with the provider module
     #   build:
     #     context: .
@@ -98,9 +102,10 @@ services:
       - "80:80"
       - "443:443"
       - "443:443/udp"   # HTTP/3 / QUIC
-    expose:
-      - "2019"           # Admin API (internal only)
     environment:
+      # Admin API bound to the caddy_admin network only: not reachable from
+      # the tenant Headscale containers or anything else on internal/tenants.
+      CADDY_ADMIN_LISTEN: 10.250.250.2:2019
       APP_DOMAIN: ${APP_DOMAIN:-tailnets.example.com}
       BASE_DOMAIN: ${BASE_DOMAIN}
       # DNS-01 provider credentials (set whichever your strategy needs)
@@ -126,8 +131,10 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     networks:
-      - internal
-      - tenants
+      internal:
+      tenants:
+      caddy_admin:
+        ipv4_address: 10.250.250.2
 
   # ---------- Headscale port range ----------------------------------------
   # Headscale containers are created dynamically by the app via Docker socket.
@@ -146,3 +153,10 @@ networks:
   # so Caddy can reach them by name. Must match HEADSCALE_NETWORK.
   tenants:
     name: atproto-tailnet-tenants
+  # Caddy admin API (2019): only Caddy and the app are attached. No egress.
+  caddy_admin:
+    driver: bridge
+    internal: true
+    ipam:
+      config:
+        - subnet: 10.250.250.0/29

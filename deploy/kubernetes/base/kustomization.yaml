@@ -12,6 +12,7 @@ resources:
   - control.yaml
   - relay.yaml
   - ingress.yaml
+  - networkpolicy.yaml
 labels:
   - pairs:
       app.kubernetes.io/part-of: atproto-tailnet

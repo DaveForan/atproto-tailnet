@@ -5,7 +5,9 @@ kind: Kustomization
 resources:
   - ../../base
 
-# Your images (build them from ./Dockerfile and ./coordinator/Dockerfile)
+# Your images (build them from ./Dockerfile and ./coordinator/Dockerfile).
+# To pin an image to the exact build, use `digest: sha256:...` in place of
+# `newTag` (the digest that `docker push` prints).
 images:
   - name: atproto-tailnet-app
     newName: registry.example.com/atproto-tailnet/app
@@ -31,3 +33,8 @@ patches:
       - { op: replace, path: /spec/rules/1/host, value: "control.example.com" }
       - { op: replace, path: /spec/rules/2/host, value: "relay-0.relay.example.com" }
       - { op: replace, path: /spec/rules/3/host, value: "relay-1.relay.example.com" }
+  # The address range of your PostgreSQL (network policy). The base has a
+  # placeholder that matches nothing.
+  - target: { kind: NetworkPolicy, name: tailnet-allow-database }
+    patch: |-
+      - { op: replace, path: /spec/egress/0/to/0/ipBlock/cidr, value: "10.0.0.5/32" }

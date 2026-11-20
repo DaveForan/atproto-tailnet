@@ -1,0 +1,189 @@
+# Network policies. Nothing may connect to a pod or leave a pod unless a
+# policy below allows it. Your cluster network plugin must enforce
+# NetworkPolicy (for example Calico or Cilium). Without such a plugin these
+# objects do nothing.
+#
+# What is allowed:
+#
+# | From                  | To                    | Port            |
+# |-----------------------|-----------------------|-----------------|
+# | ingress controller    | tailnet-app           | TCP 3000        |
+# | ingress controller    | tailnet-control       | TCP 9443        |
+# | ingress controller    | tailnet-relay         | TCP 9443        |
+# | any address           | tailnet-relay         | UDP 3478 (STUN) |
+# | tailnet-app           | tailnet-control       | TCP 9443        |
+# | all pods              | cluster DNS           | UDP/TCP 53      |
+# | app, control, relay,  | PostgreSQL            | TCP 5432        |
+# | migrate               |                       |                 |
+# | tailnet-app           | public addresses      | any             |
+#
+# The control process serves the device paths and the admin API on the same
+# port (9443). A network policy cannot tell paths apart. The Ingress sends
+# only `/key` and `/ts2021` to it, and the admin API also needs the
+# `COORDINATOR_API_KEY` bearer token.
+#
+# Change these in your overlay (see overlays/example):
+#
+# - The ingress controller: the policies select pods with the label
+#   `app.kubernetes.io/name: ingress-nginx` in the namespace `ingress-nginx`.
+# - PostgreSQL: the policy `tailnet-allow-database` allows the address
+#   192.0.2.10/32, which is a placeholder. Replace it with the address range
+#   of your database. PostgreSQL is outside these manifests (see the README).
+#   If it runs in the cluster (for example CloudNativePG), replace the
+#   `ipBlock` with a `namespaceSelector` and `podSelector` for its pods.
+---
+# Deny all traffic to and from every pod in the namespace. The policies
+# below add what is allowed.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tailnet-default-deny
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+# Name lookups through the cluster DNS. If your cluster uses NodeLocal
+# DNSCache, also allow its address (often 169.254.20.10/32).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tailnet-allow-dns
+spec:
+  podSelector: {}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+---
+# PostgreSQL: only the app, the control and relay processes, and the
+# migration Job. Replace the placeholder address in your overlay.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tailnet-allow-database
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: [tailnet-app, tailnet-control, tailnet-relay, tailnet-migrate]
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 192.0.2.10/32
+      ports:
+        - { protocol: TCP, port: 5432 }
+---
+# Dashboard and API: HTTP from the ingress controller. Out: the control
+# admin API, and public addresses (AT Protocol sign-in, PLC directory,
+# Bluesky API, webhooks, federation peers). Private and link-local ranges
+# (including the cloud metadata address) are not allowed. If you set
+# WEBHOOK_ALLOW_PRIVATE=true, add the private range of your webhooks.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tailnet-app
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: tailnet-app
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
+      ports:
+        - { protocol: TCP, port: 3000 }
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: tailnet-control
+      ports:
+        - { protocol: TCP, port: 9443 }
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 100.64.0.0/10
+              - 127.0.0.0/8
+              - 169.254.0.0/16
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+        - ipBlock:
+            cidr: ::/0
+            except:
+              - ::1/128
+              - fc00::/7
+              - fe80::/10
+---
+# Control process: device paths from the ingress controller, admin API from
+# the app pods. No other egress than DNS and PostgreSQL. (The coordinator's
+# own federation broker, COORD_FEDERATION_ENABLED, is off here; it would
+# need egress to federation peers.)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tailnet-control
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: tailnet-control
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: tailnet-app
+      ports:
+        - { protocol: TCP, port: 9443 }
+---
+# Relays: DERP over HTTPS from the ingress controller, and STUN from any
+# address (the STUN LoadBalancer Services keep the client address). No
+# other egress than DNS and PostgreSQL.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tailnet-relay
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: tailnet-relay
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: ingress-nginx
+      ports:
+        - { protocol: TCP, port: 9443 }
+    - from:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+        - ipBlock:
+            cidr: ::/0
+      ports:
+        - { protocol: UDP, port: 3478 }

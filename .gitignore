@@ -4,3 +4,5 @@ data/
 .env
 *.db
 *.db-journal
+# vitest cache (vitest.config.ts sets root to src/, so it lands in src/node_modules/.vite)
+**/node_modules/.vite/

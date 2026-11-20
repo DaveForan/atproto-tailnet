@@ -24,7 +24,24 @@ apt-get upgrade -y
 
 echo "==> Installing Docker"
 if ! command -v docker &>/dev/null; then
-  curl -fsSL https://get.docker.com | sh
+  # Docker's signed apt repository (not the get.docker.com script). The key
+  # fingerprint is checked before apt trusts the repository.
+  apt-get install -y ca-certificates curl gnupg
+  DOCKER_OS="$(. /etc/os-release && echo "$ID")"
+  DOCKER_CODENAME="$(. /etc/os-release && echo "$VERSION_CODENAME")"
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL "https://download.docker.com/linux/${DOCKER_OS}/gpg" -o /etc/apt/keyrings/docker.asc
+  DOCKER_KEY_FPR="$(gpg --show-keys --with-colons /etc/apt/keyrings/docker.asc | awk -F: '$1 == "fpr" { print $10; exit }')"
+  if [ "$DOCKER_KEY_FPR" != "9DC858229FC7DD38854AE2D88D81803C0EBFCD88" ]; then
+    echo "ERROR: unexpected Docker apt key fingerprint: $DOCKER_KEY_FPR" >&2
+    rm -f /etc/apt/keyrings/docker.asc
+    exit 1
+  fi
+  chmod a+r /etc/apt/keyrings/docker.asc
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/${DOCKER_OS} ${DOCKER_CODENAME} stable" \
+    > /etc/apt/sources.list.d/docker.list
+  apt-get update -y
+  apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
   systemctl enable --now docker
 fi
 

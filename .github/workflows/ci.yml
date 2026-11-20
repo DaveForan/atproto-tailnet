@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CI: "true"
+
+# Actions are pinned to a commit; the comment gives the tag.
+jobs:
+  node:
+    name: TypeScript service
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+          cache: npm
+      # Includes devDependencies (NODE_ENV is not "production" here)
+      - run: npm ci --ignore-scripts
+      - name: Type check (service)
+        run: npx tsc --noEmit
+      - name: Type check (dashboard)
+        run: npx tsc --noEmit -p tsconfig.client.json
+      - name: Build dashboard bundles
+        run: npx tsx esbuild.config.ts
+      - name: Tests
+        run: npx vitest run
+
+  rust:
+    name: Coordinator (Rust)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: coord
+          POSTGRES_PASSWORD: coord
+          POSTGRES_DB: coord_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U coord -d coord_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://coord:coord@localhost:5432/coord_test
+      CARGO_TERM_COLOR: always
+    defaults:
+      run:
+        working-directory: coordinator
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # Same Rust version as coordinator/Dockerfile
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master
+        with:
+          toolchain: "1.94"
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: coordinator
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Tests
+        run: cargo test --locked

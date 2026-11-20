@@ -25,6 +25,9 @@ services:
     environment:
       COORD_LISTEN: "0.0.0.0:9443"
       COORD_STORE_BACKEND: postgres
+      # Caddy forwards device connections; trust its X-Forwarded-For so device
+      # sign-in shows the real requester address.
+      COORD_TRUSTED_PROXIES: ${EDGE_SUBNET:-10.250.251.0/24}
       COORD_CONTROL_KEY_PATH: /var/lib/coordinator/control.key
       # Built-in DERP relay + STUN (ADR-0027). Empty = no relay region.
       # The relay key is kept next to the control key (coord_data volume).
@@ -54,7 +57,9 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
-      start_period: 10s
+      # Room for first-start migrations. The gateway certificate no longer
+      # delays start-up: the coordinator enables the gateway when it arrives.
+      start_period: 30s
 
   # ---------- Certificate for the gateway ---------------------------------
   # Caddy obtains the wildcard certificate of BASE_DOMAIN (DNS-01 strategies
@@ -129,7 +134,7 @@ services:
 
   # ---------- PostgreSQL --------------------------------------------------
   postgres:
-    image: postgres:17-alpine
+    image: postgres:17-alpine@sha256:526f86d93c6ea08fd3f1fe5605650cacc781b2c6013169a0ad8f42c7d3d84f32
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-atproto_tailnet}
@@ -210,6 +215,9 @@ networks:
   # Caddy and the services it proxies.
   edge:
     driver: bridge
+    ipam:
+      config:
+        - subnet: ${EDGE_SUBNET:-10.250.251.0/24}
   # Caddy admin API (2019): only Caddy and the app are attached. No egress.
   caddy_admin:
     driver: bridge

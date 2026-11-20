@@ -78,7 +78,7 @@ the [configuration reference](site/reference/configuration.md).
 | `COORDINATOR_API_KEY` | Coord | -- | Bearer token for the coordinator admin API (required when you set `COORDINATOR_URL`) |
 | `APP_DOMAIN` | Yes | -- | Domain of the dashboard, the API and `/mcp`. Caddy uses it. The app does not derive it from `PUBLIC_URL` |
 | `TRUST_PROXY` | Behind a proxy | `0` | Reverse-proxy hops to trust. Must be `1` behind Caddy, or sign-in fails. The compose files set it |
-| `CADDY_DNS_PLUGINS` | DNS-01 | -- | Caddy DNS module for your `TLS_STRATEGY`, for example `github.com/caddy-dns/digitalocean` |
+| `CADDY_DNS_PLUGINS` | DNS-01 | -- | Caddy DNS module for your `TLS_STRATEGY`, for example `github.com/caddy-dns/digitalocean`. Add `@version` to pin a version. `Dockerfile.caddy` pins `github.com/caddy-dns/digitalocean` when you give no version |
 | `CADDY_CERTS_DIR` | Manual | `./caddy/certs` | Folder with `wildcard.pem` and `wildcard.key` for `TLS_STRATEGY=manual` |
 | `WEBHOOK_ALLOW_PRIVATE` | No | `false` | Set `true` only for single-organisation self-hosting. It lets notification webhooks reach private addresses |
 | `OPERATOR_DIDS` | Yes (production) | -- | Comma-separated DIDs of the instance operators, for example `did:plc:abc123`. Only operators (and the "tailnet creators" they designate) get a tailnet; everyone else who signs in sees invitations or can request to join the default tailnet. Operators get the operator API (`/api/operator/*`). If it is empty the app logs a loud warning and nobody can create a tailnet |
@@ -181,7 +181,8 @@ ssh root@<droplet-ip> "REPO_URL=https://github.com/<you>/atproto-tailnet.git bas
 
 The script does these steps:
 
-1. It installs Docker, the Compose plugin and git.
+1. It installs Docker and the Compose plugin from the signed apt repository
+   of Docker, and git. It checks the fingerprint of the Docker key first.
 2. It clones the repository to `/opt/atproto-tailnet`.
 3. It copies `.env.coordinator.example` to `.env`.
 4. It generates `SESSION_SECRET`, `POSTGRES_PASSWORD`, `COORDINATOR_API_KEY`
@@ -462,6 +463,14 @@ DNS-01 strategies need a Caddy image that includes the DNS module. Set
 `github.com/caddy-dns/route53`). The `on-demand` and `manual` strategies
 use stock Caddy and do not need a build step.
 
+Pin the module to a version: write `module@version`, for example
+`github.com/caddy-dns/route53@v1.6.0`. Use a tag of the module, or a Go
+pseudo-version for a module without tags. `Dockerfile.caddy` has a pinned
+version of `github.com/caddy-dns/digitalocean` and uses it when you give no
+version. For another module without a version, the build uses the newest
+version and prints a warning. Go checks each module against
+`sum.golang.org`.
+
 ### Caddyfile
 
 The production Caddyfiles (`Caddyfile.coordinator.production` and
@@ -528,6 +537,13 @@ This command starts the app, PostgreSQL, and Caddy. The app accesses the Docker
 socket through a bind mount. The app can then create Headscale containers on
 the host.
 
+The Caddy admin API listens on `10.250.250.2:2019` on the private network
+`caddy_admin`. Only Caddy and the app (`10.250.250.3`) are on this network.
+The tenant Headscale containers and the other services cannot reach the admin
+API. This is the same as in the coordinator stack. If you upgrade from an
+older version, run `docker compose -f docker-compose.production.yml up -d`
+for both services, so that they join the new network.
+
 ### Updating
 
 ```sh
@@ -552,6 +568,7 @@ These guides give detailed setup instructions for each platform:
 - **Hetzner**: [`deploy/hetzner/AGENT.md`](../deploy/hetzner/AGENT.md)
 - **Vultr**: [`deploy/vultr/AGENT.md`](../deploy/vultr/AGENT.md)
 - **AWS**: [`deploy/aws/README.md`](../deploy/aws/README.md)
+- **Kubernetes**: [`deploy/kubernetes/README.md`](../deploy/kubernetes/README.md) (network policies, and a separate database role for the relays)
 - **Railway**: [`deploy/railway/README.md`](../deploy/railway/README.md)
 
 ---
@@ -628,3 +645,24 @@ tar czf headscale-backup-$(date +%Y%m%d).tar.gz /data/headscale/
 - The coordinator limits the request body to 2 MiB on all routes.
 - The dashboard HTML-escapes all user-controlled data.
 - CSP: `script-src 'self'; style-src 'self'`
+
+### Supply chain
+
+- The Dockerfiles and the compose files give each base image as
+  `image:tag@sha256:digest`. Docker uses the digest. The tag is there for the
+  reader. To update an image, get the new digest with
+  `docker buildx imagetools inspect <image:tag>` and replace it.
+- The app image installs its runtime packages from `package-lock.json` with
+  `npm ci --omit=dev --ignore-scripts`, as the `node` user. `drizzle-kit`
+  (the migrations) is a runtime dependency, so it comes from the lockfile
+  too. Build and test tools (`vitest`, `tsx`, `typescript`, React, the
+  `@types` packages) are development dependencies and are not in the image.
+- After you change dependencies, write the lockfile with npm 10, the version
+  in the `node:22-alpine` image:
+  `docker run --rm -v "$PWD":/app -w /app -u "$(id -u):$(id -g)" -e npm_config_cache=/tmp/npmcache node:22-alpine npm install --package-lock-only --ignore-scripts`.
+- The setup scripts install Docker from its signed apt repository, not with
+  `get.docker.com`.
+- CI (`.github/workflows/ci.yml`) runs on each push and pull request: type
+  checks, the dashboard build and the tests of the TS service, and clippy and
+  the tests of the coordinator with a PostgreSQL service. The workflow actions
+  are pinned to commits.

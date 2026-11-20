@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:17-alpine
+    image: postgres:17-alpine@sha256:526f86d93c6ea08fd3f1fe5605650cacc781b2c6013169a0ad8f42c7d3d84f32
     environment:
       POSTGRES_USER: atproto_tailnet
       POSTGRES_PASSWORD: atproto_tailnet
@@ -11,7 +11,7 @@ services:
       - pgdata:/var/lib/postgresql/data
 
   caddy:
-    image: caddy:2-alpine
+    image: caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
     ports:
       - "127.0.0.1:8180:80"
       - "127.0.0.1:8445:443"

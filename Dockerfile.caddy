@@ -1,22 +1,45 @@
 # Caddy with optional DNS provider modules for wildcard TLS.
 #
-# For on-demand or manual strategies, no plugins are needed — use the stock
-# caddy:2-alpine image directly (skip this Dockerfile).
+# For on-demand or manual strategies, no plugins are needed: the image is
+# then plain Caddy.
 #
 # For DNS-01 strategies, set CADDY_DNS_PLUGINS to the module(s) you need:
 #   docker build --build-arg CADDY_DNS_PLUGINS="github.com/caddy-dns/route53" ...
 #
 # Multiple plugins can be space-separated:
 #   CADDY_DNS_PLUGINS="github.com/caddy-dns/cloudflare github.com/caddy-dns/route53"
-FROM caddy:2-builder AS builder
+#
+# Pin a module to a version with `module@version` (a tag, or a Go
+# pseudo-version for a module without tags):
+#   CADDY_DNS_PLUGINS="github.com/caddy-dns/route53@v1.6.0"
+# A module without a version gets the pinned version from the list below if
+# it has one. Otherwise the build uses the newest version and prints a
+# warning. Go checks every module against sum.golang.org.
+#
+# Base images are pinned by digest. To update: `docker buildx imagetools
+# inspect caddy:<version>-builder` (and -alpine), and change both lines.
+FROM caddy:2.11.9-builder@sha256:f9beaa5ddbe7df6f26ebbcf9cbf44e05a1917b9bba464f0c3229038d7e2e6e13 AS builder
 ARG CADDY_DNS_PLUGINS=""
+# Pinned versions of DNS modules. github.com/caddy-dns/digitalocean has no
+# tags: the version is its commit 04bde28 of 2025-06-06.
+ARG CADDY_DNS_PINS="github.com/caddy-dns/digitalocean@v0.0.0-20250606074528-04bde2867106"
 RUN set -eu; \
-    if [ -z "$CADDY_DNS_PLUGINS" ]; then \
-      xcaddy build; \
-    else \
-      args=""; for p in $CADDY_DNS_PLUGINS; do args="$args --with $p"; done; \
-      xcaddy build $args; \
-    fi
+    args=""; \
+    for p in $CADDY_DNS_PLUGINS; do \
+      case "$p" in \
+        *@*) ;; \
+        *) for pin in $CADDY_DNS_PINS; do \
+             if [ "${pin%@*}" = "$p" ]; then p="$pin"; fi; \
+           done ;; \
+      esac; \
+      case "$p" in \
+        *@*) ;; \
+        *) echo "WARNING: $p has no pinned version; the newest version is used" >&2 ;; \
+      esac; \
+      args="$args --with $p"; \
+    done; \
+    echo "xcaddy build$args"; \
+    xcaddy build $args
 
-FROM caddy:2-alpine
+FROM caddy:2.11.9-alpine@sha256:003a97808e781aa9f7e75cc2f43d34d461099031faf5e20faefb9f61126836f0
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
