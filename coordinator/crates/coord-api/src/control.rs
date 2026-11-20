@@ -247,6 +247,31 @@ pub async fn build_map_snapshot(
     Ok(serde_json::to_string(&resp)?)
 }
 
+/// A full snapshot for a streaming session. `last_peers` holds the peer ids
+/// of the previous snapshot: a client treats a snapshot without peers as "no
+/// change", so when the list becomes empty the old peers are removed by id.
+pub async fn build_map_update(
+    state: &Arc<CoordinatorState>,
+    machine_key: &[u8; 32],
+    last_peers: &mut Vec<i64>,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let mut resp = state.netmap.build_snapshot(machine_key).await?;
+    let current: Vec<i64> = resp.peers.as_ref().map(|p| p.iter().map(|n| n.id).collect()).unwrap_or_default();
+    if current.is_empty() && !last_peers.is_empty() {
+        resp.peers_removed = Some(std::mem::take(last_peers));
+    }
+    *last_peers = current;
+    Ok(serde_json::to_string(&resp)?)
+}
+
+/// Peer ids in a serialized map response (the initial snapshot of a stream).
+pub fn peer_ids_in(map_json: &str) -> Vec<i64> {
+    serde_json::from_str::<serde_json::Value>(map_json)
+        .ok()
+        .and_then(|v| v.get("Peers").and_then(|p| p.as_array()).map(|a| a.iter().filter_map(|n| n.get("ID")?.as_i64()).collect()))
+        .unwrap_or_default()
+}
+
 pub async fn build_delta_response(
     state: &Arc<CoordinatorState>,
     _machine_key: &[u8; 32],

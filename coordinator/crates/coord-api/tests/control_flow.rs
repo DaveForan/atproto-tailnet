@@ -3148,3 +3148,112 @@ async fn relay_admits_registered_nodes_of_live_tenants_only() {
     state.store().set_tenant_suspended(other, true).await.unwrap();
     assert!(adm.admit(&[203u8; 32]).await.is_none(), "suspended tenant refused");
 }
+
+// ── Device access: member mode (ADR-0036) ──
+
+async fn member_map(state: &Arc<CoordinatorState>, mkey: u8) -> serde_json::Value {
+    let body = serde_json::json!({ "Version": 2, "NodeKey": format!("nodekey:{}", hex::encode([mkey.wrapping_add(1); 32])) });
+    serde_json::from_str(&coord_api::__test_handle_map(state, &[mkey; 32], &body.to_string()).await.unwrap()).unwrap()
+}
+
+fn peer_names(map: &serde_json::Value) -> Vec<String> {
+    let mut v: Vec<String> = map["Peers"]
+        .as_array()
+        .map(|a| a.iter().map(|p| p["Name"].as_str().unwrap().split('.').next().unwrap().to_string()).collect())
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+
+#[tokio::test]
+async fn member_mode_isolates_members_and_rules_open_single_ports() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "member-mode").await;
+    let alice = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "owner": "alice", "reusable": true })).await;
+    let bob = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "owner": "bob", "reusable": true })).await;
+    register_routes(&state, 110, alice["key"].as_str().unwrap(), "alice-laptop", None).await;
+    register_routes(&state, 112, alice["key"].as_str().unwrap(), "alice-server", None).await;
+    register_routes(&state, 120, bob["key"].as_str().unwrap(), "bob-phone", None).await;
+
+    // Open mode (default): everyone sees everyone, allow-all filter
+    let m = member_map(&state, 120).await;
+    assert_eq!(peer_names(&m), vec!["alice-laptop", "alice-server"]);
+    assert_eq!(m["PacketFilter"][0]["SrcIPs"][0], "*");
+
+    // Member mode: own devices only
+    let (status, _) = api_call(&app, "PUT", format!("/api/tenants/{t}/access"), Some(serde_json::json!({ "mode": "member" }))).await;
+    assert_eq!(status, StatusCode::OK);
+    let m = member_map(&state, 120).await;
+    assert!(peer_names(&m).is_empty(), "bob sees none of alice's devices");
+    assert_eq!(m["PacketFilter"], serde_json::json!([]), "and accepts nothing");
+    let m = member_map(&state, 110).await;
+    assert_eq!(peer_names(&m), vec!["alice-server"]);
+
+    // alice opens tcp/3000 on alice-server to bob's devices
+    let server_id = member_map(&state, 112).await["Node"]["ID"].as_i64().unwrap();
+    let (status, json) = api_call(
+        &app,
+        "PUT",
+        format!("/api/tenants/{t}/access"),
+        Some(serde_json::json!({
+            "mode": "member",
+            "rules": [{ "src_owner": "bob", "dst_node": server_id, "ports": [{ "proto": "tcp", "first": 3000, "last": 3000 }] }]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+
+    // bob now sees only alice-server; alice-laptop stays hidden
+    assert_eq!(peer_names(&member_map(&state, 120).await), vec!["alice-server"]);
+    // alice-server accepts bob on tcp/3000 only
+    let m = member_map(&state, 112).await;
+    let filters = m["PacketFilter"].as_array().unwrap();
+    let shared = filters.iter().find(|f| f["IPProto"] == serde_json::json!([6])).expect("tcp filter");
+    assert_eq!(shared["DstPorts"][0]["Ports"], serde_json::json!({ "First": 3000, "Last": 3000 }));
+    assert_eq!(shared["SrcIPs"].as_array().unwrap().len(), 1);
+    // alice-laptop is unaffected by the rule
+    let m = member_map(&state, 110).await;
+    assert!(m["PacketFilter"].as_array().unwrap().iter().all(|f| f.get("IPProto").is_none()));
+
+    // GET returns the stored rules; bad input is refused
+    let (_, got) = api_call(&app, "GET", format!("/api/tenants/{t}/access"), None).await;
+    assert_eq!(got["rules"][0]["dst_node"], server_id);
+    let (status, _) = api_call(
+        &app,
+        "PUT",
+        format!("/api/tenants/{t}/access"),
+        Some(serde_json::json!({ "mode": "member", "rules": [{ "dst_node": 1, "ports": [{ "first": 1, "last": 1 }] }] })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "a rule without a source is refused");
+}
+
+#[tokio::test]
+async fn member_mode_stream_removes_peers_when_access_ends() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "member-stream").await;
+    let alice = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "owner": "alice" })).await;
+    let bob = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "owner": "bob" })).await;
+    register_routes(&state, 130, alice["key"].as_str().unwrap(), "alice-box", None).await;
+    register_routes(&state, 140, bob["key"].as_str().unwrap(), "bob-box", None).await;
+    let alice_id = member_map(&state, 130).await["Node"]["ID"].as_i64().unwrap();
+
+    let open_rule = serde_json::json!({
+        "mode": "member",
+        "rules": [{ "src_owner": "bob", "dst_node": alice_id, "ports": [{ "first": 22, "last": 22 }] }]
+    });
+    api_call(&app, "PUT", format!("/api/tenants/{t}/access"), Some(open_rule)).await;
+
+    // bob's stream starts with alice-box visible
+    let mut stream = open_stream(&state, 140).await;
+
+    // Access ends: bob's device is told to drop the peer by id
+    api_call(&app, "PUT", format!("/api/tenants/{t}/access"), Some(serde_json::json!({ "mode": "member" }))).await;
+    let update = tokio::time::timeout(std::time::Duration::from_secs(3), next_map_frame(&mut stream))
+        .await
+        .expect("update after access change")
+        .expect("frame");
+    assert!(update.get("Peers").is_none());
+    assert_eq!(update["PeersRemoved"], serde_json::json!([alice_id]));
+    assert_eq!(update["PacketFilter"], serde_json::json!([]));
+}

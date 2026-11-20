@@ -398,6 +398,8 @@ async fn handle_streaming_map(
         .map(|t| t.id)
         .collect();
 
+    let mut last_peers = control::peer_ids_in(&initial);
+
     tokio::spawn(async move {
         use std::time::Duration;
         let keepalive_period = Duration::from_secs(60);
@@ -431,7 +433,7 @@ async fn handle_streaming_map(
                         .filter(|t| t.visible_to_parent())
                         .map(|t| t.id)
                         .collect();
-                    if let Ok(json) = control::build_map_snapshot(&state_clone, &machine_key).await {
+                    if let Ok(json) = control::build_map_update(&state_clone, &machine_key, &mut last_peers).await {
                         if let Ok(framed) = frame_map_response(json.as_bytes()) {
                             if tx.send(Ok(hyper::body::Frame::data(Bytes::from(framed)))).await.is_err() {
                                 break;
@@ -444,7 +446,7 @@ async fn handle_streaming_map(
                         Ok(e) => e,
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
                             tracing::warn!(skipped = n, "map stream lagged, sending full update");
-                            if let Ok(json) = control::build_map_snapshot(&state_clone, &machine_key).await {
+                            if let Ok(json) = control::build_map_update(&state_clone, &machine_key, &mut last_peers).await {
                                 if let Ok(framed) = frame_map_response(json.as_bytes()) {
                                     if tx.send(Ok(hyper::body::Frame::data(Bytes::from(framed)))).await.is_err() {
                                         break;
@@ -483,6 +485,20 @@ async fn handle_streaming_map(
                     if event_node_id == node_id {
                         if state_clone.store.get_node_tenant(node_id).await != Some(tenant_id) {
                             break;
+                        }
+                        continue;
+                    }
+
+                    // Member mode (ADR-0036): what a device may see differs per
+                    // device, so a tenant-wide delta would leak other members'
+                    // devices. Send this device its own fresh view instead.
+                    if state_clone.store.get_tenant_access(tenant_id).await.mode == coord_core::AccessMode::Member {
+                        if let Ok(json) = control::build_map_update(&state_clone, &machine_key, &mut last_peers).await {
+                            if let Ok(framed) = frame_map_response(json.as_bytes()) {
+                                if tx.send(Ok(hyper::body::Frame::data(Bytes::from(framed)))).await.is_err() {
+                                    break;
+                                }
+                            }
                         }
                         continue;
                     }

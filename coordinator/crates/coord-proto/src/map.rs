@@ -180,6 +180,9 @@ pub struct FilterRule {
     #[serde(rename = "SrcIPs")]
     pub src_ips: Vec<String>,
     pub dst_ports: Vec<NetPortRange>,
+    /// IANA protocol numbers. Absent = the client default (TCP, UDP, ICMP).
+    #[serde(rename = "IPProto", default, skip_serializing_if = "Option::is_none")]
+    pub ip_proto: Option<Vec<i32>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

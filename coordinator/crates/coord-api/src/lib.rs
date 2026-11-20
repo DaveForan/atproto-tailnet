@@ -86,6 +86,10 @@ pub fn router(state: Arc<CoordinatorState>) -> Router {
         )
         .route("/tenants/{id}/derp", get(admin::get_tenant_derp).put(admin::set_tenant_derp))
         .route(
+            "/tenants/{id}/access",
+            get(admin::get_tenant_access).put(admin::set_tenant_access),
+        )
+        .route(
             "/tenants/{id}/identity",
             get(admin::get_tenant_identity).put(admin::set_tenant_identity),
         )

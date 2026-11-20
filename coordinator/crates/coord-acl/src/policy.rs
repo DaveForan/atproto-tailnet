@@ -69,6 +69,7 @@ impl AclPolicy {
                 FilterRule {
                     src_ips: vec![rule.src.clone()],
                     dst_ports,
+                    ip_proto: None,
                 }
             })
             .collect()
@@ -85,5 +86,6 @@ pub fn allow_all_filter() -> Vec<FilterRule> {
                 last: 65535,
             },
         }],
+        ip_proto: None,
     }]
 }
