@@ -297,11 +297,11 @@ Order matters: each stage gives value alone and unblocks the next.
 ### 6.0 Done in this cycle
 - [x] Security review rounds 1 and 2: login CSRF nonce, Bearer fallback, member key limits, lockdown revocation, role escalation via default role, bounded credential issuance (fca4af7, ffe16a7)
 - [x] Tailnet and member names in Tailscale clients: coordinator identity registry (1406883)
-- [x] Public tailnet addresses: `tenant_hostnames`, random friendly names, privacy fixes (built, not committed — ADR-0026 §1-2)
+- [x] Public tailnet addresses: `tenant_hostnames`, random friendly names, privacy fixes (15236e6 — ADR-0026 §1-2)
 
 ### 6.1 Tailnet addresses and shared control URL (ADR-0026)
-- [ ] Run migration 0030 against a throwaway PostgreSQL
-- [ ] `control.<APEX_DOMAIN>`: DNS record, Caddy site, `CONTROL_URL` config; login server everywhere uses it
+- [x] Run migration 0030 against a throwaway PostgreSQL (copy of the live data: applies, idempotent, one-primary index enforced)
+- [x] `control.<APEX_DOMAIN>`: Caddy site, `CONTROL_DOMAIN` config; login server everywhere uses it (DNS record at deploy)
 - [ ] Legacy per-tailnet hostnames: keep routing until retired; extra DNS record (ADR-0028)
 - [ ] Commit, deploy; set the address of the existing tailnet; move the Mac to the shared URL; retire `daveforan-bsky-social`
 

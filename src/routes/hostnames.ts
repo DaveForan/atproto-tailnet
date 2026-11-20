@@ -16,6 +16,8 @@ import {
   listHostnames,
   retireHostname,
   setPrimaryHostname,
+  tenantLoginServerFor,
+  usesSharedControlUrl,
   MAX_LIVE_HOSTNAMES,
   type HostnameError,
 } from "../orchestrator/hostnames.js";
@@ -44,6 +46,10 @@ hostnamesRouter.get("/api/tenants/:tenantId/hostnames", requireAuth, async (req,
   const names = await listHostnames(result.tenant.id);
   res.json({
     baseDomain: config.baseDomain,
+    // What devices put in --login-server; with a shared control URL the
+    // tailnet address is its public name only (links, device/service names)
+    loginServer: await tenantLoginServerFor(result.tenant),
+    sharedControl: usesSharedControlUrl(),
     primary: names.find((n) => n.primary && !n.retiredAt)?.name ?? result.tenant.slug,
     // Only the originator manages addresses; others just see the live ones
     hostnames: result.membership.isOriginator ? names : names.filter((n) => !n.retiredAt),

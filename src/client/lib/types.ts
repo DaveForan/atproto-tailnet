@@ -33,6 +33,10 @@ export interface TailnetHostname {
 
 export interface HostnamesData {
   baseDomain: string;
+  /** URL devices use as --login-server. */
+  loginServer: string;
+  /** True when all tailnets share one control URL (the address is then a public name only). */
+  sharedControl: boolean;
   primary: string;
   hostnames: TailnetHostname[];
   canManage: boolean;

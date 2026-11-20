@@ -18,6 +18,15 @@ const configSchema = z.object({
     ),
   sessionSecret: z.string().default("dev-secret-change-me"),
   baseDomain: z.string().default("ts.localhost"),
+  /**
+   * Hostname of the shared control URL every tailnet's devices use in
+   * coordinator mode (ADR-0026). Must NOT be under baseDomain: the
+   * coordinator's split DNS for baseDomain could stop it resolving on devices.
+   */
+  controlDomain: z
+    .string()
+    .regex(/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/i, "CONTROL_DOMAIN must be a hostname")
+    .optional(),
   caddyAdminUrl: z.string().url().default("http://localhost:2019"),
   /**
    * Port devices use to reach tenant URLs, when the proxy is not published on
@@ -83,6 +92,7 @@ export const config = configSchema.parse({
   databaseUrl: process.env.DATABASE_URL,
   sessionSecret: process.env.SESSION_SECRET,
   baseDomain: process.env.BASE_DOMAIN,
+  controlDomain: process.env.CONTROL_DOMAIN || undefined,
   caddyAdminUrl: process.env.CADDY_ADMIN_URL,
   tenantPublicPort: process.env.TENANT_PUBLIC_PORT || undefined,
   coordinatorUrl: process.env.COORDINATOR_URL || undefined,
@@ -166,6 +176,25 @@ export function tenantPublicUrl(slug: string): string {
   const proto = config.publicUrl.startsWith("https") ? "https" : "http";
   const port = config.tenantPublicPort ? `:${config.tenantPublicPort}` : "";
   return `${proto}://${slug}.${config.baseDomain}${port}`;
+}
+
+/**
+ * The shared control URL (`<proto>://<CONTROL_DOMAIN>[:port]`), or null when
+ * no CONTROL_DOMAIN is configured (per-tailnet URLs are used instead).
+ */
+export function sharedControlUrl(): string | null {
+  if (!config.controlDomain) return null;
+  const proto = config.publicUrl.startsWith("https") ? "https" : "http";
+  const port = config.tenantPublicPort ? `:${config.tenantPublicPort}` : "";
+  return `${proto}://${config.controlDomain}${port}`;
+}
+
+if (config.controlDomain) {
+  const c = config.controlDomain.toLowerCase();
+  const b = config.baseDomain.toLowerCase();
+  if (c === b || c.endsWith(`.${b}`)) {
+    throw new Error("CONTROL_DOMAIN must not be BASE_DOMAIN or a name under it (ADR-0026 / ADR-0028)");
+  }
 }
 
 /** TypeScript type inferred from the validated config object. */

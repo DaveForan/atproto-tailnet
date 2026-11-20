@@ -19,7 +19,8 @@ import { randomInt } from "node:crypto";
 import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { tenants, tenantHostnames } from "../db/schema.js";
-import { tenantPublicUrl } from "../config.js";
+import { sharedControlUrl, tenantPublicUrl } from "../config.js";
+import { useCoordinator } from "./control-client.js";
 
 /** One DNS label: lowercase letters, digits, inner hyphens, 1-63 chars. */
 const LABEL_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
@@ -75,8 +76,18 @@ export async function primaryHostname(tenantId: string, fallbackSlug?: string): 
   return t?.slug ?? "";
 }
 
-/** Login server URL new devices of this tailnet should use. */
+/** True when every tailnet's devices use one shared control URL (coordinator mode + CONTROL_DOMAIN). */
+export function usesSharedControlUrl(): boolean {
+  return useCoordinator && sharedControlUrl() !== null;
+}
+
+/**
+ * Login server URL new devices of this tailnet should use: the shared control
+ * URL in coordinator mode (the pre-auth key alone selects the tailnet), else
+ * the tailnet's own primary address (Headscale mode: one server per tailnet).
+ */
 export async function tenantLoginServerFor(tenant: { id: string; slug: string }): Promise<string> {
+  if (usesSharedControlUrl()) return sharedControlUrl()!;
   return tenantPublicUrl(await primaryHostname(tenant.id, tenant.slug));
 }
 

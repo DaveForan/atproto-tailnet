@@ -112,6 +112,15 @@ doctl compute domain records create "$DOMAIN" \
   --record-ttl 300
 ```
 
+A record for the shared control URL (all devices use `https://control.$DOMAIN` as login server):
+```sh
+doctl compute domain records create "$DOMAIN" \
+  --record-type A \
+  --record-name "control" \
+  --record-data "$DROPLET_IP" \
+  --record-ttl 300
+```
+
 Wildcard A record for tenant subdomains:
 ```sh
 doctl compute domain records create "$DOMAIN" \
@@ -176,6 +185,7 @@ SESSION_SECRET=${SESSION_SECRET}
 PORT=3000
 PUBLIC_URL=https://${APP_DOMAIN}
 BASE_DOMAIN=${BASE_DOMAIN}
+CONTROL_DOMAIN=control.${DOMAIN}
 LOG_LEVEL=info
 FEDERATION_KEY_ENCRYPTION_KEY=${FEDERATION_KEY_ENCRYPTION_KEY}
 

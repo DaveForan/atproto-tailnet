@@ -24,3 +24,18 @@
 *.{$BASE_DOMAIN:ts.example.com} {
 	import /etc/caddy/tls-strategy/site.caddy
 }
+
+# Shared control URL (ADR-0026): every tailnet's devices use this one host; the
+# pre-auth key alone selects the tailnet. Only the paths Tailscale clients need
+# reach the coordinator (its admin API is on the same port). Must not be under
+# BASE_DOMAIN. Unset → control.localhost (internal certificate, no ACME).
+{$CONTROL_DOMAIN:control.localhost} {
+	header Strict-Transport-Security "max-age=31536000"
+	@control path /key /ts2021
+	handle @control {
+		reverse_proxy {$COORDINATOR_UPSTREAM:coordinator:9443}
+	}
+	handle {
+		respond "Not found" 404
+	}
+}

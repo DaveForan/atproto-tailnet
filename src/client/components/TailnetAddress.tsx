@@ -29,10 +29,13 @@ export function AddressForm({
   submitLabel,
   onSaved,
   secondary,
+  sharedControl = false,
 }: {
   tenantId: string;
   initial: string;
   baseDomain: string;
+  /** With a shared control URL the address is a public name, not where devices connect. */
+  sharedControl?: boolean;
   submitLabel: string;
   onSaved: (primary: string) => void;
   secondary?: React.ReactNode;
@@ -79,7 +82,11 @@ export function AddressForm({
         <span className="mono text-dim">.{baseDomain}</span>
       </div>
       <p id="tailnet-address-help" className="help-text">
-        {value && problem ? problem : `Devices will connect to https://${value || "…"}.${baseDomain}`}
+        {value && problem
+          ? problem
+          : sharedControl
+            ? `Join and board links will use ${value || "…"}.${baseDomain}`
+            : `Devices will connect to https://${value || "…"}.${baseDomain}`}
       </p>
       <div className="btn-group">
         <button type="submit" disabled={busy || !!problem || value === initial}>
@@ -134,7 +141,17 @@ export function TailnetAddressCard() {
   return (
     <Card title="Tailnet address">
       <p className="card-description">
-        Devices connect to <span className="mono">https://{data.primary}.{data.baseDomain}</span>.
+        {data.sharedControl ? (
+          <>
+            This tailnet&apos;s public name is <span className="mono">{data.primary}.{data.baseDomain}</span>{" "}
+            (used in join and board links). Devices connect to{" "}
+            <span className="mono">{data.loginServer}</span>.
+          </>
+        ) : (
+          <>
+            Devices connect to <span className="mono">https://{data.primary}.{data.baseDomain}</span>.
+          </>
+        )}
         {aliases.length > 0 && " Older addresses keep working for devices that enrolled with them."}
       </p>
 
@@ -171,6 +188,7 @@ export function TailnetAddressCard() {
             tenantId={currentTenant.id}
             initial={data.primary}
             baseDomain={data.baseDomain}
+            sharedControl={data.sharedControl}
             submitLabel="Change address"
             onSaved={() => {
               setEditing(false);

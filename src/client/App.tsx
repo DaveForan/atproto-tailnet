@@ -3,7 +3,7 @@ import { useApp } from "./hooks/useAppState";
 import { Header, LockdownBanner, LoginPage, Sidebar, SidebarProvider, StatsSummary } from "./components/Layout";
 import { PendingInvitations } from "./components/PendingInvitations";
 import { InvitePage, NoAccessPage, SuspendedPage } from "./components/AccessPages";
-import type { TabId, Tenant } from "./lib/types";
+import type { HostnamesData, TabId, Tenant } from "./lib/types";
 import { AddressForm } from "./components/TailnetAddress";
 import { hostnamesService } from "./services/hostnames";
 
@@ -145,16 +145,16 @@ function Dashboard() {
 
 function SetupWizard({ tenant }: { tenant: Tenant }) {
   const { wizardStep, setWizardStep, dismissWizard, reload } = useApp();
-  const [address, setAddress] = useState<{ primary: string; baseDomain: string } | null>(null);
+  const [address, setAddress] = useState<HostnamesData | null>(null);
 
   useEffect(() => {
     hostnamesService
       .list(tenant.id)
-      .then((d) => d && setAddress({ primary: d.primary, baseDomain: d.baseDomain }))
+      .then((d) => d && setAddress(d))
       .catch(() => setAddress(null));
   }, [tenant.id]);
 
-  const loginServer = address ? `https://${address.primary}.${address.baseDomain}` : "https://<your-tailnet-address>";
+  const loginServer = address?.loginServer ?? "https://<login-server>";
 
   return (
     <div className="wizard-overlay">
@@ -163,13 +163,15 @@ function SetupWizard({ tenant }: { tenant: Tenant }) {
         {wizardStep === 1 && tenant.isOriginator && address && (
           <div>
             <p>
-              Your tailnet is ready. First, choose its address — every device you add will
-              connect to it. You can change it later; old addresses keep working as aliases.
+              Your tailnet is ready. First, choose its address — the public name used in
+              join and board links{address.sharedControl ? "" : ", and the server your devices connect to"}.
+              You can change it later; old addresses keep working as aliases.
             </p>
             <AddressForm
               tenantId={tenant.id}
               initial={address.primary}
               baseDomain={address.baseDomain}
+              sharedControl={address.sharedControl}
               submitLabel="Use this address"
               onSaved={(primary) => {
                 setAddress({ ...address, primary });
