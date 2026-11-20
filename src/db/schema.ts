@@ -207,6 +207,8 @@ export const users = pgTable("users", {
   avatarUrl: text("avatar_url"),
   /** Set by an instance operator: the user cannot sign in or use any credential. */
   disabledAt: timestamp("disabled_at"),
+  /** Most trusted devices the user allows themselves (ADR-0035). */
+  maxTrustedDevices: integer("max_trusted_devices").notNull().default(3),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
@@ -1123,4 +1125,68 @@ export const deviceShares = pgTable(
     index("device_shares_owner_idx").on(t.ownerId),
     index("device_shares_guest_idx").on(t.guestId),
   ],
+);
+
+// ── Device-bound access (ADR-0035) ──────────────────────────────────────
+
+/**
+ * A browser the user trusts for sign-in. While a user has any, a sign-in must
+ * prove one of them: the browser signs a challenge with a key that cannot be
+ * read out of it. Only the public key is stored here.
+ */
+export const trustedDevices = pgTable(
+  "trusted_devices",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    /** "device-key": WebCrypto ECDSA P-256 key held by the browser. */
+    kind: text("kind").notNull().default("device-key"),
+    publicKeyJwk: jsonb("public_key_jwk").notNull().$type<{ kty: string; crv: string; x: string; y: string }>(),
+    /** Browser and system at enrolment, shown to the user (information only). */
+    userAgent: text("user_agent"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    lastUsedAt: timestamp("last_used_at"),
+  },
+  (t) => [index("trusted_devices_user_idx").on(t.userId)],
+);
+
+/** Single-use recovery codes; only SHA-256 hashes are stored. */
+export const recoveryCodes = pgTable(
+  "recovery_codes",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    codeHash: text("code_hash").notNull(),
+    usedAt: timestamp("used_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (t) => [index("recovery_codes_user_idx").on(t.userId)],
+);
+
+/**
+ * A new browser asking to become trusted. It shows a short code; the user
+ * confirms the same code on a device that is already trusted.
+ */
+export const deviceTrustRequests = pgTable(
+  "device_trust_requests",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    publicKeyJwk: jsonb("public_key_jwk").notNull().$type<{ kty: string; crv: string; x: string; y: string }>(),
+    userAgent: text("user_agent"),
+    /** Shown on the new device and typed on the trusted one. */
+    code: text("code").notNull(),
+    status: text("status").notNull().$type<"pending" | "approved" | "denied">().default("pending"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    expiresAt: timestamp("expires_at").notNull(),
+  },
+  (t) => [index("device_trust_requests_user_idx").on(t.userId, t.status)],
 );
