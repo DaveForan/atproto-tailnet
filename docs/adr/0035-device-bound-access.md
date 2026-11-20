@@ -153,9 +153,16 @@ lost when the user clears the data of the browser.
 
 Not yet built:
 
-- Passkeys (WebAuthn) as a second, stronger kind of trusted device.
 - Step-up for agent tokens, MCP connections, operator actions, the tailnet
   address, and accepting shares.
 - Section 2: self-lock of tailnet machines, enforced by the coordinator.
 - The operator reset with a delay (not planned; the owner was not sure).
 - A test in real browsers (Safari, Chrome, Firefox, mobile).
+
+### Decision of the owner: no passkeys
+
+The owner refused passkeys (WebAuthn). Reasons: a passkey is often synced to
+all devices of a cloud account, so it does not identify one device; recovery
+then depends on that cloud account; and each use needs a prompt. Section 1 and
+section 4 of this ADR describe passkeys; the device key replaces them. No
+WebAuthn code will be added.

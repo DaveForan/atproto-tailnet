@@ -370,7 +370,7 @@ Order matters: each stage gives value alone and unblocks the next.
 - [x] Add-device approval from a trusted device with a code; step-up for changes of the lock
 - [x] Recovery codes; server command `reset-device-lock`
 - [x] Account screen; themes (paper default, parchment, forest, slate, high contrast); responsive and focus polish
-- [ ] Passkeys (WebAuthn) as a stronger kind of trusted device
+- [x] Decision: no passkeys (WebAuthn); the device key is the device proof
 - [ ] Step-up for agent tokens, MCP connections, operator actions, accepting shares
 - [ ] Self-lock of tailnet machines; coordinator enforces locks at registration
 - [ ] Screen-by-screen review of the older tabs (tables on phones, forms, empty states)
