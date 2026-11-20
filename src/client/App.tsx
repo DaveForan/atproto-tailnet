@@ -3,6 +3,7 @@ import { useApp } from "./hooks/useAppState";
 import { Header, LockdownBanner, LoginPage, Sidebar, SidebarProvider, StatsSummary } from "./components/Layout";
 import { PendingInvitations } from "./components/PendingInvitations";
 import { InvitePage, NoAccessPage, SuspendedPage } from "./components/AccessPages";
+import { DeviceSignInPage } from "./components/DeviceSignIn";
 import type { HostnamesData, TabId, Tenant } from "./lib/types";
 import { AddressForm } from "./components/TailnetAddress";
 import { hostnamesService } from "./services/hostnames";
@@ -55,12 +56,14 @@ const tabComponents: Record<TabId, React.LazyExoticComponent<React.ComponentType
   instance: InstanceTab,
 };
 
+const DEVICE_PATH = /^\/device\/([0-9a-f]{32})\/?$/;
 const INVITE_PATH = /^\/invite\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i;
 
 export function App() {
   const { user, loading, error, currentTenant, showWizard, reload, reloadAndSelect } = useApp();
   const [path, setPath] = useState(window.location.pathname);
   const inviteId = INVITE_PATH.exec(path)?.[1] ?? null;
+  const deviceId = DEVICE_PATH.exec(path)?.[1] ?? null;
 
   if (loading) {
     return <div className="loading-screen">Loading...</div>;
@@ -76,7 +79,22 @@ export function App() {
   }
 
   if (!user) {
-    return <LoginPage redirect={inviteId ? `/invite/${inviteId.toLowerCase()}` : undefined} />;
+    const redirect = inviteId ? `/invite/${inviteId.toLowerCase()}` : deviceId ? `/device/${deviceId}` : undefined;
+    return <LoginPage redirect={redirect} purpose={deviceId ? "device" : inviteId ? "invite" : undefined} />;
+  }
+
+  if (deviceId) {
+    const done = () => {
+      history.replaceState(null, "", "/");
+      setPath("/");
+      void reload();
+    };
+    return (
+      <>
+        <Header minimal />
+        <DeviceSignInPage id={deviceId} onDone={done} />
+      </>
+    );
   }
 
   if (inviteId) {

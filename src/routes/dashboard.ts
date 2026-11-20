@@ -55,3 +55,17 @@ dashboardRouter.get("/invite/:id", (req, res) => {
   }
   res.type("html").send(DASHBOARD_HTML);
 });
+
+/**
+ * Device sign-in link (ADR-0032). Serves the dashboard shell, which shows the
+ * waiting device to the signed-in member. Anonymous visitors get the login
+ * view with `redirect=/device/:id`.
+ */
+dashboardRouter.get("/device/:id", (req, res) => {
+  const id = req.params.id;
+  if (typeof id !== "string" || !/^[0-9a-f]{32}$/.test(id)) {
+    res.redirect("/");
+    return;
+  }
+  res.type("html").send(DASHBOARD_HTML);
+});

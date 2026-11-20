@@ -964,3 +964,8 @@ pre {
   .editor-split { grid-template-columns: minmax(0, 1fr); }
   .post-card { padding: 12px; }
 }
+
+/* Device sign-in (ADR-0032) */
+.detail-list { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; margin-bottom: 12px; }
+.detail-list dt { color: var(--text-dim); font-size: 14px; }
+.detail-list dd { overflow-wrap: anywhere; }

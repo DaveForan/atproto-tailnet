@@ -188,6 +188,12 @@ The **Add Device** tab shows the exact command. In coordinator mode with `CONTRO
 
 The device belongs to the member who made the key.
 
+### Sign in a device without a key
+
+A device can also join without a key. Start the Tailscale app with the login server of the instance and select **Sign in**. The app opens a page of this service. Sign in with your AT Protocol account, check the name of the device and the key fingerprint, select the tailnet, and select **Add device**. The link is valid for 10 minutes and works one time.
+
+In a tailnet that requires device approval, only the originator can add a device this way. Other members ask for a key in the **Add Device** tab.
+
 ### Tailnet address
 
 Each tailnet has a public address, for example `quiet-harbor-4821.ts.yourdomain.com`. Join links and board links use it. A new tailnet gets a random address. The address never contains your handle.

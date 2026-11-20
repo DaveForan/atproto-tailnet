@@ -458,6 +458,29 @@ export class CoordinatorApiClient {
     await this.pushAutoApprovers(value);
   }
 
+  // ── Interactive device sign-in (ADR-0032; not scoped to one tenant) ──
+
+  async getDeviceAuth(id: string): Promise<{
+    hostname: string;
+    os: string;
+    fingerprint: string;
+    pending: boolean;
+    registered_tenant_id: string | null;
+  }> {
+    return (await this.request("GET", `/api/device-auth/${encodeURIComponent(id)}`)) as never;
+  }
+
+  async approveDeviceAuth(id: string, coordinatorTenantId: string, owner: string): Promise<void> {
+    await this.request("POST", `/api/device-auth/${encodeURIComponent(id)}/approve`, {
+      tenant_id: coordinatorTenantId,
+      owner,
+    });
+  }
+
+  async denyDeviceAuth(id: string): Promise<void> {
+    await this.request("POST", `/api/device-auth/${encodeURIComponent(id)}/deny`, {});
+  }
+
   /** Device and service names (ADR-0028); stored by the coordinator and sent to devices. */
   async setDns(dns: { base_domain: string | null; tailnet_label: string | null; upstream: string[]; records: unknown[] }): Promise<void> {
     await this.request("PUT", `/api/tenants/${this.tenantId}/dns`, dns);

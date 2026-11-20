@@ -29,6 +29,8 @@ services:
       # Built-in DERP relay + STUN (ADR-0027). Empty = no relay region.
       # The relay key is kept next to the control key (coord_data volume).
       COORD_DERP_HOSTNAME: ${DERP_DOMAIN:-}
+      # Devices without an auth key are sent here to sign in (ADR-0032)
+      COORD_DEVICE_AUTH_URL: ${PUBLIC_URL:-http://127.0.0.1:3000}/device
       COORD_ADMIN_KEY: ${COORDINATOR_API_KEY:?COORDINATOR_API_KEY must be set}
       DATABASE_URL: postgresql://${POSTGRES_USER:-atproto_tailnet}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-atproto_tailnet}
       RUST_LOG: "info"

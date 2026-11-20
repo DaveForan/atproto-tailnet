@@ -1,6 +1,6 @@
 # ADR-0032: Interactive device sign-in with Bluesky
 
-**Status:** Proposed
+**Status:** In Progress
 **Date:** 2026-11-19
 **Priority:** P1
 **Depends On:** ADR-0003 (AT Proto OAuth), ADR-0023 (Rust mesh coordinator), ADR-0026 (shared control URL)
@@ -53,3 +53,19 @@ Rules:
   sign-in.
 - An expired or used link shows an error and registers nothing.
 - A device in a tailnet in lockdown cannot complete the flow.
+
+## Implementation notes
+
+Built: the pending sign-in registry and the follow-up wait in the coordinator,
+the admin API, the `/device/<id>` approval page, and the checks of the key
+path.
+
+Differences from the decision:
+
+- In a tailnet that requires device approval, only the originator can use the
+  sign-in. Other members get a message to ask for a key. The request to
+  approvers from this page is not built.
+- Pending sign-ins are in the memory of one coordinator process. With more
+  than one replica (ADR-0034) they must move to the store.
+
+Not yet done: a test with the iOS, Android and macOS apps.

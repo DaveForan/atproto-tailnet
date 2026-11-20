@@ -317,9 +317,9 @@ Order matters: each stage gives value alone and unblocks the next.
 - [ ] Verify with Mac + phone (`tailscale netcheck`, relayed then direct)
 
 ### 6.3 Interactive device sign-in (ADR-0032)
-- [ ] Coordinator: pending registrations, AuthURL, waiting map request, completion API
-- [ ] TS service: `/device/:id` approval page (Bluesky sign-in, tailnet choice), all key-path checks
-- [ ] Remove the `example.com` placeholder
+- [x] Coordinator: pending sign-ins, AuthURL, waiting follow-up request, admin API
+- [x] TS service: `/device/:id` approval page (Bluesky sign-in, tailnet choice), all key-path checks
+- [x] Remove the `example.com` placeholder
 - [ ] Verify on iOS and Android
 
 ### 6.4 Coordinator DNS (ADR-0028)

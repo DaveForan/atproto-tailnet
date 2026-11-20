@@ -200,7 +200,7 @@ export function LockdownBanner() {
   );
 }
 
-export function LoginPage({ redirect }: { redirect?: string }) {
+export function LoginPage({ redirect, purpose }: { redirect?: string; purpose?: "invite" | "device" }) {
   // The default tailnet's controller board: public text written by its originator
   const [board, setBoard] = useState<{ name: string | null; text: string } | null>(null);
   useEffect(() => {
@@ -214,7 +214,9 @@ export function LoginPage({ redirect }: { redirect?: string }) {
     <div id="login-page">
       <h1>atproto-tailnet</h1>
       <p>
-        {redirect
+        {purpose === "device"
+          ? "Sign in with your Bluesky identity to add this device to your tailnet."
+          : redirect
           ? "Sign in with your Bluesky identity to view your invitation."
           : "Private mesh networks for your Bluesky identity. Access is by invitation."}
       </p>
