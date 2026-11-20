@@ -1,0 +1,22 @@
+[package]
+name = "coord-derp"
+description = "DERP relay and STUN servers compatible with Tailscale clients (ADR-0027)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+async-trait = "0.1"
+bytes = { workspace = true }
+crypto_box = { version = "0.9", features = ["salsa20"] }
+hex = { workspace = true }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
