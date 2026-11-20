@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use tracing::{info, warn};
 
-use coord_core::{sanitize, NodeId, NodeInfo, NodeRegistration};
+use coord_core::{sanitize, NodeId, NodeInfo, NodeRegistration, TenantId};
 use coord_proto::register::{RegisterRequest, RegisterResponse, User, Login};
 use coord_proto::map::MapRequest;
 use coord_store::PeerEvent;
@@ -48,9 +48,10 @@ pub async fn handle_register(
             // here would change nothing and break the key's next legitimate use.
             // A real re-auth (`tailscale up --force-reauth`) generates a new node
             // key and takes the key path below.
+            let identity_resp = authorized_response(state, detail.tenant_id, detail.attrs.owner.as_deref());
             if !suspended && current == node_key_bytes.as_slice() {
                 sync_node_routes(state, existing, advertised).await;
-                return Ok((serde_json::to_string(&authorized_response())?, None));
+                return Ok((serde_json::to_string(&identity_resp)?, None));
             }
             // Key rotation without an auth key keeps the node's identity. With an
             // auth key the machine is re-authenticating: fall through so the new
@@ -59,7 +60,7 @@ pub async fn handle_register(
                 state.store.rotate_node_key(machine_key, &old, &node_key_bytes).await?;
                 info!(node_id = existing.as_i64(), "node key rotated on re-register");
                 sync_node_routes(state, existing, advertised).await;
-                return Ok((serde_json::to_string(&authorized_response())?, None));
+                return Ok((serde_json::to_string(&identity_resp)?, None));
             }
         }
     }
@@ -135,6 +136,7 @@ pub async fn handle_register(
     };
 
     let tenant_id = grant.tenant_id;
+    let owner = grant.owner.clone();
     let registration = NodeRegistration {
         owner: grant.owner,
         tags: grant.tags,
@@ -169,7 +171,8 @@ pub async fn handle_register(
         "node registered"
     );
 
-    Ok((serde_json::to_string(&authorized_response())?, Some(generation)))
+    let resp = authorized_response(state, tenant_id, owner.as_deref());
+    Ok((serde_json::to_string(&resp)?, Some(generation)))
 }
 
 /// Stored briefly when a client sends no usable hostname; replaced by node-<id>.
@@ -190,17 +193,20 @@ fn error_response(msg: &str) -> RegisterResponse {
     }
 }
 
-fn authorized_response() -> RegisterResponse {
+/// Authorized RegisterResponse naming the node's owner as the TS service
+/// pushed it (Bluesky handle), or the legacy placeholder user when unknown.
+fn authorized_response(state: &CoordinatorState, tenant: TenantId, owner: Option<&str>) -> RegisterResponse {
+    let profile = state.identity.profile(tenant, owner);
     RegisterResponse {
         user: User {
-            id: 1,
-            display_name: "Mesh User".into(),
+            id: profile.id,
+            display_name: profile.display_name.clone(),
         },
         login: Login {
-            id: 1,
-            provider: "coordinator".into(),
-            login_name: "mesh@coordinator.local".into(),
-            display_name: "Mesh User".into(),
+            id: profile.id,
+            provider: "atproto".into(),
+            login_name: profile.login_name,
+            display_name: profile.display_name,
         },
         node_key_expired: false,
         machine_authorized: true,

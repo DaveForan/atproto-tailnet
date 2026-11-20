@@ -173,6 +173,7 @@ pub async fn delete_tenant(
             state.acl.remove_policy(tenant_id);
             state.derp.remove_tenant(tenant_id);
             state.auto_approvers.remove_tenant(tenant_id);
+            state.identity.remove_tenant(tenant_id);
             (
                 StatusCode::OK,
                 Json(serde_json::json!({"status": "deleted", "tenant_id": id})),
@@ -549,6 +550,43 @@ pub async fn approve_node_routes(
         Some(detail) => Json(node_detail_json(node_id, detail)).into_response(),
         None => not_found("node not found"),
     }
+}
+
+/// GET /api/tenants/{id}/identity
+pub async fn get_tenant_identity(
+    State(state): State<Arc<CoordinatorState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    let tenant_id = match existing_tenant(&state, &id).await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    Json(state.identity.get_tenant(tenant_id)).into_response()
+}
+
+/// PUT /api/tenants/{id}/identity — replaces the tenant's tailnet name and
+/// owner -> user names shown in Tailscale clients. Live map streams get a
+/// fresh snapshot only when something actually changed (the TS service
+/// re-pushes this on every monitor sweep).
+pub async fn set_tenant_identity(
+    State(state): State<Arc<CoordinatorState>>,
+    Path(id): Path<String>,
+    Json(body): Json<coord_netmap::TenantIdentity>,
+) -> impl IntoResponse {
+    let tenant_id = match existing_tenant(&state, &id).await {
+        Ok(t) => t,
+        Err(r) => return r,
+    };
+    let identity = match body.sanitized() {
+        Ok(i) => i,
+        Err(e) => return bad_request(e.to_string()),
+    };
+    let changed = state.identity.get_tenant(tenant_id) != identity;
+    state.identity.set_tenant(tenant_id, identity.clone());
+    if changed {
+        state.notify_tenant_changed(tenant_id);
+    }
+    Json(identity).into_response()
 }
 
 const MAX_AUTO_APPROVER_ROUTES: usize = 256;

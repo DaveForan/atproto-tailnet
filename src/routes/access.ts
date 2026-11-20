@@ -16,6 +16,7 @@ import type { ControlClient, HeadscalePreAuthKey } from "../orchestrator/control
 import { CoordinatorApiClient } from "../orchestrator/coordinator-api.js";
 import { HeadscaleApiClient } from "../orchestrator/headscale-api.js";
 import { logger } from "../logger.js";
+import { pushTenantIdentity } from "../orchestrator/coordinator-identity.js";
 
 export const DEFAULT_KEY_HOURS = 24;
 export const MAX_KEY_HOURS = 720;
@@ -88,6 +89,14 @@ export async function issueMemberKey(params: {
     expirationSeconds,
     owner: params.userId,
   });
+
+  // So the device's first registration already shows the tailnet name and the
+  // member's handle in the Tailscale app (best effort; the monitor re-pushes).
+  if (params.client instanceof CoordinatorApiClient && params.tenant.coordinatorTenantId) {
+    await pushTenantIdentity(params.tenant.id, params.tenant.coordinatorTenantId).catch((err) =>
+      logger.warn({ tenantId: params.tenant.id, err }, "failed to push tenant identity"),
+    );
+  }
 
   let recordId: string | null = null;
   try {

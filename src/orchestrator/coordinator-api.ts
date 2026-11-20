@@ -458,6 +458,14 @@ export class CoordinatorApiClient {
     await this.pushAutoApprovers(value);
   }
 
+  /** Tailnet + member names shown in Tailscale clients (see coordinator-identity.ts). */
+  async setIdentity(identity: {
+    tailnet_name: string | null;
+    users: Record<string, { login_name: string; display_name: string }>;
+  }): Promise<void> {
+    await this.request("PUT", `/api/tenants/${this.tenantId}/identity`, identity);
+  }
+
   /** Push auto-approvers without persisting (used by the monitor's replay). */
   async pushAutoApprovers(aa: AutoApproversConfig): Promise<void> {
     await this.request("PUT", `/api/tenants/${this.tenantId}/auto-approvers`, aa);

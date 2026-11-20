@@ -84,6 +84,10 @@ pub fn router(state: Arc<CoordinatorState>) -> Router {
             get(admin::get_auto_approvers).put(admin::set_auto_approvers),
         )
         .route("/tenants/{id}/derp", get(admin::get_tenant_derp).put(admin::set_tenant_derp))
+        .route(
+            "/tenants/{id}/identity",
+            get(admin::get_tenant_identity).put(admin::set_tenant_identity),
+        )
         .route("/preauth-keys", post(admin::create_preauth_key))
         .route("/nodes", get(admin::list_nodes))
         .route("/nodes/{id}", get(admin::get_node_handler).delete(admin::delete_node_handler))

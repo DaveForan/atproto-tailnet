@@ -2975,3 +2975,92 @@ async fn suspension_tells_clients_to_drop_peers_before_cutting_the_stream() {
     assert!(cutoff["PeersRemoved"].as_array().unwrap().iter().any(|id| id == peer_b));
     assert_eq!(cutoff["PacketFilter"], serde_json::json!([]), "deny-all filter");
 }
+
+// ── Tenant identity: tailnet + user names shown in Tailscale clients ──
+
+#[tokio::test]
+async fn identity_names_register_response_and_netmap() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "identity").await;
+
+    // Unknown identity: legacy placeholders, unchanged behaviour
+    let k0 = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "owner": "u-alice" })).await;
+    let before = register_routes(&state, 70, k0["key"].as_str().unwrap(), "alice-laptop", None).await;
+    assert_eq!(before["Login"]["LoginName"], "mesh@coordinator.local");
+
+    // Push identity
+    let (status, json) = api_call(
+        &app,
+        "PUT",
+        format!("/api/tenants/{t}/identity"),
+        Some(serde_json::json!({
+            "tailnet_name": "Alice's tailnet",
+            "users": {
+                "u-alice": { "login_name": "alice.bsky.social", "display_name": "Alice" },
+                "u-bob": { "login_name": "bob.bsky.social" }
+            }
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+
+    // Register response names the key's owner
+    let k1 = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "owner": "u-bob" })).await;
+    let reg = register_routes(&state, 80, k1["key"].as_str().unwrap(), "bob-phone", None).await;
+    assert_eq!(reg["Login"]["LoginName"], "bob.bsky.social");
+    assert_eq!(reg["Login"]["DisplayName"], "bob.bsky.social", "display name falls back to login");
+    assert_eq!(reg["User"]["ID"], reg["Login"]["ID"]);
+    assert_ne!(reg["User"]["ID"], 1);
+
+    // Netmap: tailnet name as Domain, distinct users with profiles for self + peers
+    let map_body = serde_json::json!({
+        "Version": 2,
+        "NodeKey": format!("nodekey:{}", hex::encode([81u8; 32])),
+    });
+    let map: serde_json::Value = serde_json::from_str(
+        &coord_api::__test_handle_map(&state, &[80u8; 32], &map_body.to_string()).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(map["Domain"], "Alice's tailnet");
+    let bob_id = map["Node"]["User"].as_i64().unwrap();
+    let alice_id = map["Peers"][0]["User"].as_i64().unwrap();
+    assert_ne!(bob_id, alice_id);
+    let profiles = map["UserProfiles"].as_array().unwrap();
+    let login_of = |id: i64| {
+        profiles.iter().find(|p| p["ID"].as_i64() == Some(id)).map(|p| p["LoginName"].clone())
+    };
+    assert_eq!(login_of(bob_id), Some(serde_json::json!("bob.bsky.social")));
+    assert_eq!(login_of(alice_id), Some(serde_json::json!("alice.bsky.social")));
+
+    // GET returns what was stored
+    let (status, json) = api_call(&app, "GET", format!("/api/tenants/{t}/identity"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(json["users"]["u-alice"]["display_name"], "Alice");
+}
+
+#[tokio::test]
+async fn identity_rejects_bad_input_and_needs_admin_auth() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "identity-bad").await;
+    for bad in [
+        serde_json::json!({ "users": { "u": { "login_name": "" } } }),
+        serde_json::json!({ "users": { "u": { "login_name": "x".repeat(300) } } }),
+        serde_json::json!({ "tailnet_name": "y".repeat(300) }),
+    ] {
+        let (status, _) = api_call(&app, "PUT", format!("/api/tenants/{t}/identity"), Some(bad)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/api/tenants/{t}/identity"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"tailnet_name":"x"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}

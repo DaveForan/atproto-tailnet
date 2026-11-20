@@ -103,6 +103,8 @@ pub struct PeerInfo {
     pub derp_region: Option<i32>,
     pub online: bool,
     pub last_seen: Option<chrono::DateTime<chrono::Utc>>,
+    /// Owner of the node (the TS service's user id), inherited from its pre-auth key.
+    pub owner: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -6,7 +6,7 @@ use coord_federation::{
     BrokerConfig, BrokerService, FederationMemoryStore, FederationStore,
     HandshakeCallbacks, InboundHandler,
 };
-use coord_netmap::{AutoApproverRegistry, DerpRegistry, NetmapService};
+use coord_netmap::{AutoApproverRegistry, DerpRegistry, IdentityRegistry, NetmapService};
 use coord_proto::map::DerpMap;
 use coord_store::{MemoryStore, Store};
 
@@ -17,6 +17,8 @@ pub struct CoordinatorState {
     pub(crate) derp: Arc<DerpRegistry>,
     /// Per-tenant route auto-approvers (in-memory; TS service replays them).
     pub(crate) auto_approvers: Arc<AutoApproverRegistry>,
+    /// Per-tenant tailnet/user names shown in clients (in-memory; TS service replays them).
+    pub(crate) identity: Arc<IdentityRegistry>,
     pub(crate) admin_api_key: Option<String>,
     pub(crate) netmap: NetmapService,
     /// Fires when a tenant's ACL or DERP config changes so live map streams resend a snapshot.
@@ -46,7 +48,8 @@ impl CoordinatorState {
         let store = Arc::new(Store::Memory(Box::new(MemoryStore::new())));
         let acl = Arc::new(PolicyEngine::new());
         let derp = Arc::new(DerpRegistry::new(default_derp_map()));
-        let netmap = NetmapService::new(store.clone(), acl.clone(), derp.clone());
+        let identity = Arc::new(IdentityRegistry::new());
+        let netmap = NetmapService::with_identity(store.clone(), acl.clone(), derp.clone(), identity.clone());
         let (config_changed, _) = broadcast::channel(256);
         Self {
             control_key,
@@ -54,6 +57,7 @@ impl CoordinatorState {
             acl,
             derp,
             auto_approvers: Arc::new(AutoApproverRegistry::new()),
+            identity,
             admin_api_key: None,
             netmap,
             config_changed,
@@ -82,13 +86,13 @@ impl CoordinatorState {
 
     pub fn with_store(mut self, store: Store) -> Self {
         self.store = Arc::new(store);
-        self.netmap = NetmapService::new(self.store.clone(), self.acl.clone(), self.derp.clone());
+        self.netmap = NetmapService::with_identity(self.store.clone(), self.acl.clone(), self.derp.clone(), self.identity.clone());
         self
     }
 
     pub fn with_derp_map(mut self, derp_map: DerpMap) -> Self {
         self.derp = Arc::new(DerpRegistry::new(derp_map));
-        self.netmap = NetmapService::new(self.store.clone(), self.acl.clone(), self.derp.clone());
+        self.netmap = NetmapService::with_identity(self.store.clone(), self.acl.clone(), self.derp.clone(), self.identity.clone());
         self
     }
 
@@ -137,6 +141,10 @@ impl CoordinatorState {
 
     pub fn derp(&self) -> &Arc<DerpRegistry> {
         &self.derp
+    }
+
+    pub fn identity(&self) -> &Arc<IdentityRegistry> {
+        &self.identity
     }
 
     pub fn auto_approvers(&self) -> &Arc<AutoApproverRegistry> {

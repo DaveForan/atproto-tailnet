@@ -17,6 +17,7 @@ import { getControlClient, useCoordinator } from "./control-client.js";
 import { CoordinatorApiClient } from "./coordinator-api.js";
 import { startInstance, stopInstance } from "./headscale.js";
 import { syncTenantRoutes } from "./caddy.js";
+import { pushTenantIdentity, syncAllTenantIdentities } from "./coordinator-identity.js";
 import { sweepExpiredJtis } from "../credentials/service-auth.js";
 import { sweepExpiredOAuthStates } from "../auth/atproto.js";
 import { logAudit } from "../routes/audit.js";
@@ -160,6 +161,8 @@ export async function resyncCoordinatorState(): Promise<boolean> {
       if (t.coordinatorAutoApprovers) {
         await client.pushAutoApprovers(t.coordinatorAutoApprovers);
       }
+
+      await pushTenantIdentity(t.id, t.coordinatorTenantId!);
 
       const regions = (t.customDerpRegions ?? []) as DerpRegion[];
       const isDefault = regions.length === 0 && t.usePublicDerp;
@@ -315,6 +318,12 @@ export function startHealthMonitor(intervalMs = 60_000): void {
         logger.warn({ err }, "failed to sync Caddy routes"),
       );
       if (tick % 5 === 0) {
+        if (useCoordinator) {
+          // New members / renamed handles (coordinator only notifies clients on change)
+          await syncAllTenantIdentities().catch((err) =>
+            logger.warn({ err }, "failed to sync tenant identities"),
+          );
+        }
         await recordUsageSnapshots();
         await sweepExpiredJtis().catch((err) =>
           logger.warn({ err }, "failed to sweep expired JTIs"),

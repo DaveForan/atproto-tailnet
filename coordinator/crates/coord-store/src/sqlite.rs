@@ -573,7 +573,7 @@ impl SqliteStore {
 
     pub async fn get_peers(&self, tenant_id: TenantId, exclude_node: NodeId) -> Vec<PeerInfo> {
         let rows = sqlx::query_as::<_, PeerRow>(
-            "SELECT id, node_key, machine_key, disco_key, endpoints, ipv4, hostname, online, last_seen, advertised_routes, approved_routes \
+            "SELECT id, node_key, machine_key, disco_key, endpoints, ipv4, hostname, online, last_seen, advertised_routes, approved_routes, owner \
              FROM coord_nodes WHERE tenant_id = ?1 AND id != ?2"
         )
             .bind(tenant_id.as_uuid().to_string())
@@ -592,7 +592,7 @@ impl SqliteStore {
     ) -> Vec<PeerInfo> {
         let tid_str = tenant_id.as_uuid().to_string();
         let rows = sqlx::query_as::<_, PeerRow>(
-            "SELECT n.id, n.node_key, n.machine_key, n.disco_key, n.endpoints, n.ipv4, n.hostname, n.online, n.last_seen, n.advertised_routes, n.approved_routes \
+            "SELECT n.id, n.node_key, n.machine_key, n.disco_key, n.endpoints, n.ipv4, n.hostname, n.online, n.last_seen, n.advertised_routes, n.approved_routes, n.owner \
              FROM coord_nodes n \
              WHERE n.id != ?2 AND ( \
                  n.tenant_id = ?1 \
@@ -613,7 +613,7 @@ impl SqliteStore {
 
     pub async fn list_tenant_nodes(&self, tenant_id: TenantId) -> Vec<PeerInfo> {
         let rows = sqlx::query_as::<_, PeerRow>(
-            "SELECT id, node_key, machine_key, disco_key, endpoints, ipv4, hostname, online, last_seen, advertised_routes, approved_routes \
+            "SELECT id, node_key, machine_key, disco_key, endpoints, ipv4, hostname, online, last_seen, advertised_routes, approved_routes, owner \
              FROM coord_nodes WHERE tenant_id = ?1"
         )
             .bind(tenant_id.as_uuid().to_string())
@@ -960,7 +960,7 @@ impl SqliteStore {
         tenant_id: TenantId,
     ) -> Vec<PeerInfo> {
         let rows = sqlx::query_as::<_, PeerRow>(
-            "SELECT id, node_key, machine_key, disco_key, endpoints, ipv4, hostname, online, last_seen, advertised_routes, approved_routes \
+            "SELECT id, node_key, machine_key, disco_key, endpoints, ipv4, hostname, online, last_seen, advertised_routes, approved_routes, owner \
              FROM coord_nodes WHERE tenant_id = ?1"
         )
             .bind(tenant_id.as_uuid().to_string())
@@ -1002,7 +1002,7 @@ fn parse_posture(s: &str) -> FederationPosture {
     })
 }
 
-type PeerRow = (i64, Vec<u8>, Vec<u8>, Option<String>, String, String, String, bool, String, String, String);
+type PeerRow = (i64, Vec<u8>, Vec<u8>, Option<String>, String, String, String, bool, String, String, String, Option<String>);
 type SummaryRow = (i64, String, String, String, bool, String, Option<String>, String, bool, String, String);
 
 fn to_json(v: &[String]) -> String {
@@ -1024,7 +1024,7 @@ fn attrs_from_parts((owner, tags, ephemeral, advertised, approved): (Option<Stri
 }
 
 fn peer_row_to_info(
-    (id, node_key, machine_key, disco_key, endpoints_str, ip_str, hostname, online, last_seen_str, advertised, approved): PeerRow,
+    (id, node_key, machine_key, disco_key, endpoints_str, ip_str, hostname, online, last_seen_str, advertised, approved, owner): PeerRow,
 ) -> PeerInfo {
     let endpoints: Vec<String> = serde_json::from_str(&endpoints_str).unwrap_or_default();
     let (addresses, allowed_ips, primary_routes) =
@@ -1042,6 +1042,7 @@ fn peer_row_to_info(
         derp_region: Some(1),
         online,
         last_seen: Some(parse_datetime(&last_seen_str)),
+        owner,
     }
 }
 

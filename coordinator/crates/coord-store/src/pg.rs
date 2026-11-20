@@ -568,7 +568,7 @@ impl PgStore {
 
     pub async fn get_peers(&self, tenant_id: TenantId, exclude_node: NodeId) -> Vec<PeerInfo> {
         let rows = sqlx::query_as::<_, PeerRow>(
-            "SELECT id, node_key, machine_key, disco_key, endpoints, ipv4, hostname, online, last_seen, advertised_routes, approved_routes \
+            "SELECT id, node_key, machine_key, disco_key, endpoints, ipv4, hostname, online, last_seen, advertised_routes, approved_routes, owner \
              FROM coord_nodes WHERE tenant_id = $1 AND id != $2"
         )
             .bind(tenant_id.as_uuid())
@@ -586,7 +586,7 @@ impl PgStore {
         exclude_node: NodeId,
     ) -> Vec<PeerInfo> {
         let rows = sqlx::query_as::<_, PeerRow>(
-            "SELECT n.id, n.node_key, n.machine_key, n.disco_key, n.endpoints, n.ipv4, n.hostname, n.online, n.last_seen, n.advertised_routes, n.approved_routes \
+            "SELECT n.id, n.node_key, n.machine_key, n.disco_key, n.endpoints, n.ipv4, n.hostname, n.online, n.last_seen, n.advertised_routes, n.approved_routes, n.owner \
              FROM coord_nodes n \
              WHERE n.id != $2 AND ( \
                  n.tenant_id = $1 \
@@ -607,7 +607,7 @@ impl PgStore {
 
     pub async fn list_tenant_nodes(&self, tenant_id: TenantId) -> Vec<PeerInfo> {
         let rows = sqlx::query_as::<_, PeerRow>(
-            "SELECT id, node_key, machine_key, disco_key, endpoints, ipv4, hostname, online, last_seen, advertised_routes, approved_routes \
+            "SELECT id, node_key, machine_key, disco_key, endpoints, ipv4, hostname, online, last_seen, advertised_routes, approved_routes, owner \
              FROM coord_nodes WHERE tenant_id = $1"
         )
             .bind(tenant_id.as_uuid())
@@ -926,7 +926,7 @@ impl PgStore {
         tenant_id: TenantId,
     ) -> Vec<PeerInfo> {
         let rows = sqlx::query_as::<_, PeerRow>(
-            "SELECT id, node_key, machine_key, disco_key, endpoints, ipv4, hostname, online, last_seen, advertised_routes, approved_routes \
+            "SELECT id, node_key, machine_key, disco_key, endpoints, ipv4, hostname, online, last_seen, advertised_routes, approved_routes, owner \
              FROM coord_nodes WHERE tenant_id = $1"
         )
             .bind(tenant_id.as_uuid())
@@ -944,7 +944,7 @@ impl std::fmt::Debug for PgStore {
     }
 }
 
-type PeerRow = (i64, Vec<u8>, Vec<u8>, Option<String>, Json, String, String, bool, DateTime<Utc>, Json, Json);
+type PeerRow = (i64, Vec<u8>, Vec<u8>, Option<String>, Json, String, String, bool, DateTime<Utc>, Json, Json, Option<String>);
 type SummaryRow = (i64, uuid::Uuid, String, String, bool, String, Option<String>, Json, bool, Json, Json);
 
 fn to_json(v: &[String]) -> Json {
@@ -966,7 +966,7 @@ fn attrs_from_parts((owner, tags, ephemeral, advertised, approved): (Option<Stri
 }
 
 fn peer_row_to_info(
-    (id, node_key, machine_key, disco_key, endpoints_json, ip_str, hostname, online, last_seen, advertised, approved): PeerRow,
+    (id, node_key, machine_key, disco_key, endpoints_json, ip_str, hostname, online, last_seen, advertised, approved, owner): PeerRow,
 ) -> PeerInfo {
     let endpoints: Vec<String> = serde_json::from_value(endpoints_json).unwrap_or_default();
     let (addresses, allowed_ips, primary_routes) =
@@ -984,6 +984,7 @@ fn peer_row_to_info(
         derp_region: Some(1),
         online,
         last_seen: Some(last_seen),
+        owner,
     }
 }
 

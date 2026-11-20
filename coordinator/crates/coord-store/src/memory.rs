@@ -832,6 +832,7 @@ fn stored_node_to_peer_info(n: &StoredNode) -> PeerInfo {
         derp_region: Some(1),
         online: n.online,
         last_seen: Some(n.last_seen),
+        owner: n.attrs.owner.clone(),
     }
 }
 
