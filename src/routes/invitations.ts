@@ -28,7 +28,12 @@ import {
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
 import { enforceMemberLimit } from "./limits.js";
-import { resolvesToPublicAddresses } from "../identity/resolver.js";
+import {
+  didWebToUrl,
+  guardedGetJson,
+  MAX_DID_DOC_BYTES,
+  resolvesToPublicAddresses,
+} from "../identity/resolver.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -109,26 +114,53 @@ export async function resolveDidToHandle(did: string): Promise<string | null> {
   return lookupVerifiedHandle(did);
 }
 
-/**
- * The account's current handle from public sources (PLC directory, then the
- * Bluesky public API), accepted only if the handle resolves back to the same
- * DID. Needs no access to the account.
- */
-export async function lookupVerifiedHandle(did: string): Promise<string | null> {
-  let candidate: string | null = null;
+/** First `at://` handle in a DID document's `alsoKnownAs`, lowercased. */
+export function handleFromDidDocument(doc: unknown): string | null {
+  const aka = (doc as { alsoKnownAs?: unknown } | null)?.alsoKnownAs;
+  if (!Array.isArray(aka)) return null;
+  const entry = aka.find((a): a is string => typeof a === "string" && a.startsWith("at://"));
+  const handle = entry?.slice(5).split("/")[0].toLowerCase();
+  return handle && HANDLE_RE.test(handle) ? handle : null;
+}
+
+/** The DID document for a did:plc or did:web account, or null. Never throws. */
+async function fetchDidDocument(did: string): Promise<unknown | null> {
   try {
     if (did.startsWith("did:plc:")) {
       const res = await fetch(`https://plc.directory/${encodeURIComponent(did)}`, {
         signal: AbortSignal.timeout(RESOLVE_TIMEOUT_MS),
         redirect: "error",
       });
-      if (res.ok) {
-        const doc = (await res.json()) as { alsoKnownAs?: string[] };
-        const aka = doc.alsoKnownAs?.find((a) => a.startsWith("at://"));
-        if (aka) candidate = aka.slice(5);
-      }
+      return res.ok ? await res.json() : null;
     }
-    if (!candidate) {
+    if (did.startsWith("did:web:")) {
+      // The host is chosen by the account: public addresses only (checked at
+      // connect time), no redirects, size-capped.
+      const out = await guardedGetJson(didWebToUrl(did), {
+        timeoutMs: RESOLVE_TIMEOUT_MS,
+        maxBytes: MAX_DID_DOC_BYTES,
+      });
+      return out.ok ? out.json : null;
+    }
+  } catch {
+    // unreachable or malformed
+  }
+  return null;
+}
+
+/**
+ * The account's current handle from public sources (its DID document, then
+ * the Bluesky public API as a fallback), accepted only if the handle resolves back to the same
+ * DID. Needs no access to the account.
+ */
+export async function lookupVerifiedHandle(did: string): Promise<string | null> {
+  // The account's own DID document is the authority for its handle
+  // (`alsoKnownAs: ["at://<handle>"]`): the PLC directory for did:plc, the
+  // account's own host for did:web. Works for accounts on any PDS.
+  let candidate = handleFromDidDocument(await fetchDidDocument(did));
+  if (!candidate) {
+    // Fallback only: Bluesky's index (covers accounts it has seen)
+    try {
       const res = await fetch(
         `https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile?actor=${encodeURIComponent(did)}`,
         { signal: AbortSignal.timeout(RESOLVE_TIMEOUT_MS), redirect: "error" },
@@ -137,9 +169,9 @@ export async function lookupVerifiedHandle(did: string): Promise<string | null> 
         const data = (await res.json()) as { handle?: string };
         if (data.handle && data.handle !== "handle.invalid") candidate = data.handle;
       }
+    } catch {
+      // fall through
     }
-  } catch {
-    // fall through — display falls back to the DID
   }
   if (!candidate || !HANDLE_RE.test(candidate)) return null;
   const back = await resolveHandleToDid(candidate);
