@@ -24,6 +24,11 @@ pub struct CoordinatorState {
     /// when a DERP map points clients at this server.
     pub(crate) relay: Arc<DerpServer>,
     relay_secret: [u8; 32],
+    /// Pending interactive device sign-ins (ADR-0032).
+    pub(crate) device_auth: Arc<crate::device_auth::DeviceAuthRegistry>,
+    /// Base of the sign-in URL sent to devices (`<base>/<id>`); `None` = auth keys only.
+    pub(crate) device_auth_url: Option<String>,
+    pub(crate) device_auth_wait: std::time::Duration,
     pub(crate) admin_api_key: Option<String>,
     pub(crate) netmap: NetmapService,
     /// Fires when a tenant's ACL or DERP config changes so live map streams resend a snapshot.
@@ -62,6 +67,9 @@ impl CoordinatorState {
             control_key,
             relay,
             relay_secret,
+            device_auth: crate::device_auth::DeviceAuthRegistry::new(),
+            device_auth_url: None,
+            device_auth_wait: crate::device_auth::FOLLOWUP_WAIT,
             store,
             acl,
             derp,
@@ -104,6 +112,23 @@ impl CoordinatorState {
         self.derp = Arc::new(DerpRegistry::new(derp_map));
         self.netmap = NetmapService::with_identity(self.store.clone(), self.acl.clone(), self.derp.clone(), self.identity.clone());
         self
+    }
+
+    /// Enable interactive device sign-in: devices without a key are sent to
+    /// `<base>/<id>` on the dashboard.
+    pub fn with_device_auth_url(mut self, base: Option<String>) -> Self {
+        self.device_auth_url = base.filter(|b| !b.is_empty());
+        self
+    }
+
+    /// How long a device's follow-up request waits for the user (tests shorten it).
+    pub fn with_device_auth_wait(mut self, wait: std::time::Duration) -> Self {
+        self.device_auth_wait = wait;
+        self
+    }
+
+    pub fn device_auth(&self) -> &Arc<crate::device_auth::DeviceAuthRegistry> {
+        &self.device_auth
     }
 
     /// Use a persistent relay key so clients see the same relay identity

@@ -3354,3 +3354,132 @@ async fn dns_record_is_hidden_when_its_device_is_not_visible() {
     let m = member_map(&state, 180).await;
     assert!(m["DNSConfig"].get("ExtraRecords").is_none(), "no address is revealed for a device that is not visible");
 }
+
+// ── Interactive device sign-in (ADR-0032) ──
+
+fn sign_in_state() -> (axum::Router, Arc<CoordinatorState>) {
+    let key = coord_noise::generate_control_key();
+    let state = Arc::new(
+        CoordinatorState::new(key)
+            .with_admin_api_key(Some(TEST_ADMIN_KEY.to_string()))
+            .with_device_auth_url(Some("https://dash.example/device".into()))
+            .with_device_auth_wait(std::time::Duration::from_millis(150)),
+    );
+    (coord_api::router(state.clone()), state)
+}
+
+async fn register_no_key(state: &Arc<CoordinatorState>, mkey: u8, followup: Option<&str>) -> serde_json::Value {
+    let mut body = serde_json::json!({
+        "Version": 2,
+        "NodeKey": format!("nodekey:{}", hex::encode([mkey.wrapping_add(1); 32])),
+        "Hostinfo": { "Hostname": "Dave's Phone", "OS": "iOS" }
+    });
+    if let Some(f) = followup {
+        body["Followup"] = serde_json::json!(f);
+    }
+    serde_json::from_str(&coord_api::__test_handle_register(state, &[mkey; 32], &body.to_string()).await.unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn device_without_a_key_is_refused_when_sign_in_is_not_configured() {
+    let (_, state) = setup();
+    let resp = register_no_key(&state, 210, None).await;
+    assert_eq!(resp["MachineAuthorized"], false);
+    assert_eq!(resp["AuthURL"], "");
+    assert!(resp["Error"].as_str().unwrap().contains("auth key"));
+}
+
+#[tokio::test]
+async fn interactive_sign_in_registers_the_device_after_approval() {
+    let (app, state) = sign_in_state();
+    let t = create_test_tenant(&state, "sign-in").await;
+
+    // 1. The device gets a sign-in URL
+    let first = register_no_key(&state, 212, None).await;
+    assert_eq!(first["MachineAuthorized"], false);
+    let url = first["AuthURL"].as_str().unwrap().to_string();
+    assert!(url.starts_with("https://dash.example/device/"));
+    let id = url.rsplit('/').next().unwrap().to_string();
+
+    // 2. The dashboard reads what to show the user
+    let (status, info) = api_call(&app, "GET", format!("/api/device-auth/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(info["os"], "iOS");
+    assert_eq!(info["pending"], true);
+    assert!(info["registered_tenant_id"].is_null());
+    assert_eq!(info["fingerprint"].as_str().unwrap().len(), 19);
+
+    // 3. Before the user answers, the follow-up is told to keep waiting
+    let waiting = register_no_key(&state, 212, Some(&url)).await;
+    assert_eq!(waiting["MachineAuthorized"], false);
+    assert_eq!(waiting["AuthURL"], url);
+
+    // 4. The user approves; the follow-up registers the device for that owner
+    let (status, _) = api_call(
+        &app,
+        "POST",
+        format!("/api/device-auth/{id}/approve"),
+        Some(serde_json::json!({ "tenant_id": t.to_string(), "owner": "u-dave" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let done = register_no_key(&state, 212, Some(&url)).await;
+    assert_eq!(done["MachineAuthorized"], true, "{done}");
+
+    let (_, nodes) = api_call(&app, "GET", format!("/api/tenants/{t}/nodes"), None).await;
+    assert_eq!(nodes["nodes"][0]["owner"], "u-dave");
+
+    // 5. The link worked once
+    let (status, _) = api_call(&app, "GET", format!("/api/device-auth/{id}"), None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = api_call(
+        &app,
+        "POST",
+        format!("/api/device-auth/{id}/approve"),
+        Some(serde_json::json!({ "tenant_id": t.to_string(), "owner": "u-mallory" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn interactive_sign_in_denied_or_stolen_link() {
+    let (app, state) = sign_in_state();
+    let t = create_test_tenant(&state, "sign-in-deny").await;
+
+    let url = register_no_key(&state, 214, None).await["AuthURL"].as_str().unwrap().to_string();
+    let id = url.rsplit('/').next().unwrap().to_string();
+
+    // Another machine cannot use this link: it just gets its own
+    let other = register_no_key(&state, 216, Some(&url)).await;
+    assert_eq!(other["MachineAuthorized"], false);
+    assert_ne!(other["AuthURL"], url);
+
+    // A denied sign-in tells the device and registers nothing
+    let (status, _) = api_call(&app, "POST", format!("/api/device-auth/{id}/deny"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    let denied = register_no_key(&state, 214, Some(&url)).await;
+    assert_eq!(denied["MachineAuthorized"], false);
+    assert!(denied["Error"].as_str().unwrap().contains("refused"));
+    let (_, nodes) = api_call(&app, "GET", format!("/api/tenants/{t}/nodes"), None).await;
+    assert_eq!(nodes["nodes"].as_array().unwrap().len(), 0);
+
+    // Approval for a suspended tenant is refused; the admin routes need the admin key
+    let url = register_no_key(&state, 218, None).await["AuthURL"].as_str().unwrap().to_string();
+    let id = url.rsplit('/').next().unwrap().to_string();
+    state.store().set_tenant_suspended(t, true).await.unwrap();
+    let (status, _) = api_call(
+        &app,
+        "POST",
+        format!("/api/device-auth/{id}/approve"),
+        Some(serde_json::json!({ "tenant_id": t.to_string(), "owner": "u" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let resp = app
+        .clone()
+        .oneshot(Request::builder().uri(format!("/api/device-auth/{id}")).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}

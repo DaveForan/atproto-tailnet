@@ -189,6 +189,14 @@ async fn main() -> anyhow::Result<()> {
     }
     coordinator = coordinator.with_admin_api_key(admin_key);
 
+    // Interactive device sign-in (ADR-0032): where devices without a key are sent
+    let device_auth_url = std::env::var("COORD_DEVICE_AUTH_URL").ok().filter(|u| !u.is_empty());
+    match &device_auth_url {
+        Some(url) => tracing::info!(url = %url, "interactive device sign-in enabled"),
+        None => tracing::info!("COORD_DEVICE_AUTH_URL not set: devices need an auth key"),
+    }
+    coordinator = coordinator.with_device_auth_url(device_auth_url);
+
     // The TS service is the authoritative federation endpoint; the Rust CFP
     // implementation only runs when explicitly enabled.
     let federation_enabled = std::env::var("COORD_FEDERATION_ENABLED")

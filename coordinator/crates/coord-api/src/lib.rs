@@ -1,6 +1,7 @@
 mod state;
 mod key_handler;
 pub mod derp_handler;
+pub mod device_auth;
 mod noise_handler;
 mod control;
 mod admin;
@@ -85,6 +86,9 @@ pub fn router(state: Arc<CoordinatorState>) -> Router {
             get(admin::get_auto_approvers).put(admin::set_auto_approvers),
         )
         .route("/tenants/{id}/derp", get(admin::get_tenant_derp).put(admin::set_tenant_derp))
+        .route("/device-auth/{id}", get(admin::get_device_auth))
+        .route("/device-auth/{id}/approve", post(admin::approve_device_auth))
+        .route("/device-auth/{id}/deny", post(admin::deny_device_auth))
         .route("/tenants/{id}/dns", get(admin::get_tenant_dns).put(admin::set_tenant_dns))
         .route(
             "/tenants/{id}/access",

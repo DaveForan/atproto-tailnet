@@ -89,17 +89,11 @@ pub async fn handle_register(
                 return Ok((serde_json::to_string(&error_response("invalid or expired pre-auth key"))?, None));
             }
         },
-        None => {
-            let resp = RegisterResponse {
-                user: User::default(),
-                login: Login::default(),
-                node_key_expired: false,
-                machine_authorized: false,
-                auth_url: "https://example.com/register".into(),
-                error: String::new(),
-            };
-            return Ok((serde_json::to_string(&resp)?, None));
-        }
+        // No key: interactive sign-in (ADR-0032)
+        None => match interactive_sign_in(state, machine_key, &req, known_tenant).await {
+            Ok(grant) => grant,
+            Err(resp) => return Ok((serde_json::to_string(&resp)?, None)),
+        },
     };
 
     if let Some(ref old_key_str) = req.old_node_key {
@@ -173,6 +167,58 @@ pub async fn handle_register(
 
     let resp = authorized_response(state, tenant_id, owner.as_deref());
     Ok((serde_json::to_string(&resp)?, Some(generation)))
+}
+
+/// Interactive sign-in: the device gets a URL, the user approves it on the
+/// dashboard, and the device's follow-up request then receives the grant.
+/// `Err` carries the response to send while there is no grant yet.
+async fn interactive_sign_in(
+    state: &Arc<CoordinatorState>,
+    machine_key: &[u8; 32],
+    req: &RegisterRequest,
+    known_tenant: Option<TenantId>,
+) -> Result<coord_core::PreAuthGrant, RegisterResponse> {
+    use crate::device_auth::{self, Decision};
+    let Some(base) = state.device_auth_url.as_deref() else {
+        return Err(error_response("this server needs an auth key: run `tailscale up --authkey <key>`"));
+    };
+    let sign_in_url = |id: &str| RegisterResponse {
+        user: User::default(),
+        login: Login::default(),
+        node_key_expired: false,
+        machine_authorized: false,
+        auth_url: format!("{}/{}", base.trim_end_matches('/'), id),
+        error: String::new(),
+    };
+
+    if let Some(id) = req.followup.as_deref().and_then(device_auth::id_from_url) {
+        match state.device_auth.wait(id, machine_key, state.device_auth_wait).await {
+            Some(Decision::Approved { tenant_id, owner }) => {
+                if state.store.is_tenant_suspended(tenant_id).await {
+                    return Err(error_response(TENANT_SUSPENDED_MSG));
+                }
+                if known_tenant.is_some_and(|known| known != tenant_id) {
+                    return Err(error_response("this machine is registered to a different tailnet"));
+                }
+                info!(tenant = %tenant_id, "device sign-in approved");
+                return Ok(coord_core::PreAuthGrant { tenant_id, owner: Some(owner), tags: vec![], ephemeral: false });
+            }
+            // Still waiting: the device asks again with the same URL
+            Some(Decision::Pending) => return Err(sign_in_url(id)),
+            Some(Decision::Denied) => return Err(error_response("device sign-in was refused")),
+            // Unknown or expired: start again below
+            None => {}
+        }
+    }
+
+    let hostinfo = req.hostinfo.as_ref();
+    let hostname = hostinfo
+        .and_then(|h| h.hostname.as_deref())
+        .and_then(sanitize::dns_label)
+        .unwrap_or_else(|| HOSTNAME_PLACEHOLDER.into());
+    let os = sanitize::os(hostinfo.and_then(|h| h.os.as_deref()));
+    let id = state.device_auth.start(*machine_key, hostname, os);
+    Err(sign_in_url(&id))
 }
 
 /// Stored briefly when a client sends no usable hostname; replaced by node-<id>.
