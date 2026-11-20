@@ -26,6 +26,8 @@ declare module "express-session" {
     proofAttempts?: number;
     /** Open request of this browser to become trusted. */
     trustRequestId?: string;
+    /** Notification that tells the owner about this sign-in on hold; removed when the device proves itself. */
+    pendingNoticeId?: string;
     /** Trusted device that made this session. */
     trustedDeviceId?: string;
     /** Last time the device was proven (sign-in or step-up), ms since epoch. */

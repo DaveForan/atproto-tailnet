@@ -3,8 +3,6 @@ import type {
   Settings,
   DeviceApproval,
   JoinRequest,
-  ServiceDevice,
-  Service,
 } from "../lib/types";
 
 export const securityService = {
@@ -16,14 +14,10 @@ export const securityService = {
       tenantApi<Settings>(tid, "/settings"),
       tenantApi<DeviceApproval[]>(tid, "/device-approvals"),
       tenantApi<JoinRequest[]>(tid, "/join-requests"),
-      tenantApi<ServiceDevice[]>(tid, "/service-devices"),
-      tenantApi<Service[]>(tid, "/services"),
-    ]).then(([settings, approvals, joinRequests, serviceDevices, services]) => ({
+    ]).then(([settings, approvals, joinRequests]) => ({
       settings,
       approvals: approvals ?? [],
       joinRequests: joinRequests ?? [],
-      serviceDevices: serviceDevices ?? [],
-      services: services ?? [],
     })),
 
   updateSetting: (tid: string, key: string, value: boolean | number) =>

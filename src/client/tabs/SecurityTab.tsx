@@ -23,7 +23,6 @@ type BoolSettingKey = {
 const TOGGLE_SETTINGS: Array<{ key: BoolSettingKey; label: string; description: string }> = [
   { key: "lockdownMode", label: "Lockdown mode", description: "Block invitations, joins, and device registrations" },
   { key: "requireDeviceApproval", label: "Require device approval", description: "New devices wait for admin approval before they can join. Admins get a dashboard notification (and a webhook call, if configured below) for each request." },
-  { key: "requireServiceDeviceApproval", label: "Require service device approval", description: "Service devices need admin approval" },
   { key: "requireServiceApproval", label: "Require service approval", description: "Services need admin approval before activation" },
   { key: "allowJoinRequests", label: "Allow join requests", description: "Allow non-members to request to join" },
   { key: "boardEnabled", label: "Board enabled", description: "Enable the public message board" },

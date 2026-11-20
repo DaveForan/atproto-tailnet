@@ -71,6 +71,27 @@ function initialTab(): TabId {
   return isTabId(hash) ? hash : "status";
 }
 
+const WIZARD_KEY = "atproto-tailnet:wizardDone";
+
+/** Tailnets whose setup wizard this browser has finished or skipped. */
+function wizardDoneFor(tenantId: string): boolean {
+  try {
+    return (JSON.parse(localStorage.getItem(WIZARD_KEY) ?? "[]") as string[]).includes(tenantId);
+  } catch {
+    return false;
+  }
+}
+
+function rememberWizardDone(tenantId: string): void {
+  try {
+    const done = new Set(JSON.parse(localStorage.getItem(WIZARD_KEY) ?? "[]") as string[]);
+    done.add(tenantId);
+    localStorage.setItem(WIZARD_KEY, JSON.stringify([...done].slice(-50)));
+  } catch {
+    // storage blocked: the wizard is dismissed for this page view only
+  }
+}
+
 function readStoredTenant(): string | null {
   try {
     return localStorage.getItem(TENANT_KEY);
@@ -182,7 +203,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
           currentTenant.status === "running" &&
           !currentTenant.suspended &&
           stats &&
-          stats.totalDevices === 0
+          stats.totalDevices === 0 &&
+          !wizardDoneFor(currentTenant.id)
         ) {
           showWizard = true;
         }
@@ -269,11 +291,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const dismissWizard = useCallback(() => {
-    setState((s) => ({
-      ...s,
-      showWizard: false,
-      wizardDismissed: true,
-    }));
+    setState((s) => {
+      if (s.currentTenant) rememberWizardDone(s.currentTenant.id);
+      return { ...s, showWizard: false, wizardDismissed: true };
+    });
   }, []);
 
   const reload = useCallback(async () => {

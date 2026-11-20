@@ -452,3 +452,52 @@ describe("device cookie and profile", () => {
     expect(writes.find((w) => w.op === "update" && w.table === "trusted_devices")!.arg).toEqual({ profileWarning: null, profileWarningAt: null, profile: null });
   });
 });
+
+describe("sign-in on hold notice", () => {
+  it("a pending session tells the owner, with the browser and the address", async () => {
+    const { establishPendingSession } = await import("../routes/device-trust.js");
+    const sess: Record<string, unknown> = {};
+    const req = {
+      headers: { "user-agent": WIN_CHROME },
+      ip: "203.0.113.9",
+      session: Object.assign(sess, {
+        regenerate: (cb: (e?: unknown) => void) => cb(),
+        save: (cb: (e?: unknown) => void) => cb(),
+      }),
+    };
+    results.push([{ tenantId: "t-1" }], [{ id: "notice-1" }]);
+    await establishPendingSession(req as never, { userId: "u-1", did: "did:plc:x", redirect: "/" });
+    const notice = writes.find((w) => w.op === "insert" && w.table === "notifications")!.arg as Record<string, string>;
+    expect(notice).toMatchObject({ tenantId: "t-1", userId: "u-1", type: "device_trust" });
+    expect(notice.body).toContain("Chrome on Windows");
+    expect(notice.body).toContain("203.0.113.9");
+    expect(sess).toMatchObject({ pendingUserId: "u-1", pendingNoticeId: "notice-1" });
+    expect(sess.userId).toBeUndefined();
+  });
+
+  it("a user in no tailnet still gets a pending session", async () => {
+    const { establishPendingSession } = await import("../routes/device-trust.js");
+    const sess: Record<string, unknown> = {};
+    const req = { headers: {}, session: Object.assign(sess, { regenerate: (cb: () => void) => cb(), save: (cb: () => void) => cb() }) };
+    results.push([]);
+    await establishPendingSession(req as never, { userId: "u-1", did: "did:plc:x", redirect: "/" });
+    expect(sess.pendingUserId).toBe("u-1");
+    expect(sess.pendingNoticeId).toBeUndefined();
+  });
+
+  it("the notice is removed when the trusted device proves itself, and kept when the proof fails", async () => {
+    const d = device();
+    session = { pendingUserId: "u-1", pendingDid: "did:plc:x", pendingNoticeId: "notice-1" };
+    results.push([{ handle: "h" }]);
+    let challenge = (await call("GET", "/api/device-trust/pending")).json.challenge;
+    results.push([row(d.jwk)]);
+    expect((await call("POST", "/api/device-trust/pending/verify", { deviceId: DEV, signature: device().signIt(challenge) })).status).toBe(403);
+    expect(writes.some((w) => w.op === "delete" && w.table === "notifications")).toBe(false);
+
+    results.push([{ handle: "h" }]);
+    challenge = (await call("GET", "/api/device-trust/pending")).json.challenge;
+    results.push([row(d.jwk)]);
+    expect((await call("POST", "/api/device-trust/pending/verify", { deviceId: DEV, signature: d.signIt(challenge) })).status).toBe(200);
+    expect(writes.some((w) => w.op === "delete" && w.table === "notifications")).toBe(true);
+  });
+});

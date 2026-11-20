@@ -144,15 +144,39 @@ const authLimiter = rateLimit({
   message: { error: "Too many requests, try again later" },
 });
 
-const apiLimiter = rateLimit({
+/** Requests per minute for callers without a dashboard session, per address. */
+const API_LIMIT_PER_ADDRESS = 60;
+/**
+ * Requests per minute for one signed-in user. One page of the dashboard makes
+ * about ten requests, so the per-address number is too low for normal use, and
+ * people behind one address (a home, an office) must not share one budget.
+ */
+const API_LIMIT_PER_USER = 300;
+
+const signedIn = (req: Request): boolean => Boolean(req.session?.userId);
+
+const addressLimiter = rateLimit({
   windowMs: 60 * 1000,
-  limit: 60,
+  limit: API_LIMIT_PER_ADDRESS,
   standardHeaders: "draft-7",
   legacyHeaders: false,
   message: { error: "Too many requests, try again later" },
   // MCP tool calls arrive on loopback (one shared IP); /mcp has its own per-user limit
-  skip: isInternalMcpCall,
+  skip: (req) => isInternalMcpCall(req) || signedIn(req),
 });
+
+const userLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: API_LIMIT_PER_USER,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { error: "Too many requests, try again later" },
+  keyGenerator: (req) => `user:${req.session.userId}`,
+  skip: (req) => !signedIn(req),
+});
+
+/** Anonymous and token callers are limited per address; signed-in users per account. */
+const apiLimiter = [addressLimiter, userLimiter];
 
 const federationLimiter = rateLimit({
   windowMs: 60 * 1000,

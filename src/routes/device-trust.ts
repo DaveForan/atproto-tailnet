@@ -16,7 +16,7 @@
 import { Router, type Request, type Response, type NextFunction } from "express";
 import { and, eq, gt, isNull } from "drizzle-orm";
 import { db, pool } from "../db/index.js";
-import { users, memberships, trustedDevices, recoveryCodes, deviceTrustRequests } from "../db/schema.js";
+import { users, memberships, trustedDevices, recoveryCodes, deviceTrustRequests, notifications } from "../db/schema.js";
 import { requireSession, param } from "./helpers.js";
 import { logger } from "../logger.js";
 import { notifyUser } from "../notifications/service.js";
@@ -86,7 +86,14 @@ export function establishPendingSession(
       req.session.pendingUserId = data.userId;
       req.session.pendingDid = data.did;
       req.session.postLoginRedirect = data.redirect;
-      req.session.save((e) => (e ? reject(e) : resolve()));
+      // The owner is told about every sign-in that is on hold. A trusted
+      // device removes the notice when it proves itself a moment later, so
+      // only attempts from other devices stay visible.
+      void noteSignInOnHold(req, data.userId)
+        .then((id) => {
+          if (id) req.session.pendingNoticeId = id;
+        })
+        .finally(() => req.session.save((e) => (e ? reject(e) : resolve())));
     });
   });
 }
@@ -105,6 +112,41 @@ async function endOtherSessions(userId: string, keepSid: string, trustedDeviceId
   } catch (err) {
     logger.warn({ userId, err }, "failed to end other sessions");
   }
+}
+
+/** Write the "sign-in on hold" notification; returns its id (null when the user is in no tailnet). */
+async function noteSignInOnHold(req: Request, userId: string): Promise<string | null> {
+  try {
+    const [m] = await db
+      .select({ tenantId: memberships.tenantId })
+      .from(memberships)
+      .where(eq(memberships.userId, userId))
+      .limit(1);
+    if (!m) return null;
+    const seen = deviceProfile(String(req.headers["user-agent"] ?? ""), null);
+    const [row] = await db
+      .insert(notifications)
+      .values({
+        tenantId: m.tenantId,
+        userId,
+        type: "device_trust",
+        title: "A sign-in to your account was stopped at the device check",
+        body: `${seen.browser} on ${seen.os}, address ${req.ip ?? "unknown"}. The correct account was used, but the device is not one of your trusted devices. If this was not you, change the password of your AT Protocol account.`,
+        link: "/#account",
+      })
+      .returning({ id: notifications.id });
+    return row?.id ?? null;
+  } catch (err) {
+    logger.warn({ userId, err }, "failed to record a sign-in on hold");
+    return null;
+  }
+}
+
+/** The device proved itself (or a recovery code was used): the notice is no longer true. */
+async function clearSignInNotice(req: Request): Promise<void> {
+  const id = req.session.pendingNoticeId;
+  if (!id) return;
+  await db.delete(notifications).where(eq(notifications.id, id)).catch(() => undefined);
 }
 
 /** Tell the user, in one of their tailnets, about a security event. */
@@ -242,6 +284,7 @@ deviceTrustRouter.post("/api/device-trust/pending/verify", async (req, res) => {
   const redirect = req.session.postLoginRedirect || "/";
   await db.update(trustedDevices).set({ lastUsedAt: new Date() }).where(eq(trustedDevices.id, device.id));
   await noteProfile(req, device);
+  await clearSignInNotice(req);
   await establishSession(req, { userId: pending.userId, did: pending.did, trustedDeviceId: device.id });
   res.json({ status: "signed_in", redirect });
 });
@@ -265,6 +308,8 @@ deviceTrustRouter.post("/api/device-trust/pending/recover", async (req, res) => 
     return;
   }
   const redirect = req.session.postLoginRedirect || "/";
+  // The recovery alert below replaces the notice
+  await clearSignInNotice(req);
   await establishSession(req, { userId: pending.userId, did: pending.did, mustEnrollDevice: true });
   void alertUser(pending.userId, "A recovery code was used to sign in", "If this was not you, remove the new device and make new recovery codes.");
   res.json({ status: "signed_in", redirect });
