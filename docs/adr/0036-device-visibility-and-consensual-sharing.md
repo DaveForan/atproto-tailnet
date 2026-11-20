@@ -20,9 +20,10 @@ to their own devices.
 The operator requires this model:
 
 - By default, a member reaches only their own devices.
-- The board shows **solicitations**: a member offers a service on one device
-  and one port. Each other member chooses which of their own devices connect
-  to it.
+- A board shows **solicitations** only: a member offers a service on one
+  device and one port. The tailnet has a public board. Each member also has a
+  private board for services that only their own devices use, at private DNS
+  names.
 - Members can ask to see the devices of other members, and can show their own
   devices to other members. Both members must agree.
 - Each member controls which of their devices and which ports are exposed.
@@ -38,15 +39,31 @@ the peers that it can reach or that can reach it.
 Existing tailnets keep the `open` mode (allow all) until the originator changes
 it. A tailnet with a custom ACL policy stays in the `custom` mode.
 
-### 2. Solicitations on the board
+### 2. Boards
 
-The board lists **solicitations**: open offers of a service that a member runs.
+A board holds solicitations only. It is not a place for general posts. There
+are two kinds of board.
+
+**The public board of the tailnet.** It lists the services that members offer
+to other members. Each member of the tailnet can see it on the tailnet
+website.
+
+**The private board of each member.** It lists the services that a member runs
+for their own devices. Only that member sees it. Each entry is one device, one
+port and a name. The devices of the member reach the service at a private DNS
+name, `<name>.<BASE_DOMAIN>` (for example `notes.ts.mesotechnics.cloud`). The
+coordinator sends the DNS record only to the devices of that member (ADR-0028),
+so the name does not resolve for other members or on the internet. Two members
+can use the same private name. A member moves an entry to the public board to
+offer it to other members; the name must then be free in the tailnet.
+
+Rules for a solicitation on the public board:
 
 - A solicitation is for one device and one port (TCP or UDP) of the member who
   posts it, with a title and a description. A member who runs two applications
   on one device (one for everybody on one port, one for their own devices on
   another port) solicits only the first port. The second port stays private.
-- A solicitation alone opens nothing. Next to each solicitation there is a
+- A solicitation on the public board alone opens nothing. Next to each solicitation there is a
   **Connect** button. The viewer selects one or more of their own devices. The
   selected devices can then reach that device and that port, and no other
   port. The board shows the address to use (tailnet address and port; the name
@@ -137,6 +154,10 @@ confirm on a trusted device to accept or widen a share.
   device. That device reaches port 3000 and not port 4000. The other devices of
   B, and member C who did not connect, reach nothing.
 - A holder of `manage_board` removes the solicitation. B loses access.
+- A puts `notes` on port 8080 on their private board. On the devices of A,
+  `notes.<BASE_DOMAIN>` resolves to that device. On the devices of B the name
+  does not resolve, and B cannot see the entry.
+- The board accepts no post that is not bound to a device and a port.
 - An administrator cannot list or change a share between A and B.
 - A requests access to a device of B. Before B accepts, nothing changes. After
   B accepts ports 22 and 443 only, A reaches those two ports only.

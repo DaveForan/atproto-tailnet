@@ -19,6 +19,11 @@ from a connected device.
 
 ## Decision
 
+ADR-0036 defines where services are listed: the public board of the tailnet
+and the private board of each member. This ADR defines the names and the HTTPS
+path. A private-board name resolves only on the devices of its owner and is
+unique for that owner. A public-board name is unique in the tailnet.
+
 ### Model
 
 A **named service** has:
