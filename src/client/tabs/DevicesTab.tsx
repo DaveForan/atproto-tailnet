@@ -4,13 +4,14 @@ import { useTenantMutation } from "../hooks/useMutation";
 import { Card } from "../components/Card";
 import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
+import { MachineLockCard } from "../components/MachineLock";
 import { formatExpiry, relativeTime } from "../lib/utils";
 import type { AuthKeyInfo, DevicesData } from "../lib/types";
 
 const KEYS_FALLBACK: { keys: AuthKeyInfo[] } = { keys: [] };
 
 export function DevicesTab() {
-  const { hasPerm, reload, user } = useApp();
+  const { hasPerm, reload, user, currentTenant } = useApp();
   const { data: devices, loading, reload: reloadDevices } = useTenantData<DevicesData | null>("/devices", null);
   const { mutate, busy } = useTenantMutation({ onError: "Failed to remove device" });
   const canManage = hasPerm("manage_devices");
@@ -74,6 +75,9 @@ export function DevicesTab() {
           </div>
         )}
       </Card>
+      {currentTenant && (
+        <MachineLockCard tenantId={currentTenant.id} onChanged={() => { void reloadDevices(); reload(); }} />
+      )}
       <AuthKeysCard />
     </div>
   );

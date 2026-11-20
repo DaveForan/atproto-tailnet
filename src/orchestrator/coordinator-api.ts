@@ -74,6 +74,16 @@ function isNotFound(err: unknown): boolean {
  * CoordinatorApiClient talks to the same coordinator process; the tenant
  * is identified by `tenantId` and scoped server-side.
  */
+/** A member's machine lock as the coordinator reports it. */
+export interface OwnerLockView {
+  locked: boolean;
+  /** Nodes of the owner that the lock allows. */
+  node_ids: number[];
+  allow_one_until: string | null;
+  refused: Array<{ at: string; hostname: string; os: string; fingerprint: string }>;
+  removed_nodes?: number;
+}
+
 export class CoordinatorApiClient {
   private baseUrl: string;
   private tenantId: string;
@@ -468,6 +478,35 @@ export class CoordinatorApiClient {
     registered_tenant_id: string | null;
   }> {
     return (await this.request("GET", `/api/device-auth/${encodeURIComponent(id)}`)) as never;
+  }
+
+  // ── Owner machine locks (ADR-0035) ──
+
+  private ownerLockPath(owner: string): string {
+    return `/api/tenants/${this.tenantId}/owner-locks/${encodeURIComponent(owner)}`;
+  }
+
+  async getOwnerLock(owner: string): Promise<OwnerLockView> {
+    return (await this.request("GET", this.ownerLockPath(owner))) as OwnerLockView;
+  }
+
+  /** Lock the owner to these nodes; the coordinator removes the owner's other nodes. */
+  async setOwnerLock(owner: string, nodeIds: number[]): Promise<OwnerLockView> {
+    return (await this.request("PUT", this.ownerLockPath(owner), { node_ids: nodeIds })) as OwnerLockView;
+  }
+
+  /** Open the one-new-machine window; null when the owner has no lock. */
+  async allowOneMachine(owner: string, seconds: number): Promise<OwnerLockView | null> {
+    try {
+      return (await this.request("POST", `${this.ownerLockPath(owner)}/allow-one`, { seconds })) as OwnerLockView;
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("failed (404)")) return null;
+      throw err;
+    }
+  }
+
+  async deleteOwnerLock(owner: string): Promise<void> {
+    await this.request("DELETE", this.ownerLockPath(owner));
   }
 
   async approveDeviceAuth(id: string, coordinatorTenantId: string, owner: string): Promise<void> {

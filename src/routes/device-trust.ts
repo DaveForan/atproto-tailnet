@@ -371,6 +371,13 @@ async function mayChangeLock(req: Request, res: Response): Promise<boolean> {
   return false;
 }
 
+/**
+ * Gate for other sensitive changes of the signed-in user (for example the
+ * machine lock): with trusted devices, a fresh proof is required. Sends the
+ * `step_up_required` response and returns false when it is missing.
+ */
+export const requireFreshDeviceProof = mayChangeLock;
+
 deviceTrustRouter.get("/api/trusted-devices", requireSession, async (req, res) => {
   const userId = req.session.userId!;
   const [user] = await db.select({ max: users.maxTrustedDevices }).from(users).where(eq(users.id, userId));

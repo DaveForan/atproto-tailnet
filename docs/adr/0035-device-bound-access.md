@@ -151,13 +151,38 @@ Limits of a device key, compared with a passkey: the key is not in secure
 hardware. Malware that copies the browser profile takes the key. The key is
 lost when the user clears the data of the browser.
 
+Also built:
+
+- **Device cookie.** A device proof needs the signature of the device key and
+  a device cookie that page scripts cannot read (HttpOnly, SameSite=Strict,
+  `__Host-` prefix over HTTPS). The service stores only the hash. The key and
+  the cookie are in different stores of the browser, so a theft of one of them
+  is not sufficient. A copy of the full browser profile takes both.
+- **Device profile.** The service stores coarse traits of the browser at
+  enrolment (system, browser family, touch, processor count; no versions).
+  When a trusted key signs in from a browser that looks different, the sign-in
+  works, the device gets a warning, and the user gets one notification. The
+  profile never refuses a sign-in: an attacker can copy the traits, and
+  updates change them. The user clears the warning with a fresh proof.
+- **Section 2, machine lock.** A member locks their own devices in a tailnet
+  to chosen machines. The coordinator stores the lock for each tenant and
+  owner, and refuses every other machine key at registration, with a valid
+  auth key and with an approved sign-in. The other devices of the member are
+  removed when the lock is set. "Allow one new device" opens a window of 10
+  minutes that admits exactly one new machine. The coordinator records the
+  refused machines and the dashboard shows them. With trusted devices, each
+  change of the lock needs a fresh proof.
+
 Not yet built:
 
 - Step-up for agent tokens, MCP connections, operator actions, the tailnet
   address, and accepting shares.
-- Section 2: self-lock of tailnet machines, enforced by the coordinator.
+- A notification for a refused machine (the dashboard shows the list; no
+  notification is sent). A maximum number of machines in a machine lock.
 - The operator reset with a delay (not planned; the owner was not sure).
-- A test in real browsers (Safari, Chrome, Firefox, mobile).
+- A test in real browsers (Safari, Chrome, Firefox, mobile) and with real
+  Tailscale clients. To check in Safari: the browser can delete the device
+  key after 7 days without a visit to the site.
 
 ### Decision of the owner: no passkeys
 

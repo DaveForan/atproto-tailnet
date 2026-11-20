@@ -22,6 +22,7 @@ import {
   authKeys,
 } from "../db/schema.js";
 import { getControlClient, useCoordinator } from "../orchestrator/control-client.js";
+import { CoordinatorApiClient } from "../orchestrator/coordinator-api.js";
 import {
   requireAuth,
   param,
@@ -561,6 +562,12 @@ export async function removeMemberCascade(
       userId: removedUserId,
       hsUsername: toHsUsername(removedUser.handle),
     });
+    // Their machine lock in this tailnet goes with them (ADR-0035)
+    if (client instanceof CoordinatorApiClient) {
+      await client
+        .deleteOwnerLock(removedUserId)
+        .catch((err: unknown) => logger.warn({ tenantId, err }, "failed to remove machine lock of removed member"));
+    }
   }
 
   await db

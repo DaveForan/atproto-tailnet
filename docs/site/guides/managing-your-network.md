@@ -31,7 +31,19 @@ To add a device: sign in on it and select **Ask for approval**. It shows a code.
 
 If you lose all trusted devices, use a recovery code. Each code works one time. Then you must trust the device that you use. If you have no code, a person with access to the server can reset the lock with `node dist/scripts/reset-device-lock.js <handle>` in the app container.
 
-The key is in the data of the browser. If you clear the data of the browser, the device is not trusted any more.
+The key and a device cookie are in the data of the browser. A sign-in needs the two. If you clear the data or the cookies of the browser, the device is not trusted any more. Approve it again from another trusted device, or use a recovery code.
+
+If a trusted device signs in from a browser that looks different (another system, another browser), the sign-in works but the **Account** tab shows a warning on that device and you get a notification. If it was not you, remove the device. If it was you, select **This was me**.
+
+### Lock your tailnet devices
+
+You can limit your devices in a tailnet to the machines that you have now. Open the **Devices** tab and find **Lock my devices**.
+
+1. Select **Lock to my devices** and select the devices that stay. The other devices of yours are removed from the tailnet.
+2. While the lock is on, no other machine can join as you. A valid auth key or the correct sign-in does not help.
+3. To add a device, select **Allow one new device** and connect the device in the next 10 minutes. Only one device gets in.
+
+The card shows the machines that were refused. If you have trusted devices, each change of this lock needs a trusted device.
 
 ### Appearance
 
