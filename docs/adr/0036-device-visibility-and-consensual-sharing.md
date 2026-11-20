@@ -46,7 +46,7 @@ are three boards, with three audiences.
 
 | Board | Audience | Content | Who writes |
 |---|---|---|---|
-| Controller board | The internet (WAN, public) | Information about the tailnet | The operator of the tailnet |
+| Controller board | The internet (WAN, public) | Text about the tailnet | The originator of the tailnet |
 | Public board | Members of the tailnet | Solicitations: services offered to members | Each member |
 | Private board | The devices of one member | Services of that member for their own devices | That member |
 
@@ -55,19 +55,20 @@ operator of the tailnet (the originator) uses it for administrative
 information: the purpose of the tailnet, how to join, contact data, or any
 other message. It contains no solicitations, no devices and no ports.
 
-- The operator writes the page as a template in the dashboard, with HTML, CSS
-  and JavaScript. The template has variables (name of the tailnet, number of
-  members, link to join).
-- The content of an operator is not trusted by the service. It runs in a
-  sandbox: a frame with a unique origin (`sandbox` without same-origin), served
-  with its own content security policy. The script cannot read cookies or the
-  session of the dashboard, cannot call the API, cannot send data to other
-  hosts and cannot submit forms. Images load over HTTPS only.
-- The page around the frame is ours. It shows the name of the tailnet, a label
-  that the content comes from the operator of the tailnet, and the real sign-in
-  and join buttons. The operator content cannot draw over them.
-- Size limit for the template. The instance operator can turn off scripts, or
-  the controller board, for the instance.
+- The content is text only. The originator writes it in the dashboard in a
+  small subset of Markdown: headings, paragraphs, bold, italic, lists and
+  links. Our code parses the subset and renders plain elements. Everything
+  else shows as literal text. There is no HTML, no script, no image and no
+  embedded content, so the page needs no sandbox.
+- Links must use `https://`. They open in a new tab with `rel="noopener
+  noreferrer nofollow"`.
+- On save, the service refuses control characters, invisible and
+  direction-changing Unicode characters, links that are not `https://`, and
+  text above the size limit (4000 characters). The editor shows a preview of
+  what visitors see.
+- The landing page of the instance shows the controller board of the default
+  tailnet below the sign-in form. Each tailnet also has its board at
+  `/board/<tailnet-address>`. Sign-in stays our own form.
 
 **Public board (tailnet, public).** Visible only to members of the tailnet,
 after sign-in. It lists solicitations: services that members offer to other
@@ -189,8 +190,7 @@ confirm on a trusted device to accept or widen a share.
 - The public and private boards accept no entry that is not bound to a device
   and a port.
 - The controller board is readable without sign-in and shows no device, port
-  or member. A script in its template cannot read `document.cookie` of the
-  dashboard or call `/api`.
+  or member. HTML or script in its text shows as literal text.
 - An administrator cannot list or change a share between A and B.
 - A requests access to a device of B. Before B accepts, nothing changes. After
   B accepts ports 22 and 443 only, A reaches those two ports only.
