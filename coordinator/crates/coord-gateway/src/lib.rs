@@ -2,3 +2,5 @@
 //! primitive crates only. No Tailscale code.
 
 pub mod netstack;
+
+pub mod tunnel;
