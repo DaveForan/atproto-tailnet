@@ -353,6 +353,13 @@ Order matters: each stage gives value alone and unblocks the next.
 - [ ] Hierarchy: child services and routes visible to parents by posture
 - [ ] `cloud.mesotechnics.service` lexicon; write/verify records; board as a view of records
 
+### 6.9b Device visibility and consensual sharing (ADR-0036)
+- [ ] Coordinator: tenant access mode, per-device packet filter and peer list, persisted access rules + admin API
+- [ ] TS service: published services open a port; "See published services" setting; shares (request/offer, accept, scope per device and port, expiry, end)
+- [ ] Originator controls (mode, turn off shares or published services); audit and notifications
+- [ ] Dashboard: publish, share and review screens
+- [ ] Verify with two members and two devices
+
 ### 6.10 Device-bound access (ADR-0035)
 - [ ] WebAuthn verification (node:crypto + CBOR), challenge store, trusted-device table
 - [ ] Two-step sign-in, refusal + notification for other devices, device limit

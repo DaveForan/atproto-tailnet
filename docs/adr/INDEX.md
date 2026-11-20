@@ -59,6 +59,7 @@ Track ADRs like stories on a board. Each ADR moves through these lifecycle state
 | 0033 | Federation data plane on the gateway, and services as AT Proto records | 2026-11-19 | 0020 (coordinator mode) | 0029, 0030 |
 | 0034 | High availability, replicas, and Kubernetes | 2026-11-20 | — | 0023, 0026, 0027 |
 | 0035 | Device-bound access (trusted devices and enforced tailnet locks) | 2026-11-20 | — | 0003, 0005, 0032 |
+| 0036 | Device visibility and consensual sharing | 2026-11-20 | — | 0005, 0023 |
 
 ### Superseded
 
