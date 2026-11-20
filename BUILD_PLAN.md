@@ -354,8 +354,8 @@ Order matters: each stage gives value alone and unblocks the next.
 - [ ] `cloud.mesotechnics.service` lexicon; write/verify records; board as a view of records
 
 ### 6.9b Device visibility and consensual sharing (ADR-0036)
-- [ ] Coordinator: tenant access mode, per-device packet filter and peer list, persisted access rules + admin API
-- [ ] TS service: board solicitations bound to one device + port; Connect with a choice of own devices; shares (request/offer, accept, scope per device, port and protocol, expiry, role shares, block list, limits)
+- [x] Coordinator: access mode, per-device filter and peer list, stored rules, admin API (0594e66)
+- [ ] TS service: service posts (create with device + port, enroll a new device, operator approval, Connect with a choice of own devices); friends; shares between friends (request/offer, accept, scope per device, port and protocol, expiry, block list, limits)
 - [ ] Administrators control solicitations only (remove, approve); access mode per tailnet; audit and notifications
 - [ ] Controller board: originator's text (Markdown subset, linted, https links only) on the landing page and `/board/<address>`
 - [ ] Public board (members only) and private board (own devices, private DNS names) as the publish interface

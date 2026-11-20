@@ -87,28 +87,48 @@ then be free in the tailnet.
 The public board and the private board hold solicitations only. Each entry is
 bound to a device and a port.
 
-Rules for a solicitation on the public board:
+There are two ways for a member to reach a device of another member: a
+service on the public board (below), or a share between friends (section 3).
 
-- A solicitation is for one device and one port (TCP or UDP) of the member who
-  posts it, with a title and a description. A member who runs two applications
-  on one device (one for everybody on one port, one for their own devices on
-  another port) solicits only the first port. The second port stays private.
-- A solicitation on the public board alone opens nothing. Next to each solicitation there is a
-  **Connect** button. The viewer selects one or more of their own devices. The
-  selected devices can then reach that device and that port, and no other
-  port. The board shows the address to use (tailnet address and port; the name
-  of the service when ADR-0030 is built).
-- The post is the consent of the publisher. The **Connect** action is the
-  consent of the viewer. No approval step is necessary for each viewer.
-- The viewer can disconnect a device at any time. The publisher can remove the
-  solicitation at any time. Access ends at once for all connected devices.
-- The publisher sees how many members and devices are connected, and can
-  remove one of them.
+**Service posts on the public board.** One process combines the service, its
+device and the board post.
 
-### 3. Shares between members
+1. **Create.** A member creates a service post: a title, a description, one
+   device and one port (TCP or UDP). The device is one of the devices of the
+   member, or a new device that the member enrolls in this step (the post
+   shows the key and the command). A device with a service post is a **service
+   device**.
+2. **Approve.** The post is not visible to other members until an operator of
+   the tailnet approves it (the originator, or a holder of
+   `approve_services`). Approvers get a notification. A post of the originator
+   needs no approval. A refused post stays visible to its author with the
+   reason.
+3. **Solicit.** The approved post is on the public board. It alone opens
+   nothing. Next to it there is a **Connect** button. The viewer selects one or
+   more of their own devices. The selected devices can then reach that device
+   and that port, and no other port. The board shows the address to use
+   (tailnet address and port; the name of the service when ADR-0030 is built).
+4. **End.** The viewer can disconnect a device at any time. The author can
+   remove the post, and an operator can remove it or withdraw the approval.
+   Access ends at once for all connected devices.
 
-A **share** gives the devices of one member access to a device of another
-member. It has a direction: the *owner* exposes, the *guest* connects.
+- A member who runs two applications on one device (one for everybody on one
+  port, one for their own devices on another port) posts only the first port.
+  The second port stays private.
+- A change of the device or the port of an approved post needs a new approval.
+- The author sees how many members and devices are connected, and can remove
+  one of them.
+- The private board needs no approval: it only concerns the devices of its
+  owner.
+
+### 3. Friends and shares between members
+
+Two members become **friends** when one sends a friend request and the other
+accepts. Only friends can ask for access to the devices of each other. Either
+member can end the friendship; all shares between them then end.
+
+A **share** gives the devices of one member access to a device of a friend. It
+has a direction: the *owner* exposes, the *guest* connects.
 
 - Scope, chosen by the owner: one device, and a list of ports or port ranges
   (or all ports). One share per device, so each device can have different
@@ -131,9 +151,9 @@ member. It has a direction: the *owner* exposes, the *guest* connects.
 Administrators control solicitations, because all members of the tailnet see
 them. The originator also writes the controller board. They do not control private shares between members.
 
-- Holders of `manage_board` can remove a solicitation. If the tailnet requires
-  service approval (`requireServiceApproval`), a solicitation is visible only
-  after a holder of `approve_services` approves it.
+- A service post is visible on the public board only after the originator or
+  a holder of `approve_services` approves it. Holders of `manage_board` can
+  remove a post.
 - The originator, or a holder of `manage_acl`, selects the access mode of the
   tailnet: `member` (this ADR), `open`, or `custom` (the ACL policy). The
   originator can turn off the board, or shares, for the whole tailnet.
@@ -143,11 +163,11 @@ them. The originator also writes the controller board. They do not control priva
 
 ### 4b. First version
 
-Included: an expiry on each share (the interface asks for it), one screen per
-device that shows who can reach it with "stop all sharing", shares to a role
-(each member of the role accepts for themselves), notifications, protocol with
-the port (TCP, UDP, ICMP), a block list, and limits on pending requests with a
-cool-down after a refusal.
+Included: friends, an expiry on each share (the interface asks for it), one
+screen per device that shows who can reach it with "stop all sharing",
+notifications, protocol with the port (TCP, UDP, ICMP), a block list (a
+blocked member cannot send friend requests), and limits on pending requests
+with a cool-down after a refusal.
 
 Later: last-use information for shares, and shares between a tailnet and its
 sub-tailnets. When ADR-0035 is built, a member with trusted devices must
@@ -179,8 +199,10 @@ confirm on a trusted device to accept or widen a share.
 ## Acceptance
 
 - New tailnet, two members: neither reaches a device of the other.
-- Member A solicits port 3000 of a device and runs a private application on
-  port 4000 of the same device. Member B presses Connect and selects one
+- Member A creates a service post for port 3000 of a device and runs a
+  private application on port 4000 of the same device. Before an operator
+  approves the post, member B does not see it. After the approval, B presses
+  Connect and selects one
   device. That device reaches port 3000 and not port 4000. The other devices of
   B, and member C who did not connect, reach nothing.
 - A holder of `manage_board` removes the solicitation. B loses access.
@@ -192,6 +214,7 @@ confirm on a trusted device to accept or widen a share.
 - The controller board is readable without sign-in and shows no device, port
   or member. HTML or script in its text shows as literal text.
 - An administrator cannot list or change a share between A and B.
+- A cannot request access to a device of B before they are friends.
 - A requests access to a device of B. Before B accepts, nothing changes. After
   B accepts ports 22 and 443 only, A reaches those two ports only.
 - B ends the share. A loses access in less than 5 seconds.
