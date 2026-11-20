@@ -82,17 +82,18 @@ vi.mock("../orchestrator/headscale.js", () => ({
 vi.mock("../orchestrator/caddy.js", () => ({ syncTenantRoutes: vi.fn(async () => {}) }));
 
 vi.mock("../auth/atproto.js", () => ({
+  OAUTH_SCOPE: "atproto",
   getOAuthClient: async () => ({ callback: oauthCallback }),
   getClientMetadata: () => ({}),
   getPublicJwks: async () => ({}),
 }));
-vi.mock("@atproto/api", () => ({
-  Agent: class {
-    async getProfile({ actor }: { actor: string }) {
-      return { data: { handle: `${actor.slice(8)}.test`, displayName: null, avatar: null } };
-    }
-  },
+vi.mock("../identity/account.js", () => ({
+  fetchAccountProfile: async (did: string) =>
+    did === "did:plc:nohandle"
+      ? { handle: null, displayName: null, avatarUrl: null }
+      : { handle: `${did.slice(8)}.test`, displayName: null, avatarUrl: null },
 }));
+
 
 import express from "express";
 import type { Request, Response, NextFunction } from "express";
@@ -215,8 +216,10 @@ describe("canCreateTailnet", () => {
 
 // ── Sign-in ──
 describe("auth callback", () => {
+  const signOut = vi.fn().mockResolvedValue(undefined);
+
   it("no membership and no right to create → no tenant provisioned, redirect to /", async () => {
-    oauthCallback.mockResolvedValue({ session: { did: "did:plc:stranger" }, state: "nonce-1" });
+    oauthCallback.mockResolvedValue({ session: { did: "did:plc:stranger", signOut }, state: "nonce-1" });
     results.push(
       [], // users by did → new user
       [{ id: "u-new", did: "did:plc:stranger", handle: "stranger.test", disabledAt: null }], // insert returning
@@ -228,10 +231,20 @@ describe("auth callback", () => {
     expect(r.location).toBe("/");
     expect(writes.some((w) => w.table === "tenants" && w.op === "insert")).toBe(false);
     expect(writes.some((w) => w.table === "memberships")).toBe(false);
+    // Identification only: the OAuth tokens are revoked as soon as the DID is known
+    expect(signOut).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a new account whose handle cannot be verified", async () => {
+    oauthCallback.mockResolvedValue({ session: { did: "did:plc:nohandle", signOut }, state: "nonce-h" });
+    results.push([]); // users by did → unknown
+    const r = await call("GET", "/auth/callback?code=x&state=y", undefined, undefined, { "x-login-nonce": "nonce-h" });
+    expect(r.status).toBe(502);
+    expect(writes.some((w) => w.table === "users")).toBe(false);
   });
 
   it("disabled users are refused with a page, no session", async () => {
-    oauthCallback.mockResolvedValue({ session: { did: "did:plc:bob" }, state: "nonce-2" });
+    oauthCallback.mockResolvedValue({ session: { did: "did:plc:bob", signOut }, state: "nonce-2" });
     results.push([{ id: "u-bob", did: "did:plc:bob", handle: "bob.test", disabledAt: new Date() }]);
     const r = await call("GET", "/auth/callback?code=x&state=y", undefined, undefined, { "x-login-nonce": "nonce-2" });
     expect(r.status).toBe(403);
@@ -244,7 +257,6 @@ describe("auth callback", () => {
     ["a different browser's nonce", "other-nonce", "nonce-3"],
     ["no state returned", "nonce-3", null],
   ])("refuses a callback with %s", async (_label, browserNonce, returnedState) => {
-    const signOut = vi.fn().mockResolvedValue(undefined);
     oauthCallback.mockResolvedValue({ session: { did: "did:plc:attacker", signOut }, state: returnedState });
     const r = await call(
       "GET",
@@ -255,13 +267,13 @@ describe("auth callback", () => {
     );
     expect(r.status).toBe(400);
     expect(r.text).toMatch(/not started in this browser/);
-    // The DID-keyed stored OAuth session is left alone
-    expect(signOut).not.toHaveBeenCalled();
+    // The tokens are revoked either way: the service keeps no account access
+    expect(signOut).toHaveBeenCalled();
     expect(writes.some((w) => w.table === "users")).toBe(false);
   });
 
   it("completes a sign-in started in another tab of the same browser", async () => {
-    oauthCallback.mockResolvedValue({ session: { did: "did:plc:bob" }, state: "tab-1" });
+    oauthCallback.mockResolvedValue({ session: { did: "did:plc:bob", signOut }, state: "tab-1" });
     results.push([{ id: "u-bob", did: "did:plc:bob", handle: "bob.test", disabledAt: new Date() }]);
     const r = await call("GET", "/auth/callback?code=x&state=y", undefined, undefined, {
       "x-login-nonce": "tab-1,tab-2",

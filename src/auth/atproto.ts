@@ -17,6 +17,13 @@ import { config, isLoopbackDeployment } from "../config.js";
 import { db } from "../db/index.js";
 import { oauthStates, oauthSessions } from "../db/schema.js";
 
+/**
+ * The only OAuth scope requested: `atproto` proves who the account is and
+ * grants nothing else — no reading or writing posts, follows, messages or
+ * settings. Never add `transition:*` scopes: sign-in is identification only.
+ */
+export const OAUTH_SCOPE = "atproto";
+
 type StateStore = {
   get(key: string): Promise<NodeSavedState | undefined>;
   set(key: string, val: NodeSavedState): Promise<void>;
@@ -106,10 +113,10 @@ export async function getOAuthClient(): Promise<NodeOAuthClient> {
     clientInstance = new NodeOAuthClient({
       clientMetadata: {
         client_name: "atproto-tailnet (dev)",
-        client_id: `http://localhost?redirect_uri=${enc(redirectUri)}&scope=${enc("atproto transition:generic")}`,
+        client_id: `http://localhost?redirect_uri=${enc(redirectUri)}&scope=${enc(OAUTH_SCOPE)}`,
         client_uri: url,
         redirect_uris: [redirectUri],
-        scope: "atproto transition:generic",
+        scope: OAUTH_SCOPE,
         grant_types: ["authorization_code", "refresh_token"],
         response_types: ["code"],
         application_type: "web",
@@ -131,7 +138,7 @@ export async function getOAuthClient(): Promise<NodeOAuthClient> {
         client_id: `${url}/.well-known/atproto-client-metadata.json`,
         client_uri: url,
         redirect_uris: [`${url}/auth/callback`],
-        scope: "atproto transition:generic",
+        scope: OAUTH_SCOPE,
         grant_types: ["authorization_code", "refresh_token"],
         response_types: ["code"],
         application_type: "web",
@@ -157,7 +164,7 @@ export function getClientMetadata(): object {
     client_id: `${url}/.well-known/atproto-client-metadata.json`,
     client_uri: url,
     redirect_uris: [`${url}/auth/callback`],
-    scope: "atproto transition:generic",
+    scope: OAUTH_SCOPE,
     grant_types: ["authorization_code", "refresh_token"],
     response_types: ["code"],
     application_type: "web",
@@ -186,4 +193,21 @@ export async function getPublicJwks(): Promise<{ keys: unknown[] }> {
   const key = await JoseKey.fromImportable(keyStr, atprotoKeyId(keyStr));
   const pub = key.publicJwk;
   return { keys: pub ? [pub] : [] };
+}
+
+/**
+ * Revoke and delete every OAuth session stored by earlier versions, which
+ * kept long-lived tokens (with a broader scope) after sign-in. The service no
+ * longer keeps any account tokens: a sign-in is revoked as soon as the
+ * account is identified. Best effort per session; the row is always deleted.
+ */
+export async function purgeStoredOAuthSessions(): Promise<number> {
+  const rows = await db.select({ key: oauthSessions.key }).from(oauthSessions);
+  if (rows.length === 0) return 0;
+  const client = await getOAuthClient();
+  for (const row of rows) {
+    await client.revoke(row.key).catch(() => {});
+    await db.delete(oauthSessions).where(eq(oauthSessions.key, row.key));
+  }
+  return rows.length;
 }

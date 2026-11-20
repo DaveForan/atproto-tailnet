@@ -40,7 +40,6 @@ import {
 import { loadCollectiveKeyPair } from "../orchestrator/federation-broker.js";
 import { verifyCredential, verifyHolderBinding } from "../credentials/verifier.js";
 import { verifyServiceAuth } from "../credentials/service-auth.js";
-import { obtainServiceAuthToken } from "../credentials/service-auth-bff.js";
 import { getResolver } from "../identity/resolver.js";
 import { config } from "../config.js";
 import * as jose from "jose";
@@ -785,39 +784,6 @@ credentialsRouter.post(
       results: verificationResults,
       errors,
     });
-  },
-);
-
-credentialsRouter.post(
-  "/api/tenants/:tenantId/credentials/service-auth-token",
-  requireAuth,
-  async (req, res) => {
-    const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    const userDid = await authUserDid(req);
-    if (!userDid) {
-      res.status(400).json({ error: "Could not resolve user DID" });
-      return;
-    }
-
-    const { audienceDid } = req.body ?? {};
-    if (!audienceDid || typeof audienceDid !== "string") {
-      res.status(400).json({ error: "audienceDid is required" });
-      return;
-    }
-
-    const token = await obtainServiceAuthToken(userDid, audienceDid);
-    if (!token) {
-      res.status(502).json({ error: "Failed to obtain service-auth token from PDS" });
-      return;
-    }
-
-    res.json({ token: token.token });
   },
 );
 

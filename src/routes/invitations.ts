@@ -106,7 +106,15 @@ export function inviteUrl(invitationId: string): string {
 export async function resolveDidToHandle(did: string): Promise<string | null> {
   const [known] = await db.select({ handle: users.handle }).from(users).where(eq(users.did, did));
   if (known) return known.handle;
+  return lookupVerifiedHandle(did);
+}
 
+/**
+ * The account's current handle from public sources (PLC directory, then the
+ * Bluesky public API), accepted only if the handle resolves back to the same
+ * DID. Needs no access to the account.
+ */
+export async function lookupVerifiedHandle(did: string): Promise<string | null> {
   let candidate: string | null = null;
   try {
     if (did.startsWith("did:plc:")) {

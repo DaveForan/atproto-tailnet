@@ -7,12 +7,13 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { Router } from "express";
 import { eq } from "drizzle-orm";
-import { Agent } from "@atproto/api";
 import {
   getOAuthClient,
   getClientMetadata,
   getPublicJwks,
+  OAUTH_SCOPE,
 } from "../auth/atproto.js";
+import { fetchAccountProfile } from "../identity/account.js";
 import { db } from "../db/index.js";
 import { users, tenants, memberships, roles } from "../db/schema.js";
 import { allocateTenantPort } from "../orchestrator/ports.js";
@@ -47,6 +48,24 @@ const ACCOUNT_DISABLED_HTML = `<!DOCTYPE html>
     <h1>Account disabled</h1>
     <p>Your account has been disabled by the operator of this instance, so you can't sign in.</p>
     <p>If you think this is a mistake, contact the instance operator.</p>
+    <p><a href="/">Back to the home page</a></p>
+  </main>
+</body>
+</html>`;
+
+/** Shown when the account's handle cannot be verified from public sources. */
+const HANDLE_UNVERIFIED_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sign-in failed — atproto-tailnet</title>
+  <link rel="stylesheet" href="/css/dashboard.css" />
+</head>
+<body>
+  <main class="container">
+    <h1>Sign-in could not be completed</h1>
+    <p>Your account was identified, but its handle could not be verified right now. Try again in a few minutes.</p>
     <p><a href="/">Back to the home page</a></p>
   </main>
 </body>
@@ -389,7 +408,7 @@ authRouter.get("/auth/login", async (req, res) => {
 
     const client = await getOAuthClient();
     const url = await client.authorize(handle, {
-      scope: "atproto transition:generic",
+      scope: OAUTH_SCOPE,
       state: loginNonce,
     });
 
@@ -414,9 +433,10 @@ authRouter.get("/auth/callback", async (req, res) => {
     const pendingNonces = req.session.oauthLoginNonces ?? [];
     const { session, state } = await client.callback(params);
     const matched = pendingNonces.find((n) => loginNonceMatches(n, state));
+    // The callback proved who the account is; that is all sign-in is for.
+    // Revoke the tokens right away so the service never holds account access.
+    await session.signOut().catch((err) => logger.warn({ err }, "failed to revoke OAuth session after sign-in"));
     if (!matched) {
-      // Not signing out: the OAuth session store is keyed by DID, so that
-      // would also drop the account's legitimate stored session.
       logger.warn({ did: session.did }, "OAuth callback refused: not started in this browser");
       res.status(400).type("html").send(LOGIN_MISMATCH_HTML);
       return;
@@ -425,13 +445,18 @@ authRouter.get("/auth/callback", async (req, res) => {
 
     const did = session.did;
 
-    const agent = new Agent(session);
-    const profile = await agent.getProfile({ actor: did });
-    const handle = profile.data.handle;
-    const displayName = profile.data.displayName ?? handle;
-    const avatarUrl = profile.data.avatar ?? null;
-
     let [user] = await db.select().from(users).where(eq(users.did, did));
+
+    // Profile details come from public sources — no account access is used.
+    const profile = await fetchAccountProfile(did);
+    const handle = profile.handle ?? user?.handle;
+    if (!handle) {
+      logger.warn({ did }, "sign-in refused: handle could not be verified");
+      res.status(502).type("html").send(HANDLE_UNVERIFIED_HTML);
+      return;
+    }
+    const displayName = profile.displayName ?? user?.displayName ?? handle;
+    const avatarUrl = profile.avatarUrl ?? user?.avatarUrl ?? null;
 
     if (user?.disabledAt) {
       logger.info({ did }, "sign-in refused: account disabled");

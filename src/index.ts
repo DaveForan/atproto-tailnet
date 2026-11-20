@@ -56,6 +56,7 @@ import { startBroker } from "./orchestrator/federation-broker.js";
 import { startAbuseSweep } from "./federation/abuse.js";
 import { reconcileTenantRouting } from "./orchestrator/caddy.js";
 import { logger } from "./logger.js";
+import { purgeStoredOAuthSessions } from "./auth/atproto.js";
 
 const app = express();
 app.disable("x-powered-by");
@@ -259,4 +260,8 @@ app.listen(config.port, () => {
   if (config.federationEnabled) startBroker();
   startAbuseSweep();
   void reconcileTenantRouting();
+  // Earlier versions kept account tokens after sign-in; revoke and drop them
+  void purgeStoredOAuthSessions()
+    .then((n) => n > 0 && logger.info({ sessions: n }, "revoked stored OAuth sessions"))
+    .catch((err) => logger.warn({ err }, "failed to purge stored OAuth sessions"));
 });
