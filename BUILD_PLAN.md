@@ -299,6 +299,9 @@ Order matters: each stage gives value alone and unblocks the next.
 - [x] Tailnet and member names in Tailscale clients: coordinator identity registry (1406883)
 - [x] Public tailnet addresses: `tenant_hostnames`, random friendly names, privacy fixes (15236e6 — ADR-0026 §1-2)
 
+### 6.0b Sign-in is identification only
+- [x] `atproto` scope only; session revoked in the callback; stored sessions purged; public profile lookup from the DID document (b825e10)
+
 ### 6.1 Tailnet addresses and shared control URL (ADR-0026)
 - [x] Run migration 0030 against a throwaway PostgreSQL (copy of the live data: applies, idempotent, one-primary index enforced)
 - [x] `control.<APEX_DOMAIN>`: Caddy site, `CONTROL_DOMAIN` config; login server everywhere uses it (DNS record at deploy)
@@ -339,7 +342,7 @@ Order matters: each stage gives value alone and unblocks the next.
 - [ ] Verify `https://<name>.<BASE_DOMAIN>` from a second device; not reachable from outside
 
 ### 6.7 Public service exposure (ADR-0031)
-- [ ] `__Host-` dashboard session cookie (do first, independent)
+- [x] `__Host-` dashboard session cookie (7e7b3e7)
 - [ ] Decide and register `PUBLIC_SERVICE_DOMAIN`
 - [ ] Operator enable per tailnet + per-service approval, audit, kill switch
 - [ ] Caddy public side → gateway; `public` and `public-signed-in` modes
@@ -349,6 +352,19 @@ Order matters: each stage gives value alone and unblocks the next.
 - [ ] Gateway-to-gateway link; advertise agreed CIDRs; enforce traversal policy
 - [ ] Hierarchy: child services and routes visible to parents by posture
 - [ ] `cloud.mesotechnics.service` lexicon; write/verify records; board as a view of records
+
+### 6.10 Device-bound access (ADR-0035)
+- [ ] WebAuthn verification (node:crypto + CBOR), challenge store, trusted-device table
+- [ ] Two-step sign-in, refusal + notification for other devices, device limit
+- [ ] Add-device approval from a trusted device; step-up for sensitive actions
+- [ ] Recovery codes; operator reset with delay
+- [ ] Self-lock of tailnet machines; coordinator enforces locks at registration
+
+### 6.11 High availability and Kubernetes (ADR-0034)
+- [ ] Stage A: coordinator config in the database; LISTEN/NOTIFY event bus; advisory-lock leader for TS loops; shared MCP secret
+- [ ] Stage B: coordinator roles (control / relay / all); one DERP region per relay; real home relay per device; relay discovery table
+- [ ] Stage C: `deploy/kubernetes/` Kustomize manifests, cert-manager TLS, STUN UDP services, Secrets for keys, probes and disruption budgets; docs
+- [ ] Verify: replica loss during a ping between two devices
 
 ### 6.9 Operations (no ADR)
 - [ ] DigitalOcean backups + nightly `pg_dump` and coordinator key off the droplet; test a restore
