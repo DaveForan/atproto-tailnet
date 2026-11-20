@@ -374,8 +374,8 @@ Order matters: each stage gives value alone and unblocks the next.
 - [x] Step-up for agent tokens, MCP connections, operator changes, the tailnet address, shares
 - [x] Device cookie (second proof, HttpOnly) and device profile warning
 - [x] Self-lock of tailnet machines; coordinator enforces locks at registration; allow-one window; refused list
-- [ ] Notification for a refused machine; maximum number of machines in a machine lock
-- [ ] Screen-by-screen review of the older tabs (tables on phones, forms, empty states)
+- [x] Notification for a refused machine; maximum number of machines in a machine lock
+- [x] Screen-by-screen review of the older tabs (tables on phones, forms, empty states)
 - [ ] Verify in real browsers
 
 ### 6.11 High availability and Kubernetes (ADR-0034)

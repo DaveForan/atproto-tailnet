@@ -179,10 +179,16 @@ Also built:
   dashboard proves the device again without a prompt. The MCP page has no
   script, so the user confirms the device in the Account tab first.
 
+- **Refused machines and the device limit of a machine lock.** The monitor
+  asks the coordinator for refused machines and writes one notification for
+  each to the owner of the lock. A member can set the maximum number of
+  devices in the lock; a full lock admits no machine, also in the window.
+  Difference from section 2: the approvers of the tailnet get no
+  notification. A refused attempt is about the account of one member, and an
+  approver cannot act on it.
+
 Not yet built:
 
-- A notification for a refused machine (the dashboard shows the list; no
-  notification is sent). A maximum number of machines in a machine lock.
 - The operator reset with a delay (not planned; the owner was not sure).
 - A test in real browsers (Safari, Chrome, Firefox, mobile) and with real
   Tailscale clients. To check in Safari: the browser can delete the device
