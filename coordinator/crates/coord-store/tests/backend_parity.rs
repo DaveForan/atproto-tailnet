@@ -572,11 +572,13 @@ async fn owner_lock_round_trip_and_removal() {
         let s = &b.store;
         let t = tenant(s, "lock").await;
         assert_eq!(s.get_owner_lock(t, "alice").await, None, "{}", b.name);
-        let lock = OwnerLock { machines: vec!["ab".repeat(32)], allow_one_until: Some(chrono::Utc::now()), refused: vec![] };
+        let lock = OwnerLock { machines: vec!["ab".repeat(32)], allow_one_until: Some(chrono::Utc::now()), refused: vec![], max_machines: Some(3) };
         s.set_owner_lock(t, "alice", Some(lock.clone())).await.unwrap();
         let got = s.get_owner_lock(t, "alice").await.unwrap();
         assert_eq!(got.machines, lock.machines, "{}", b.name);
         assert!(got.allow_one_until.is_some(), "{}", b.name);
+        assert_eq!(got.max_machines, Some(3), "{}", b.name);
+        assert!(s.list_owner_locks().await.iter().any(|(tid, o, l)| *tid == t && o == "alice" && l.max_machines == Some(3)), "{}", b.name);
         assert_eq!(s.get_owner_lock(t, "bob").await, None, "locks are per owner ({})", b.name);
         s.set_owner_lock(t, "alice", None).await.unwrap();
         assert_eq!(s.get_owner_lock(t, "alice").await, None, "{}", b.name);

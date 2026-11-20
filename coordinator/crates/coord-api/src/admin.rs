@@ -631,6 +631,38 @@ pub async fn set_tenant_access(
 pub struct OwnerLockBody {
     /// Nodes of the owner that stay allowed.
     pub node_ids: Vec<i64>,
+    /// Most machines the lock may hold (absent = the system limit).
+    #[serde(default)]
+    pub max_machines: Option<u32>,
+}
+
+#[derive(serde::Deserialize)]
+pub struct RefusedQuery {
+    /// Only attempts after this time.
+    pub since: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// GET /api/owner-locks/refused?since=… — machines refused by a machine lock,
+/// oldest first, for the TS service to notify their owners.
+pub async fn list_refused_machines(
+    State(state): State<Arc<CoordinatorState>>,
+    axum::extract::Query(q): axum::extract::Query<RefusedQuery>,
+) -> impl IntoResponse {
+    let mut out = Vec::new();
+    for (tenant_id, owner, lock) in state.store.list_owner_locks().await {
+        for r in lock.refused.into_iter().filter(|r| q.since.is_none_or(|s| r.at > s)) {
+            out.push((r.at, serde_json::json!({
+                "tenant_id": tenant_id.to_string(),
+                "owner": owner,
+                "at": r.at,
+                "hostname": r.hostname,
+                "os": r.os,
+                "fingerprint": r.fingerprint,
+            })));
+        }
+    }
+    out.sort_by_key(|(at, _)| *at);
+    Json(serde_json::json!({ "refused": out.into_iter().map(|(_, v)| v).collect::<Vec<_>>() })).into_response()
 }
 
 #[derive(serde::Deserialize)]
@@ -657,6 +689,7 @@ async fn owner_lock_view(state: &CoordinatorState, tenant_id: TenantId, owner: &
         "locked": lock.is_some(),
         "node_ids": allowed,
         "allow_one_until": lock.as_ref().and_then(|l| l.allow_one_until),
+        "max_machines": lock.as_ref().and_then(|l| l.max_machines),
         "refused": lock.map(|l| l.refused).unwrap_or_default(),
     })
 }
@@ -703,11 +736,17 @@ pub async fn set_owner_lock(
         .filter(|n| body.node_ids.contains(&n.node_id.as_i64()))
         .map(|n| hex::encode(&n.machine_key))
         .collect();
+    if let Some(max) = body.max_machines {
+        if max < 1 || max as usize > coord_core::lock::MAX_LOCK_MACHINES || (max as usize) < machines.len() {
+            return bad_request("max_machines must be at least the number of kept devices and at most 64");
+        }
+    }
     let previous = state.store.get_owner_lock(tenant_id, &owner).await;
     let lock = coord_core::OwnerLock {
         machines,
         allow_one_until: None,
         refused: previous.map(|l| l.refused).unwrap_or_default(),
+        max_machines: body.max_machines,
     };
     if let Err(e) = state.store.set_owner_lock(tenant_id, &owner, Some(lock)).await {
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response();
@@ -740,6 +779,9 @@ pub async fn allow_one_machine(
     let Some(mut lock) = state.store.get_owner_lock(tenant_id, &owner).await else {
         return not_found("this owner has no machine lock");
     };
+    if lock.is_full() {
+        return (StatusCode::CONFLICT, Json(serde_json::json!({ "error": "the lock is at its device limit", "code": "lock_full" }))).into_response();
+    }
     lock.allow_one_until = Some(chrono::Utc::now() + chrono::Duration::seconds(body.seconds));
     if let Err(e) = state.store.set_owner_lock(tenant_id, &owner, Some(lock)).await {
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response();

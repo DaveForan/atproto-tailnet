@@ -446,6 +446,14 @@ impl PgStore {
         rows.into_iter().map(|(id, region)| (NodeId::new(id), region)).collect()
     }
 
+    pub async fn list_owner_locks(&self) -> Vec<(TenantId, String, coord_core::OwnerLock)> {
+        let rows: Vec<(uuid::Uuid, String, Json)> = sqlx::query_as("SELECT tenant_id, owner, lock FROM coord_owner_locks")
+            .fetch_all(&self.pool)
+            .await
+            .unwrap_or_default();
+        rows.into_iter().filter_map(|(t, o, l)| Some((TenantId::new(t), o, serde_json::from_value(l).ok()?))).collect()
+    }
+
     pub async fn get_owner_lock(&self, tenant_id: TenantId, owner: &str) -> Option<coord_core::OwnerLock> {
         let row: Option<Json> = sqlx::query_scalar("SELECT lock FROM coord_owner_locks WHERE tenant_id = $1 AND owner = $2")
             .bind(tenant_id.as_uuid())

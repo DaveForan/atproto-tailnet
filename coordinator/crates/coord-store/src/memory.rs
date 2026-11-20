@@ -251,6 +251,11 @@ impl MemoryStore {
         node_ids.iter().filter_map(|id| all.get(id).map(|r| (*id, *r))).collect()
     }
 
+    pub fn list_owner_locks(&self) -> Vec<(TenantId, String, coord_core::OwnerLock)> {
+        let locks = self.owner_locks.lock().unwrap_or_else(|e| e.into_inner());
+        locks.iter().map(|((t, o), l)| (*t, o.clone(), l.clone())).collect()
+    }
+
     pub fn get_owner_lock(&self, tenant_id: TenantId, owner: &str) -> Option<coord_core::OwnerLock> {
         self.owner_locks.lock().unwrap_or_else(|e| e.into_inner()).get(&(tenant_id, owner.to_string())).cloned()
     }

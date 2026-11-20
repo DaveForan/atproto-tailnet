@@ -3692,3 +3692,42 @@ async fn peers_learn_the_home_relay_that_a_device_reports() {
     map_of(&state, 252, Some(serde_json::json!({ "Hostname": "two", "NetInfo": { "PreferredDERP": 77 } }))).await;
     assert_eq!(map_of(&state, 250, None).await["Peers"][0]["HomeDERP"], 2);
 }
+
+#[tokio::test]
+async fn machine_lock_cap_and_refused_listing() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "machine-cap").await;
+    let k = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "owner": "alice", "reusable": true })).await;
+    let k = k["key"].as_str().unwrap();
+    register_routes(&state, 60, k, "alice-mac", None).await;
+    let mac = member_map(&state, 60).await["Node"]["ID"].as_i64().unwrap();
+    let path = format!("/api/tenants/{t}/owner-locks/alice");
+
+    // The cap cannot be below the kept devices or above the system limit
+    for bad in [0, 65] {
+        let (status, _) = api_call(&app, "PUT", path.clone(), Some(serde_json::json!({ "node_ids": [mac], "max_machines": bad }))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+    let (status, lock) = api_call(&app, "PUT", path.clone(), Some(serde_json::json!({ "node_ids": [mac], "max_machines": 2 }))).await;
+    assert_eq!((status, &lock["max_machines"]), (StatusCode::OK, &serde_json::json!(2)));
+
+    // One more machine fits; then the lock is full and the window cannot be opened
+    let (status, _) = api_call(&app, "POST", format!("{path}/allow-one"), Some(serde_json::json!({ "seconds": 600 }))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(register_routes(&state, 62, k, "alice-phone", None).await["MachineAuthorized"], true);
+    let (status, body) = api_call(&app, "POST", format!("{path}/allow-one"), Some(serde_json::json!({ "seconds": 600 }))).await;
+    assert_eq!((status, &body["code"]), (StatusCode::CONFLICT, &serde_json::json!("lock_full")));
+
+    // Refused attempts are listed for the TS service, and `since` filters them
+    let before = chrono::Utc::now();
+    assert_eq!(register_routes(&state, 64, k, "intruder", None).await["MachineAuthorized"], false);
+    let (_, all) = api_call(&app, "GET", "/api/owner-locks/refused".into(), None).await;
+    let mine: Vec<_> = all["refused"].as_array().unwrap().iter().filter(|r| r["tenant_id"] == t.to_string()).collect();
+    assert_eq!(mine.len(), 1);
+    assert_eq!((&mine[0]["owner"], &mine[0]["hostname"]), (&serde_json::json!("alice"), &serde_json::json!("intruder")));
+    let since = |ts: chrono::DateTime<chrono::Utc>| format!("/api/owner-locks/refused?since={}", ts.to_rfc3339().replace('+', "%2B"));
+    let (_, recent) = api_call(&app, "GET", since(before), None).await;
+    assert_eq!(recent["refused"].as_array().unwrap().len(), 1);
+    let (_, later) = api_call(&app, "GET", since(chrono::Utc::now() + chrono::Duration::seconds(5)), None).await;
+    assert!(later["refused"].as_array().unwrap().is_empty());
+}

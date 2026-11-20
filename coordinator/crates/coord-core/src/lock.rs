@@ -35,6 +35,9 @@ pub struct OwnerLock {
     pub allow_one_until: Option<DateTime<Utc>>,
     #[serde(default)]
     pub refused: Vec<RefusedMachine>,
+    /// Most machines the owner allows in this lock (`None` = the system limit).
+    #[serde(default)]
+    pub max_machines: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +51,15 @@ pub enum LockOutcome {
 }
 
 impl OwnerLock {
+    /// The number of machines this lock can hold.
+    pub fn capacity(&self) -> usize {
+        self.max_machines.map_or(MAX_LOCK_MACHINES, |m| (m as usize).min(MAX_LOCK_MACHINES))
+    }
+
+    pub fn is_full(&self) -> bool {
+        self.machines.len() >= self.capacity()
+    }
+
     pub fn allows(&self, machine_key_hex: &str) -> bool {
         self.machines.iter().any(|m| m == machine_key_hex)
     }
@@ -65,7 +77,7 @@ impl OwnerLock {
         if self.allows(machine_key_hex) {
             return LockOutcome::Allowed;
         }
-        if self.allow_one_until.is_some_and(|until| now < until) && self.machines.len() < MAX_LOCK_MACHINES {
+        if self.allow_one_until.is_some_and(|until| now < until) && !self.is_full() {
             self.machines.push(machine_key_hex.to_string());
             self.allow_one_until = None;
             return LockOutcome::AllowedNew;
@@ -109,7 +121,7 @@ mod tests {
         let mut lock = OwnerLock {
             machines: vec!["aa".into()],
             allow_one_until: Some(now() + chrono::Duration::minutes(10)),
-            refused: vec![],
+            ..Default::default()
         };
         assert_eq!(lock.check("bb", now(), "phone", "iOS", "f"), LockOutcome::AllowedNew);
         assert!(lock.allows("bb"));
@@ -122,10 +134,26 @@ mod tests {
         let mut lock = OwnerLock {
             machines: vec!["aa".into()],
             allow_one_until: Some(now() - chrono::Duration::seconds(1)),
-            refused: vec![],
+            ..Default::default()
         };
         assert_eq!(lock.check("bb", now(), "late", "linux", "f"), LockOutcome::Refused);
         assert_eq!(lock.allow_one_until, None);
+    }
+
+    #[test]
+    fn a_full_lock_admits_nobody_even_inside_the_window() {
+        let mut lock = OwnerLock {
+            machines: vec!["aa".into(), "bb".into()],
+            allow_one_until: Some(now() + chrono::Duration::minutes(10)),
+            max_machines: Some(2),
+            ..Default::default()
+        };
+        assert!(lock.is_full());
+        assert_eq!(lock.check("cc", now(), "third", "linux", "f"), LockOutcome::Refused);
+        assert_eq!(lock.check("aa", now(), "known", "linux", "f"), LockOutcome::Allowed);
+        lock.max_machines = Some(3);
+        lock.allow_one_until = Some(now() + chrono::Duration::minutes(10));
+        assert_eq!(lock.check("cc", now(), "third", "linux", "f"), LockOutcome::AllowedNew);
     }
 
     #[test]

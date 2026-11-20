@@ -267,6 +267,15 @@ impl Store {
         }
     }
 
+    /// Every machine lock, as (tenant, owner, lock).
+    pub async fn list_owner_locks(&self) -> Vec<(TenantId, String, coord_core::OwnerLock)> {
+        match self {
+            Store::Memory(m) => m.list_owner_locks(),
+            Store::Pg(p) => p.list_owner_locks().await,
+            Store::Sqlite(s) => s.list_owner_locks().await,
+        }
+    }
+
     /// Set or (with `None`) remove an owner's machine lock.
     pub async fn set_owner_lock(
         &self,

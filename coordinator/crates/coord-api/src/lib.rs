@@ -91,6 +91,7 @@ pub fn router(state: Arc<CoordinatorState>) -> Router {
             get(admin::get_owner_lock).put(admin::set_owner_lock).delete(admin::delete_owner_lock),
         )
         .route("/tenants/{id}/owner-locks/{owner}/allow-one", post(admin::allow_one_machine))
+        .route("/owner-locks/refused", get(admin::list_refused_machines))
         .route("/device-auth/{id}", get(admin::get_device_auth))
         .route("/device-auth/{id}/approve", post(admin::approve_device_auth))
         .route("/device-auth/{id}/deny", post(admin::deny_device_auth))

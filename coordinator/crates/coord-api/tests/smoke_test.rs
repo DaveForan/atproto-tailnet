@@ -169,15 +169,20 @@ async fn body_limit_enforced_over_tcp() {
 
     // 3 MiB body should be rejected (limit is 2 MiB)
     let big_body = vec![b'x'; 3 * 1024 * 1024];
-    let resp = client
+    let result = client
         .post(format!("{}/api/tenants", base))
         .header("Authorization", "Bearer smoke-test-key")
         .header("Content-Type", "application/json")
         .body(big_body)
         .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 413);
+        .await;
+    // The server answers 413 and closes. When it closes before the client has
+    // written the whole body, the client sees a reset in place of the answer.
+    // The two outcomes both mean that the body was refused.
+    match result {
+        Ok(resp) => assert_eq!(resp.status(), 413),
+        Err(e) => assert!(e.is_request() || e.is_body() || e.is_connect(), "unexpected error: {e:?}"),
+    }
 
     handle.abort();
 }
