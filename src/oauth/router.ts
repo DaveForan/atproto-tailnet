@@ -26,6 +26,7 @@ import { metadataHandler } from "@modelcontextprotocol/sdk/server/auth/handlers/
 import { MAX_CLIENT_METADATA_BYTES, type TailnetOAuthProvider } from "./provider.js";
 import { errorPage } from "./pages.js";
 import "./types.js";
+import { stepUpMissing } from "../auth/step-up.js";
 
 export interface OAuthRouterOptions {
   provider: TailnetOAuthProvider;
@@ -187,6 +188,18 @@ export function createOAuthRouter(opts: OAuthRouterOptions): Router {
           decision !== "allow" ? "The user denied access" : "This account cannot authorize applications",
         );
         res.redirect(302, target.href);
+        return;
+      }
+
+      // A connection acts as the user for a long time: with the device lock
+      // on, allowing one needs a fresh proof from the trusted device (ADR-0035).
+      if (stepUpMissing(req)) {
+        res.status(403).type("html").send(
+          errorPage(
+            "Confirm this device first",
+            "Open the dashboard, go to Account and select \"Confirm this device\". Then start the connection again from your MCP client within 5 minutes.",
+          ),
+        );
         return;
       }
 

@@ -19,6 +19,7 @@ import { logAudit } from "./audit.js";
 import { notifyUser } from "../notifications/service.js";
 import { listUserDevices } from "../access/devices.js";
 import { syncTenantAccess } from "../access/sync.js";
+import { stepUpForSession } from "../auth/step-up.js";
 
 export const sharingRouter = Router();
 
@@ -367,7 +368,7 @@ const shareBody = z.object({
  * device. `offer`: the caller is the owner and offers one of their devices.
  * Nothing is opened until the other side accepts.
  */
-sharingRouter.post("/api/tenants/:tenantId/shares", requireAuth, async (req, res) => {
+sharingRouter.post("/api/tenants/:tenantId/shares", requireAuth, stepUpForSession, async (req, res) => {
   const m = await member(req, res);
   if (!m) return;
   const tenantId = m.ctx.tenant.id;
@@ -455,7 +456,7 @@ export function portsWithin(narrow: AccessPortSpec[], wide: AccessPortSpec[]): b
   );
 }
 
-sharingRouter.post("/api/tenants/:tenantId/shares/:shareId/accept", requireAuth, async (req, res) => {
+sharingRouter.post("/api/tenants/:tenantId/shares/:shareId/accept", requireAuth, stepUpForSession, async (req, res) => {
   const m = await member(req, res);
   if (!m) return;
   const tenantId = m.ctx.tenant.id;

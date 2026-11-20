@@ -22,6 +22,7 @@ import {
   MAX_LIVE_HOSTNAMES,
   type HostnameError,
 } from "../orchestrator/hostnames.js";
+import { stepUpForSession } from "../auth/step-up.js";
 
 export const hostnamesRouter = Router();
 
@@ -64,7 +65,7 @@ async function resyncRoutes(tenantId: string): Promise<void> {
   await syncTenantAccess(tenantId);
 }
 
-hostnamesRouter.put("/api/tenants/:tenantId/hostnames/primary", requireAuth, async (req, res) => {
+hostnamesRouter.put("/api/tenants/:tenantId/hostnames/primary", requireAuth, stepUpForSession, async (req, res) => {
   const result = await getTenantForUser(param(req, "tenantId"), authUserId(req));
   if (!result) {
     res.status(404).json({ error: "Tenant not found" });
@@ -92,7 +93,7 @@ hostnamesRouter.put("/api/tenants/:tenantId/hostnames/primary", requireAuth, asy
   res.json({ primary: outcome.name, hostnames: await listHostnames(result.tenant.id) });
 });
 
-hostnamesRouter.delete("/api/tenants/:tenantId/hostnames/:name", requireAuth, async (req, res) => {
+hostnamesRouter.delete("/api/tenants/:tenantId/hostnames/:name", requireAuth, stepUpForSession, async (req, res) => {
   const result = await getTenantForUser(param(req, "tenantId"), authUserId(req));
   if (!result) {
     res.status(404).json({ error: "Tenant not found" });

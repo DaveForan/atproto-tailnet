@@ -4,7 +4,6 @@ import { Badge } from "./Badge";
 import { useToast } from "./Toast";
 import { errorCode, errorMessage } from "../lib/utils";
 import { machineLockService, type MachineLockState } from "../services/machine-lock";
-import { deviceTrustService } from "../services/device-trust";
 
 /**
  * "Lock my devices" (ADR-0035): the member limits their devices in this
@@ -26,19 +25,11 @@ export function MachineLockCard({ tenantId, onChanged }: { tenantId: string; onC
     machineLockService.get(tenantId).then(apply, () => setState(null));
   }, [tenantId, apply]);
 
-  /** Run a change; when the server asks for a fresh proof, prove this trusted device and retry. */
+  /** Run a change and show the result. */
   const run = async (fn: () => Promise<MachineLockState | null>, done: string) => {
     setBusy(true);
     try {
-      let next: MachineLockState | null;
-      try {
-        next = await fn();
-      } catch (e) {
-        if (errorCode(e) !== "step_up_required") throw e;
-        await deviceTrustService.stepUp();
-        next = await fn();
-      }
-      apply(next);
+      apply(await fn()); // the API layer proves this device again when the server asks
       setChoosing(false);
       toast(done);
       onChanged?.();

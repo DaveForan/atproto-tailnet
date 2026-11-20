@@ -371,7 +371,7 @@ Order matters: each stage gives value alone and unblocks the next.
 - [x] Recovery codes; server command `reset-device-lock`
 - [x] Account screen; themes (paper default, parchment, forest, slate, high contrast); responsive and focus polish
 - [x] Decision: no passkeys (WebAuthn); the device key is the device proof
-- [ ] Step-up for agent tokens, MCP connections, operator actions, accepting shares
+- [x] Step-up for agent tokens, MCP connections, operator changes, the tailnet address, shares
 - [x] Device cookie (second proof, HttpOnly) and device profile warning
 - [x] Self-lock of tailnet machines; coordinator enforces locks at registration; allow-one window; refused list
 - [ ] Notification for a refused machine; maximum number of machines in a machine lock

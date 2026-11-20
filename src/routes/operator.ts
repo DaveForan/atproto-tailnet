@@ -38,6 +38,7 @@ import { deleteTenantInstance } from "./api.js";
 import { ACCOUNT_DID_RE, normalizeAccountDid, resolveDidToHandle, resolveHandleToDid } from "./invitations.js";
 import { logger } from "../logger.js";
 import { primaryHostname } from "../orchestrator/hostnames.js";
+import { stepUpForSession } from "../auth/step-up.js";
 
 /** Router for /api/operator/* (all routes behind requireOperator). */
 export const operatorRouter = Router();
@@ -48,6 +49,8 @@ export const instanceRouter = Router();
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 operatorRouter.use("/api/operator", requireOperator);
+// Every change by an operator in a dashboard session needs a fresh device proof (ADR-0035)
+operatorRouter.use("/api/operator", (req, res, next) => (req.method === "GET" ? next() : stepUpForSession(req, res, next)));
 
 // ── Public: instance descriptor ─────────────────────────────────────
 

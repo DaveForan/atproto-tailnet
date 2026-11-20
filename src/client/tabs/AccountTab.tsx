@@ -86,13 +86,7 @@ function TrustedDevices({ onChanged }: { onChanged?: () => void }) {
   const guarded = async (fn: () => Promise<unknown>, done: string) => {
     setBusy(true);
     try {
-      try {
-        await fn();
-      } catch (e) {
-        if (errorCode(e) !== "step_up_required") throw e;
-        await deviceTrustService.stepUp();
-        await fn();
-      }
+      await fn(); // the API layer proves this device again when the server asks
       toast(done);
       await load();
       onChanged?.();
@@ -286,6 +280,14 @@ function TrustedDevices({ onChanged }: { onChanged?: () => void }) {
               Make new recovery codes
             </button>
           </div>
+          <div className="btn-group">
+            <button className="btn-sm btn-ghost" disabled={busy} onClick={() => { void guarded(() => deviceTrustService.stepUp(), "Confirmed for 5 minutes"); }}>
+              Confirm this device
+            </button>
+          </div>
+          <p className="help-text">
+            Confirm this device before you allow an application (MCP) to connect to your account.
+          </p>
           <p className="help-text">
             To add another device: sign in on it, choose &quot;Ask for approval&quot;, then approve it here with the code it shows.
           </p>

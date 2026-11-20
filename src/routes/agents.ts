@@ -52,6 +52,7 @@ import {
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
 import { ALL_PERMISSIONS } from "./permissions.js";
+import { stepUpForSession } from "../auth/step-up.js";
 
 export const agentsRouter = Router();
 
@@ -79,6 +80,7 @@ const createTokenBody = z.object({
 agentsRouter.post(
   "/api/tenants/:tenantId/agent-tokens",
   requireAuth,
+  stepUpForSession,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const userId = authUserId(req);

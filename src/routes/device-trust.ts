@@ -45,6 +45,7 @@ import {
   readCookie,
 } from "../auth/device-trust.js";
 import { config } from "../config.js";
+import { deviceProofFresh } from "../auth/step-up.js";
 
 export const deviceTrustRouter = Router();
 
@@ -358,10 +359,7 @@ export function enforceDeviceEnrollment(req: Request, res: Response, next: NextF
   res.status(403).json({ error: "Add this device as a trusted device first", code: "enroll_required" });
 }
 
-function stepUpFresh(req: Request): boolean {
-  const at = req.session.deviceVerifiedAt;
-  return !!req.session.trustedDeviceId && !!at && Date.now() - at < STEP_UP_TTL_MS;
-}
+const stepUpFresh = deviceProofFresh;
 
 /** True when the request may change the lock: no lock yet, or a fresh device proof. */
 async function mayChangeLock(req: Request, res: Response): Promise<boolean> {

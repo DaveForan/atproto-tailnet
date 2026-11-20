@@ -173,10 +173,14 @@ Also built:
   refused machines and the dashboard shows them. With trusted devices, each
   change of the lock needs a fresh proof.
 
+- **Step-up for other actions** (`auth/step-up.ts`): making an agent token,
+  each change by an operator, a change of the tailnet address, offering,
+  requesting or accepting a share, and allowing an MCP connection. The
+  dashboard proves the device again without a prompt. The MCP page has no
+  script, so the user confirms the device in the Account tab first.
+
 Not yet built:
 
-- Step-up for agent tokens, MCP connections, operator actions, the tailnet
-  address, and accepting shares.
 - A notification for a refused machine (the dashboard shows the list; no
   notification is sent). A maximum number of machines in a machine lock.
 - The operator reset with a delay (not planned; the owner was not sure).

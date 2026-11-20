@@ -15,7 +15,23 @@ export function setCsrfToken(token: string) {
   csrfToken = token;
 }
 
-export async function api<T = unknown>(
+/**
+ * Call the API. When the server asks for a fresh device proof
+ * (`step_up_required`, ADR-0035), this trusted device proves itself silently
+ * and the call is repeated once.
+ */
+export async function api<T = unknown>(path: string, opts?: RequestInit): Promise<T | null> {
+  try {
+    return await request<T>(path, opts);
+  } catch (e) {
+    if (!(e instanceof ApiError) || e.code !== "step_up_required") throw e;
+    const { deviceTrustService } = await import("./device-trust");
+    await deviceTrustService.stepUp();
+    return request<T>(path, opts);
+  }
+}
+
+async function request<T>(
   path: string,
   opts?: RequestInit,
 ): Promise<T | null> {
