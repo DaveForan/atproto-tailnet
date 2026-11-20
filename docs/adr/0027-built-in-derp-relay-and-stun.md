@@ -1,6 +1,6 @@
 # ADR-0027: Built-in DERP relay and STUN server
 
-**Status:** Proposed
+**Status:** In Progress
 **Date:** 2026-11-19
 **Priority:** P0
 **Depends On:** ADR-0006 (custom DERP regions), ADR-0023 (Rust mesh coordinator)
@@ -89,3 +89,20 @@ Mesh between several relays (more regions) is out of scope for this ADR.
 - A node key that is not registered cannot use the relay.
 - Unit tests cover frame encoding, the handshake and forwarding. An integration
   test uses two real Tailscale clients.
+
+## Implementation notes
+
+Built: `coord-derp` (framing, handshake, forwarding, admission, limits, STUN),
+the HTTP endpoints and `StoreAdmission` in `coord-api`, the relay key, hostname
+and STUN listener in `coord-server`, and the Caddy sites.
+
+Differences from the decision above:
+
+- The WebSocket transport is not built. Only browser-based clients need it.
+- Relaying is limited to nodes of one tenant, or of a parent and a child
+  tenant. A peer outside this scope gets the same answer as an unknown key.
+- Admission is checked again at each keep-alive, so that a removed node or a
+  suspended tenant loses the relay in about one minute.
+
+Not yet done: the integration test with two real Tailscale clients (planned at
+deployment, with `tailscale netcheck` and `tailscale debug derp`).

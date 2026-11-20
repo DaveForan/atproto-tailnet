@@ -1,6 +1,6 @@
 # ADR-0026: Tailnet addresses, opaque internal IDs, and a shared control URL
 
-**Status:** Proposed
+**Status:** In Progress
 **Date:** 2026-11-19
 **Priority:** P0
 **Depends On:** ADR-0023 (Rust mesh coordinator), ADR-0025 (instance operators)

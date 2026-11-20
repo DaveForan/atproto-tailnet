@@ -473,6 +473,7 @@ dependencies = [
  "axum",
  "coord-api",
  "coord-core",
+ "coord-derp",
  "coord-federation",
  "coord-noise",
  "coord-proto",

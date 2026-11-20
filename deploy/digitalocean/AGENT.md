@@ -121,6 +121,15 @@ doctl compute domain records create "$DOMAIN" \
   --record-ttl 300
 ```
 
+A record for the built-in DERP relay:
+```sh
+doctl compute domain records create "$DOMAIN" \
+  --record-type A \
+  --record-name "derp" \
+  --record-data "$DROPLET_IP" \
+  --record-ttl 300
+```
+
 Wildcard A record for tenant subdomains:
 ```sh
 doctl compute domain records create "$DOMAIN" \
@@ -186,6 +195,7 @@ PORT=3000
 PUBLIC_URL=https://${APP_DOMAIN}
 BASE_DOMAIN=${BASE_DOMAIN}
 CONTROL_DOMAIN=control.${DOMAIN}
+DERP_DOMAIN=derp.${DOMAIN}
 LOG_LEVEL=info
 FEDERATION_KEY_ENCRYPTION_KEY=${FEDERATION_KEY_ENCRYPTION_KEY}
 
@@ -239,7 +249,7 @@ Docker-published ports (80, 443) bypass `ufw`. `ufw` alone does not protect them
 doctl compute firewall create \
   --name atproto-tailnet-fw \
   --tag-names atproto-tailnet \
-  --inbound-rules "protocol:tcp,ports:22,address:${ADMIN_IP}/32 protocol:tcp,ports:80,address:0.0.0.0/0,address:::/0 protocol:tcp,ports:443,address:0.0.0.0/0,address:::/0 protocol:udp,ports:443,address:0.0.0.0/0,address:::/0" \
+  --inbound-rules "protocol:tcp,ports:22,address:${ADMIN_IP}/32 protocol:tcp,ports:80,address:0.0.0.0/0,address:::/0 protocol:tcp,ports:443,address:0.0.0.0/0,address:::/0 protocol:udp,ports:443,address:0.0.0.0/0,address:::/0 protocol:udp,ports:3478,address:0.0.0.0/0,address:::/0" \
   --outbound-rules "protocol:tcp,ports:all,address:0.0.0.0/0,address:::/0 protocol:udp,ports:all,address:0.0.0.0/0,address:::/0 protocol:icmp,address:0.0.0.0/0,address:::/0"
 ```
 

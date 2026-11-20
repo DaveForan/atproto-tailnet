@@ -306,10 +306,10 @@ Order matters: each stage gives value alone and unblocks the next.
 - [ ] Commit, deploy; set the address of the existing tailnet; move the Mac to the shared URL; retire `daveforan-bsky-social`
 
 ### 6.2 Built-in DERP relay and STUN (ADR-0027)
-- [ ] `coord-derp` crate: frames, handshake (NaCl box), connection table, forwarding, keepalive, PeerGone
-- [ ] Helper endpoints and WebSocket upgrade
-- [ ] Member-only check of node keys against the store; per-node limits
-- [ ] STUN server on UDP 3478
+- [x] `coord-derp` crate: frames, handshake (NaCl box), connection table, forwarding, keepalive, PeerGone
+- [x] Helper endpoints (WebSocket transport deferred: browser clients only)
+- [x] Member-only check of node keys against the store; per-node limits
+- [x] STUN server on UDP 3478
 - [ ] Deploy: `derp.<APEX_DOMAIN>`, Caddy proxy, UDP 3478 in the cloud firewall, default DERP map → built-in region
 - [ ] Verify with Mac + phone (`tailscale netcheck`, relayed then direct)
 

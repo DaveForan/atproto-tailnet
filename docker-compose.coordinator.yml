@@ -26,6 +26,9 @@ services:
       COORD_LISTEN: "0.0.0.0:9443"
       COORD_STORE_BACKEND: postgres
       COORD_CONTROL_KEY_PATH: /var/lib/coordinator/control.key
+      # Built-in DERP relay + STUN (ADR-0027). Empty = no relay region.
+      # The relay key is kept next to the control key (coord_data volume).
+      COORD_DERP_HOSTNAME: ${DERP_DOMAIN:-}
       COORD_ADMIN_KEY: ${COORDINATOR_API_KEY:?COORDINATOR_API_KEY must be set}
       DATABASE_URL: postgresql://${POSTGRES_USER:-atproto_tailnet}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-atproto_tailnet}
       RUST_LOG: "info"
@@ -33,6 +36,9 @@ services:
       - coord_data:/var/lib/coordinator
     expose:
       - "9443"
+    ports:
+      # STUN: devices learn their public address here to find direct paths
+      - "${STUN_PORT:-3478}:3478/udp"
     networks:
       - internal
       - edge
@@ -133,6 +139,7 @@ services:
       CADDY_ADMIN_LISTEN: 10.250.250.2:2019
       APP_DOMAIN: ${APP_DOMAIN:-tailnets.example.com}
       CONTROL_DOMAIN: ${CONTROL_DOMAIN:-control.localhost}
+      DERP_DOMAIN: ${DERP_DOMAIN:-derp.localhost}
       BASE_DOMAIN: ${BASE_DOMAIN:-ts.example.com}
       CF_API_TOKEN: ${CF_API_TOKEN:-}
       DO_AUTH_TOKEN: ${DO_AUTH_TOKEN:-}

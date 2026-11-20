@@ -9,6 +9,11 @@ struct Config {
     listen: String,
     domain: String,
     derp_map_file: Option<String>,
+    /// Public hostname of the built-in DERP relay (e.g. "derp.example.com").
+    /// When set, it is the default DERP region and the STUN server starts.
+    derp_hostname: Option<String>,
+    /// UDP address of the STUN server (default "0.0.0.0:3478"; "off" disables).
+    stun_listen: Option<String>,
     /// Required — one of: "sqlite", "postgres", "memory"
     store_backend: Option<String>,
     /// Path to SQLite database file (required when store_backend = "sqlite")
@@ -23,6 +28,8 @@ impl Default for Config {
             listen: "127.0.0.1:9443".into(),
             domain: "mesh.local".into(),
             derp_map_file: None,
+            derp_hostname: None,
+            stun_listen: None,
             store_backend: None,
             sqlite_path: None,
             database_url: None,
@@ -62,12 +69,48 @@ async fn main() -> anyhow::Result<()> {
         "coordinator starting"
     );
 
+    let control_key_path = std::env::var("COORD_CONTROL_KEY_PATH").ok();
     let mut coordinator = coord_api::CoordinatorState::new(control_key);
+
+    // Built-in DERP relay (ADR-0027): a persistent key keeps the relay's
+    // identity stable across restarts. By default it sits next to the control key.
+    let relay_key_path = std::env::var("COORD_DERP_KEY_PATH").ok().or_else(|| {
+        let dir = std::path::Path::new(control_key_path.as_deref()?).parent()?;
+        Some(dir.join("derp.key").to_string_lossy().into_owned())
+    });
+    if let Some(secret) = load_or_create_secret(relay_key_path, "DERP relay key")? {
+        coordinator = coordinator.with_relay_secret(secret);
+    }
+
+    let derp_hostname = std::env::var("COORD_DERP_HOSTNAME")
+        .ok()
+        .or(config.derp_hostname)
+        .filter(|h| !h.is_empty());
+    let stun_listen = std::env::var("COORD_STUN_LISTEN")
+        .ok()
+        .or(config.stun_listen)
+        .unwrap_or_else(|| "0.0.0.0:3478".into());
+    let stun_addr: Option<SocketAddr> = match stun_listen.as_str() {
+        "off" => None,
+        addr => Some(addr.parse().map_err(|e| anyhow::anyhow!("invalid COORD_STUN_LISTEN {addr:?}: {e}"))?),
+    };
 
     let derp_path = std::env::var("COORD_DERP_MAP")
         .ok()
         .or(config.derp_map_file);
 
+    if let Some(hostname) = &derp_hostname {
+        let stun_port = stun_addr.map(|a| a.port()).unwrap_or(0);
+        coordinator = coordinator.with_builtin_relay_region(hostname, stun_port);
+        tracing::info!(hostname = %hostname, stun_port, "built-in DERP relay is the default region");
+    } else if derp_path.is_none() {
+        tracing::warn!(
+            "no DERP relay configured (COORD_DERP_HOSTNAME / COORD_DERP_MAP): devices that cannot connect directly will not reach each other"
+        );
+    }
+
+    // An explicit map file replaces the default map (it may list the built-in
+    // relay's hostname itself, next to other regions).
     if let Some(path) = derp_path {
         let contents = std::fs::read_to_string(&path)?;
         let derp_map: coord_proto::map::DerpMap = serde_json::from_str(&contents)?;
@@ -177,6 +220,17 @@ async fn main() -> anyhow::Result<()> {
         tracing::info!("Rust federation endpoints disabled (COORD_FEDERATION_ENABLED not set)");
     }
 
+    if let (Some(_), Some(addr)) = (&derp_hostname, stun_addr) {
+        let socket = tokio::net::UdpSocket::bind(addr).await
+            .map_err(|e| anyhow::anyhow!("cannot bind STUN on {addr}: {e}"))?;
+        tracing::info!(%addr, "STUN server listening");
+        tokio::spawn(async move {
+            if let Err(e) = coord_derp::stun::serve(socket).await {
+                tracing::error!(error = %e, "STUN server stopped");
+            }
+        });
+    }
+
     coord_api::spawn_ephemeral_sweeper(state.clone());
     tracing::info!("ephemeral node sweeper started");
 
@@ -215,20 +269,29 @@ fn validate_admin_key(key: Option<String>) -> anyhow::Result<Option<String>> {
 
 /// Clients pin the control server's Noise key, so it must survive restarts.
 fn load_or_create_control_key(path: Option<String>) -> anyhow::Result<coord_core::ControlKey> {
-    let Some(path) = path else {
-        tracing::warn!(
-            "COORD_CONTROL_KEY_PATH not set; using an ephemeral control key (clients re-handshake after every restart)"
-        );
-        return Ok(coord_noise::generate_control_key());
-    };
+    match load_or_create_secret(path, "control key")? {
+        Some(secret) => Ok(coord_noise::control_key_from_secret(secret)),
+        None => {
+            tracing::warn!(
+                "COORD_CONTROL_KEY_PATH not set; using an ephemeral control key (clients re-handshake after every restart)"
+            );
+            Ok(coord_noise::generate_control_key())
+        }
+    }
+}
+
+/// Read a 32-byte hex secret from `path`, creating it (mode 0600) when the
+/// file does not exist. `None` when no path is configured.
+fn load_or_create_secret(path: Option<String>, what: &str) -> anyhow::Result<Option<[u8; 32]>> {
+    let Some(path) = path else { return Ok(None) };
     match std::fs::read_to_string(&path) {
         Ok(contents) => {
             let bytes = hex::decode(contents.trim())
-                .map_err(|e| anyhow::anyhow!("control key at {path} is not hex: {e}"))?;
+                .map_err(|e| anyhow::anyhow!("{what} at {path} is not hex: {e}"))?;
             let secret: [u8; 32] = bytes
                 .try_into()
-                .map_err(|_| anyhow::anyhow!("control key at {path} must be 32 bytes"))?;
-            Ok(coord_noise::control_key_from_secret(secret))
+                .map_err(|_| anyhow::anyhow!("{what} at {path} must be 32 bytes"))?;
+            Ok(Some(secret))
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             use rand::RngCore;
@@ -238,10 +301,10 @@ fn load_or_create_control_key(path: Option<String>) -> anyhow::Result<coord_core
                 std::fs::create_dir_all(dir)?;
             }
             write_secret_file(&path, &hex::encode(secret))?;
-            tracing::info!(path = %path, "generated new control key");
-            Ok(coord_noise::control_key_from_secret(secret))
+            tracing::info!(path = %path, "generated new {what}");
+            Ok(Some(secret))
         }
-        Err(e) => Err(anyhow::anyhow!("cannot read control key at {path}: {e}")),
+        Err(e) => Err(anyhow::anyhow!("cannot read {what} at {path}: {e}")),
     }
 }
 

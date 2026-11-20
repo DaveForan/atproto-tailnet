@@ -39,3 +39,27 @@
 		respond "Not found" 404
 	}
 }
+
+# Built-in DERP relay (ADR-0027): encrypted WireGuard packets between devices
+# that cannot connect directly. Clients upgrade GET /derp; the other paths are
+# their probes. Unset → derp.localhost (internal certificate, no ACME).
+{$DERP_DOMAIN:derp.localhost} {
+	@derp path /derp /derp/* /generate_204
+	handle @derp {
+		reverse_proxy {$COORDINATOR_UPSTREAM:coordinator:9443}
+	}
+	handle {
+		respond "Not found" 404
+	}
+}
+
+# Captive-portal detection uses plain HTTP and must get a 204, not a redirect.
+http://{$DERP_DOMAIN:derp.localhost} {
+	@probe path /generate_204
+	handle @probe {
+		reverse_proxy {$COORDINATOR_UPSTREAM:coordinator:9443}
+	}
+	handle {
+		redir https://{host}{uri} 308
+	}
+}
