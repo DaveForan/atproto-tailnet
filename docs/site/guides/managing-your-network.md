@@ -19,6 +19,24 @@ When an operator designates you as a tailnet creator, you can create your tailne
 - If you are not a member of a tailnet, sign out and sign in again. The service then creates your tailnet.
 - Use the API (`POST /api/tenants/mine`) or the MCP tool `create_tailnet`.
 
+### Lock sign-in to your devices
+
+You can limit sign-in to devices that you trust. Open the **Account** tab.
+
+1. Select **Trust this device and turn the lock on**. The browser makes a key that it keeps and does not show to anybody. The service stores only the public part.
+2. Save the recovery codes. The service shows them one time.
+3. From now on, a sign-in from another device is refused, also with the correct AT Protocol account. You get a notification.
+
+To add a device: sign in on it and select **Ask for approval**. It shows a code. On a trusted device, open **Account**, type the code, and select **Approve**. You can set the maximum number of trusted devices.
+
+If you lose all trusted devices, use a recovery code. Each code works one time. Then you must trust the device that you use. If you have no code, a person with access to the server can reset the lock with `node dist/scripts/reset-device-lock.js <handle>` in the app container.
+
+The key is in the data of the browser. If you clear the data of the browser, the device is not trusted any more.
+
+### Appearance
+
+Select a colour theme in the **Account** tab. The theme is saved in the browser.
+
 ### What sign-in can access
 
 Sign-in asks your AT Protocol server for one thing: proof of who you are (the `atproto` scope). The service cannot read or write your posts, follows, messages or settings. The service revokes the sign-in token as soon as it knows your account, and it keeps no token for your account. Your handle, display name and avatar come from public sources.

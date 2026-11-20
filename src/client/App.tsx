@@ -4,6 +4,7 @@ import { Header, LockdownBanner, LoginPage, Sidebar, SidebarProvider, StatsSumma
 import { PendingInvitations } from "./components/PendingInvitations";
 import { InvitePage, NoAccessPage, SuspendedPage } from "./components/AccessPages";
 import { DeviceSignInPage } from "./components/DeviceSignIn";
+import { VerifyDevicePage } from "./components/VerifyDevice";
 import type { HostnamesData, TabId, Tenant } from "./lib/types";
 import { AddressForm } from "./components/TailnetAddress";
 import { hostnamesService } from "./services/hostnames";
@@ -17,6 +18,7 @@ const RoutesTab = lazy(() => import("./tabs/RoutesTab").then((m) => ({ default: 
 const IpConfigTab = lazy(() => import("./tabs/IpConfigTab").then((m) => ({ default: m.IpConfigTab })));
 const DerpTab = lazy(() => import("./tabs/DerpTab").then((m) => ({ default: m.DerpTab })));
 const BoardsTab = lazy(() => import("./tabs/BoardsTab").then((m) => ({ default: m.BoardsTab })));
+const AccountTab = lazy(() => import("./tabs/AccountTab").then((m) => ({ default: m.AccountTab })));
 const SharingTab = lazy(() => import("./tabs/SharingTab").then((m) => ({ default: m.SharingTab })));
 const FederationTab = lazy(() => import("./tabs/FederationTab").then((m) => ({ default: m.FederationTab })));
 const CollectivesTab = lazy(() => import("./tabs/CollectivesTab").then((m) => ({ default: m.CollectivesTab })));
@@ -42,6 +44,7 @@ const tabComponents: Record<TabId, React.LazyExoticComponent<React.ComponentType
   derp: DerpTab,
   board: BoardsTab,
   sharing: SharingTab,
+  account: AccountTab,
   federation: FederationTab,
   collectives: CollectivesTab,
   traversal: TraversalTab,
@@ -65,6 +68,11 @@ export function App() {
   const inviteId = INVITE_PATH.exec(path)?.[1] ?? null;
   const deviceId = DEVICE_PATH.exec(path)?.[1] ?? null;
 
+  // Second step of sign-in for accounts with trusted devices (no session yet)
+  if (path === "/verify-device") {
+    return <VerifyDevicePage />;
+  }
+
   if (loading) {
     return <div className="loading-screen">Loading...</div>;
   }
@@ -81,6 +89,20 @@ export function App() {
   if (!user) {
     const redirect = inviteId ? `/invite/${inviteId.toLowerCase()}` : deviceId ? `/device/${deviceId}` : undefined;
     return <LoginPage redirect={redirect} purpose={deviceId ? "device" : inviteId ? "invite" : undefined} />;
+  }
+
+  // After a recovery code, the only thing available is to trust this device
+  if (user.mustEnrollDevice) {
+    return (
+      <>
+        <Header minimal />
+        <main className="access-main">
+          <Suspense fallback={<div className="tab-loading">Loading...</div>}>
+            <AccountTab onChanged={() => { void reload(); }} />
+          </Suspense>
+        </main>
+      </>
+    );
   }
 
   if (deviceId) {

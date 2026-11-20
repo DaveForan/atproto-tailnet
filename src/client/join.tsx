@@ -3,6 +3,9 @@ import { errorMessage } from "./lib/utils";
 import { createRoot } from "react-dom/client";
 import { api, fetchCsrfToken } from "./services/api";
 import { ToastProvider, useToast } from "./components/Toast";
+import { applyTheme } from "./lib/theme";
+
+applyTheme();
 
 interface JoinTenant {
   id: string;

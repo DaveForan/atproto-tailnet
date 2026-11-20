@@ -365,11 +365,16 @@ Order matters: each stage gives value alone and unblocks the next.
 - [ ] Verify with two members and two real devices
 
 ### 6.10 Device-bound access (ADR-0035)
-- [ ] WebAuthn verification (node:crypto + CBOR), challenge store, trusted-device table
-- [ ] Two-step sign-in, refusal + notification for other devices, device limit
-- [ ] Add-device approval from a trusted device; step-up for sensitive actions
-- [ ] Recovery codes; operator reset with delay
+- [x] Device keys (WebCrypto P-256, public key only on the server), challenge store, trusted-device table
+- [x] Two-step sign-in, refusal + notification for other devices, device limit
+- [x] Add-device approval from a trusted device with a code; step-up for changes of the lock
+- [x] Recovery codes; server command `reset-device-lock`
+- [x] Account screen; themes (paper default, parchment, forest, slate, high contrast); responsive and focus polish
+- [ ] Passkeys (WebAuthn) as a stronger kind of trusted device
+- [ ] Step-up for agent tokens, MCP connections, operator actions, accepting shares
 - [ ] Self-lock of tailnet machines; coordinator enforces locks at registration
+- [ ] Screen-by-screen review of the older tabs (tables on phones, forms, empty states)
+- [ ] Verify in real browsers
 
 ### 6.11 High availability and Kubernetes (ADR-0034)
 - [ ] Stage A: coordinator config in the database; LISTEN/NOTIFY event bus; advisory-lock leader for TS loops; shared MCP secret

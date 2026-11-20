@@ -1,4 +1,71 @@
+/* ── Themes ───────────────────────────────────────────────────────────────
+   Every colour is a variable. The default is "paper": light green paper with
+   dark green ink. A theme is chosen with <html data-theme="…"> (lib/theme.ts). */
 :root {
+  color-scheme: light;
+  --bg: #e9f0e1;
+  --surface: #f7faf1;
+  --border: #c9d5bb;
+  --text: #1e2a23;
+  --text-dim: #586a5d;
+  --accent: #2f6b4f;
+  --accent-hover: #245640;
+  --on-accent: #f7faf1;
+  --success: #2c7a4b;
+  --danger: #a5372d;
+  --warning: #8f6410;
+  --on-warning: #fffaf0;
+  --code-bg: #dfe8d4;
+  --code-text: #1e2a23;
+  --overlay: rgba(30, 42, 35, 0.45);
+  --grain: rgba(30, 42, 35, 0.045);
+  --shadow: 0 1px 0 rgba(30, 42, 35, 0.06), 0 2px 6px rgba(30, 42, 35, 0.05);
+  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  --font-heading: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+[data-theme="parchment"] {
+  --bg: #f1e9d8;
+  --surface: #fbf6e9;
+  --border: #d9cbae;
+  --text: #2a2317;
+  --text-dim: #6b5d47;
+  --accent: #7a4a1c;
+  --accent-hover: #623b15;
+  --on-accent: #fbf6e9;
+  --success: #3d6b2e;
+  --danger: #9c2f25;
+  --warning: #8a5a0c;
+  --code-bg: #e8dec8;
+  --code-text: #2a2317;
+  --overlay: rgba(42, 35, 23, 0.45);
+  --grain: rgba(42, 35, 23, 0.05);
+}
+
+[data-theme="forest"] {
+  color-scheme: dark;
+  --bg: #0f1913;
+  --surface: #15221a;
+  --border: #26392d;
+  --text: #dfe9df;
+  --text-dim: #8da394;
+  --accent: #74c394;
+  --accent-hover: #8fd3aa;
+  --on-accent: #0c1510;
+  --success: #74c394;
+  --danger: #e2776c;
+  --warning: #dcae52;
+  --on-warning: #1a1403;
+  --code-bg: #0a120d;
+  --code-text: #b8e0c6;
+  --overlay: rgba(0, 0, 0, 0.55);
+  --grain: rgba(223, 233, 223, 0.025);
+  --shadow: 0 1px 0 rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+[data-theme="slate"] {
+  color-scheme: dark;
   --bg: #0a0a0f;
   --surface: #13131a;
   --border: #23232f;
@@ -6,16 +73,49 @@
   --text-dim: #8888a0;
   --accent: #6366f1;
   --accent-hover: #818cf8;
+  --on-accent: #ffffff;
   --success: #22c55e;
   --danger: #ef4444;
   --warning: #f59e0b;
+  --on-warning: #000000;
+  --code-bg: #000000;
+  --code-text: #22c55e;
+  --overlay: var(--overlay);
+  --grain: transparent;
+  --shadow: none;
+  --font-heading: var(--font-body);
+}
+
+[data-theme="contrast"] {
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --border: #1a1a1a;
+  --text: #000000;
+  --text-dim: #2f2f2f;
+  --accent: #00472a;
+  --accent-hover: #002e1b;
+  --on-accent: #ffffff;
+  --success: #00562f;
+  --danger: #8a0f08;
+  --warning: #5c3d00;
+  --on-warning: #ffffff;
+  --code-bg: #f0f0f0;
+  --code-text: #000000;
+  --overlay: rgba(0, 0, 0, 0.6);
+  --grain: transparent;
+  --shadow: none;
+  --font-heading: var(--font-body);
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-  background: var(--bg);
+  font-family: var(--font-body);
+  background-color: var(--bg);
+  /* Paper grain: two offset dot grids, barely visible */
+  background-image: radial-gradient(var(--grain) 1px, transparent 1px), radial-gradient(var(--grain) 1px, transparent 1px);
+  background-size: 3px 3px, 7px 7px;
+  background-position: 0 0, 2px 3px;
   color: var(--text);
   line-height: 1.5;
 }
@@ -148,12 +248,12 @@ main {
 
 .nav-item:hover {
   color: var(--text);
-  background: rgba(99, 102, 241, 0.05);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
 }
 
 .nav-item.active {
   color: var(--text);
-  background: rgba(99, 102, 241, 0.08);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
   border-left-color: var(--accent);
 }
 
@@ -175,7 +275,7 @@ main {
   display: none;
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--overlay);
   z-index: 99;
 }
 
@@ -256,16 +356,16 @@ main {
   font-weight: 500;
 }
 
-.badge-running { background: #22c55e20; color: var(--success); }
-.badge-stopped { background: #ef444420; color: var(--danger); }
-.badge-originator { background: #6366f120; color: var(--accent); }
-.badge-role { background: #8888a020; color: var(--text-dim); }
-.badge-perm { background: #6366f110; color: var(--accent); font-size: 11px; margin-left: 4px; }
-.badge-warning { background: #f59e0b20; color: var(--warning); }
-.badge-pending { background: #f59e0b20; color: var(--warning); }
+.badge-running { background: color-mix(in srgb, var(--success) 16%, transparent); color: var(--success); }
+.badge-stopped { background: color-mix(in srgb, var(--danger) 14%, transparent); color: var(--danger); }
+.badge-originator { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
+.badge-role { background: color-mix(in srgb, var(--text-dim) 14%, transparent); color: var(--text-dim); }
+.badge-perm { background: color-mix(in srgb, var(--accent) 9%, transparent); color: var(--accent); font-size: 11px; margin-left: 4px; }
+.badge-warning { background: color-mix(in srgb, var(--warning) 16%, transparent); color: var(--warning); }
+.badge-pending { background: color-mix(in srgb, var(--warning) 16%, transparent); color: var(--warning); }
 
 .default-badge {
-  background: #22c55e20;
+  background: color-mix(in srgb, var(--success) 16%, transparent);
   color: var(--success);
   font-size: 11px;
   padding: 1px 6px;
@@ -274,7 +374,7 @@ main {
 }
 
 .system-badge {
-  background: #8888a015;
+  background: color-mix(in srgb, var(--text-dim) 10%, transparent);
   color: var(--text-dim);
   font-size: 10px;
   padding: 1px 6px;
@@ -286,7 +386,7 @@ main {
 
 button, .btn {
   background: var(--accent);
-  color: white;
+  color: var(--on-accent);
   border: none;
   padding: 8px 16px;
   border-radius: 6px;
@@ -302,9 +402,9 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .btn-sm { padding: 4px 10px; font-size: 12px; }
 .btn-danger { background: var(--danger); }
-.btn-danger:hover { background: #dc2626; }
-.btn-warning { background: var(--warning); color: #000; }
-.btn-warning:hover { background: #d97706; }
+.btn-danger:hover { background: color-mix(in srgb, var(--danger) 84%, black); }
+.btn-warning { background: var(--warning); color: var(--on-warning); }
+.btn-warning:hover { background: color-mix(in srgb, var(--warning) 84%, black); }
 
 .btn-ghost {
   background: transparent;
@@ -445,7 +545,7 @@ textarea::placeholder { color: var(--text-dim); }
 
 .device-item:last-child { border-bottom: none; }
 .device-name { font-weight: 500; }
-.device-ip { color: var(--text-dim); font-family: monospace; font-size: 13px; }
+.device-ip { color: var(--text-dim); font-family: var(--font-mono); font-size: 13px; }
 
 .online-dot {
   display: inline-block;
@@ -558,7 +658,7 @@ textarea::placeholder { color: var(--text-dim); }
 .perm-chip.active {
   background: var(--accent);
   border-color: var(--accent);
-  color: white;
+  color: var(--on-accent);
 }
 
 .perm-chip.readonly { cursor: default; }
@@ -566,13 +666,13 @@ textarea::placeholder { color: var(--text-dim); }
 /* ── Code blocks ──────────────────────────────────────────────────────── */
 
 .code-block {
-  background: #000;
+  background: var(--code-bg);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 12px;
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-family: var(--font-mono);
   font-size: 13px;
-  color: var(--success);
+  color: var(--code-text);
   overflow-x: auto;
   cursor: pointer;
   position: relative;
@@ -591,11 +691,11 @@ textarea::placeholder { color: var(--text-dim); }
 }
 
 pre {
-  background: #000;
+  background: var(--code-bg);
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 12px;
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-family: var(--font-mono);
   font-size: 13px;
   color: var(--text);
   overflow-x: auto;
@@ -650,8 +750,8 @@ pre {
 /* ── Lockdown banner ──────────────────────────────────────────────────── */
 
 .lockdown-banner {
-  background: #f59e0b20;
-  border: 1px solid #f59e0b40;
+  background: color-mix(in srgb, var(--warning) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning) 38%, transparent);
   color: var(--warning);
   padding: 12px 20px;
   display: flex;
@@ -821,9 +921,9 @@ pre {
 .confirm-panel {
   margin-top: 16px;
   padding: 16px;
-  border: 1px solid #ef444460;
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
   border-radius: 8px;
-  background: #ef444410;
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
 }
 
 .confirm-panel h4 { font-size: 14px; font-weight: 600; margin-bottom: 8px; }
@@ -831,9 +931,9 @@ pre {
 .inline-alert {
   margin-top: 12px;
   padding: 12px;
-  border: 1px solid #f59e0b40;
+  border: 1px solid color-mix(in srgb, var(--warning) 38%, transparent);
   border-radius: 6px;
-  background: #f59e0b15;
+  background: color-mix(in srgb, var(--warning) 11%, transparent);
   color: var(--text);
   font-size: 14px;
 }
@@ -847,9 +947,9 @@ pre {
   gap: 12px;
   padding: 12px 16px;
   margin-bottom: 16px;
-  border: 1px solid #ef444460;
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, transparent);
   border-radius: 8px;
-  background: #ef444415;
+  background: color-mix(in srgb, var(--danger) 11%, transparent);
   font-size: 14px;
 }
 
@@ -870,7 +970,7 @@ pre {
 .text-dim { color: var(--text-dim); }
 .text-sm { font-size: 13px; }
 .text-xs { font-size: 11px; }
-.mono { font-family: 'SF Mono', 'Fira Code', monospace; }
+.mono { font-family: var(--font-mono); }
 .help-text { font-size: 13px; color: var(--text-dim); margin-bottom: 8px; }
 .mt-4 { margin-top: 4px; }
 .mt-8 { margin-top: 8px; }
@@ -969,3 +1069,94 @@ pre {
 .detail-list { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; margin-bottom: 12px; }
 .detail-list dt { color: var(--text-dim); font-size: 14px; }
 .detail-list dd { overflow-wrap: anywhere; }
+
+/* ── Paper and ink ─────────────────────────────────────────────────────── */
+h1, h2, header h1, .card-header h3, .wizard-card h2, .post-head h4 {
+  font-family: var(--font-heading);
+  letter-spacing: 0.005em;
+}
+.card, .wizard-card { box-shadow: var(--shadow); }
+.mono, code, .code-block { font-family: var(--font-mono); }
+
+/* Keyboard focus is always visible, in the ink colour of the theme */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+button:focus-visible, .btn:focus-visible { outline-offset: 3px; }
+a { text-underline-offset: 2px; }
+
+/* Controls: comfortable touch targets */
+button, .btn, input[type="text"], input[type="number"], select, textarea { min-height: 36px; }
+.btn-sm { min-height: 30px; }
+.btn-ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
+.btn-ghost:hover { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); min-height: 0; }
+
+/* Wide content never forces the page to scroll sideways */
+table { width: 100%; }
+.card { overflow-x: auto; }
+img, svg { max-width: 100%; }
+
+/* ── Account: themes and trusted devices (ADR-0035) ────────────────────── */
+.theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+.theme-option {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: 14px;
+}
+.theme-option[aria-checked="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.theme-swatch { display: flex; height: 34px; border-radius: 5px; overflow: hidden; border: 1px solid var(--border); }
+.theme-swatch span { flex: 1; }
+.swatch-paper-bg { background: #e9f0e1; } .swatch-paper-ink { background: #1e2a23; } .swatch-paper-accent { background: #2f6b4f; }
+.swatch-parchment-bg { background: #f1e9d8; } .swatch-parchment-ink { background: #2a2317; } .swatch-parchment-accent { background: #7a4a1c; }
+.swatch-forest-bg { background: #0f1913; } .swatch-forest-ink { background: #dfe9df; } .swatch-forest-accent { background: #74c394; }
+.swatch-slate-bg { background: #0a0a0f; } .swatch-slate-ink { background: #e4e4ed; } .swatch-slate-accent { background: #6366f1; }
+.swatch-contrast-bg { background: #ffffff; } .swatch-contrast-ink { background: #000000; } .swatch-contrast-accent { background: #00472a; }
+
+.pairing-code {
+  font-size: 30px;
+  letter-spacing: 0.3em;
+  text-align: center;
+  padding: 14px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: var(--code-bg);
+  color: var(--code-text);
+  user-select: all;
+}
+.code-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; list-style: none; }
+.code-grid li { padding: 8px 10px; background: var(--code-bg); color: var(--code-text); border-radius: 6px; text-align: center; user-select: all; }
+.notice { border-left: 3px solid var(--warning); padding: 8px 12px; background: color-mix(in srgb, var(--warning) 10%, transparent); border-radius: 0 6px 6px 0; }
+.notice-ok { border-left-color: var(--success); background: color-mix(in srgb, var(--success) 10%, transparent); }
+
+/* ── Tablet and phone ──────────────────────────────────────────────────── */
+@media (max-width: 1024px) {
+  .sidebar { width: 200px; }
+  main { padding: 18px; }
+}
+@media (max-width: 768px) {
+  header { padding: 12px 14px; gap: 8px; flex-wrap: wrap; }
+  header h1 { font-size: 16px; }
+  main { padding: 12px; }
+  .card { padding: 14px 12px; }
+  .card-header { flex-wrap: wrap; gap: 8px; }
+  .btn-group { flex-wrap: wrap; }
+  .item-row { flex-wrap: wrap; gap: 6px; }
+  .inline-form { flex-wrap: wrap; }
+  .wizard-card { width: calc(100vw - 24px); max-width: none; padding: 18px; }
+  #login-page form { flex-direction: column; width: 100%; max-width: 360px; }
+  #login-page form input, #login-page form button { width: 100%; }
+  /* 16px stops iOS from zooming the page when a field gets focus */
+  input[type="text"], input[type="number"], select, textarea { font-size: 16px; }
+  button, .btn { min-height: 42px; }
+  .btn-sm { min-height: 36px; padding: 6px 12px; }
+  .pairing-code { font-size: 24px; letter-spacing: 0.2em; }
+}
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}

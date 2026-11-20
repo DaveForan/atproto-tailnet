@@ -56,6 +56,7 @@ export const tabRegistry: TabEntry[] = [
   { id: "audit", label: "Audit Log", group: "Admin", gate: perm("view_audit_log") },
 
   // Account
+  { id: "account", label: "Account", group: "Account", gate: always },
   { id: "claude", label: "Connect Claude", group: "Account", gate: always },
 
   // Operator

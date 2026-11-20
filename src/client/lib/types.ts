@@ -8,6 +8,8 @@ export interface User {
   isOperator?: boolean;
   canCreateTailnet?: boolean;
   access?: "member" | "no_access";
+  /** Signed in with a recovery code: must trust this device before anything else. */
+  mustEnrollDevice?: boolean;
 }
 
 export interface Tenant {
@@ -588,4 +590,5 @@ export type TabId =
   | "security"
   | "audit"
   | "claude"
-  | "instance";
+  | "instance"
+  | "account";

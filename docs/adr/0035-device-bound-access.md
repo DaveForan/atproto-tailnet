@@ -1,6 +1,6 @@
 # ADR-0035: Device-bound access
 
-**Status:** Proposed
+**Status:** In Progress
 **Date:** 2026-11-20
 **Priority:** P0
 **Depends On:** ADR-0003 (AT Proto OAuth), ADR-0005 (security management), ADR-0032 (device sign-in)
@@ -131,3 +131,31 @@ address then identifies the machine.
   coordinator refuses it.
 - Removal of a lock without a trusted-device assertion is refused.
 - A recovery code works one time.
+
+## Implementation notes
+
+Built (section 1 and section 3):
+
+- Trusted devices with a **device key**: an ECDSA P-256 key that the browser
+  makes with WebCrypto as non-extractable and keeps in IndexedDB. The service
+  stores the public key only. The proof is a signature of a single-use
+  challenge. This was chosen in place of an HMAC secret: with HMAC the server
+  holds the same secret, so a copy of the database could impersonate a device.
+- Pending sessions, refusal of other devices with a notification, the device
+  limit, approval of a new device with a code from a trusted device, step-up
+  for changes of the lock, recovery codes, and the server command
+  `reset-device-lock`.
+- The first trusted device ends all other sessions of the account.
+
+Limits of a device key, compared with a passkey: the key is not in secure
+hardware. Malware that copies the browser profile takes the key. The key is
+lost when the user clears the data of the browser.
+
+Not yet built:
+
+- Passkeys (WebAuthn) as a second, stronger kind of trusted device.
+- Step-up for agent tokens, MCP connections, operator actions, the tailnet
+  address, and accepting shares.
+- Section 2: self-lock of tailnet machines, enforced by the coordinator.
+- The operator reset with a delay (not planned; the owner was not sure).
+- A test in real browsers (Safari, Chrome, Firefox, mobile).
