@@ -239,6 +239,13 @@
       "when": 1794028814001,
       "tag": "0033_device_cookie_profile",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1794028815001,
+      "tag": "0034_machine_refused_seen",
+      "breakpoints": true
     }
   ]
 }

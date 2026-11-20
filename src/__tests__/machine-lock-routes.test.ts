@@ -125,7 +125,7 @@ describe("machine lock", () => {
     h.coord.setOwnerLock.mockResolvedValue({ locked: true, node_ids: [1], allow_one_until: null, refused: [], removed_nodes: 1 });
     const r = await call("PUT", PATH, { deviceIds: ["1", "1"] });
     expect(r.status).toBe(200);
-    expect(h.coord.setOwnerLock).toHaveBeenCalledWith("u-1", [1]);
+    expect(h.coord.setOwnerLock).toHaveBeenCalledWith("u-1", [1], undefined);
     expect(h.sync).toHaveBeenCalledWith("t-1");
     expect(h.audit).toHaveBeenCalledWith(expect.objectContaining({ action: "device_locked", metadata: { self: true, devices: 1, removed: 1 } }));
   });
@@ -165,6 +165,19 @@ describe("machine lock", () => {
     const r = await call("POST", `${PATH}/allow-one`);
     expect(r.json.allowOneUntil).toBe("2026-11-20T12:10:00Z");
     expect(h.coord.allowOneMachine).toHaveBeenLastCalledWith("u-1", 600);
+  });
+
+  it("passes the device limit on, refuses one below the kept devices, and reports a full lock", async () => {
+    h.coord.setOwnerLock.mockResolvedValue({ locked: true, node_ids: [1, 2], allow_one_until: null, refused: [], max_machines: 3 });
+    const ok = await call("PUT", PATH, { deviceIds: ["1", "2"], maxDevices: 3 });
+    expect(ok.json.maxDevices).toBe(3);
+    expect(h.coord.setOwnerLock).toHaveBeenCalledWith("u-1", [1, 2], 3);
+    expect((await call("PUT", PATH, { deviceIds: ["1", "2"], maxDevices: 1 })).status).toBe(400);
+    expect((await call("PUT", PATH, { deviceIds: ["1"], maxDevices: 99 })).status).toBe(400);
+
+    h.coord.allowOneMachine.mockResolvedValueOnce("full");
+    const full = await call("POST", `${PATH}/allow-one`);
+    expect([full.status, full.json.code]).toEqual([409, "lock_full"]);
   });
 
   it("unlock removes the lock", async () => {

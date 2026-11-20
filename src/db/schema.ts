@@ -869,6 +869,8 @@ export const instanceSettings = pgTable("instance_settings", {
   defaultTailnetId: uuid("default_tailnet_id").references(() => tenants.id, {
     onDelete: "set null",
   }),
+  /** Refused machines (machine locks) up to this time were turned into notifications. */
+  machineRefusedSeenAt: timestamp("machine_refused_seen_at"),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 

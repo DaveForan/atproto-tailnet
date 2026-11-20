@@ -81,7 +81,19 @@ export interface OwnerLockView {
   node_ids: number[];
   allow_one_until: string | null;
   refused: Array<{ at: string; hostname: string; os: string; fingerprint: string }>;
+  /** Most machines the lock may hold; null = the system limit. */
+  max_machines?: number | null;
   removed_nodes?: number;
+}
+
+/** One machine that a machine lock refused. */
+export interface RefusedMachine {
+  tenant_id: string;
+  owner: string;
+  at: string;
+  hostname: string;
+  os: string;
+  fingerprint: string;
 }
 
 export class CoordinatorApiClient {
@@ -491,16 +503,25 @@ export class CoordinatorApiClient {
   }
 
   /** Lock the owner to these nodes; the coordinator removes the owner's other nodes. */
-  async setOwnerLock(owner: string, nodeIds: number[]): Promise<OwnerLockView> {
-    return (await this.request("PUT", this.ownerLockPath(owner), { node_ids: nodeIds })) as OwnerLockView;
+  async setOwnerLock(owner: string, nodeIds: number[], maxMachines?: number): Promise<OwnerLockView> {
+    const body = { node_ids: nodeIds, ...(maxMachines ? { max_machines: maxMachines } : {}) };
+    return (await this.request("PUT", this.ownerLockPath(owner), body)) as OwnerLockView;
   }
 
-  /** Open the one-new-machine window; null when the owner has no lock. */
-  async allowOneMachine(owner: string, seconds: number): Promise<OwnerLockView | null> {
+  /** Machines refused by any machine lock after `since` (all tenants), oldest first. */
+  async listRefusedMachines(since?: Date): Promise<RefusedMachine[]> {
+    const query = since ? `?since=${encodeURIComponent(since.toISOString())}` : "";
+    const res = (await this.request("GET", `/api/owner-locks/refused${query}`)) as { refused?: RefusedMachine[] };
+    return res.refused ?? [];
+  }
+
+  /** Open the one-new-machine window; null when the owner has no lock, "full" at the device limit. */
+  async allowOneMachine(owner: string, seconds: number): Promise<OwnerLockView | null | "full"> {
     try {
       return (await this.request("POST", `${this.ownerLockPath(owner)}/allow-one`, { seconds })) as OwnerLockView;
     } catch (err) {
       if (err instanceof Error && err.message.includes("failed (404)")) return null;
+      if (err instanceof Error && err.message.includes("failed (409)")) return "full";
       throw err;
     }
   }

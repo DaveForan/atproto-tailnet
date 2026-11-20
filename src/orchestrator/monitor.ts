@@ -24,6 +24,7 @@ import { logAudit } from "../routes/audit.js";
 import { endExpiredShares, syncTenantAccess } from "../access/sync.js";
 import { logger } from "../logger.js";
 import { isLeader } from "./leader.js";
+import { notifyRefusedMachines } from "./machine-refusals.js";
 
 /** Boot id of the coordinator process whose in-memory state is in sync (null = not synced). */
 let syncedBootId: string | null = null;
@@ -324,6 +325,11 @@ export function startHealthMonitor(intervalMs = 60_000): void {
       await syncTenantRoutes().catch((err) =>
         logger.warn({ err }, "failed to sync Caddy routes"),
       );
+      if (useCoordinator) {
+        await notifyRefusedMachines().catch((err) =>
+          logger.warn({ err }, "failed to notify about refused machines"),
+        );
+      }
       if (tick % 5 === 0) {
         if (useCoordinator) {
           // New members / renamed handles (coordinator only notifies clients on change)

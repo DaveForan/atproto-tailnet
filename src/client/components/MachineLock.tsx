@@ -15,12 +15,16 @@ export function MachineLockCard({ tenantId, onChanged }: { tenantId: string; onC
   const confirm = useConfirm();
   const [state, setState] = useState<MachineLockState | null>(null);
   const [keep, setKeep] = useState<Set<string>>(new Set());
+  const [max, setMax] = useState<number | null>(null);
   const [choosing, setChoosing] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const apply = useCallback((s: MachineLockState | null) => {
     setState(s);
-    if (s) setKeep(new Set(s.devices.filter((d) => d.allowed).map((d) => d.id)));
+    if (s) {
+      setKeep(new Set(s.devices.filter((d) => d.allowed).map((d) => d.id)));
+      setMax(s.maxDevices);
+    }
   }, []);
 
   useEffect(() => {
@@ -71,7 +75,7 @@ export function MachineLockCard({ tenantId, onChanged }: { tenantId: string; onC
           className="form-stack"
           onSubmit={(e) => {
             e.preventDefault();
-            void run(() => machineLockService.lock(tenantId, [...keep]), "Your devices are locked");
+            void run(() => machineLockService.lock(tenantId, [...keep], max !== null && max < keep.size ? keep.size : max), "Your devices are locked");
           }}
         >
           <fieldset className="check-list">
@@ -95,6 +99,15 @@ export function MachineLockCard({ tenantId, onChanged }: { tenantId: string; onC
               </label>
             ))}
           </fieldset>
+          <div className="inline-form">
+            <label htmlFor="lock-max" className="text-sm">Most devices I allow in this tailnet</label>
+            <select id="lock-max" value={max ?? ""} onChange={(e) => setMax(e.target.value ? Number(e.target.value) : null)}>
+              <option value="">No limit of my own</option>
+              {Array.from({ length: 20 }, (_, i) => i + 1).map((n) => (
+                <option key={n} value={n} disabled={n < keep.size}>{n}</option>
+              ))}
+            </select>
+          </div>
           {dropped.length > 0 && (
             <p className="notice" role="alert">
               {dropped.map((d) => d.name).join(", ")} will be removed from this tailnet.
@@ -113,6 +126,7 @@ export function MachineLockCard({ tenantId, onChanged }: { tenantId: string; onC
         <div className="form-stack">
           <p className="notice notice-ok">
             The lock is on. Only these devices can connect as you in this tailnet.
+            {state.maxDevices !== null && ` Your limit is ${state.maxDevices} device(s).`}
           </p>
           <ul className="item-list">
             {state.devices.map((d) => (
