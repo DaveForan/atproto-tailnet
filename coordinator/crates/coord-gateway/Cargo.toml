@@ -28,4 +28,5 @@ rand = { workspace = true }
 
 [dev-dependencies]
 rcgen = "0.14"
+async-trait = "0.1"
 tokio = { workspace = true, features = ["test-util"] }

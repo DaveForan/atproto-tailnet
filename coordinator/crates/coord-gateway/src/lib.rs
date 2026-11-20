@@ -4,3 +4,4 @@
 pub mod netstack;
 
 pub mod tunnel;
+pub mod proxy;
