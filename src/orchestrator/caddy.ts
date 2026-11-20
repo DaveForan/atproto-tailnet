@@ -290,6 +290,8 @@ let syncQueue: Promise<unknown> = Promise.resolve();
  * every sweep so routes come back after a Caddy restart.
  */
 export function syncTenantRoutes(): Promise<void> {
+  // No Caddy to configure (CADDY_ADMIN_URL=off): the edge proxy has static routes
+  if (!config.caddyEnabled) return Promise.resolve();
   const run = syncQueue.then(async () => {
     const routable = await listRoutableTenants();
     const outcome = await applyTenantRouter(buildTenantRouter(routable));

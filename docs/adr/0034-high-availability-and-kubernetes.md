@@ -124,23 +124,50 @@ stays a supported deployment with one replica of each component.
 
 ## Implementation notes
 
-Built (stage A, item 3):
+Built:
 
-- `db/locks.ts`: `withAdvisoryLock` and `LeaderLock` on PostgreSQL session
-  advisory locks.
-- Tailnet creation holds an advisory lock across all replicas.
-- The monitor (health checks, hibernation, Caddy sync, identity sync, sweeps)
-  and the federation broker run only on the replica that holds the leader
-  lock. Another replica takes the lock in 10 seconds or less when the leader
-  stops.
+- **Stage A, TS service.** `db/locks.ts`: `withAdvisoryLock` and `LeaderLock`
+  on PostgreSQL session advisory locks. Tailnet creation holds a lock across
+  all replicas. The monitor and the federation broker run only on the replica
+  that holds the leader lock; another replica takes it in 10 seconds or less.
+- **Stage A, coordinator.** ACL policy, DERP regions, auto-approvers and
+  identity are in `coord_tenant_config`; the registries are caches that load
+  at start. Peer events and tenant changes go through `LISTEN/NOTIFY`
+  (`coord_events`); a replica ignores its own notifications. Pending device
+  sign-ins are in `coord_sign_ins`. SQLite and memory keep the in-process
+  channel.
+- **Stage B.** `COORD_ROLE` (`all`, `control`, `relay`). Each relay process
+  has its own region (`COORD_DERP_REGION_ID`, 1 to 899) and reports itself in
+  `coord_relays` every 20 seconds. Control replicas build the default DERP map
+  from the relays seen in the last 75 seconds and send the new map to devices
+  when it changes. The coordinator records `NetInfo.PreferredDERP` of each
+  device and sends it to peers as the home relay.
+- **Stage C.** `deploy/kubernetes/` (Kustomize base and an example overlay):
+  Deployments for the TS service and the control role, a StatefulSet for
+  relays, a migration Job, Services (one UDP LoadBalancer for STUN per relay),
+  an Ingress for ingress-nginx with cert-manager, probes and disruption
+  budgets. `CADDY_ADMIN_URL=off` makes the TS service work without Caddy;
+  `SKIP_MIGRATIONS=1` leaves the migrations to the Job.
 
-Difference from the decision: the MCP loopback secret stays random for each
-process. An MCP tool calls the API of its own process, so replicas do not
-share the secret.
+Differences from the decision:
 
-Not yet built: coordinator configuration in the database for ACL policy, DERP
-regions, auto-approvers and identity (access rules, DNS and machine locks are
-in the database already); the LISTEN/NOTIFY event bus; shared rate limits;
-pending device sign-ins in the store; stage B and stage C.
+- The MCP loopback secret stays random for each process. An MCP tool calls
+  the API of its own process, so replicas do not share the secret.
+- Rate limits, the replay guard and connection limits stay per replica. The
+  Kubernetes guide states the effect.
+- The TS service still replays auto-approvers when the coordinator restarts.
+  The replay is harmless now and can be removed later.
+- TLS in Kubernetes is one certificate for the listed hosts, not a wildcard.
+  Tailnet names are not public hosts there, so they do not appear in
+  certificate logs.
 
-Not yet done: a test with two replicas and a real PostgreSQL.
+Tests: two and three coordinator replicas on one PostgreSQL (configuration,
+events, sign-in across replicas); real `control` and `relay` processes on one
+database, where the control process found the relay.
+
+Not yet done:
+
+- The manifests were rendered with `kubectl kustomize` but never applied to a
+  cluster.
+- A test with real devices: two devices with different home relays, and the
+  loss of one replica during a ping.

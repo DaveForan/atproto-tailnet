@@ -69,6 +69,11 @@ app.disable("x-powered-by");
 // Returns 200 if the hostname belongs to a real tenant, 403 otherwise.
 // Must be before all middleware (no session, no CSRF, no rate limiting).
 app.get("/internal/tls-check", async (req: Request, res: Response) => {
+  // Without Caddy nothing asks this, and the edge proxy may not block the path
+  if (!config.caddyEnabled) {
+    res.status(404).end();
+    return;
+  }
   const domain = (req.query.domain as string) || "";
   const suffix = `.${config.baseDomain}`;
   if (!domain.endsWith(suffix)) {

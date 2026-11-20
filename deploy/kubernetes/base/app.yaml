@@ -1,0 +1,95 @@
+# Dashboard and API (TS service). Any number of replicas: sessions and state
+# are in PostgreSQL, and background work runs on one replica at a time (the
+# leader lock, ADR-0034).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tailnet-app
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tailnet-app
+  strategy:
+    rollingUpdate: { maxUnavailable: 0, maxSurge: 1 }
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: tailnet-app
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: tailnet-app
+      containers:
+        - name: app
+          image: atproto-tailnet-app
+          ports:
+            - { name: http, containerPort: 3000 }
+          envFrom:
+            - configMapRef: { name: tailnet-config }
+          env:
+            - { name: PORT, value: "3000" }
+            # The Job runs the migrations
+            - { name: SKIP_MIGRATIONS, value: "1" }
+            # The Ingress has static routes: there is no Caddy to configure
+            - { name: CADDY_ADMIN_URL, value: "off" }
+            # One proxy (the ingress controller) is in front of the service
+            - { name: TRUST_PROXY, value: "1" }
+            - { name: COORDINATOR_URL, value: "http://tailnet-control:9443" }
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: tailnet-secrets, key: DATABASE_URL }
+            - name: SESSION_SECRET
+              valueFrom:
+                secretKeyRef: { name: tailnet-secrets, key: SESSION_SECRET }
+            - name: COORDINATOR_API_KEY
+              valueFrom:
+                secretKeyRef: { name: tailnet-secrets, key: COORDINATOR_API_KEY }
+            - name: ATPROTO_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef: { name: tailnet-secrets, key: ATPROTO_PRIVATE_KEY }
+            - name: FEDERATION_KEY_ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef: { name: tailnet-secrets, key: FEDERATION_KEY_ENCRYPTION_KEY, optional: true }
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          resources:
+            requests: { cpu: 100m, memory: 192Mi }
+            limits: { memory: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tailnet-app
+spec:
+  selector:
+    app.kubernetes.io/name: tailnet-app
+  ports:
+    - { name: http, port: 3000, targetPort: http }
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: tailnet-app
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: tailnet-app

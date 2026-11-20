@@ -1,0 +1,21 @@
+# Settings that are not secret. The overlay replaces the example domains.
+# Secrets come from the Secret `tailnet-secrets` (see the README): it is
+# never part of these manifests.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tailnet-config
+data:
+  # Dashboard and API
+  PUBLIC_URL: https://tailnets.example.com
+  # Tailnet names and device names live under this domain (inside tailnets only)
+  BASE_DOMAIN: ts.example.com
+  # One control URL for all tailnets. Must not be under BASE_DOMAIN.
+  CONTROL_DOMAIN: control.example.com
+  # Relay replica N is reached at relay-N.<RELAY_DOMAIN>
+  RELAY_DOMAIN: relay.example.com
+  # Comma-separated DIDs of the instance operators
+  OPERATOR_DIDS: ""
+  FEDERATION_ENABLED: "false"
+  TAILNET_DNS_UPSTREAM: ""
+  LOG_LEVEL: info

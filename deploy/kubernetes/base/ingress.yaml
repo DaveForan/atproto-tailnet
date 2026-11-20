@@ -1,0 +1,69 @@
+# Public HTTPS routes. Written for ingress-nginx with cert-manager; another
+# controller works if it passes HTTP `Upgrade` requests through (the control
+# protocol and the relay both use them) and keeps connections open for a
+# long time.
+#
+# Only the paths that devices need are routed on the control and relay
+# hosts: the admin API of the coordinator is never public.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: tailnet
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # Devices keep the control and relay connections open
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-body-size: "2m"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+spec:
+  ingressClassName: nginx
+  tls:
+    - secretName: tailnet-tls
+      hosts:
+        - tailnets.example.com
+        - control.example.com
+        - relay-0.relay.example.com
+        - relay-1.relay.example.com
+  rules:
+    - host: tailnets.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service: { name: tailnet-app, port: { name: http } }
+    - host: control.example.com
+      http:
+        paths:
+          - path: /key
+            pathType: Exact
+            backend:
+              service: { name: tailnet-control, port: { name: http } }
+          - path: /ts2021
+            pathType: Exact
+            backend:
+              service: { name: tailnet-control, port: { name: http } }
+    - host: relay-0.relay.example.com
+      http:
+        paths:
+          - path: /derp
+            pathType: Prefix
+            backend:
+              service: { name: tailnet-relay-0, port: { name: http } }
+          - path: /generate_204
+            pathType: Exact
+            backend:
+              service: { name: tailnet-relay-0, port: { name: http } }
+    - host: relay-1.relay.example.com
+      http:
+        paths:
+          - path: /derp
+            pathType: Prefix
+            backend:
+              service: { name: tailnet-relay-1, port: { name: http } }
+          - path: /generate_204
+            pathType: Exact
+            backend:
+              service: { name: tailnet-relay-1, port: { name: http } }

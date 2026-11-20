@@ -35,6 +35,13 @@ const configSchema = z.object({
     .optional(),
   caddyAdminUrl: z.string().url().default("http://localhost:2019"),
   /**
+   * False when `CADDY_ADMIN_URL=off`: another proxy with static routes is in
+   * front (for example a Kubernetes Ingress), so the service writes no Caddy
+   * routes and does not answer Caddy's certificate question. Needs the shared
+   * control URL (`CONTROL_DOMAIN`): per-tailnet hostnames are not routed.
+   */
+  caddyEnabled: z.boolean().default(true),
+  /**
    * Port devices use to reach tenant URLs, when the proxy is not published on
    * the scheme's default port (local development: Caddy is on 8180).
    */
@@ -100,7 +107,8 @@ export const config = configSchema.parse({
   baseDomain: process.env.BASE_DOMAIN,
   controlDomain: process.env.CONTROL_DOMAIN || undefined,
   tailnetDnsUpstream: (process.env.TAILNET_DNS_UPSTREAM ?? "").split(",").map((s) => s.trim()).filter(Boolean),
-  caddyAdminUrl: process.env.CADDY_ADMIN_URL,
+  caddyAdminUrl: process.env.CADDY_ADMIN_URL === "off" ? undefined : process.env.CADDY_ADMIN_URL,
+  caddyEnabled: process.env.CADDY_ADMIN_URL !== "off",
   tenantPublicPort: process.env.TENANT_PUBLIC_PORT || undefined,
   coordinatorUrl: process.env.COORDINATOR_URL || undefined,
   coordinatorApiKey: process.env.COORDINATOR_API_KEY || undefined,
@@ -196,6 +204,9 @@ export function sharedControlUrl(): string | null {
   return `${proto}://${config.controlDomain}${port}`;
 }
 
+if (!config.caddyEnabled && !config.controlDomain) {
+  throw new Error("CADDY_ADMIN_URL=off needs CONTROL_DOMAIN: without Caddy, per-tailnet control hostnames are not routed");
+}
 if (config.controlDomain) {
   const c = config.controlDomain.toLowerCase();
   const b = config.baseDomain.toLowerCase();

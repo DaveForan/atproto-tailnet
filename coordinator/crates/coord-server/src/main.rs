@@ -72,14 +72,23 @@ async fn main() -> anyhow::Result<()> {
     let control_key_path = std::env::var("COORD_CONTROL_KEY_PATH").ok();
     let mut coordinator = coord_api::CoordinatorState::new(control_key);
 
+    // Which parts this process serves: all (default), control, or relay (ADR-0034)
+    let role: coord_api::Role = std::env::var("COORD_ROLE")
+        .unwrap_or_default()
+        .parse()
+        .map_err(|e: String| anyhow::anyhow!("invalid COORD_ROLE: {e}"))?;
+    coordinator = coordinator.with_role(role);
     // Built-in DERP relay (ADR-0027): a persistent key keeps the relay's
     // identity stable across restarts. By default it sits next to the control key.
     let relay_key_path = std::env::var("COORD_DERP_KEY_PATH").ok().or_else(|| {
         let dir = std::path::Path::new(control_key_path.as_deref()?).parent()?;
         Some(dir.join("derp.key").to_string_lossy().into_owned())
     });
-    if let Some(secret) = load_or_create_secret(relay_key_path, "DERP relay key")? {
-        coordinator = coordinator.with_relay_secret(secret);
+    // A control-only process has no relay, and its key folder may be read-only
+    if role.serves_relay() {
+        if let Some(secret) = load_or_create_secret(relay_key_path, "DERP relay key")? {
+            coordinator = coordinator.with_relay_secret(secret);
+        }
     }
 
     let derp_hostname = std::env::var("COORD_DERP_HOSTNAME")
@@ -99,12 +108,6 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .or(config.derp_map_file);
 
-    // Which parts this process serves: all (default), control, or relay (ADR-0034)
-    let role: coord_api::Role = std::env::var("COORD_ROLE")
-        .unwrap_or_default()
-        .parse()
-        .map_err(|e: String| anyhow::anyhow!("invalid COORD_ROLE: {e}"))?;
-    coordinator = coordinator.with_role(role);
     // Each relay process has its own DERP region. Region 1 is the default;
     // further relay replicas set COORD_DERP_REGION_ID (2-899).
     let region_id: i32 = match std::env::var("COORD_DERP_REGION_ID") {

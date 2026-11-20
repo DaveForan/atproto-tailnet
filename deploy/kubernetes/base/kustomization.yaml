@@ -1,0 +1,18 @@
+# atproto-tailnet on Kubernetes (ADR-0034, stage C).
+# Do not apply this base directly: copy overlays/example, set your domains,
+# images and secrets there, and apply the overlay.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: atproto-tailnet
+resources:
+  - namespace.yaml
+  - config.yaml
+  - migrate-job.yaml
+  - app.yaml
+  - control.yaml
+  - relay.yaml
+  - ingress.yaml
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: atproto-tailnet
+    includeSelectors: false

@@ -1,0 +1,33 @@
+# Copy this folder, change the values, and apply it:
+#   kubectl apply -k deploy/kubernetes/overlays/<your-copy>
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+
+# Your images (build them from ./Dockerfile and ./coordinator/Dockerfile)
+images:
+  - name: atproto-tailnet-app
+    newName: registry.example.com/atproto-tailnet/app
+    newTag: "1"
+  - name: atproto-tailnet-coordinator
+    newName: registry.example.com/atproto-tailnet/coordinator
+    newTag: "1"
+
+patches:
+  # Your domains and operators
+  - target: { kind: ConfigMap, name: tailnet-config }
+    patch: |-
+      - { op: replace, path: /data/PUBLIC_URL, value: "https://tailnets.example.com" }
+      - { op: replace, path: /data/BASE_DOMAIN, value: "ts.example.com" }
+      - { op: replace, path: /data/CONTROL_DOMAIN, value: "control.example.com" }
+      - { op: replace, path: /data/RELAY_DOMAIN, value: "relay.example.com" }
+      - { op: replace, path: /data/OPERATOR_DIDS, value: "did:plc:replace-with-your-did" }
+  # The same hosts in the Ingress (rules and certificate)
+  - target: { kind: Ingress, name: tailnet }
+    patch: |-
+      - { op: replace, path: /spec/tls/0/hosts, value: ["tailnets.example.com", "control.example.com", "relay-0.relay.example.com", "relay-1.relay.example.com"] }
+      - { op: replace, path: /spec/rules/0/host, value: "tailnets.example.com" }
+      - { op: replace, path: /spec/rules/1/host, value: "control.example.com" }
+      - { op: replace, path: /spec/rules/2/host, value: "relay-0.relay.example.com" }
+      - { op: replace, path: /spec/rules/3/host, value: "relay-1.relay.example.com" }
