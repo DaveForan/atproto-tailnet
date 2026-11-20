@@ -542,3 +542,22 @@ async fn tenant_access_round_trip_and_default() {
         assert!(s.set_tenant_access(missing, TenantAccess::default()).await.is_err(), "{}", b.name);
     }
 }
+
+#[tokio::test]
+async fn tenant_dns_round_trip_and_default() {
+    use coord_core::{DnsRecord, TenantDns};
+    for b in backends().await {
+        let s = &b.store;
+        let t = tenant(s, "dns").await;
+        assert_eq!(s.get_tenant_dns(t).await, TenantDns::default(), "{}", b.name);
+        let dns = TenantDns {
+            base_domain: Some("ts.example.com".into()),
+            tailnet_label: Some("harbor".into()),
+            upstream: vec!["1.1.1.1".into()],
+            records: vec![DnsRecord { name: "notes".into(), node: 4, owner: Some("alice".into()), nodes: vec![7] }],
+        };
+        s.set_tenant_dns(t, dns.clone()).await.unwrap();
+        assert_eq!(s.get_tenant_dns(t).await, dns, "{}", b.name);
+        assert!(s.set_tenant_dns(TenantId::new(uuid::Uuid::new_v4()), TenantDns::default()).await.is_err(), "{}", b.name);
+    }
+}

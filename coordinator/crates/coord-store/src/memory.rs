@@ -51,6 +51,7 @@ struct PreAuthKey {
 pub struct MemoryStore {
     tenants: Mutex<HashMap<TenantId, Tenant>>,
     access: Mutex<HashMap<TenantId, coord_core::TenantAccess>>,
+    dns: Mutex<HashMap<TenantId, coord_core::TenantDns>>,
     nodes: Mutex<HashMap<NodeId, StoredNode>>,
     machine_key_index: Mutex<HashMap<[u8; 32], NodeId>>,
     preauth_keys: Mutex<HashMap<String, PreAuthKey>>,
@@ -64,6 +65,7 @@ impl MemoryStore {
         Self {
             tenants: Mutex::new(HashMap::new()),
             access: Mutex::new(HashMap::new()),
+            dns: Mutex::new(HashMap::new()),
             nodes: Mutex::new(HashMap::new()),
             machine_key_index: Mutex::new(HashMap::new()),
             preauth_keys: Mutex::new(HashMap::new()),
@@ -126,6 +128,18 @@ impl MemoryStore {
             return Err(CoordError::TenantNotFound(tenant_id));
         }
         self.access.lock().unwrap_or_else(|e| e.into_inner()).insert(tenant_id, access);
+        Ok(())
+    }
+
+    pub fn get_tenant_dns(&self, tenant_id: TenantId) -> coord_core::TenantDns {
+        self.dns.lock().unwrap_or_else(|e| e.into_inner()).get(&tenant_id).cloned().unwrap_or_default()
+    }
+
+    pub fn set_tenant_dns(&self, tenant_id: TenantId, dns: coord_core::TenantDns) -> Result<(), CoordError> {
+        if self.get_tenant(tenant_id).is_none() {
+            return Err(CoordError::TenantNotFound(tenant_id));
+        }
+        self.dns.lock().unwrap_or_else(|e| e.into_inner()).insert(tenant_id, dns);
         Ok(())
     }
 

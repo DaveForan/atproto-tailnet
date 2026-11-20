@@ -143,6 +143,32 @@ impl SqliteStore {
         Ok(())
     }
 
+    pub async fn get_tenant_dns(&self, tenant_id: TenantId) -> coord_core::TenantDns {
+        let row: Option<String> = sqlx::query_scalar("SELECT dns FROM coord_tenant_dns WHERE tenant_id = ?1")
+            .bind(tenant_id.as_uuid().to_string())
+            .fetch_optional(&self.pool)
+            .await
+            .ok()
+            .flatten();
+        row.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()
+    }
+
+    pub async fn set_tenant_dns(&self, tenant_id: TenantId, dns: coord_core::TenantDns) -> Result<(), CoordError> {
+        if self.get_tenant(tenant_id).await.is_none() {
+            return Err(CoordError::TenantNotFound(tenant_id));
+        }
+        sqlx::query(
+            "INSERT INTO coord_tenant_dns (tenant_id, dns) VALUES (?1, ?2) \
+             ON CONFLICT (tenant_id) DO UPDATE SET dns = excluded.dns, updated_at = datetime('now')"
+        )
+            .bind(tenant_id.as_uuid().to_string())
+            .bind(serde_json::to_string(&dns).unwrap_or_default())
+            .execute(&self.pool)
+            .await
+            .map_err(db)?;
+        Ok(())
+    }
+
     pub async fn list_tenants(&self) -> Vec<Tenant> {
         let rows = sqlx::query_as::<_, TenantRow>(
             "SELECT id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix, created_at, suspended \

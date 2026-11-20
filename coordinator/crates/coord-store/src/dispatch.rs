@@ -115,6 +115,23 @@ impl Store {
         }
     }
 
+    /// The tenant's DNS configuration (ADR-0028). Defaults to off.
+    pub async fn get_tenant_dns(&self, tenant_id: TenantId) -> coord_core::TenantDns {
+        match self {
+            Store::Memory(m) => m.get_tenant_dns(tenant_id),
+            Store::Pg(p) => p.get_tenant_dns(tenant_id).await,
+            Store::Sqlite(s) => s.get_tenant_dns(tenant_id).await,
+        }
+    }
+
+    pub async fn set_tenant_dns(&self, tenant_id: TenantId, dns: coord_core::TenantDns) -> Result<(), CoordError> {
+        match self {
+            Store::Memory(m) => m.set_tenant_dns(tenant_id, dns),
+            Store::Pg(p) => p.set_tenant_dns(tenant_id, dns).await,
+            Store::Sqlite(s) => s.set_tenant_dns(tenant_id, dns).await,
+        }
+    }
+
     pub async fn is_tenant_suspended(&self, tenant_id: TenantId) -> bool {
         self.get_tenant(tenant_id).await.is_some_and(|t| t.suspended)
     }
