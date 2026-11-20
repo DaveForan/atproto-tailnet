@@ -11,8 +11,8 @@ const POLL_MS = 30_000;
 const TYPE_TABS: Record<string, TabId> = {
   device_approval_requested: "security",
   join_request: "security",
-  service_device_approval_requested: "services",
-  service_approval_requested: "services",
+  service_device_approval_requested: "board",
+  service_approval_requested: "board",
   device_limit_reached: "usage",
 };
 

@@ -38,8 +38,8 @@ export const tabRegistry: TabEntry[] = [
 
   // Manage
   { id: "invite", label: "Invite", group: "Manage", gate: perm("invite") },
-  { id: "services", label: "Services", group: "Manage", gate: perm("manage_services", "approve_services") },
-  { id: "board", label: "Board", group: "Manage", gate: perm("manage_board", "create_posts") },
+  { id: "board", label: "Boards", group: "Network", gate: always },
+  { id: "sharing", label: "Friends & Sharing", group: "Network", gate: always },
   { id: "federation", label: "Federation", group: "Manage", gate: perm("manage_settings"), feature: "federation" },
   { id: "collectives", label: "Sub-Collectives", group: "Manage", gate: perm("manage_sub_collectives") },
   { id: "traversal", label: "Traversal Policy", group: "Manage", gate: perm("manage_settings"), feature: "federation" },

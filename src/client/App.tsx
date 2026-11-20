@@ -15,8 +15,8 @@ const InviteTab = lazy(() => import("./tabs/InviteTab").then((m) => ({ default: 
 const RoutesTab = lazy(() => import("./tabs/RoutesTab").then((m) => ({ default: m.RoutesTab })));
 const IpConfigTab = lazy(() => import("./tabs/IpConfigTab").then((m) => ({ default: m.IpConfigTab })));
 const DerpTab = lazy(() => import("./tabs/DerpTab").then((m) => ({ default: m.DerpTab })));
-const ServicesTab = lazy(() => import("./tabs/ServicesTab").then((m) => ({ default: m.ServicesTab })));
-const BoardTab = lazy(() => import("./tabs/BoardTab").then((m) => ({ default: m.BoardTab })));
+const BoardsTab = lazy(() => import("./tabs/BoardsTab").then((m) => ({ default: m.BoardsTab })));
+const SharingTab = lazy(() => import("./tabs/SharingTab").then((m) => ({ default: m.SharingTab })));
 const FederationTab = lazy(() => import("./tabs/FederationTab").then((m) => ({ default: m.FederationTab })));
 const CollectivesTab = lazy(() => import("./tabs/CollectivesTab").then((m) => ({ default: m.CollectivesTab })));
 const TraversalTab = lazy(() => import("./tabs/TraversalTab").then((m) => ({ default: m.TraversalTab })));
@@ -39,8 +39,8 @@ const tabComponents: Record<TabId, React.LazyExoticComponent<React.ComponentType
   routes: RoutesTab,
   ipconfig: IpConfigTab,
   derp: DerpTab,
-  services: ServicesTab,
-  board: BoardTab,
+  board: BoardsTab,
+  sharing: SharingTab,
   federation: FederationTab,
   collectives: CollectivesTab,
   traversal: TraversalTab,

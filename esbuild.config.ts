@@ -24,10 +24,6 @@ const configs: esbuild.BuildOptions[] = [
     ...shared,
     entryPoints: { "js/join": "src/client/join.tsx" },
   },
-  {
-    ...shared,
-    entryPoints: { "js/board": "src/client/board.ts" },
-  },
 ];
 
 async function run() {

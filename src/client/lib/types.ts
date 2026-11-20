@@ -575,7 +575,7 @@ export type TabId =
   | "members"
   | "connect"
   | "invite"
-  | "services"
+  | "sharing"
   | "board"
   | "federation"
   | "collectives"

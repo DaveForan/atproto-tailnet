@@ -1,8 +1,10 @@
-import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
 import { useApp } from "../hooks/useAppState";
 import { securityService } from "../services/security";
 import { useToast } from "./Toast";
 import { Badge } from "./Badge";
+import { BoardText } from "./BoardText";
+import { boardsService } from "../services/boards";
 import { NotificationBell } from "./NotificationBell";
 import { tabEnabled, tabRegistry, type TabGroup } from "./registry";
 
@@ -199,6 +201,15 @@ export function LockdownBanner() {
 }
 
 export function LoginPage({ redirect }: { redirect?: string }) {
+  // The default tailnet's controller board: public text written by its originator
+  const [board, setBoard] = useState<{ name: string | null; text: string } | null>(null);
+  useEffect(() => {
+    boardsService
+      .landing()
+      .then((b) => setBoard(b))
+      .catch(() => setBoard(null));
+  }, []);
+
   return (
     <div id="login-page">
       <h1>atproto-tailnet</h1>
@@ -218,6 +229,12 @@ export function LoginPage({ redirect }: { redirect?: string }) {
         {redirect && <input type="hidden" name="redirect" value={redirect} />}
         <button type="submit">Sign in</button>
       </form>
+      {!redirect && board?.text && (
+        <section className="landing-board" aria-label={board.name ? `About ${board.name}` : "About this tailnet"}>
+          {board.name && <h2>{board.name}</h2>}
+          <BoardText text={board.text} />
+        </section>
+      )}
     </div>
   );
 }
