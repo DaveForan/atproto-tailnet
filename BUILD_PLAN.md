@@ -290,6 +290,74 @@ See `docs/adr/` for the reason for each choice:
 
 ---
 
+## Phase 6: Self-contained mesh — "Own every part" (ADR-0026 to ADR-0033)
+
+Order matters: each stage gives value alone and unblocks the next.
+
+### 6.0 Done in this cycle
+- [x] Security review rounds 1 and 2: login CSRF nonce, Bearer fallback, member key limits, lockdown revocation, role escalation via default role, bounded credential issuance (fca4af7, ffe16a7)
+- [x] Tailnet and member names in Tailscale clients: coordinator identity registry (1406883)
+- [x] Public tailnet addresses: `tenant_hostnames`, random friendly names, privacy fixes (built, not committed — ADR-0026 §1-2)
+
+### 6.1 Tailnet addresses and shared control URL (ADR-0026)
+- [ ] Run migration 0030 against a throwaway PostgreSQL
+- [ ] `control.<APEX_DOMAIN>`: DNS record, Caddy site, `CONTROL_URL` config; login server everywhere uses it
+- [ ] Legacy per-tailnet hostnames: keep routing until retired; extra DNS record (ADR-0028)
+- [ ] Commit, deploy; set the address of the existing tailnet; move the Mac to the shared URL; retire `daveforan-bsky-social`
+
+### 6.2 Built-in DERP relay and STUN (ADR-0027)
+- [ ] `coord-derp` crate: frames, handshake (NaCl box), connection table, forwarding, keepalive, PeerGone
+- [ ] Helper endpoints and WebSocket upgrade
+- [ ] Member-only check of node keys against the store; per-node limits
+- [ ] STUN server on UDP 3478
+- [ ] Deploy: `derp.<APEX_DOMAIN>`, Caddy proxy, UDP 3478 in the cloud firewall, default DERP map → built-in region
+- [ ] Verify with Mac + phone (`tailscale netcheck`, relayed then direct)
+
+### 6.3 Interactive device sign-in (ADR-0032)
+- [ ] Coordinator: pending registrations, AuthURL, waiting map request, completion API
+- [ ] TS service: `/device/:id` approval page (Bluesky sign-in, tailnet choice), all key-path checks
+- [ ] Remove the `example.com` placeholder
+- [ ] Verify on iOS and Android
+
+### 6.4 Coordinator DNS (ADR-0028)
+- [ ] Per-tenant DNS registry + `PUT /api/tenants/{id}/dns`, pushed and replayed by the TS service
+- [ ] Split-DNS route for `BASE_DOMAIN` with upstream resolvers (never empty); extra records
+- [ ] Device names `<device>.<tailnet-name>.<BASE_DOMAIN>` and search domain
+- [ ] Verify device names on Mac and phone; verify the control URL still resolves
+
+### 6.5 Gateway node (ADR-0029)
+- [ ] Phase 1: coordinator-registered tagged node, WireGuard, DERP client; Mac pings the gateway
+- [ ] Phase 2: disco; direct path to the gateway
+- [ ] Phase 3: per-tailnet userspace TCP/IP; proxy TCP to a port on the Mac
+- [ ] Caller identity from tailnet address (in-process lookup)
+
+### 6.6 Named tailnet services (ADR-0030)
+- [ ] Service model: name, device, port, visibility; shared namespace with tailnet addresses
+- [ ] Gateway: TLS with the wildcard certificate, routing by server name, identity headers
+- [ ] Extra DNS records for services; ACL rule for gateway → targets
+- [ ] Dashboard publish flow, "Post to board", MCP tool
+- [ ] Verify `https://<name>.<BASE_DOMAIN>` from a second device; not reachable from outside
+
+### 6.7 Public service exposure (ADR-0031)
+- [ ] `__Host-` dashboard session cookie (do first, independent)
+- [ ] Decide and register `PUBLIC_SERVICE_DOMAIN`
+- [ ] Operator enable per tailnet + per-service approval, audit, kill switch
+- [ ] Caddy public side → gateway; `public` and `public-signed-in` modes
+- [ ] Rate, body-size and bandwidth limits; access logs
+
+### 6.8 Federation data plane and service records (ADR-0033)
+- [ ] Gateway-to-gateway link; advertise agreed CIDRs; enforce traversal policy
+- [ ] Hierarchy: child services and routes visible to parents by posture
+- [ ] `cloud.mesotechnics.service` lexicon; write/verify records; board as a view of records
+
+### 6.9 Operations (no ADR)
+- [ ] DigitalOcean backups + nightly `pg_dump` and coordinator key off the droplet; test a restore
+- [ ] Uptime check on `/health` and droplet alerts (CPU, memory, disk)
+- [ ] One-command deploy script (parity check, build, restart, verify)
+- [ ] Confirm domain auto-renew at the registrar
+
+---
+
 ## Out of scope (for now)
 
 - ~~Custom DERP relays per tenant~~ ✅ Implemented (custom regions, embedded toggle, public relay toggle)

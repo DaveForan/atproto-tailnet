@@ -49,6 +49,14 @@ Track ADRs like stories on a board. Each ADR moves through these lifecycle state
 |----|-------|------|------------|------------|
 | 0022 | Tenant TLS for any DNS provider | 2026-11-05 | — | 0002, 0004 |
 | 0024 | Purpose-built mesh client | 2026-11-06 | — | 0023 |
+| 0026 | Tailnet addresses, opaque internal IDs, and a shared control URL | 2026-11-19 | — | 0023, 0025 |
+| 0027 | Built-in DERP relay and STUN server | 2026-11-19 | — | 0006, 0023 |
+| 0028 | Coordinator DNS — extra records and split DNS | 2026-11-19 | — | 0023, 0026 |
+| 0029 | Bespoke gateway node (`coord-gateway`) | 2026-11-19 | — | 0023, 0027 |
+| 0030 | Named tailnet services | 2026-11-19 | — | 0026, 0028, 0029 |
+| 0031 | Public service exposure | 2026-11-19 | — | 0030 |
+| 0032 | Interactive device sign-in with Bluesky | 2026-11-19 | — | 0003, 0023, 0026 |
+| 0033 | Federation data plane on the gateway, and services as AT Proto records | 2026-11-19 | 0020 (coordinator mode) | 0029, 0030 |
 
 ### Superseded
 
