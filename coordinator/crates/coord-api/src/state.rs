@@ -34,6 +34,10 @@ pub struct CoordinatorState {
     pub(crate) role: Role,
     /// This process's relay region, when it is a relay with a public hostname.
     pub(crate) own_relay: Option<coord_core::RelayInfo>,
+    /// The gateway node of each tenant that has one (cache of the store).
+    pub(crate) gateway_nodes: Arc<coord_netmap::GatewayRegistry>,
+    /// Set when this process runs gateways (ADR-0029).
+    pub(crate) gateways_cfg: Option<Arc<crate::gateway::Gateways>>,
     pub(crate) netmap: NetmapService,
     /// Fires when a tenant's ACL or DERP config changes so live map streams resend a snapshot.
     pub(crate) config_changed: broadcast::Sender<TenantId>,
@@ -55,6 +59,8 @@ pub const CONFIG_ACL: &str = "acl";
 pub const CONFIG_DERP: &str = "derp";
 pub const CONFIG_AUTO_APPROVERS: &str = "auto_approvers";
 pub const CONFIG_IDENTITY: &str = "identity";
+/// The gateway node of the tenant: `{ "node_id": … }`.
+pub const CONFIG_GATEWAY: &str = "gateway";
 
 /// Default instance-wide cap on concurrent Noise connections.
 pub const DEFAULT_MAX_NOISE_CONNECTIONS: usize = 4096;
@@ -69,7 +75,8 @@ impl CoordinatorState {
         let acl = Arc::new(PolicyEngine::new());
         let derp = Arc::new(DerpRegistry::new(default_derp_map()));
         let identity = Arc::new(IdentityRegistry::new());
-        let netmap = NetmapService::with_identity(store.clone(), acl.clone(), derp.clone(), identity.clone());
+        let gateway_nodes = Arc::new(coord_netmap::GatewayRegistry::new());
+        let netmap = NetmapService::with_identity(store.clone(), acl.clone(), derp.clone(), identity.clone()).with_gateways(gateway_nodes.clone());
         let (config_changed, _) = broadcast::channel(256);
         let relay_secret = random_secret();
         let relay = build_relay(relay_secret, &store);
@@ -88,6 +95,8 @@ impl CoordinatorState {
             admin_api_key: None,
             role: Role::All,
             own_relay: None,
+            gateway_nodes,
+            gateways_cfg: None,
             netmap,
             config_changed,
             federation_inbound: Arc::new(InboundHandler::new(
@@ -116,13 +125,13 @@ impl CoordinatorState {
     pub fn with_store(mut self, store: Store) -> Self {
         self.store = Arc::new(store);
         self.relay = build_relay(self.relay_secret, &self.store);
-        self.netmap = NetmapService::with_identity(self.store.clone(), self.acl.clone(), self.derp.clone(), self.identity.clone());
+        self.netmap = NetmapService::with_identity(self.store.clone(), self.acl.clone(), self.derp.clone(), self.identity.clone()).with_gateways(self.gateway_nodes.clone());
         self
     }
 
     pub fn with_derp_map(mut self, derp_map: DerpMap) -> Self {
         self.derp = Arc::new(DerpRegistry::new(derp_map));
-        self.netmap = NetmapService::with_identity(self.store.clone(), self.acl.clone(), self.derp.clone(), self.identity.clone());
+        self.netmap = NetmapService::with_identity(self.store.clone(), self.acl.clone(), self.derp.clone(), self.identity.clone()).with_gateways(self.gateway_nodes.clone());
         self
     }
 
@@ -174,6 +183,17 @@ impl CoordinatorState {
     #[doc(hidden)]
     pub fn __test_config_changes(&self) -> broadcast::Receiver<TenantId> {
         self.config_changed.subscribe()
+    }
+
+    /// Run gateways in this process: `secret` gives each tenant's gateway its
+    /// keys, `certificate` is the wildcard certificate of the base domain.
+    pub fn with_gateway(mut self, secret: [u8; 32], certificate: Arc<coord_gateway::proxy::Certificate>) -> Self {
+        self.gateways_cfg = Some(Arc::new(crate::gateway::Gateways::new(secret, certificate)));
+        self
+    }
+
+    pub fn gateways(&self) -> Option<&Arc<crate::gateway::Gateways>> {
+        self.gateways_cfg.as_ref()
     }
 
     pub fn with_role(mut self, role: Role) -> Self {
@@ -282,6 +302,7 @@ impl CoordinatorState {
         self.derp.remove_tenant(tenant);
         self.auto_approvers.remove_tenant(tenant);
         self.identity.remove_tenant(tenant);
+        self.gateway_nodes.remove(tenant);
     }
 
     fn apply_config(&self, tenant: TenantId, kind: &str, value: serde_json::Value) {
@@ -290,6 +311,7 @@ impl CoordinatorState {
             CONFIG_DERP => serde_json::from_value(value).map(|v| self.derp.set_tenant(tenant, v)).is_ok(),
             CONFIG_AUTO_APPROVERS => serde_json::from_value(value).map(|v| self.auto_approvers.set_tenant(tenant, v)).is_ok(),
             CONFIG_IDENTITY => serde_json::from_value(value).map(|v| self.identity.set_tenant(tenant, v)).is_ok(),
+            CONFIG_GATEWAY => value.get("node_id").and_then(|n| n.as_i64()).map(|n| self.gateway_nodes.set(tenant, n)).is_some(),
             _ => true, // a kind written by a newer version: ignore
         };
         if !ok {
@@ -326,6 +348,7 @@ impl CoordinatorState {
                 match events.recv().await {
                     Ok(coord_store::RemoteEvent::TenantChanged(tenant)) => {
                         state.reload_tenant_config(tenant).await;
+                        state.sync_gateway(tenant).await;
                         let _ = state.config_changed.send(tenant);
                     }
                     Ok(coord_store::RemoteEvent::SignInDecided(_)) => state.device_auth.wake(),

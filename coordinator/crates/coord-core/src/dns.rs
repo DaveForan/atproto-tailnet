@@ -13,6 +13,9 @@ pub const MAX_DNS_RECORDS: usize = 2000;
 pub const MAX_DNS_UPSTREAMS: usize = 4;
 pub const MAX_RECORD_NODES: usize = 256;
 
+/// Ports that the gateway serves on its tailnet address.
+pub const GATEWAY_PORTS: [u16; 2] = [80, 443];
+
 /// One service name. It resolves to the address of `node`, for the devices of
 /// `owner` and the devices listed in `nodes`. With neither, every device of
 /// the tenant sees it.
@@ -26,6 +29,11 @@ pub struct DnsRecord {
     pub owner: Option<String>,
     #[serde(default)]
     pub nodes: Vec<i64>,
+    /// With a port, the name is an HTTPS service (ADR-0030): it resolves to
+    /// the gateway of the tailnet, which passes requests to this TCP port of
+    /// `node`. Without a gateway the name resolves to `node` itself.
+    #[serde(default)]
+    pub port: Option<u16>,
 }
 
 impl DnsRecord {
@@ -86,6 +94,9 @@ impl TenantDns {
             if !is_dns_label(&r.name) {
                 return Err("record name must be one DNS label");
             }
+            if r.port == Some(0) {
+                return Err("a service port must be 1 to 65535");
+            }
             if r.nodes.len() > MAX_RECORD_NODES || r.owner.as_ref().is_some_and(|o| o.len() > 128) {
                 return Err("record visibility list too large");
             }
@@ -112,7 +123,7 @@ mod tests {
             base_domain: Some("ts.example.com".into()),
             tailnet_label: Some("quiet-harbor".into()),
             upstream: vec!["1.1.1.1".into(), "2606:4700:4700::1111".into()],
-            records: vec![DnsRecord { name: "notes".into(), node: 3, owner: Some("alice".into()), nodes: vec![] }],
+            records: vec![DnsRecord { name: "notes".into(), node: 3, owner: Some("alice".into()), nodes: vec![], port: None }],
         }
     }
 
@@ -145,13 +156,13 @@ mod tests {
 
     #[test]
     fn record_visibility() {
-        let private = DnsRecord { name: "n".into(), node: 1, owner: Some("alice".into()), nodes: vec![] };
+        let private = DnsRecord { name: "n".into(), node: 1, owner: Some("alice".into()), nodes: vec![], port: None };
         assert!(private.visible_to(5, Some("alice")));
         assert!(!private.visible_to(5, Some("bob")));
         assert!(!private.visible_to(5, None));
-        let listed = DnsRecord { name: "n".into(), node: 1, owner: Some("alice".into()), nodes: vec![9] };
+        let listed = DnsRecord { name: "n".into(), node: 1, owner: Some("alice".into()), nodes: vec![9], port: None };
         assert!(listed.visible_to(9, Some("bob")));
-        let everyone = DnsRecord { name: "n".into(), node: 1, owner: None, nodes: vec![] };
+        let everyone = DnsRecord { name: "n".into(), node: 1, owner: None, nodes: vec![], port: None };
         assert!(everyone.visible_to(7, None));
     }
 }

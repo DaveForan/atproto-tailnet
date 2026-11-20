@@ -557,7 +557,7 @@ async fn tenant_dns_round_trip_and_default() {
             base_domain: Some("ts.example.com".into()),
             tailnet_label: Some("harbor".into()),
             upstream: vec!["1.1.1.1".into()],
-            records: vec![DnsRecord { name: "notes".into(), node: 4, owner: Some("alice".into()), nodes: vec![7] }],
+            records: vec![DnsRecord { name: "notes".into(), node: 4, owner: Some("alice".into()), nodes: vec![7], port: None }],
         };
         s.set_tenant_dns(t, dns.clone()).await.unwrap();
         assert_eq!(s.get_tenant_dns(t).await, dns, "{}", b.name);

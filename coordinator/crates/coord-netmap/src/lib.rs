@@ -142,6 +142,64 @@ impl AutoApproverRegistry {
     }
 }
 
+/// The gateway node of each tenant that has one (ADR-0029). A cache of the
+/// `gateway` tenant configuration in the store.
+#[derive(Default)]
+pub struct GatewayRegistry {
+    tenants: RwLock<HashMap<TenantId, i64>>,
+}
+
+impl GatewayRegistry {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn set(&self, tenant: TenantId, node_id: i64) {
+        self.tenants.write().unwrap_or_else(|e| e.into_inner()).insert(tenant, node_id);
+    }
+
+    pub fn get(&self, tenant: TenantId) -> Option<i64> {
+        self.tenants.read().unwrap_or_else(|e| e.into_inner()).get(&tenant).copied()
+    }
+
+    pub fn remove(&self, tenant: TenantId) {
+        self.tenants.write().unwrap_or_else(|e| e.into_inner()).remove(&tenant);
+    }
+}
+
+/// The access rules that HTTPS services need in a `member`-mode tailnet
+/// (ADR-0030): the devices that may see a service reach the gateway on its
+/// web ports, and the gateway reaches the published port of the device.
+/// `everyone` lists all devices of the tailnet except the gateway, for
+/// services that every device may see.
+pub fn service_rules(dns: &coord_core::TenantDns, gateway: i64, everyone: &[i64]) -> Vec<coord_core::AccessRule> {
+    use coord_core::{AccessPort, AccessProto, AccessRule};
+    let tcp = |port: u16| AccessPort { proto: AccessProto::Tcp, first: port, last: port };
+    let mut rules = Vec::new();
+    for record in dns.records.iter().filter(|r| r.port.is_some() && r.node != gateway) {
+        let Some(port) = record.port else { continue };
+        let to_gateway = |src_owner: Option<String>, src_nodes: Vec<i64>| AccessRule {
+            src_owner,
+            src_nodes,
+            dst_node: gateway,
+            ports: coord_core::dns::GATEWAY_PORTS.iter().map(|p| tcp(*p)).collect(),
+        };
+        if record.owner.is_none() && record.nodes.is_empty() {
+            rules.push(to_gateway(None, everyone.to_vec()));
+        } else {
+            // `visible_to` is "listed device, or device of the owner": one rule for each
+            if !record.nodes.is_empty() {
+                rules.push(to_gateway(None, record.nodes.clone()));
+            }
+            if record.owner.is_some() {
+                rules.push(to_gateway(record.owner.clone(), Vec::new()));
+            }
+        }
+        rules.push(AccessRule { src_owner: None, src_nodes: vec![gateway], dst_node: record.node, ports: vec![tcp(port)] });
+    }
+    rules
+}
+
 /// Fallback names when the TS service has not pushed identity for a tenant/owner.
 pub const DEFAULT_DOMAIN: &str = "mesh.local";
 pub const DEFAULT_LOGIN_NAME: &str = "mesh@coordinator.local";
@@ -295,6 +353,7 @@ pub fn dns_view(
     self_ip: &str,
     visible_peers: &[coord_core::PeerInfo],
     dns: &coord_core::TenantDns,
+    gateway: Option<i64>,
 ) -> DnsConfig {
     let Some(base) = dns.base_domain.as_deref() else {
         return DnsConfig { resolvers: Some(vec![]), domains: Some(vec![]), routes: None, proxied: None, extra_records: None };
@@ -310,7 +369,15 @@ pub fn dns_view(
         .records
         .iter()
         .filter(|r| r.visible_to(self_id, self_owner))
-        .filter_map(|r| Some(DnsExtraRecord { name: format!("{}.{base}", r.name), value: address_of(r.node)? }))
+        // An HTTPS service resolves to the gateway, which passes the request
+        // on; every other name resolves to its device.
+        .filter_map(|r| {
+            let node = match (r.port, gateway) {
+                (Some(_), Some(gw)) => gw,
+                _ => r.node,
+            };
+            Some(DnsExtraRecord { name: format!("{}.{base}", r.name), value: address_of(node)? })
+        })
         .collect();
     let routes = (!dns.upstream.is_empty()).then(|| {
         let resolvers = dns.upstream.iter().map(|addr| DnsResolver { addr: addr.clone() }).collect();
@@ -398,6 +465,7 @@ pub struct NetmapService {
     acl: Arc<PolicyEngine>,
     derp: Arc<DerpRegistry>,
     identity: Arc<IdentityRegistry>,
+    gateways: Arc<GatewayRegistry>,
 }
 
 impl NetmapService {
@@ -411,7 +479,13 @@ impl NetmapService {
         derp: Arc<DerpRegistry>,
         identity: Arc<IdentityRegistry>,
     ) -> Self {
-        Self { store, acl, derp, identity }
+        Self { store, acl, derp, identity, gateways: Arc::new(GatewayRegistry::new()) }
+    }
+
+    /// Use this registry of gateway nodes (ADR-0029).
+    pub fn with_gateways(mut self, gateways: Arc<GatewayRegistry>) -> Self {
+        self.gateways = gateways;
+        self
     }
 
     /// One profile per distinct owner (self first), for MapResponse.UserProfiles.
@@ -465,8 +539,16 @@ impl NetmapService {
         } else {
             self.store.get_peers_with_children(tenant_id, node_id).await
         };
+        let gateway = self.gateways.get(tenant_id);
         let member = member_mode.then(|| {
-            member_view(node_id.as_i64(), detail.attrs.owner.as_deref(), &ipv4.to_string(), &all_peers, &access.rules)
+            // HTTPS services open two paths: viewers to the gateway, and the
+            // gateway to the published port. Nothing else.
+            let mut rules = access.rules.clone();
+            if let Some(gw) = gateway {
+                let everyone: Vec<i64> = all_peers.iter().map(|p| p.node_id.as_i64()).chain([node_id.as_i64()]).filter(|id| *id != gw).collect();
+                rules.extend(service_rules(&dns, gw, &everyone));
+            }
+            member_view(node_id.as_i64(), detail.attrs.owner.as_deref(), &ipv4.to_string(), &all_peers, &rules)
         });
         let (peers, member_filter): (Vec<coord_core::PeerInfo>, Option<Vec<FilterRule>>) = match member {
             Some(view) => (view.peers.into_iter().cloned().collect(), Some(view.filter)),
@@ -524,7 +606,7 @@ impl NetmapService {
             peers_changed: None,
             peers_removed: None,
             derp_map: Some(derp_map),
-            dns_config: Some(dns_view(node_id.as_i64(), self_owner, &ipv4.to_string(), &peers, &dns)),
+            dns_config: Some(dns_view(node_id.as_i64(), self_owner, &ipv4.to_string(), &peers, &dns, gateway)),
             // Member mode: per-device filter (an empty list blocks everything).
             // Otherwise the tenant's ACL policy, or allow-all.
             packet_filter: Some(member_filter.unwrap_or_else(|| {

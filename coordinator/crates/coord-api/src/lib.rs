@@ -1,4 +1,5 @@
 mod state;
+pub mod gateway;
 mod key_handler;
 pub mod derp_handler;
 pub mod device_auth;

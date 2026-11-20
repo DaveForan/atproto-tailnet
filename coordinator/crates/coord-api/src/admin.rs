@@ -897,6 +897,8 @@ pub async fn set_tenant_dns(
     if let Err(e) = state.store.set_tenant_dns(tenant_id, body.clone()).await {
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response();
     }
+    // A first HTTPS service brings the gateway into the tailnet
+    state.sync_gateway(tenant_id).await;
     if changed {
         state.notify_tenant_changed(tenant_id);
     }
