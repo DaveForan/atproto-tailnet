@@ -216,6 +216,37 @@ async fn main() -> anyhow::Result<()> {
     coordinator = coordinator.with_admin_api_key(admin_key);
 
     // Interactive device sign-in (ADR-0032): where devices without a key are sent
+    // Gateway (ADR-0029): HTTPS for named services inside tailnets. It needs
+    // the wildcard certificate of the base domain and the relay of this process.
+    let gateway_cert = std::env::var("COORD_GATEWAY_CERT").ok().filter(|p| !p.is_empty());
+    let gateway_key = std::env::var("COORD_GATEWAY_KEY").ok().filter(|p| !p.is_empty());
+    if let (Some(cert), Some(key), true) = (gateway_cert, gateway_key, role.serves_relay()) {
+        let secret_path = std::env::var("COORD_GATEWAY_SECRET_PATH").ok().or_else(|| {
+            let dir = std::path::Path::new(control_key_path.as_deref()?).parent()?;
+            Some(dir.join("gateway.key").to_string_lossy().into_owned())
+        });
+        let secret = load_or_create_secret(secret_path, "gateway secret")?
+            .ok_or_else(|| anyhow::anyhow!("the gateway needs COORD_GATEWAY_SECRET_PATH or COORD_CONTROL_KEY_PATH for its secret"))?;
+        // The certificate may arrive a little after the first start (another
+        // container copies it). Without it this process runs with no gateway.
+        let mut loaded = None;
+        for attempt in 0..30 {
+            match coord_gateway::proxy::Certificate::from_files(&cert, &key) {
+                Ok(c) => {
+                    loaded = Some(Arc::new(c));
+                    break;
+                }
+                Err(e) if attempt == 29 => tracing::warn!(error = %e, "gateway certificate not usable: named HTTPS services are off"),
+                Err(_) => tokio::time::sleep(std::time::Duration::from_secs(2)).await,
+            }
+        }
+        if let Some(certificate) = loaded {
+            coord_gateway::proxy::spawn_reload(certificate.clone(), std::time::Duration::from_secs(6 * 3600));
+            coordinator = coordinator.with_gateway(secret, certificate);
+            tracing::info!(cert = %cert, "gateway enabled: named HTTPS services");
+        }
+    }
+
     let device_auth_url = std::env::var("COORD_DEVICE_AUTH_URL").ok().filter(|u| !u.is_empty());
     match &device_auth_url {
         Some(url) => tracing::info!(url = %url, "interactive device sign-in enabled"),
@@ -239,6 +270,8 @@ async fn main() -> anyhow::Result<()> {
     // Relay discovery: report this relay, and build the DERP map from the live relays
     state.refresh_relays().await;
     state.spawn_relay_tasks();
+    // Tailnets that already have HTTPS services get their gateway back
+    state.start_gateways().await;
 
     if federation_enabled && role.serves_control() {
         // Spawn the federation broker background loop.

@@ -329,16 +329,20 @@ Order matters: each stage gives value alone and unblocks the next.
 - [ ] Verify device names on Mac and phone; verify the control URL still resolves
 
 ### 6.5 Gateway node (ADR-0029)
-- [ ] Phase 1: coordinator-registered tagged node, WireGuard, DERP client; Mac pings the gateway
-- [ ] Phase 2: disco; direct path to the gateway
-- [ ] Phase 3: per-tailnet userspace TCP/IP; proxy TCP to a port on the Mac
-- [ ] Caller identity from tailnet address (in-process lookup)
+- [x] Coordinator-registered tagged node, keys derived from one secret
+- [x] WireGuard sessions (boringtun) over the in-process relay client
+- [x] Per-tailnet userspace TCP/IP (smoltcp); TCP in both directions
+- [x] Caller identity from the tailnet address (store lookup)
+- [ ] Phase 2: answer disco; direct paths to the gateway
+- [ ] Verify with real Tailscale clients (Mac and phone)
 
 ### 6.6 Named tailnet services (ADR-0030)
-- [ ] Service model: name, device, port, visibility; shared namespace with tailnet addresses
-- [ ] Gateway: TLS with the wildcard certificate, routing by server name, identity headers
-- [ ] Extra DNS records for services; ACL rule for gateway → targets
-- [ ] Dashboard publish flow, "Post to board", MCP tool
+- [x] Service model: `web` flag on service posts; DNS record with a port
+- [x] Gateway: TLS with the wildcard certificate, routing by server name, identity headers, upgrades
+- [x] DNS records point at the gateway; member-mode rules for viewers → gateway and gateway → target
+- [x] Dashboard: "This is a web application" on the service form; HTTPS links on the boards
+- [x] Certificate copy service in the compose file; reload every 6 hours
+- [ ] MCP tool; role restriction; ACL-policy rule; parent sees child services
 - [ ] Verify `https://<name>.<BASE_DOMAIN>` from a second device; not reachable from outside
 
 ### 6.7 Public service exposure (ADR-0031)

@@ -139,6 +139,20 @@ describe("compileDns", () => {
     expect(out.records).toEqual([{ name: "notes", node: 10, owner: "u-alice", nodes: [20, 21] }]);
   });
 
+  it("a web service carries its port, so the gateway serves the name over HTTPS", () => {
+    const web = { web: true, proto: "tcp", port: 3000 };
+    expect(compileDns(input({ posts: [named(web)] })).records).toEqual([{ name: "notes", node: 10, owner: "u-alice", port: 3000 }]);
+    const shared = compileDns(input({ posts: [named({ ...web, board: "public" })], connections: [{ postId: "p1", nodeId: "20" }] }));
+    expect(shared.records).toEqual([{ name: "notes", node: 10, owner: "u-alice", nodes: [20], port: 3000 }]);
+  });
+
+  it("only a TCP post that asked for it is a web service", () => {
+    const record = (post: Record<string, unknown>) => compileDns(input({ posts: [named(post)] })).records[0];
+    expect(record({ web: false, proto: "tcp", port: 3000 })).not.toHaveProperty("port");
+    expect(record({ web: true, proto: "udp", port: 3000 })).not.toHaveProperty("port");
+    expect(record({ proto: "tcp", port: 3000 })).not.toHaveProperty("port");
+  });
+
   it.each([
     ["a pending public service", named({ board: "public", status: "pending" })],
     ["a rejected public service", named({ board: "public", status: "rejected" })],

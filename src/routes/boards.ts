@@ -23,6 +23,7 @@ import {
   authUserId,
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
+import { httpsServicesAvailable } from "../orchestrator/gateway.js";
 import { notify, notifyUser } from "../notifications/service.js";
 import { listTenantDevices, listUserDevices } from "../access/devices.js";
 import { syncTenantAccess } from "../access/sync.js";
@@ -46,11 +47,31 @@ const postBody = z.object({
   port: z.number().int().min(1).max(65535),
   proto: z.enum(["tcp", "udp"]).default("tcp"),
   name: z.string().optional(),
+  /** Serve the name as an HTTPS web address through the gateway (ADR-0030). */
+  web: z.boolean().optional(),
 });
 
 const postPatch = postBody.omit({ board: true }).partial();
 
 type Post = typeof servicePosts.$inferSelect;
+
+/**
+ * Why a post cannot be a web service, or null. A web service needs a name
+ * (it is the address), TCP, and a coordinator that runs the gateway. The
+ * gateway is only asked for when the post becomes a web service.
+ */
+async function webServiceProblem(
+  name: string | null | undefined,
+  proto: string,
+  checkGateway = true,
+): Promise<{ status: number; error: string; code: string } | null> {
+  if (!name) return { status: 400, error: "A web address needs a name", code: "web_needs_name" };
+  if (proto !== "tcp") return { status: 400, error: "A web address needs TCP", code: "web_needs_tcp" };
+  if (checkGateway && !(await httpsServicesAvailable())) {
+    return { status: 409, error: "This instance does not serve web addresses", code: "web_unavailable" };
+  }
+  return null;
+}
 
 function canReview(result: NonNullable<Awaited<ReturnType<typeof getTenantForUser>>>, req: Request) {
   return hasPermission(result.membership, result.role, "approve_services", req);
@@ -138,10 +159,13 @@ boardsRouter.get("/api/tenants/:tenantId/boards/public", requireAuth, async (req
         name: post.name,
         proto: post.proto,
         port: post.port,
+        web: post.web,
         author: { handle: authorHandle, displayName: authorName },
         isAuthor,
         // The address is useful only once a device of the viewer is connected
         address: mine.length > 0 || isAuthor ? (device?.address ?? null) : null,
+        // The web address works on the author's devices and on connected devices
+        url: post.web && post.name && (mine.length > 0 || isAuthor) ? `https://${post.name}.${config.baseDomain}` : null,
         deviceOnline: device?.online ?? false,
         myConnectedDevices: mine,
         connectedDevices: isAuthor ? connections.filter((c) => c.postId === post.id).length : undefined,
@@ -179,6 +203,8 @@ boardsRouter.get("/api/tenants/:tenantId/boards/mine", requireAuth, async (req, 
   const deviceById = new Map(devices.map((d) => [d.id, d]));
   res.json({
     baseDomain: config.baseDomain,
+    // The form offers "web address" only when the gateway can serve it
+    httpsServices: await httpsServicesAvailable(),
     posts: posts.map((p) => ({
       ...p,
       device: deviceById.get(p.nodeId) ?? null,
@@ -249,6 +275,11 @@ boardsRouter.post("/api/tenants/:tenantId/boards/posts", requireAuth, async (req
     res.status(409).json({ error: "That service name is already in use" });
     return;
   }
+  const webProblem = data.web ? await webServiceProblem(named.name, data.proto) : null;
+  if (webProblem) {
+    res.status(webProblem.status).json({ error: webProblem.error, code: webProblem.code });
+    return;
+  }
 
   // A post is always on a device of its author
   const devices = await listUserDevices(result.tenant, userId).catch(() => null);
@@ -287,6 +318,7 @@ boardsRouter.post("/api/tenants/:tenantId/boards/posts", requireAuth, async (req
         nodeId: data.nodeId,
         proto: data.proto,
         port: data.port,
+        web: data.web ?? false,
         status: approved ? "approved" : "pending",
         reviewedById: approved && data.board === "public" ? userId : null,
         reviewedAt: approved && data.board === "public" ? new Date() : null,
@@ -368,6 +400,19 @@ boardsRouter.patch("/api/tenants/:tenantId/boards/posts/:postId", requireAuth, a
   }
   if (data.port !== undefined) updates.port = data.port;
   if (data.proto !== undefined) updates.proto = data.proto;
+  if (data.web !== undefined) updates.web = data.web;
+  // The rules of a web service hold for the post as it will be after this change
+  if (updates.web ?? post.web) {
+    const webProblem = await webServiceProblem(
+      updates.name !== undefined ? updates.name : post.name,
+      updates.proto ?? post.proto,
+      !post.web,
+    );
+    if (webProblem) {
+      res.status(webProblem.status).json({ error: webProblem.error, code: webProblem.code });
+      return;
+    }
+  }
 
   // What the post opens changed: an approval of the old target does not
   // cover the new one, and connected devices must not follow it silently.

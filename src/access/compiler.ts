@@ -114,6 +114,8 @@ export interface CoordinatorDnsRecord {
   node: number;
   owner?: string;
   nodes?: number[];
+  /** Set for a web service: the gateway serves the name over HTTPS and passes requests to this port. */
+  port?: number;
 }
 
 export interface CoordinatorDns {
@@ -127,7 +129,17 @@ export interface DnsInput {
   baseDomain: string;
   tailnetLabel: string;
   upstream: string[];
-  posts: Array<{ id: string; board: string; status: string; name: string | null; nodeId: string; authorId: string }>;
+  posts: Array<{
+    id: string;
+    board: string;
+    status: string;
+    name: string | null;
+    nodeId: string;
+    authorId: string;
+    proto?: string;
+    port?: number;
+    web?: boolean;
+  }>;
   connections: Array<{ postId: string; nodeId: string }>;
 }
 
@@ -146,8 +158,10 @@ export function compileDns(input: DnsInput): CoordinatorDns {
     if (!post.name || post.name === input.tailnetLabel) continue;
     const node = nodeNumber(post.nodeId);
     if (node === null) continue;
+    // A web service is reached through the gateway on its HTTPS name
+    const web = post.web && post.proto === "tcp" && post.port ? { port: post.port } : {};
     if (post.board === "private" && post.status !== "removed") {
-      records.push({ name: post.name, node, owner: post.authorId });
+      records.push({ name: post.name, node, owner: post.authorId, ...web });
     } else if (post.board === "public" && post.status === "approved") {
       const nodes = [
         ...new Set(
@@ -159,7 +173,7 @@ export function compileDns(input: DnsInput): CoordinatorDns {
       ]
         .sort((a, b) => a - b)
         .slice(0, MAX_RULE_SOURCES);
-      records.push({ name: post.name, node, owner: post.authorId, ...(nodes.length ? { nodes } : {}) });
+      records.push({ name: post.name, node, owner: post.authorId, ...(nodes.length ? { nodes } : {}), ...web });
     }
   }
   records.sort((a, b) => a.name.localeCompare(b.name) || a.node - b.node);

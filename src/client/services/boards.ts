@@ -14,9 +14,13 @@ export interface PublicPost {
   name: string | null;
   proto: "tcp" | "udp";
   port: number;
+  /** Served as https://<name>.<base domain> by the gateway. */
+  web: boolean;
   author: { handle: string; displayName: string | null };
   isAuthor: boolean;
   address: string | null;
+  /** The HTTPS address, when this is a web service that this viewer can open. */
+  url: string | null;
   deviceOnline: boolean;
   myConnectedDevices: string[];
   connectedDevices?: number;
@@ -31,6 +35,7 @@ export interface MyPost {
   nodeId: string;
   proto: "tcp" | "udp";
   port: number;
+  web: boolean;
   status: "pending" | "approved" | "rejected";
   rejectReason: string | null;
   device: MyDevice | null;
@@ -49,6 +54,7 @@ export interface NewPost {
   port: number;
   proto: "tcp" | "udp";
   name?: string;
+  web?: boolean;
 }
 
 const json = (method: string, body?: unknown): RequestInit => ({
@@ -59,7 +65,7 @@ const json = (method: string, body?: unknown): RequestInit => ({
 export const boardsService = {
   myDevices: (tid: string) => tenantApi<{ devices: MyDevice[]; supported: boolean }>(tid, "/my-devices"),
   publicBoard: (tid: string) => tenantApi<{ posts: PublicPost[] }>(tid, "/boards/public"),
-  myPosts: (tid: string) => tenantApi<{ baseDomain: string; posts: MyPost[] }>(tid, "/boards/mine"),
+  myPosts: (tid: string) => tenantApi<{ baseDomain: string; httpsServices: boolean; posts: MyPost[] }>(tid, "/boards/mine"),
   pending: (tid: string) => tenantApi<{ posts: PendingPost[] }>(tid, "/boards/pending"),
   create: (tid: string, post: NewPost) => tenantApi<MyPost>(tid, "/boards/posts", json("POST", post)),
   remove: (tid: string, postId: string) => tenantApi(tid, `/boards/posts/${postId}`, json("DELETE")),

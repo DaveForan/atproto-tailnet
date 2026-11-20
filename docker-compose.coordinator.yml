@@ -29,6 +29,10 @@ services:
       # Built-in DERP relay + STUN (ADR-0027). Empty = no relay region.
       # The relay key is kept next to the control key (coord_data volume).
       COORD_DERP_HOSTNAME: ${DERP_DOMAIN:-}
+      # Gateway (ADR-0029): HTTPS for named services, with the wildcard
+      # certificate that the gateway-certs service copies from Caddy
+      COORD_GATEWAY_CERT: /certs/tls.crt
+      COORD_GATEWAY_KEY: /certs/tls.key
       # Devices without an auth key are sent here to sign in (ADR-0032)
       COORD_DEVICE_AUTH_URL: ${PUBLIC_URL:-http://127.0.0.1:3000}/device
       COORD_ADMIN_KEY: ${COORDINATOR_API_KEY:?COORDINATOR_API_KEY must be set}
@@ -36,6 +40,7 @@ services:
       RUST_LOG: "info"
     volumes:
       - coord_data:/var/lib/coordinator
+      - gateway_certs:/certs:ro
     expose:
       - "9443"
     ports:
@@ -50,6 +55,27 @@ services:
       timeout: 3s
       retries: 5
       start_period: 10s
+
+  # ---------- Certificate for the gateway ---------------------------------
+  # Caddy obtains the wildcard certificate of BASE_DOMAIN (DNS-01 strategies
+  # only). Its files are readable by root only, so this small service copies
+  # them to a volume that the coordinator can read. It uses the coordinator
+  # image, so the owner of the copies is the coordinator's user. The
+  # coordinator loads the certificate again every few hours.
+  gateway-certs:
+    build:
+      context: ./coordinator
+      dockerfile: Dockerfile
+    user: root
+    restart: unless-stopped
+    network_mode: none
+    environment:
+      BASE_DOMAIN: ${BASE_DOMAIN:-ts.localhost}
+    entrypoint: ["/bin/sh", "/usr/local/bin/copy-gateway-cert.sh"]
+    volumes:
+      - ./deploy/copy-gateway-cert.sh:/usr/local/bin/copy-gateway-cert.sh:ro
+      - caddy_data:/caddy:ro
+      - gateway_certs:/certs
 
   # ---------- TypeScript service ------------------------------------------
   app:
@@ -172,6 +198,7 @@ services:
 
 volumes:
   coord_data:
+  gateway_certs:
   pgdata:
   caddy_data:
   caddy_config:

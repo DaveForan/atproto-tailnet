@@ -1,6 +1,6 @@
 # ADR-0030: Named tailnet services
 
-**Status:** Proposed
+**Status:** In Progress
 **Date:** 2026-11-19
 **Priority:** P1
 **Depends On:** ADR-0026 (tailnet addresses), ADR-0028 (coordinator DNS), ADR-0029 (gateway node)
@@ -95,3 +95,45 @@ Open allow), the same as for routes.
 - A device outside the tailnet gets the same response as for an unknown name.
 - The application receives `X-Tailnet-User`. A client cannot forge it.
 - A name that is a live tailnet address or service is refused.
+
+## Implementation notes
+
+Built:
+
+- **Model.** A service post (ADR-0036) has a `web` flag. A web service needs a
+  name and TCP. The TS service sends it to the coordinator as a DNS record
+  with a port. No new table and no new API: names, visibility and the
+  30-day rules are those of service posts and tailnet addresses.
+- **Private path.** For a device that may see the service, the name resolves
+  to the gateway. The gateway ends TLS with the wildcard certificate of
+  `BASE_DOMAIN`, selects the service by the TLS server name, and proxies to
+  the device and port. A request for another name on the same connection gets
+  421.
+- **Identity.** `X-Tailnet-User` (sign-in name) and `X-Tailnet-Device`. Every
+  `x-tailnet-*` header of the caller is removed first. Also
+  `X-Forwarded-For`, `-Proto` and `-Host`.
+- **Access.** Who may open a service is who gets its DNS record: the devices
+  of the author, and for an approved public service the connected devices.
+  The gateway checks this for each request. A service that the caller may
+  not see answers exactly like a name that does not exist. In member mode the
+  coordinator opens two paths only: these devices to ports 80 and 443 of the
+  gateway, and the gateway to the published port of the device.
+- **Certificate.** Caddy obtains the wildcard certificate (DNS-01). The
+  `gateway-certs` service of the compose file copies it to a volume that the
+  coordinator reads, and the coordinator loads it again every 6 hours.
+- WebSocket and other upgraded connections work. Plain HTTP on port 80
+  redirects to HTTPS.
+- The dashboard offers "This is a web application" only when the coordinator
+  says in `/health` that it runs the gateway.
+
+Differences from the decision:
+
+- The publish flow is the service form of the Boards tab, not a separate
+  Services screen. There is no MCP tool yet.
+- No restriction of a service to roles. Visibility is by board and
+  connection, as for all service posts.
+- In a tailnet with an ACL policy (open mode with rules), no rule is added
+  for the gateway. The originator must allow it in the policy.
+- The hierarchy rule (a parent sees the services of children) is not built.
+
+Not yet done: the acceptance test with a real device and a browser.

@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 coord-core = { workspace = true }
+coord-gateway = { workspace = true }
 coord-noise = { workspace = true }
 coord-proto = { workspace = true }
 coord-api = { workspace = true }

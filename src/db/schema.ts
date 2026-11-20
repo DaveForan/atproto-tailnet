@@ -1005,6 +1005,11 @@ export const servicePosts = pgTable(
     nodeId: text("node_id").notNull(),
     proto: text("proto").notNull().$type<"tcp" | "udp">().default("tcp"),
     port: integer("port").notNull(),
+    /**
+     * A web application: the name is served as `https://<name>.<BASE_DOMAIN>`
+     * by the gateway, which passes requests to the port (ADR-0030).
+     */
+    web: boolean("web").notNull().default(false),
     status: text("status").notNull().$type<"pending" | "approved" | "rejected" | "removed">().default("pending"),
     rejectReason: text("reject_reason"),
     reviewedById: uuid("reviewed_by_id").references(() => users.id),

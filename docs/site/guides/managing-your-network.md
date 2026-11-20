@@ -19,6 +19,22 @@ When an operator designates you as a tailnet creator, you can create your tailne
 - If you are not a member of a tailnet, sign out and sign in again. The service then creates your tailnet.
 - Use the API (`POST /api/tenants/mine`) or the MCP tool `create_tailnet`.
 
+### Give a web application a secure address
+
+A web application on one of your devices can get an address such as `https://food-app.ts.example.com`. The address works inside the tailnet only, and it has a valid certificate.
+
+1. Open the **Boards** tab and add a service: select the device, type the port, and give it a name.
+2. Select **This is a web application: give it a secure web address**.
+3. On your private board, the address works on your own devices. On the public board, it works for members after the approval and after they select **Connect**.
+
+The application must listen on the tailnet address of the device (or on all addresses), not only on `localhost`.
+
+The application receives two headers that tell it who is calling: `X-Tailnet-User` (the sign-in name) and `X-Tailnet-Device` (the name of the device). A visitor cannot set these headers.
+
+A person who is not allowed to see the service gets the same answer as for a name that does not exist. From the public internet the address does not work.
+
+If you do not see the option, the instance does not run the gateway.
+
 ### Lock sign-in to your devices
 
 You can limit sign-in to devices that you trust. Open the **Account** tab.

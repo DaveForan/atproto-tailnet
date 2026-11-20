@@ -184,9 +184,10 @@ pub fn spawn_ephemeral_sweeper(state: Arc<CoordinatorState>) -> tokio::task::Joi
 /// Changes on every process start so the service can detect a restart and resync in-memory state.
 static BOOT_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
-async fn health() -> axum::Json<serde_json::Value> {
+async fn health(axum::extract::State(state): axum::extract::State<Arc<CoordinatorState>>) -> axum::Json<serde_json::Value> {
     let boot_id = BOOT_ID.get_or_init(|| uuid::Uuid::new_v4().to_string());
-    axum::Json(serde_json::json!({"status": "ok", "boot_id": boot_id}))
+    // `gateway`: this process serves named HTTPS services (ADR-0030)
+    axum::Json(serde_json::json!({"status": "ok", "boot_id": boot_id, "gateway": state.gateways().is_some()}))
 }
 
 #[doc(hidden)]

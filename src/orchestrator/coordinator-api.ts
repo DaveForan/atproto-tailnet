@@ -74,6 +74,9 @@ function isNotFound(err: unknown): boolean {
  * CoordinatorApiClient talks to the same coordinator process; the tenant
  * is identified by `tenantId` and scoped server-side.
  */
+/** Tag of the gateway node that the coordinator puts in a tailnet with HTTPS services. */
+export const GATEWAY_TAG = "tag:gateway";
+
 /** A member's machine lock as the coordinator reports it. */
 export interface OwnerLockView {
   locked: boolean;
@@ -274,7 +277,9 @@ export class CoordinatorApiClient {
       "GET",
       `/api/tenants/${this.tenantId}/nodes`,
     )) as { nodes: CoordinatorNode[] };
-    return data.nodes.map(toHeadscaleNode);
+    // The gateway (ADR-0029) is part of the instance, not a device of a
+    // member: it is not listed, counted or managed with the devices.
+    return data.nodes.filter((n) => !(n.tags ?? []).includes(GATEWAY_TAG)).map(toHeadscaleNode);
   }
 
   async getNode(nodeId: string): Promise<HeadscaleNode> {
@@ -342,13 +347,18 @@ export class CoordinatorApiClient {
    * per-process boot id (changes on every restart), or null when unhealthy.
    */
   async probeBootId(timeoutMs = 10_000): Promise<string | null> {
+    return (await this.probeHealth(timeoutMs))?.bootId ?? null;
+  }
+
+  /** The coordinator's health: its boot id, and whether it serves named HTTPS services. */
+  async probeHealth(timeoutMs = 10_000): Promise<{ bootId: string; gateway: boolean } | null> {
     try {
       const res = await fetch(`${this.baseUrl}/health`, {
         signal: AbortSignal.timeout(timeoutMs),
       });
       if (!res.ok) return null;
-      const body = (await res.json().catch(() => ({}))) as { boot_id?: unknown };
-      return typeof body.boot_id === "string" ? body.boot_id : "unknown";
+      const body = (await res.json().catch(() => ({}))) as { boot_id?: unknown; gateway?: unknown };
+      return { bootId: typeof body.boot_id === "string" ? body.boot_id : "unknown", gateway: body.gateway === true };
     } catch {
       return null;
     }

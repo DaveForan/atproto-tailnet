@@ -24,6 +24,7 @@ interface State {
   publicPosts: PublicPost[];
   myPosts: MyPost[];
   baseDomain: string;
+  httpsServices: boolean;
   pending: PendingPost[];
   mode: "open" | "member";
   canEditMode: boolean;
@@ -102,10 +103,16 @@ function PublicPostCard({ post, devices, onChanged }: { post: PublicPost; device
         by @{post.author.handle}
         {post.isAuthor && post.connectedDevices !== undefined && ` · ${post.connectedDevices} device(s) connected`}
       </p>
-      {post.address && (
+      {post.url ? (
         <p className="post-address">
-          Address: <span className="mono">{post.address}:{post.port}</span>
+          <a className="mono" href={post.url} target="_blank" rel="noreferrer">{post.url}</a>
         </p>
+      ) : (
+        post.address && (
+          <p className="post-address">
+            Address: <span className="mono">{post.address}:{post.port}</span>
+          </p>
+        )
       )}
       {!post.isAuthor &&
         (open ? (
@@ -133,9 +140,19 @@ function PublicPostCard({ post, devices, onChanged }: { post: PublicPost; device
   );
 }
 
-const EMPTY_POST: NewPost = { board: "private", title: "", description: "", nodeId: "", port: 0, proto: "tcp", name: "" };
+const EMPTY_POST: NewPost = { board: "private", title: "", description: "", nodeId: "", port: 0, proto: "tcp", name: "", web: false };
 
-function NewServiceForm({ devices, baseDomain, onCreated }: { devices: MyDevice[]; baseDomain: string; onCreated: () => void }) {
+function NewServiceForm({
+  devices,
+  baseDomain,
+  httpsServices,
+  onCreated,
+}: {
+  devices: MyDevice[];
+  baseDomain: string;
+  httpsServices: boolean;
+  onCreated: () => void;
+}) {
   const { currentTenant } = useApp();
   const { toast, toastError } = useToast();
   const [post, setPost] = useState<NewPost>({ ...EMPTY_POST, nodeId: devices[0]?.id ?? "" });
@@ -152,6 +169,7 @@ function NewServiceForm({ devices, baseDomain, onCreated }: { devices: MyDevice[
         title: post.title.trim(),
         description: post.description?.trim() || undefined,
         name: post.name?.trim().toLowerCase() || undefined,
+        web: Boolean(post.web && post.proto === "tcp" && post.name),
       });
       toast(created?.status === "pending" ? "Sent for approval" : "Service added");
       setPost({ ...EMPTY_POST, nodeId: devices[0]?.id ?? "" });
@@ -224,6 +242,28 @@ function NewServiceForm({ devices, baseDomain, onCreated }: { devices: MyDevice[
             : "Only this one port is offered. Other ports on the device stay private."}
         </p>
       </div>
+
+      {httpsServices && (
+        <>
+          <span />
+          <div>
+            <label className="check-row">
+              <input
+                type="checkbox"
+                checked={Boolean(post.web)}
+                disabled={post.proto !== "tcp" || !post.name}
+                onChange={(e) => set({ web: e.target.checked })}
+              />
+              <span>This is a web application: give it a secure web address</span>
+            </label>
+            <p className="help-text">
+              {post.web && post.name
+                ? <>It opens at <span className="mono">https://{post.name}.{baseDomain}</span> inside the tailnet, with a valid certificate. The application gets the name and the device of each visitor in the headers <span className="mono">X-Tailnet-User</span> and <span className="mono">X-Tailnet-Device</span>. It must listen on the tailnet address of the device, not only on localhost.</>
+                : "Needs a name and TCP. Without this, the name points at the device and you add the port yourself."}
+            </p>
+          </div>
+        </>
+      )}
 
       <div className="form-actions">
         <button type="submit" disabled={busy || !valid}>{busy ? "Adding..." : "Add service"}</button>
@@ -314,6 +354,7 @@ export function BoardsTab() {
         publicPosts: pub?.posts ?? [],
         myPosts: mine?.posts ?? [],
         baseDomain: mine?.baseDomain ?? "",
+        httpsServices: mine?.httpsServices ?? false,
         pending: pending?.posts ?? [],
         mode: mode?.mode ?? "open",
         canEditMode: mode?.canEdit ?? false,
@@ -433,7 +474,11 @@ export function BoardsTab() {
                   <span className="mono text-sm">{p.proto} {p.port}</span>
                 </div>
                 <p className="post-address">
-                  <span className="mono">{p.name}.{state.baseDomain}</span>
+                  {p.web ? (
+                    <a className="mono" href={`https://${p.name}.${state.baseDomain}`} target="_blank" rel="noreferrer">https://{p.name}.{state.baseDomain}</a>
+                  ) : (
+                    <span className="mono">{p.name}.{state.baseDomain}</span>
+                  )}
                   {p.device?.address && <span className="text-dim"> · {p.device.address}:{p.port} on {p.device.name}</span>}
                 </p>
                 <button type="button" className="btn-sm btn-ghost" onClick={() => { void act(() => boardsService.remove(tid, p.id), "Removed", "Could not remove"); }}>
@@ -484,7 +529,7 @@ export function BoardsTab() {
       </Card>
 
       <Card title="Add a service">
-        <NewServiceForm devices={state.devices} baseDomain={state.baseDomain} onCreated={() => { void load(); }} />
+        <NewServiceForm devices={state.devices} baseDomain={state.baseDomain} httpsServices={state.httpsServices} onCreated={() => { void load(); }} />
       </Card>
 
       {state.board.canEdit && (

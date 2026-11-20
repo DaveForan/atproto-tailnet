@@ -590,6 +590,7 @@ dependencies = [
  "coord-core",
  "coord-derp",
  "coord-federation",
+ "coord-gateway",
  "coord-noise",
  "coord-proto",
  "coord-store",
