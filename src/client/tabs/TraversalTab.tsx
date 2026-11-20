@@ -5,6 +5,8 @@ import { networkService } from "../services/network";
 import { useApp } from "../hooks/useAppState";
 import { useToast } from "../components/Toast";
 import { Card } from "../components/Card";
+import { Loading } from "../components/Loading";
+import { CodeBlock } from "../components/CodeBlock";
 import type { TraversalEvalResult } from "../lib/types";
 
 export function TraversalTab() {
@@ -26,7 +28,8 @@ export function TraversalTab() {
     if (policy !== null) setPolicyText(JSON.stringify(policy, null, 2));
   }, [policy]);
 
-  const savePolicy = async () => {
+  const savePolicy = async (e: React.FormEvent) => {
+    e.preventDefault();
     let parsed: unknown;
     try {
       parsed = JSON.parse(policyText);
@@ -61,55 +64,65 @@ export function TraversalTab() {
     }
   };
 
-  if (loading) return <div className="loading">Loading...</div>;
+  if (loading) return <Loading />;
 
   return (
     <div className="tab-content">
-      <Card title="Traversal Policy">
-        <div className="inline-form">
-          <textarea
-            className="code-textarea"
-            value={policyText}
-            onChange={(e) => setPolicyText(e.target.value)}
-            rows={16}
-            spellCheck={false}
-          />
-          <button
-            className="btn-primary"
-            onClick={savePolicy}
-            disabled={saveBusy}
-          >
-            {saveBusy ? "Saving..." : "Save Policy"}
+      <Card title="Traversal policy">
+        <form className="form-stack" onSubmit={savePolicy}>
+          <div className="field">
+            <label htmlFor="traversal-policy">Policy (JSON)</label>
+            <textarea
+              id="traversal-policy"
+              className="code-input"
+              value={policyText}
+              onChange={(e) => setPolicyText(e.target.value)}
+              rows={16}
+              spellCheck={false}
+            />
+          </div>
+          <button type="submit" disabled={saveBusy}>
+            {saveBusy ? "Saving…" : "Save policy"}
           </button>
-        </div>
+        </form>
       </Card>
 
-      <Card title="Test Traversal">
-        <form className="inline-form" onSubmit={evaluate}>
-          <input
-            type="text"
-            placeholder="Source (e.g. 100.64.0.1)"
-            value={source}
-            onChange={(e) => setSource(e.target.value)}
-            required
-          />
-          <input
-            type="text"
-            placeholder="Destination (e.g. 100.64.1.1)"
-            value={destination}
-            onChange={(e) => setDestination(e.target.value)}
-            required
-          />
-          <button type="submit" className="btn-primary" disabled={testBusy}>
-            {testBusy ? "Testing..." : "Test"}
+      <Card title="Test traversal">
+        <form className="form-stack" onSubmit={evaluate}>
+          <div className="field-row">
+            <div className="field">
+              <label htmlFor="traversal-source">Source</label>
+              <input
+                id="traversal-source"
+                type="text"
+                className="mono"
+                placeholder="e.g. 100.64.0.1"
+                spellCheck={false}
+                value={source}
+                onChange={(e) => setSource(e.target.value)}
+                required
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="traversal-destination">Destination</label>
+              <input
+                id="traversal-destination"
+                type="text"
+                className="mono"
+                placeholder="e.g. 100.64.1.1"
+                spellCheck={false}
+                value={destination}
+                onChange={(e) => setDestination(e.target.value)}
+                required
+              />
+            </div>
+          </div>
+          <button type="submit" className="btn-ghost" disabled={testBusy}>
+            {testBusy ? "Testing…" : "Test"}
           </button>
         </form>
 
-        {result && (
-          <pre className="code-block">
-            {JSON.stringify(result, null, 2)}
-          </pre>
-        )}
+        {result && <CodeBlock value={JSON.stringify(result, null, 2)} label="Test result" />}
       </Card>
     </div>
   );

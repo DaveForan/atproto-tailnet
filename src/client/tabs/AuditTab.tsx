@@ -4,6 +4,7 @@ import { useApp } from "../hooks/useAppState";
 import { useToast } from "../components/Toast";
 import { Card } from "../components/Card";
 import { EmptyState } from "../components/EmptyState";
+import { Loading } from "../components/Loading";
 import { auditActionLabels, relativeTime } from "../lib/utils";
 import type { AuditEntry } from "../lib/types";
 
@@ -65,11 +66,11 @@ export function AuditTab() {
     return parts.join(", ");
   };
 
-  if (loading) return <div className="loading">Loading...</div>;
+  if (loading) return <Loading />;
 
   return (
     <div className="tab-content">
-      <Card title="Audit Log">
+      <Card title="Audit log">
         {entries.length === 0 ? (
           <EmptyState>No audit log entries.</EmptyState>
         ) : (
@@ -101,9 +102,9 @@ export function AuditTab() {
               ))}
             </ul>
             {hasMore && (
-              <div className="load-more">
-                <button className="btn-primary" onClick={handleLoadMore} disabled={loadingMore}>
-                  {loadingMore ? "Loading..." : "Load more"}
+              <div className="form-footer mt-12">
+                <button type="button" className="btn-ghost" onClick={handleLoadMore} disabled={loadingMore}>
+                  {loadingMore ? "Loading…" : "Load more"}
                 </button>
               </div>
             )}

@@ -113,12 +113,12 @@ export function VerifyDevicePage() {
   return (
     <main className="access-main">
       <div className="access-page">
-        {view.kind === "checking" && <div className="tab-loading" role="status">Checking this device...</div>}
+        {view.kind === "checking" && <div className="loading" role="status">Checking this device…</div>}
 
         {view.kind === "no-session" && (
           <Card title="Sign in first">
             <p>There is no sign-in waiting for a device check.</p>
-            <a className="btn-sm" href="/">Go to sign-in</a>
+            <a className="btn mt-12" href="/">Go to sign-in</a>
           </Card>
         )}
 
@@ -133,17 +133,20 @@ export function VerifyDevicePage() {
             <Card title="Ask a trusted device to add this one">
               {deviceKeysSupported() ? (
                 <form className="form-stack" onSubmit={(e) => { e.preventDefault(); void requestTrust(); }}>
-                  <label htmlFor="new-device-name" className="text-sm">Name for this device</label>
-                  <input id="new-device-name" type="text" maxLength={60} value={name} onChange={(e) => setName(e.target.value)} required />
-                  <button type="submit" disabled={busy || !name.trim()}>{busy ? "Sending..." : "Ask for approval"}</button>
+                  <div className="field">
+                    <label htmlFor="new-device-name">Name for this device</label>
+                    <input id="new-device-name" type="text" maxLength={60} value={name} onChange={(e) => setName(e.target.value)} required />
+                  </div>
+                  <button type="submit" disabled={busy || !name.trim()}>{busy ? "Sending…" : "Ask for approval"}</button>
                 </form>
               ) : (
-                <p role="alert">This browser cannot hold a device key (private browsing may block it). Use a recovery code.</p>
+                <p className="notice" role="alert">This browser cannot hold a device key (private browsing may block it). Use a recovery code.</p>
               )}
             </Card>
             <Card title="Use a recovery code">
               <form className="form-stack" onSubmit={(e) => { e.preventDefault(); void useRecoveryCode(); }}>
-                <label htmlFor="recovery-code" className="text-sm">Recovery code</label>
+                <div className="field">
+                <label htmlFor="recovery-code">Recovery code</label>
                 <input
                   id="recovery-code"
                   type="text"
@@ -153,13 +156,15 @@ export function VerifyDevicePage() {
                   placeholder="XXXXX-XXXXX"
                   value={code}
                   onChange={(e) => setCode(e.target.value)}
+                  aria-describedby="recovery-code-help"
                   required
                 />
-                <button type="submit" disabled={busy || code.trim().length < 10}>Sign in with the code</button>
-                <p className="help-text">Each code works once. After it, you add this device as a trusted device.</p>
+                <p className="help-text" id="recovery-code-help">Each code works once. After it, you add this device as a trusted device.</p>
+                </div>
+                <button type="submit" className="btn-ghost" disabled={busy || code.trim().length < 10}>Sign in with the code</button>
               </form>
             </Card>
-            {error && <p role="alert">{error}</p>}
+            {error && <p className="form-error" role="alert">{error}</p>}
             {signOut}
           </>
         )}
@@ -176,7 +181,7 @@ export function VerifyDevicePage() {
         {view.kind === "ended" && (
           <Card title="This device was not added">
             <p role="alert">{view.message}</p>
-            <a className="btn-sm" href="/">Start again</a>
+            <a className="btn mt-12" href="/">Start again</a>
           </Card>
         )}
       </div>

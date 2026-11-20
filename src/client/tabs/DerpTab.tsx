@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState } from "react";
 import { networkService } from "../services/network";
 import { useApp } from "../hooks/useAppState";
 import { useToast } from "../components/Toast";
 import { useTenantMutation } from "../hooks/useMutation";
 import { Card } from "../components/Card";
 import { EmptyState } from "../components/EmptyState";
+import { Loading } from "../components/Loading";
+import { Badge } from "../components/Badge";
 import { Toggle } from "../components/Toggle";
 import type { DerpConfig, DerpNode, DerpRegion } from "../lib/types";
 
@@ -17,6 +19,7 @@ export function DerpTab() {
     embeddedDerpEnabled: false,
     usePublicDerp: true,
   });
+  const [loading, setLoading] = useState(true);
 
   const load = useCallback(async () => {
     if (!currentTenant) return;
@@ -25,6 +28,8 @@ export function DerpTab() {
       if (data) setConfig(data);
     } catch (e) {
       toastError(e instanceof Error ? e.message : "Failed to load DERP config");
+    } finally {
+      setLoading(false);
     }
   }, [currentTenant?.id]);
 
@@ -70,10 +75,12 @@ export function DerpTab() {
     );
   };
 
+  if (loading) return <Loading />;
+
   return (
     <div className="tab-content">
-      <Card title="DERP Relay Configuration">
-        <p className="help-text">
+      <Card title="DERP relays">
+        <p className="card-description">
           DERP (Designated Encrypted Relay for Packets) relays help devices
           communicate when direct connections are not possible.
         </p>
@@ -95,9 +102,9 @@ export function DerpTab() {
         </div>
       </Card>
 
-      <Card title="Custom DERP Regions" className="mt-12">
+      <Card title="Custom DERP regions">
         {config.regions.length === 0 ? (
-          <EmptyState>No custom DERP regions defined</EmptyState>
+          <EmptyState>No custom DERP regions defined.</EmptyState>
         ) : (
           config.regions.map((region, rIdx) => (
             <RegionCard
@@ -112,8 +119,11 @@ export function DerpTab() {
         <AddRegionForm onAdd={addRegion} />
       </Card>
 
-      <div className="mt-12">
-        <button className="btn-primary" onClick={save} disabled={busy}>Save DERP Configuration</button>
+      <div className="form-footer">
+        <button type="button" onClick={save} disabled={busy}>
+          {busy ? "Saving…" : "Save DERP configuration"}
+        </button>
+        <span className="text-dim text-sm">Changes to toggles, regions and nodes apply when you save.</span>
       </div>
     </div>
   );
@@ -135,8 +145,10 @@ function RegionCard({
   const [stunPort, setStunPort] = useState("");
   const [derpPort, setDerpPort] = useState("");
   const { toast } = useToast();
+  const id = useId();
 
-  const handleAddNode = () => {
+  const handleAddNode = (e: React.FormEvent) => {
+    e.preventDefault();
     if (!nodeName.trim() || !nodeHost.trim()) {
       toast("Node name and hostname are required");
       return;
@@ -152,71 +164,60 @@ function RegionCard({
   };
 
   return (
-    <div className="role-card">
-      <div className="role-card-header">
-        <div>
-          <strong>{region.regionName}</strong>
-          <span className="badge badge-role ml-8">{region.regionCode}</span>
-          <span className="text-dim text-sm ml-8">ID: {region.regionId}</span>
-        </div>
-        <button className="btn-sm btn-danger" onClick={onRemove}>
-          Remove
+    <section className="sub-card" aria-label={`Region ${region.regionName}`}>
+      <div className="sub-card-header">
+        <h4>
+          {region.regionName}
+          <Badge variant="role">{region.regionCode}</Badge>
+          <span className="text-dim text-sm">ID {region.regionId}</span>
+        </h4>
+        <button type="button" className="btn-sm btn-danger" onClick={onRemove} aria-label={`Remove region ${region.regionName}`}>
+          Remove region
         </button>
       </div>
-      {region.nodes.map((node, nIdx) => (
-        <div key={nIdx} className="approval-item text-sm">
-          <div>
-            <strong>{node.name}</strong>
-            <span className="text-dim mono ml-8">{node.hostname}</span>
-            {node.stunPort != null && (
-              <span className="text-dim text-xs ml-8">
-                STUN:{node.stunPort}
-              </span>
-            )}
-            {node.derpPort != null && (
-              <span className="text-dim text-xs ml-8">
-                DERP:{node.derpPort}
-              </span>
-            )}
+      {region.nodes.length === 0 ? (
+        <p className="help-text">This region has no nodes.</p>
+      ) : (
+        <ul className="item-list">
+          {region.nodes.map((node, nIdx) => (
+            <li key={nIdx} className="item-row">
+              <div className="item-info">
+                <span className="item-name">{node.name}</span>
+                <span className="item-meta">
+                  <span className="mono">{node.hostname}</span>
+                  {node.stunPort != null && <span>STUN {node.stunPort}</span>}
+                  {node.derpPort != null && <span>DERP {node.derpPort}</span>}
+                </span>
+              </div>
+              <button type="button" className="btn-sm btn-ghost" onClick={() => onRemoveNode(nIdx)} aria-label={`Remove node ${node.name}`}>
+                Remove
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <form className="form-stack mt-12" onSubmit={handleAddNode} aria-label={`Add a node to ${region.regionName}`}>
+        <div className="field-row">
+          <div className="field">
+            <label htmlFor={`${id}-name`}>Node name</label>
+            <input id={`${id}-name`} type="text" value={nodeName} onChange={(e) => setNodeName(e.target.value)} />
           </div>
-          <button className="btn-sm btn-danger" onClick={() => onRemoveNode(nIdx)}>
-            Del
-          </button>
+          <div className="field">
+            <label htmlFor={`${id}-host`}>Hostname</label>
+            <input id={`${id}-host`} type="text" className="mono" spellCheck={false} value={nodeHost} onChange={(e) => setNodeHost(e.target.value)} />
+          </div>
+          <div className="field">
+            <label htmlFor={`${id}-stun`}>STUN port (optional)</label>
+            <input id={`${id}-stun`} type="text" inputMode="numeric" value={stunPort} onChange={(e) => setStunPort(e.target.value)} />
+          </div>
+          <div className="field">
+            <label htmlFor={`${id}-derp`}>DERP port (optional)</label>
+            <input id={`${id}-derp`} type="text" inputMode="numeric" value={derpPort} onChange={(e) => setDerpPort(e.target.value)} />
+          </div>
         </div>
-      ))}
-      <div className="inline-form mt-8">
-        <input
-          type="text"
-          placeholder="Node name"
-          value={nodeName}
-          onChange={(e) => setNodeName(e.target.value)}
-          className="w-140"
-        />
-        <input
-          type="text"
-          placeholder="Hostname"
-          value={nodeHost}
-          onChange={(e) => setNodeHost(e.target.value)}
-        />
-        <input
-          type="text"
-          placeholder="STUN port"
-          value={stunPort}
-          onChange={(e) => setStunPort(e.target.value)}
-          className="w-100"
-        />
-        <input
-          type="text"
-          placeholder="DERP port"
-          value={derpPort}
-          onChange={(e) => setDerpPort(e.target.value)}
-          className="w-100"
-        />
-        <button className="btn-sm btn-primary" onClick={handleAddNode}>
-          Add Node
-        </button>
-      </div>
-    </div>
+        <button type="submit" className="btn-sm btn-ghost">Add node</button>
+      </form>
+    </section>
   );
 }
 
@@ -230,7 +231,8 @@ function AddRegionForm({ onAdd }: { onAdd: (region: DerpRegion) => void }) {
   const [derpPort, setDerpPort] = useState("");
   const { toast } = useToast();
 
-  const handleSubmit = () => {
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
     const id = parseInt(regionId);
     if (!id || id < 900 || id > 999) {
       toast("Region ID must be between 900 and 999");
@@ -263,25 +265,44 @@ function AddRegionForm({ onAdd }: { onAdd: (region: DerpRegion) => void }) {
   };
 
   return (
-    <div className="form-section">
-      <h4>Add Region</h4>
-      <div className="form-stack">
-        <div className="inline-form">
-          <input type="text" placeholder="Region ID (900-999)" value={regionId} onChange={(e) => setRegionId(e.target.value)} className="w-180" />
-          <input type="text" placeholder="Region code (e.g. mycolo)" value={regionCode} onChange={(e) => setRegionCode(e.target.value)} className="w-180" />
-          <input type="text" placeholder="Region name" value={regionName} onChange={(e) => setRegionName(e.target.value)} />
+    <form className="form-section form-stack" onSubmit={handleSubmit} aria-labelledby="add-region-heading">
+      <h4 id="add-region-heading">Add a region</h4>
+      <div className="field-row">
+        <div className="field">
+          <label htmlFor="region-id">Region ID (900–999)</label>
+          <input id="region-id" type="text" inputMode="numeric" value={regionId} onChange={(e) => setRegionId(e.target.value)} />
         </div>
-        <div className="help-text">Initial node (at least one required):</div>
-        <div className="inline-form">
-          <input type="text" placeholder="Node name" value={nodeName} onChange={(e) => setNodeName(e.target.value)} className="w-160" />
-          <input type="text" placeholder="Hostname" value={nodeHost} onChange={(e) => setNodeHost(e.target.value)} />
+        <div className="field">
+          <label htmlFor="region-code">Region code</label>
+          <input id="region-code" type="text" placeholder="e.g. mycolo" value={regionCode} onChange={(e) => setRegionCode(e.target.value)} />
         </div>
-        <div className="inline-form">
-          <input type="text" placeholder="STUN port (optional)" value={stunPort} onChange={(e) => setStunPort(e.target.value)} className="w-180" />
-          <input type="text" placeholder="DERP port (optional)" value={derpPort} onChange={(e) => setDerpPort(e.target.value)} className="w-180" />
-          <button className="btn-primary" onClick={handleSubmit}>Add Region</button>
+        <div className="field">
+          <label htmlFor="region-name">Region name</label>
+          <input id="region-name" type="text" value={regionName} onChange={(e) => setRegionName(e.target.value)} />
         </div>
       </div>
-    </div>
+      <fieldset className="field">
+        <legend>First node (a region needs at least one)</legend>
+        <div className="field-row">
+          <div className="field">
+            <label htmlFor="region-node-name">Node name</label>
+            <input id="region-node-name" type="text" value={nodeName} onChange={(e) => setNodeName(e.target.value)} />
+          </div>
+          <div className="field">
+            <label htmlFor="region-node-host">Hostname</label>
+            <input id="region-node-host" type="text" className="mono" spellCheck={false} value={nodeHost} onChange={(e) => setNodeHost(e.target.value)} />
+          </div>
+          <div className="field">
+            <label htmlFor="region-stun">STUN port (optional)</label>
+            <input id="region-stun" type="text" inputMode="numeric" value={stunPort} onChange={(e) => setStunPort(e.target.value)} />
+          </div>
+          <div className="field">
+            <label htmlFor="region-derp">DERP port (optional)</label>
+            <input id="region-derp" type="text" inputMode="numeric" value={derpPort} onChange={(e) => setDerpPort(e.target.value)} />
+          </div>
+        </div>
+      </fieldset>
+      <button type="submit" className="btn-ghost">Add region</button>
+    </form>
   );
 }

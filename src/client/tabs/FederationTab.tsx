@@ -6,6 +6,9 @@ import { useTenantMutation } from "../hooks/useMutation";
 import { Card } from "../components/Card";
 import { Badge, StatusBadge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
+import { Loading } from "../components/Loading";
+import { CodeBlock } from "../components/CodeBlock";
+import { useConfirm } from "../components/ConfirmDialog";
 import { relativeTime } from "../lib/utils";
 import type {
   FederationLink,
@@ -22,6 +25,8 @@ export function FederationTab() {
   const { currentTenant, hasPerm } = useApp();
   const { toastError } = useToast();
   const { mutate, busy } = useTenantMutation();
+  const confirm = useConfirm();
+  const canManage = hasPerm("manage_settings");
 
   const [links, setLinks] = useState<FederationLink[]>([]);
   const [posture, setPosture] = useState("selective");
@@ -157,14 +162,15 @@ export function FederationTab() {
   };
 
   const revokeLink = async (id: string) => {
-    if (!confirm("Revoke this federation link? This cannot be undone.")) return;
+    if (!(await confirm({ title: "Revoke this federation link?", message: "This cannot be undone.", confirmLabel: "Revoke link", danger: true }))) return;
     await mutate(`/federation/${id}/revoke`, { method: "POST" }, {
       successMsg: "Federation link revoked",
       reload: loadLinks,
     });
   };
 
-  const savePosture = async () => {
+  const savePosture = async (e: React.FormEvent) => {
+    e.preventDefault();
     await mutate("/federation/posture", {
       method: "PUT",
       body: JSON.stringify({ posture }),
@@ -181,7 +187,8 @@ export function FederationTab() {
     setPolicies((prev) => ({ ...prev, [sc]: { ...DEFAULT_POLICY, ...prev[sc], ...patch } }));
   };
 
-  const saveScope = async () => {
+  const saveScope = async (e: React.FormEvent) => {
+    e.preventDefault();
     if (scopes.length === 0) {
       toastError("Select at least one scope");
       return;
@@ -209,163 +216,177 @@ export function FederationTab() {
   };
 
   const rotateDid = async () => {
-    if (!confirm("Rotate DID? This invalidates all federation sessions and credentials signed under the current DID.")) return;
+    if (!(await confirm({
+      title: "Rotate the collective DID?",
+      message: "This invalidates all federation sessions and credentials signed under the current DID.",
+      confirmLabel: "Rotate DID",
+      danger: true,
+    }))) return;
     await mutate("/federation/did/rotate", { method: "POST" }, {
       successMsg: "Collective DID rotated",
       reload: loadDid,
     });
   };
 
-  if (loading) return <div className="loading">Loading...</div>;
+  if (loading) return <Loading />;
+
+  const peer = (link: FederationLink) => link.peerName || link.peerDid;
+  const cidrs = (label: string, list?: string[] | null) =>
+    list && list.length > 0 ? (
+      <span className="item-detail">
+        {label}: <span className="mono">{list.join(", ")}</span>
+      </span>
+    ) : null;
 
   return (
     <div className="tab-content">
       {/* Request federation */}
-      <Card title="Request Federation">
-        <form className="inline-form" onSubmit={requestFederation}>
-          <input
-            type="text"
-            placeholder="Target collective slug"
-            value={targetSlug}
-            onChange={(e) => setTargetSlug(e.target.value)}
-            required
-          />
-          <textarea
-            placeholder="Message (optional)"
-            value={requestMessage}
-            onChange={(e) => setRequestMessage(e.target.value)}
-            rows={2}
-          />
-          <textarea
-            placeholder="CIDRs to share (one per line)"
-            value={requestCidrs}
-            onChange={(e) => setRequestCidrs(e.target.value)}
-            rows={3}
-          />
-          <button type="submit" className="btn-primary" disabled={busy || !hasPerm("manage_settings")}>
-            Send Request
+      <Card title="Request federation">
+        <form className="form-stack" onSubmit={requestFederation}>
+          <div className="field">
+            <label htmlFor="fed-target">Target collective slug</label>
+            <input
+              id="fed-target"
+              type="text"
+              className="mono"
+              autoCapitalize="none"
+              spellCheck={false}
+              value={targetSlug}
+              onChange={(e) => setTargetSlug(e.target.value)}
+              required
+            />
+          </div>
+          <div className="field-row">
+            <div className="field">
+              <label htmlFor="fed-message">Message (optional)</label>
+              <textarea
+                id="fed-message"
+                value={requestMessage}
+                onChange={(e) => setRequestMessage(e.target.value)}
+                rows={3}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="fed-cidrs">CIDRs to share (one per line)</label>
+              <textarea
+                id="fed-cidrs"
+                className="mono"
+                spellCheck={false}
+                value={requestCidrs}
+                onChange={(e) => setRequestCidrs(e.target.value)}
+                rows={3}
+              />
+            </div>
+          </div>
+          <button type="submit" disabled={busy || !canManage}>
+            Send request
           </button>
         </form>
       </Card>
 
+      {/* Incoming pending */}
+      <Card title="Incoming requests">
+        {incomingPending.length > 0 ? (
+          <ul className="post-list">
+            {incomingPending.map((link) => (
+              <li key={link.id} className="post-card">
+                <div className="post-head">
+                  <h4>{peer(link)}</h4>
+                  <span className="text-dim text-sm">{relativeTime(link.createdAt)}</span>
+                  <StatusBadge status={link.status} />
+                </div>
+                {cidrs("Their CIDRs", link.peerCidrs)}
+                {link.message && <p className="post-desc">{link.message}</p>}
+                <form
+                  className="form-stack"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void acceptLink(link.id);
+                  }}
+                >
+                  <div className="field">
+                    <label htmlFor={`fed-accept-${link.id}`}>Your CIDRs to share (one per line)</label>
+                    <textarea
+                      id={`fed-accept-${link.id}`}
+                      className="mono"
+                      spellCheck={false}
+                      value={acceptCidrs[link.id] ?? ""}
+                      onChange={(e) =>
+                        setAcceptCidrs((prev) => ({
+                          ...prev,
+                          [link.id]: e.target.value,
+                        }))
+                      }
+                      rows={2}
+                    />
+                  </div>
+                  <div className="btn-group">
+                    <button type="submit" className="btn-sm" disabled={busy || !canManage}>
+                      Accept
+                    </button>
+                    <button
+                      type="button"
+                      className="btn-sm btn-danger btn-apart"
+                      onClick={() => rejectLink(link.id)}
+                      disabled={busy || !canManage}
+                    >
+                      Reject
+                    </button>
+                  </div>
+                </form>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <EmptyState>No incoming requests.</EmptyState>
+        )}
+      </Card>
+
       {/* Outgoing pending */}
-      <Card title="Outgoing Pending">
+      <Card title="Outgoing requests">
         {outgoingPending.length > 0 ? (
           <ul className="item-list">
             {outgoingPending.map((link) => (
               <li key={link.id} className="item-row">
                 <div className="item-info">
-                  <span className="item-name">
-                    {link.peerName || link.peerDid}
+                  <span className="item-header">
+                    <span className="item-name">{peer(link)}</span>
+                    <StatusBadge status={link.status} />
                   </span>
-                  <StatusBadge status={link.status} />
-                  {link.localCidrs && link.localCidrs.length > 0 && (
-                    <span className="item-detail">
-                      Local CIDRs: {link.localCidrs.join(", ")}
-                    </span>
-                  )}
-                  <span className="item-meta">
-                    {relativeTime(link.createdAt)}
-                  </span>
+                  {cidrs("Local CIDRs", link.localCidrs)}
+                  <span className="item-detail">{relativeTime(link.createdAt)}</span>
                 </div>
               </li>
             ))}
           </ul>
         ) : (
-          <EmptyState>No outgoing pending requests.</EmptyState>
-        )}
-      </Card>
-
-      {/* Incoming pending */}
-      <Card title="Incoming Pending">
-        {incomingPending.length > 0 ? (
-          <ul className="item-list">
-            {incomingPending.map((link) => (
-              <li key={link.id} className="item-row">
-                <div className="item-info">
-                  <span className="item-name">
-                    {link.peerName || link.peerDid}
-                  </span>
-                  {link.peerCidrs && link.peerCidrs.length > 0 && (
-                    <span className="item-detail">
-                      Their CIDRs: {link.peerCidrs.join(", ")}
-                    </span>
-                  )}
-                  {link.message && (
-                    <span className="item-detail">
-                      Message: {link.message}
-                    </span>
-                  )}
-                  <span className="item-meta">
-                    {relativeTime(link.createdAt)}
-                  </span>
-                  <textarea
-                    placeholder="Your CIDRs to share (one per line)"
-                    value={acceptCidrs[link.id] ?? ""}
-                    onChange={(e) =>
-                      setAcceptCidrs((prev) => ({
-                        ...prev,
-                        [link.id]: e.target.value,
-                      }))
-                    }
-                    rows={2}
-                  />
-                </div>
-                <div className="item-actions">
-                  <button
-                    className="btn-sm btn-primary"
-                    onClick={() => acceptLink(link.id)}
-                    disabled={busy || !hasPerm("manage_settings")}
-                  >
-                    Accept
-                  </button>
-                  <button
-                    className="btn-sm btn-danger"
-                    onClick={() => rejectLink(link.id)}
-                    disabled={busy || !hasPerm("manage_settings")}
-                  >
-                    Reject
-                  </button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <EmptyState>No incoming pending requests.</EmptyState>
+          <EmptyState>No outgoing requests.</EmptyState>
         )}
       </Card>
 
       {/* Active links */}
-      <Card title="Active Links">
+      <Card title="Active links">
         {active.length > 0 ? (
           <ul className="item-list">
             {active.map((link) => (
               <li key={link.id} className="item-row">
                 <div className="item-info">
-                  <span className="item-name">
-                    {link.peerName || link.peerDid}
+                  <span className="item-header">
+                    <span className="item-name">{peer(link)}</span>
+                    <Badge variant="role">{link.direction}</Badge>
                   </span>
-                  <Badge variant="role">{link.direction}</Badge>
-                  {link.localCidrs && link.localCidrs.length > 0 && (
-                    <span className="item-detail">
-                      Local CIDRs: {link.localCidrs.join(", ")}
-                    </span>
-                  )}
-                  {link.peerCidrs && link.peerCidrs.length > 0 && (
-                    <span className="item-detail">
-                      Peer CIDRs: {link.peerCidrs.join(", ")}
-                    </span>
-                  )}
+                  {cidrs("Local CIDRs", link.localCidrs)}
+                  {cidrs("Peer CIDRs", link.peerCidrs)}
                 </div>
-                <div className="item-actions">
-                  <button
-                    className="btn-sm btn-danger"
-                    onClick={() => revokeLink(link.id)}
-                    disabled={busy || !hasPerm("manage_settings")}
-                  >
-                    Revoke
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  className="btn-sm btn-danger"
+                  aria-label={`Revoke link with ${peer(link)}`}
+                  onClick={() => revokeLink(link.id)}
+                  disabled={busy || !canManage}
+                >
+                  Revoke
+                </button>
               </li>
             ))}
           </ul>
@@ -381,14 +402,12 @@ export function FederationTab() {
             {history.map((link) => (
               <li key={link.id} className="item-row">
                 <div className="item-info">
-                  <span className="item-name">
-                    {link.peerName || link.peerDid}
+                  <span className="item-header">
+                    <span className="item-name">{peer(link)}</span>
+                    <StatusBadge status={link.status} />
+                    <Badge variant="role">{link.direction}</Badge>
                   </span>
-                  <StatusBadge status={link.status} />
-                  <Badge variant="role">{link.direction}</Badge>
-                  <span className="item-meta">
-                    {relativeTime(link.updatedAt)}
-                  </span>
+                  <span className="item-detail">{relativeTime(link.updatedAt)}</span>
                 </div>
               </li>
             ))}
@@ -399,111 +418,135 @@ export function FederationTab() {
       </Card>
 
       {/* Posture */}
-      <Card title="Federation Posture">
-        <div className="inline-form">
-          <select
-            value={posture}
-            onChange={(e) => setPosture(e.target.value)}
-          >
-            <option value="open">Open</option>
-            <option value="selective">Selective</option>
-            <option value="closed">Closed</option>
-          </select>
-          <button className="btn-primary" onClick={savePosture} disabled={busy || !hasPerm("manage_settings")}>
-            Save Posture
-          </button>
-        </div>
+      <Card title="Federation posture">
+        <form className="field" onSubmit={savePosture}>
+          <label htmlFor="fed-posture">Who may federate with this tailnet</label>
+          <div className="inline-form">
+            <select
+              id="fed-posture"
+              value={posture}
+              onChange={(e) => setPosture(e.target.value)}
+            >
+              <option value="open">Open</option>
+              <option value="selective">Selective</option>
+              <option value="closed">Closed</option>
+            </select>
+            <button type="submit" disabled={busy || !canManage}>
+              Save posture
+            </button>
+          </div>
+        </form>
       </Card>
 
       {/* Scoping */}
-      <Card title="Federation Scope">
-        <div className="inline-form">
-          <label className="form-label">Scopes</label>
-          {ALL_SCOPES.map((sc) => {
-            const enabled = scopes.includes(sc);
-            const policy = policies[sc] ?? DEFAULT_POLICY;
-            return (
-              <div key={sc} className="form-row">
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={enabled}
-                    onChange={(e) => toggleScope(sc, e.target.checked)}
-                  />{" "}
-                  {sc}
-                </label>
-                {enabled && (
-                  <>
-                    <label>
-                      <input
-                        type="checkbox"
-                        checked={policy.autoAccept}
-                        onChange={(e) => setPolicy(sc, { autoAccept: e.target.checked })}
-                      />{" "}
-                      Auto-accept
-                    </label>
-                    <select
-                      value={policy.verification}
-                      onChange={(e) =>
-                        setPolicy(sc, { verification: e.target.value as ScopePolicyConfig["verification"] })
-                      }
-                    >
-                      <option value="standard">Standard verification</option>
-                      <option value="strict">Strict verification</option>
-                    </select>
-                  </>
-                )}
-              </div>
-            );
-          })}
-          <label className="form-label">Region (UN M49 3-digit code, optional)</label>
-          <input
-            type="text"
-            value={region}
-            onChange={(e) => setRegion(e.target.value)}
-            pattern="\d{3}"
-            maxLength={3}
-            placeholder="e.g. 021"
-          />
-          <label className="form-label">Coordinates (optional)</label>
-          <div className="form-row">
-            <input
-              type="number"
-              step="any"
-              min={-90}
-              max={90}
-              value={lat}
-              onChange={(e) => setLat(e.target.value)}
-              placeholder="Latitude"
-            />
-            <input
-              type="number"
-              step="any"
-              min={-180}
-              max={180}
-              value={lon}
-              onChange={(e) => setLon(e.target.value)}
-              placeholder="Longitude"
-            />
+      <Card title="Federation scope">
+        <form className="form-stack" onSubmit={saveScope} noValidate>
+          <fieldset className="check-list">
+            <legend>Scopes</legend>
+            {ALL_SCOPES.map((sc) => {
+              const enabled = scopes.includes(sc);
+              const policy = policies[sc] ?? DEFAULT_POLICY;
+              return (
+                <div key={sc} className="scope-row">
+                  <label className="check-inline">
+                    <input
+                      type="checkbox"
+                      checked={enabled}
+                      onChange={(e) => toggleScope(sc, e.target.checked)}
+                    />
+                    {sc}
+                  </label>
+                  {enabled && (
+                    <>
+                      <label className="check-inline">
+                        <input
+                          type="checkbox"
+                          checked={policy.autoAccept}
+                          onChange={(e) => setPolicy(sc, { autoAccept: e.target.checked })}
+                        />
+                        Auto-accept
+                      </label>
+                      <select
+                        className="select-compact"
+                        aria-label={`Verification for the ${sc} scope`}
+                        value={policy.verification}
+                        onChange={(e) =>
+                          setPolicy(sc, { verification: e.target.value as ScopePolicyConfig["verification"] })
+                        }
+                      >
+                        <option value="standard">Standard verification</option>
+                        <option value="strict">Strict verification</option>
+                      </select>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </fieldset>
+          <div className="field-row">
+            <div className="field">
+              <label htmlFor="fed-region">Region (UN M49 3-digit code, optional)</label>
+              <input
+                id="fed-region"
+                type="text"
+                inputMode="numeric"
+                value={region}
+                onChange={(e) => setRegion(e.target.value)}
+                pattern="\d{3}"
+                maxLength={3}
+                placeholder="e.g. 021"
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="fed-lat">Latitude (optional)</label>
+              <input
+                id="fed-lat"
+                type="number"
+                step="any"
+                min={-90}
+                max={90}
+                value={lat}
+                onChange={(e) => setLat(e.target.value)}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="fed-lon">Longitude (optional)</label>
+              <input
+                id="fed-lon"
+                type="number"
+                step="any"
+                min={-180}
+                max={180}
+                value={lon}
+                onChange={(e) => setLon(e.target.value)}
+              />
+            </div>
           </div>
-          <button className="btn-primary" onClick={saveScope} disabled={busy || !hasPerm("manage_settings")}>
-            Save Scope
+          <button type="submit" disabled={busy || !canManage}>
+            Save scope
           </button>
-        </div>
+        </form>
       </Card>
 
       {/* Collective DID */}
-      <Card title="Collective Identity">
-        <div className="inline-form">
-          <code className="code-block">{did || "No DID assigned"}</code>
-          <button className="btn-sm btn-danger" onClick={rotateDid} disabled={busy || !hasPerm("manage_settings")}>
+      <Card title="Collective identity">
+        {did ? (
+          <CodeBlock value={did} label="Collective DID" />
+        ) : (
+          <EmptyState>No DID assigned.</EmptyState>
+        )}
+        <div className="form-section">
+          <p className="help-text">
+            Rotating the DID invalidates all federation sessions and credentials signed under the current one.
+          </p>
+          <button type="button" className="btn-sm btn-danger" onClick={rotateDid} disabled={busy || !canManage}>
             Rotate DID
           </button>
         </div>
       </Card>
 
       {/* Broker status */}
-      <Card title="Broker Status">
+      <Card title="Broker status">
         {broker ? (
           <div className="stats-row">
             <div className="stat-card">
@@ -512,11 +555,11 @@ export function FederationTab() {
             </div>
             <div className="stat-card">
               <div className="stat-value">{broker.importedRoutes}</div>
-              <div className="stat-label">Imported Routes</div>
+              <div className="stat-label">Imported routes</div>
             </div>
             <div className="stat-card">
               <div className="stat-value">{broker.exportedRoutes}</div>
-              <div className="stat-label">Exported Routes</div>
+              <div className="stat-label">Exported routes</div>
             </div>
           </div>
         ) : (

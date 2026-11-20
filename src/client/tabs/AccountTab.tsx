@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useToast } from "../components/Toast";
+import { useConfirm } from "../components/ConfirmDialog";
 import { Card } from "../components/Card";
 import { Badge } from "../components/Badge";
 import { errorMessage, errorCode } from "../lib/utils";
@@ -50,13 +51,13 @@ function RecoveryCodes({ codes, onDone }: { codes: string[]; onDone: () => void 
         ))}
       </ul>
       <div className="btn-group">
-        <button
+        <button type="button"
           className="btn-sm btn-ghost"
           onClick={() => { void navigator.clipboard?.writeText(codes.join("\n")); }}
         >
           Copy all
         </button>
-        <button className="btn-sm" onClick={onDone}>I saved them</button>
+        <button type="button" className="btn-sm" onClick={onDone}>I saved them</button>
       </div>
     </div>
   );
@@ -65,6 +66,7 @@ function RecoveryCodes({ codes, onDone }: { codes: string[]; onDone: () => void 
 /** Trusted devices: the lock that limits sign-in to chosen devices (ADR-0035). */
 function TrustedDevices({ onChanged }: { onChanged?: () => void }) {
   const { toast, toastError } = useToast();
+  const confirm = useConfirm();
   const [state, setState] = useState<TrustState | null>(null);
   const [name, setName] = useState(suggestedDeviceName());
   const [codes, setCodes] = useState<string[] | null>(null);
@@ -101,7 +103,7 @@ function TrustedDevices({ onChanged }: { onChanged?: () => void }) {
     }
   };
 
-  if (!state) return <div className="tab-loading">Loading...</div>;
+  if (!state) return <div className="loading" role="status">Loading…</div>;
   if (codes) {
     return (
       <RecoveryCodes
@@ -171,14 +173,14 @@ function TrustedDevices({ onChanged }: { onChanged?: () => void }) {
                     value={pairing[r.id] ?? ""}
                     onChange={(e) => setPairing((p) => ({ ...p, [r.id]: e.target.value.toUpperCase() }))}
                   />
-                  <button
+                  <button type="button"
                     className="btn-sm"
                     disabled={busy || (pairing[r.id] ?? "").length !== 6 || full}
                     onClick={() => { void guarded(() => deviceTrustService.approve(r.id, pairing[r.id]), "Device added"); }}
                   >
                     Approve
                   </button>
-                  <button className="btn-sm btn-ghost" disabled={busy} onClick={() => { void guarded(() => deviceTrustService.deny(r.id), "Refused"); }}>
+                  <button type="button" className="btn-sm btn-ghost" disabled={busy} onClick={() => { void guarded(() => deviceTrustService.deny(r.id), "Refused"); }}>
                     Refuse
                   </button>
                 </div>
@@ -207,7 +209,7 @@ function TrustedDevices({ onChanged }: { onChanged?: () => void }) {
                     <strong>This device signed in from a browser that looks different.</strong> Changed: {d.warning}
                     {d.warningAt ? ` (${new Date(d.warningAt).toLocaleString()})` : ""}. If this was not you, remove the
                     device: its key may have been copied.{" "}
-                    <button
+                    <button type="button"
                       className="btn-sm btn-ghost"
                       disabled={busy}
                       onClick={() => { void guarded(() => deviceTrustService.dismissWarning(d.id), "Warning cleared"); }}
@@ -217,15 +219,17 @@ function TrustedDevices({ onChanged }: { onChanged?: () => void }) {
                   </span>
                 )}
               </span>
-              <button
+              <button type="button"
                 className="btn-sm btn-ghost"
                 disabled={busy}
-                onClick={() => {
+                onClick={async () => {
                   const last = state.devices.length === 1;
-                  const msg = last
-                    ? "Remove the last trusted device? The lock turns off and any device can sign in again."
-                    : `Remove "${d.name}"? It is signed out and can no longer sign in.`;
-                  if (!window.confirm(msg)) return;
+                  const ok = await confirm(
+                    last
+                      ? { title: "Remove the last trusted device?", message: "The lock turns off and any device can sign in again.", confirmLabel: "Remove device", danger: true }
+                      : { title: `Remove "${d.name}"?`, message: "It is signed out and can no longer sign in.", confirmLabel: "Remove device", danger: true },
+                  );
+                  if (!ok) return;
                   void guarded(async () => {
                     await deviceTrustService.remove(d.id);
                     if (d.id === state.currentDeviceId) await forgetDeviceKey();
@@ -266,11 +270,11 @@ function TrustedDevices({ onChanged }: { onChanged?: () => void }) {
             </select>
           </div>
           <div className="btn-group">
-            <button
+            <button type="button"
               className="btn-sm btn-ghost"
               disabled={busy}
-              onClick={() => {
-                if (!window.confirm("Make new recovery codes? The old codes stop working.")) return;
+              onClick={async () => {
+                if (!(await confirm({ title: "Make new recovery codes?", message: "The old codes stop working.", confirmLabel: "Make new codes" }))) return;
                 void guarded(async () => {
                   const r = await deviceTrustService.newRecoveryCodes();
                   if (r) setCodes(r.recoveryCodes);
@@ -281,7 +285,7 @@ function TrustedDevices({ onChanged }: { onChanged?: () => void }) {
             </button>
           </div>
           <div className="btn-group">
-            <button className="btn-sm btn-ghost" disabled={busy} onClick={() => { void guarded(() => deviceTrustService.stepUp(), "Confirmed for 5 minutes"); }}>
+            <button type="button" className="btn-sm btn-ghost" disabled={busy} onClick={() => { void guarded(() => deviceTrustService.stepUp(), "Confirmed for 5 minutes"); }}>
               Confirm this device
             </button>
           </div>

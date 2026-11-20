@@ -3,6 +3,7 @@ import { errorMessage } from "./lib/utils";
 import { createRoot } from "react-dom/client";
 import { api, fetchCsrfToken } from "./services/api";
 import { ToastProvider, useToast } from "./components/Toast";
+import { Badge } from "./components/Badge";
 import { applyTheme } from "./lib/theme";
 
 applyTheme();
@@ -104,7 +105,8 @@ function JoinApp() {
 
   useEffect(() => { init(); }, [init]);
 
-  const submitRequest = async (tenantId: string) => {
+  const submitRequest = async (e: React.FormEvent, tenantId: string) => {
+    e.preventDefault();
     if (submitting) return;
     setSubmitting(true);
     try {
@@ -112,7 +114,7 @@ function JoinApp() {
         method: "POST",
         body: JSON.stringify({ message: message.trim() || undefined }),
       });
-      toast("Request submitted!");
+      toast("Request submitted");
       await init();
     } catch (e) {
       toastError(errorMessage(e, "Failed to submit request"));
@@ -121,16 +123,40 @@ function JoinApp() {
     }
   };
 
+  const home = <a href="/">Go to the dashboard</a>;
+
+  const requestForm = (tenantId: string, submitLabel: string) => (
+    <form className="form-stack" onSubmit={(e) => { void submitRequest(e, tenantId); }}>
+      <div className="field">
+        <label htmlFor="join-message">Message to the admins (optional)</label>
+        <textarea
+          id="join-message"
+          maxLength={500}
+          value={message}
+          onChange={(e) => setMessage(e.target.value)}
+          aria-describedby="join-message-help"
+        />
+        <p className="help-text" id="join-message-help">Up to 500 characters.</p>
+      </div>
+      <button type="submit" disabled={submitting}>
+        {submitting ? "Sending…" : submitLabel}
+      </button>
+    </form>
+  );
+
   return (
-    <div className="join-container">
+    <main className="join-container">
       <div className="card join-card">
-        {state.kind === "loading" && <p>Loading...</p>}
+        {state.kind === "loading" && <p className="text-dim" role="status">Loading…</p>}
 
         {state.kind === "error" && (
           <>
             <h1>Something went wrong</h1>
-            <p className="text-dim">{state.message}</p>
-            <a href="/">Go to dashboard</a>
+            <p className="form-error" role="alert">{state.message}</p>
+            <button type="button" className="btn-ghost" onClick={() => { setState({ kind: "loading" }); void init(); }}>
+              Try again
+            </button>
+            {home}
           </>
         )}
 
@@ -140,7 +166,7 @@ function JoinApp() {
             <p className="text-dim">
               This tailnet does not exist or is not accepting requests.
             </p>
-            <a href="/">Go to dashboard</a>
+            {home}
           </>
         )}
 
@@ -150,7 +176,7 @@ function JoinApp() {
             <p className="text-dim">
               This tailnet is not currently accepting join requests.
             </p>
-            <a href="/">Go to dashboard</a>
+            {home}
           </>
         )}
 
@@ -160,16 +186,23 @@ function JoinApp() {
             <p className="text-dim">
               Sign in with your Bluesky identity to request access.
             </p>
-            <form action="/auth/login" method="get" className="inline-form justify-center">
-              <input
-                type="text"
-                name="handle"
-                placeholder="yourname.bsky.social"
-                required
-                className="w-220"
-              />
-              <input type="hidden" name="redirect" value={`/join/${slug}`} />
-              <button type="submit">Sign in</button>
+            <form action="/auth/login" method="get" className="field">
+              <label htmlFor="join-handle">Bluesky handle</label>
+              <div className="inline-form">
+                <input
+                  id="join-handle"
+                  type="text"
+                  name="handle"
+                  placeholder="yourname.bsky.social"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  autoComplete="username"
+                  required
+                />
+                <input type="hidden" name="redirect" value={`/join/${slug}`} />
+                <button type="submit">Sign in</button>
+              </div>
             </form>
           </>
         )}
@@ -178,51 +211,37 @@ function JoinApp() {
           <>
             <h1>{state.name}</h1>
             <p className="text-dim">You are already a member of this tailnet.</p>
-            <a href="/">Go to dashboard</a>
+            {home}
           </>
         )}
 
         {state.kind === "pending" && (
           <>
             <h1>{state.name}</h1>
-            <p className="text-dim">Your request to join is pending review.</p>
-            <span className="badge badge-pending">Pending</span>
-            <p className="text-dim text-sm mt-16">
+            <Badge variant="pending">pending</Badge>
+            <p className="text-dim" role="status">Your request to join is waiting for review.</p>
+            <p className="text-dim text-sm">
               Submitted {new Date(state.requestedAt).toLocaleString()}
             </p>
-            <p className="mt-16"><a href="/">Go to dashboard</a></p>
+            {home}
           </>
         )}
 
         {state.kind === "approved" && (
           <>
             <h1>{state.name}</h1>
-            <p className="text-dim">Your request was approved! You are now a member.</p>
-            <span className="badge badge-running">Approved</span>
-            <p className="mt-16"><a href="/">Go to dashboard</a></p>
+            <Badge variant="running">approved</Badge>
+            <p className="text-dim" role="status">Your request was approved. You are now a member.</p>
+            {home}
           </>
         )}
 
         {state.kind === "rejected" && (
           <>
             <h1>{state.name}</h1>
-            <p className="text-dim">Your previous request was declined.</p>
-            <span className="badge badge-stopped">Rejected</span>
-            <div className="mt-16">
-              <textarea
-                placeholder="Add an optional message (max 500 chars)"
-                maxLength={500}
-                value={message}
-                onChange={(e) => setMessage(e.target.value)}
-              />
-              <button
-                onClick={() => submitRequest(state.tenantId)}
-                disabled={submitting}
-                className="mt-8"
-              >
-                Request Again
-              </button>
-            </div>
+            <Badge variant="stopped">declined</Badge>
+            <p className="text-dim">Your previous request was declined. You can ask again.</p>
+            {requestForm(state.tenantId, "Request again")}
           </>
         )}
 
@@ -232,25 +251,11 @@ function JoinApp() {
             <p className="text-dim">
               Request to join this tailnet. The owner will review your request.
             </p>
-            <div>
-              <textarea
-                placeholder="Add an optional message (max 500 chars)"
-                maxLength={500}
-                value={message}
-                onChange={(e) => setMessage(e.target.value)}
-              />
-              <button
-                onClick={() => submitRequest(state.tenantId)}
-                disabled={submitting}
-                className="mt-8"
-              >
-                Request to Join
-              </button>
-            </div>
+            {requestForm(state.tenantId, "Request to join")}
           </>
         )}
       </div>
-    </div>
+    </main>
   );
 }
 

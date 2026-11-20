@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { AppProvider } from "./hooks/useAppState";
 import { ToastProvider } from "./components/Toast";
+import { ConfirmProvider } from "./components/ConfirmDialog";
 import { App } from "./App";
 import { applyTheme } from "./lib/theme";
 
@@ -11,7 +12,9 @@ createRoot(document.getElementById("app")!).render(
   <StrictMode>
     <AppProvider>
       <ToastProvider>
-        <App />
+        <ConfirmProvider>
+          <App />
+        </ConfirmProvider>
       </ToastProvider>
     </AppProvider>
   </StrictMode>,

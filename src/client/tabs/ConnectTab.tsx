@@ -2,7 +2,8 @@ import { useState } from "react";
 import { useApp } from "../hooks/useAppState";
 import { useToast } from "../components/Toast";
 import { Card } from "../components/Card";
-import { copyToClipboard, errorCode, errorMessage } from "../lib/utils";
+import { CodeBlock } from "../components/CodeBlock";
+import { errorCode, errorMessage } from "../lib/utils";
 import { deviceService } from "../services/devices";
 
 const EXPIRY_OPTIONS = [1, 24, 24 * 7, 24 * 30];
@@ -28,8 +29,9 @@ export function ConnectTab() {
   const [reusable, setReusable] = useState(false);
   const [expiresInHours, setExpiresInHours] = useState(24);
 
-  const handleGenerate = async () => {
-    if (!currentTenant) return;
+  const handleGenerate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentTenant || generating) return;
     setGenerating(true);
     setLimitError(null);
     try {
@@ -59,80 +61,69 @@ export function ConnectTab() {
     }
   };
 
-  const handleCopy = () => {
-    if (!issued) return;
-    copyToClipboard(issued.command);
-    toast("Copied to clipboard");
-  };
-
   return (
     <div className="tab-content">
-      <Card title="Add a Device">
+      <Card title="Add a device">
         <p className="card-description">
           Generate an auth key to connect a new device to this tailnet. Run the
           command on the device you want to add.
         </p>
 
-        <div className="form-row">
-          <label htmlFor="key-expiry">Key expires after</label>
-          <select
-            id="key-expiry"
-            value={expiresInHours}
-            onChange={(e) => setExpiresInHours(Number(e.target.value))}
-          >
-            {expiryOptions.map((h) => (
-              <option key={h} value={h}>{expiryLabel(h)}</option>
-            ))}
-          </select>
-          {canManageDevices && (
-            <label>
-              <input
-                type="checkbox"
-                checked={reusable}
-                onChange={(e) => setReusable(e.target.checked)}
-              />{" "}
-              Reusable (connect several devices with one key)
-            </label>
-          )}
-        </div>
-
-        {limitError && (
-          <div className="lockdown-banner" role="alert">
-            <span>{limitError}</span>
-            <button className="btn-sm btn-ghost" onClick={() => setTab("usage")}>View limits</button>
-          </div>
-        )}
-
-        {pending && (
-          <p className="help-text" role="status">
-            Device approval is required on this tailnet. Your request was sent to the
-            admins; you will be able to connect once it is approved.
-          </p>
-        )}
-
-        {issued && (
-          <div className="auth-key-result">
-            <div className="code-block-wrapper">
-              <pre className="code-block">{issued.command}</pre>
-              <button className="btn-sm btn-ghost copy-btn" onClick={handleCopy}>
-                Copy
-              </button>
+        <form className="form-stack" onSubmit={handleGenerate}>
+          <div className="field-row">
+            <div className="field">
+              <label htmlFor="key-expiry">Key expires after</label>
+              <select
+                id="key-expiry"
+                value={expiresInHours}
+                onChange={(e) => setExpiresInHours(Number(e.target.value))}
+              >
+                {expiryOptions.map((h) => (
+                  <option key={h} value={h}>{expiryLabel(h)}</option>
+                ))}
+              </select>
             </div>
-            <p className="help-text">
-              Run this command on the device you want to connect.{" "}
-              {issued.reusable ? "The key can be used for several devices" : "The key can only be used once"}{" "}
-              and expires in {expiryLabel(issued.expiresInHours)}. You can revoke it from the Devices tab.
-            </p>
+            {canManageDevices && (
+              <label className="check-inline">
+                <input
+                  type="checkbox"
+                  checked={reusable}
+                  onChange={(e) => setReusable(e.target.checked)}
+                />
+                Reusable (connect several devices with one key)
+              </label>
+            )}
           </div>
-        )}
 
-        <button
-          className={issued ? "btn btn-ghost" : "btn btn-primary"}
-          onClick={handleGenerate}
-          disabled={generating}
-        >
-          {generating ? "Generating..." : issued ? "Generate New Key" : "Generate Auth Key"}
-        </button>
+          {limitError && (
+            <div className="lockdown-banner" role="alert">
+              <span>{limitError}</span>
+              <button type="button" className="btn-sm btn-ghost" onClick={() => setTab("usage")}>View limits</button>
+            </div>
+          )}
+
+          {pending && (
+            <p className="notice" role="status">
+              Device approval is required on this tailnet. Your request was sent to the
+              admins; you will be able to connect once it is approved.
+            </p>
+          )}
+
+          {issued && (
+            <div>
+              <CodeBlock value={issued.command} label="Connect command" />
+              <p className="help-text">
+                Run this command on the device you want to connect.{" "}
+                {issued.reusable ? "The key can be used for several devices" : "The key can only be used once"}{" "}
+                and expires in {expiryLabel(issued.expiresInHours)}. You can revoke it from the Devices tab.
+              </p>
+            </div>
+          )}
+
+          <button type="submit" className={issued ? "btn-ghost" : undefined} disabled={generating}>
+            {generating ? "Generating…" : issued ? "Generate new key" : "Generate auth key"}
+          </button>
+        </form>
       </Card>
     </div>
   );

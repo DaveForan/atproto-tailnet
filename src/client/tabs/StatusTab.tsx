@@ -1,6 +1,7 @@
 import { Card } from "../components/Card";
 import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
+import { Loading } from "../components/Loading";
 import { TailnetAddressCard } from "../components/TailnetAddress";
 import { useTenantParallel } from "../hooks/useTenantData";
 import type { DevicesData, HealthData } from "../lib/types";
@@ -23,7 +24,7 @@ export function StatusTab() {
   );
   const { devices, health } = data;
 
-  if (loading) return <div className="loading">Loading...</div>;
+  if (loading) return <Loading />;
 
   let totalDevices = 0;
   let onlineDevices = 0;
@@ -61,27 +62,24 @@ export function StatusTab() {
 
       <TailnetAddressCard />
 
-      <Card title="Devices by User">
+      <Card title="Devices by user">
         {devices && devices.byUser.length > 0 ? (
-          <div className="device-groups">
-            {devices.byUser.map((group) => (
-              <div key={group.hsUsername} className="device-group">
-                <div className="device-group-header">{group.hsUsername}</div>
-                <ul className="device-list">
-                  {group.devices.map((device) => (
-                    <li key={device.id} className="device-row">
-                      <span
-                        className={`online-dot ${device.online ? "online" : "offline"}`}
-                      />
-                      <span className="device-name">
-                        {device.givenName || device.name}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))}
-          </div>
+          devices.byUser.map((group) => (
+            <section key={group.hsUsername} className="item-group" aria-label={`Devices of ${group.hsUsername}`}>
+              <h4 className="group-heading">{group.hsUsername}</h4>
+              <ul className="item-list">
+                {group.devices.map((device) => (
+                  <li key={device.id} className="item-row">
+                    <div className="item-lead">
+                      <span className={`online-dot ${device.online ? "online" : "offline"}`} aria-hidden="true" />
+                      <span className="item-name">{device.givenName || device.name}</span>
+                    </div>
+                    <span className="text-dim text-sm">{device.online ? "Online" : "Offline"}</span>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ))
         ) : (
           <EmptyState>No devices connected yet.</EmptyState>
         )}

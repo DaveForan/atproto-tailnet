@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useApp } from "../hooks/useAppState";
 import { useToast } from "./Toast";
+import { useConfirm } from "./ConfirmDialog";
 import { Card } from "./Card";
 import { Badge } from "./Badge";
 import { hostnamesService } from "../services/hostnames";
@@ -102,6 +103,7 @@ export function AddressForm({
 export function TailnetAddressCard() {
   const { currentTenant, reload } = useApp();
   const { toast, toastError } = useToast();
+  const confirm = useConfirm();
   const [data, setData] = useState<HostnamesData | null>(null);
   const [editing, setEditing] = useState(false);
 
@@ -125,9 +127,12 @@ export function TailnetAddressCard() {
   const retired = data.hostnames.filter((h) => h.retiredAt);
 
   const retire = async (name: string) => {
-    const ok = window.confirm(
-      `Retire ${name}.${data.baseDomain}? Devices still using this address will lose their connection to the tailnet.`,
-    );
+    const ok = await confirm({
+      title: `Retire ${name}.${data.baseDomain}?`,
+      message: "Devices still using this address will lose their connection to the tailnet.",
+      confirmLabel: "Retire address",
+      danger: true,
+    });
     if (!ok) return;
     try {
       await hostnamesService.retire(currentTenant.id, name);
@@ -162,7 +167,7 @@ export function TailnetAddressCard() {
               <span className="mono">{h.name}.{data.baseDomain}</span>
               <Badge variant="pending">alias</Badge>
               {data.canManage && (
-                <button className="btn-sm btn-ghost" onClick={() => { void retire(h.name); }}>
+                <button type="button" className="btn-sm btn-ghost" onClick={() => { void retire(h.name); }}>
                   Retire
                 </button>
               )}
@@ -202,7 +207,7 @@ export function TailnetAddressCard() {
             }
           />
         ) : (
-          <button className="btn-sm" onClick={() => setEditing(true)}>Change address</button>
+          <button type="button" className="btn-sm" onClick={() => setEditing(true)}>Change address</button>
         ))}
     </Card>
   );

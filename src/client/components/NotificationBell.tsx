@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useApp } from "../hooks/useAppState";
 import { useToast } from "./Toast";
 import { tabRegistry } from "./registry";
@@ -27,30 +27,6 @@ function targetTab(n: AppNotification): TabId | null {
   }
   return TYPE_TABS[n.type] ?? null;
 }
-
-const wrapStyle: CSSProperties = { position: "relative" };
-const bellStyle: CSSProperties = { position: "relative" };
-const countStyle: CSSProperties = {
-  position: "absolute", top: -6, right: -6, minWidth: 18, height: 18, padding: "0 5px",
-  borderRadius: 9, background: "var(--danger)", color: "#fff", fontSize: 11, lineHeight: "18px",
-  textAlign: "center", fontWeight: 600,
-};
-const panelStyle: CSSProperties = {
-  position: "absolute", right: 0, top: "calc(100% + 8px)", width: 360, maxWidth: "calc(100vw - 24px)",
-  maxHeight: 440, overflowY: "auto", background: "var(--surface)", border: "1px solid var(--border)",
-  borderRadius: 8, boxShadow: "0 8px 24px rgba(0,0,0,0.45)", zIndex: 200,
-};
-const panelHeaderStyle: CSSProperties = {
-  display: "flex", justifyContent: "space-between", alignItems: "center",
-  padding: "10px 12px", borderBottom: "1px solid var(--border)",
-};
-const srOnly: CSSProperties = {
-  position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)", whiteSpace: "nowrap",
-};
-const itemStyle: CSSProperties = {
-  display: "block", width: "100%", textAlign: "left", padding: "10px 12px", background: "transparent",
-  border: 0, borderBottom: "1px solid var(--border)", borderRadius: 0, color: "var(--text)", cursor: "pointer",
-};
 
 export function NotificationBell() {
   const { currentTenant, setTab } = useApp();
@@ -181,12 +157,11 @@ export function NotificationBell() {
   const label = unread > 0 ? `Notifications, ${unread} unread` : "Notifications";
 
   return (
-    <div ref={wrapRef} style={wrapStyle}>
+    <div ref={wrapRef} className="notif">
       <button
         ref={buttonRef}
         type="button"
-        className="btn-sm btn-ghost"
-        style={bellStyle}
+        className="btn-sm btn-ghost notif-button"
         aria-label={label}
         aria-expanded={open}
         aria-controls={panelId}
@@ -199,7 +174,7 @@ export function NotificationBell() {
           <path d="M13.73 21a2 2 0 0 1-3.46 0" />
         </svg>
         {unread > 0 && (
-          <span style={countStyle} aria-hidden="true">{unread > 99 ? "99+" : unread}</span>
+          <span className="notif-count" aria-hidden="true">{unread > 99 ? "99+" : unread}</span>
         )}
       </button>
       {open && (
@@ -209,9 +184,9 @@ export function NotificationBell() {
           role="region"
           aria-label="Notifications"
           tabIndex={-1}
-          style={panelStyle}
+          className="notif-panel"
         >
-          <div style={panelHeaderStyle}>
+          <div className="notif-panel-head">
             <strong>Notifications</strong>
             <button
               type="button"
@@ -223,26 +198,26 @@ export function NotificationBell() {
             </button>
           </div>
           {loadingList && items.length === 0 ? (
-            <p className="text-dim text-sm" style={{ padding: 12 }}>Loading...</p>
+            <p className="text-dim text-sm notif-empty" role="status">Loading…</p>
           ) : items.length === 0 ? (
-            <p className="text-dim text-sm" style={{ padding: 12 }}>No notifications.</p>
+            <p className="text-dim text-sm notif-empty">No notifications.</p>
           ) : (
-            <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
+            <ul className="notif-list">
               {items.map((n) => (
                 <li key={n.id}>
                   <button
                     type="button"
-                    style={{ ...itemStyle, opacity: n.readAt ? 0.65 : 1 }}
+                    className={`notif-item${n.readAt ? " read" : ""}`}
                     onClick={() => openItem(n)}
                   >
-                    <span style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
-                      <span style={{ fontWeight: n.readAt ? 400 : 600 }}>
-                        {!n.readAt && <span style={srOnly}>Unread: </span>}
+                    <span className="notif-item-head">
+                      <span className="notif-item-title">
+                        {!n.readAt && <span className="sr-only">Unread: </span>}
                         {n.title}
                       </span>
                       <span className="text-dim text-xs">{relativeTime(n.createdAt)}</span>
                     </span>
-                    {n.body && <span className="text-dim text-sm" style={{ display: "block", marginTop: 4 }}>{n.body}</span>}
+                    {n.body && <span className="text-dim text-sm notif-item-body">{n.body}</span>}
                   </button>
                 </li>
               ))}

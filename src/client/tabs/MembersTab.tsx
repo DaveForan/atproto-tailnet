@@ -5,6 +5,8 @@ import { useTenantMutation } from "../hooks/useMutation";
 import { Card } from "../components/Card";
 import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
+import { Loading } from "../components/Loading";
+import { useConfirm } from "../components/ConfirmDialog";
 import { safeUrl } from "../lib/utils";
 import { deviceService } from "../services/devices";
 import type { Member } from "../lib/types";
@@ -49,6 +51,7 @@ export function MembersTab() {
   useEffect(() => { loadMembers(); }, [loadMembers]);
 
   const { mutate, busy } = useTenantMutation();
+  const confirm = useConfirm();
 
   const reloadAfterMutate = async () => { await loadMembers(false); reload(); };
 
@@ -69,7 +72,12 @@ export function MembersTab() {
   };
 
   const handleRemove = async (memberId: string, handle: string) => {
-    if (!confirm(`Remove member @${handle}? This also removes all of their devices and revokes their outstanding auth keys. This cannot be undone.`)) return;
+    if (!(await confirm({
+      title: `Remove member @${handle}?`,
+      message: "This also removes all of their devices and revokes their outstanding auth keys. This cannot be undone.",
+      confirmLabel: "Remove member",
+      danger: true,
+    }))) return;
     await mutate(
       `/members/${memberId}`,
       { method: "DELETE" },
@@ -77,7 +85,7 @@ export function MembersTab() {
     );
   };
 
-  if (loading) return <div className="loading">Loading...</div>;
+  if (loading) return <Loading />;
 
   if (members.length === 0) {
     return (
@@ -94,71 +102,77 @@ export function MembersTab() {
   return (
     <div className="tab-content">
       <Card title="Members">
-        <ul className="member-list">
+        <ul className="item-list">
           {members.map((member) => {
             const avatar = safeUrl(member.avatarUrl);
             const isLocked = lockInfo.get(member.id) ?? member.isLocked ?? false;
+            const canAct = !member.isOriginator;
 
             return (
-              <li key={member.id} className="member-row">
-                <div className="member-identity">
+              <li key={member.id} className="item-row item-row-wrap">
+                <div className="item-lead">
                   {avatar ? (
                     <img className="avatar" src={avatar} alt="" />
                   ) : (
-                    <div className="avatar avatar-placeholder" />
+                    <div className="avatar avatar-placeholder" aria-hidden="true" />
                   )}
-                  <div className="member-names">
-                    <span className="member-display-name">
-                      {member.displayName || member.handle}
+                  <div className="item-info">
+                    <span className="item-header">
+                      <span className="item-name">{member.displayName || member.handle}</span>
+                      {member.isOriginator ? (
+                        <Badge variant="originator">originator</Badge>
+                      ) : (
+                        <Badge variant="role">{member.roleName || "citizen"}</Badge>
+                      )}
+                      {isLocked && <Badge variant="warning">locked</Badge>}
                     </span>
-                    <span className="member-handle">@{member.handle}</span>
+                    <span className="item-detail">@{member.handle}</span>
                   </div>
                 </div>
 
-                <div className="member-badges">
-                  {member.isOriginator ? (
-                    <Badge variant="originator">originator</Badge>
-                  ) : (
-                    <Badge variant="role">{member.roleName || "citizen"}</Badge>
-                  )}
-                  {isLocked && <Badge variant="warning">locked</Badge>}
-                </div>
+                {canAct && (hasPerm("manage_roles") || hasPerm("lock_devices") || hasPerm("kick")) && (
+                  <div className="item-actions">
+                    {hasPerm("manage_roles") && (
+                      <select
+                        className="select-compact"
+                        aria-label={`Role of @${member.handle}`}
+                        value={member.roleId ?? ""}
+                        disabled={busy}
+                        onChange={(e) => handleRoleChange(member.id, e.target.value)}
+                      >
+                        {assignableRoles.map((role) => (
+                          <option key={role.id} value={role.id}>
+                            {role.name}
+                          </option>
+                        ))}
+                      </select>
+                    )}
 
-                <div className="member-actions">
-                  {hasPerm("manage_roles") && !member.isOriginator && (
-                    <select
-                      className="role-select"
-                      value={member.roleId ?? ""}
-                      onChange={(e) => handleRoleChange(member.id, e.target.value)}
-                    >
-                      {assignableRoles.map((role) => (
-                        <option key={role.id} value={role.id}>
-                          {role.name}
-                        </option>
-                      ))}
-                    </select>
-                  )}
+                    {hasPerm("lock_devices") && (
+                      <button
+                        type="button"
+                        className={`btn-sm ${isLocked ? "btn-warning" : "btn-ghost"}`}
+                        disabled={busy}
+                        aria-label={`${isLocked ? "Unlock" : "Lock"} devices of @${member.handle}`}
+                        onClick={() => handleToggleLock(member.id, isLocked)}
+                      >
+                        {isLocked ? "Unlock" : "Lock"}
+                      </button>
+                    )}
 
-                  {hasPerm("lock_devices") && !member.isOriginator && (
-                    <button
-                      className={`btn-sm ${isLocked ? "btn-warning" : "btn-ghost"}`}
-                      disabled={busy}
-                      onClick={() => handleToggleLock(member.id, isLocked)}
-                    >
-                      {isLocked ? "Unlock" : "Lock"}
-                    </button>
-                  )}
-
-                  {hasPerm("kick") && !member.isOriginator && (
-                    <button
-                      className="btn-sm btn-danger"
-                      disabled={busy}
-                      onClick={() => handleRemove(member.id, member.handle)}
-                    >
-                      Remove
-                    </button>
-                  )}
-                </div>
+                    {hasPerm("kick") && (
+                      <button
+                        type="button"
+                        className="btn-sm btn-danger"
+                        disabled={busy}
+                        aria-label={`Remove member @${member.handle}`}
+                        onClick={() => handleRemove(member.id, member.handle)}
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                )}
               </li>
             );
           })}

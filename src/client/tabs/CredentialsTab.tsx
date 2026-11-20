@@ -3,25 +3,11 @@ import { credentialsService } from "../services/credentials";
 import { useApp } from "../hooks/useAppState";
 import { useToast } from "../components/Toast";
 import { Card } from "../components/Card";
-import { copyToClipboard } from "../lib/utils";
+import { CodeBlock } from "../components/CodeBlock";
 
 function CodeResult({ value, label }: { value: string | null; label: string }) {
-  const { toast } = useToast();
   if (!value) return null;
-  return (
-    <div className="code-block-wrapper">
-      <code className="code-block">{value}</code>
-      <button
-        className="btn-sm btn-ghost"
-        onClick={() => {
-          copyToClipboard(value);
-          toast(`${label} copied`);
-        }}
-      >
-        Copy
-      </button>
-    </div>
-  );
+  return <CodeBlock value={value} label={label} />;
 }
 
 export function CredentialsTab() {
@@ -54,7 +40,8 @@ export function CredentialsTab() {
 
   const busy = busyAction !== null;
 
-  const issueMembership = async () => {
+  const issueMembership = async (e: React.FormEvent) => {
+    e.preventDefault();
     if (!currentTenant || !memberDid.trim()) return;
     setBusyAction("membership");
     try {
@@ -73,7 +60,8 @@ export function CredentialsTab() {
     }
   };
 
-  const issueRole = async () => {
+  const issueRole = async (e: React.FormEvent) => {
+    e.preventDefault();
     if (!currentTenant || !roleDid.trim()) return;
     setBusyAction("role");
     const roleName = rolePerms.trim();
@@ -92,7 +80,8 @@ export function CredentialsTab() {
     }
   };
 
-  const issueCapability = async () => {
+  const issueCapability = async (e: React.FormEvent) => {
+    e.preventDefault();
     if (!currentTenant || !capDid.trim() || !capName.trim()) return;
     setBusyAction("capability");
     try {
@@ -112,7 +101,8 @@ export function CredentialsTab() {
     }
   };
 
-  const handleVerify = async () => {
+  const handleVerify = async (e: React.FormEvent) => {
+    e.preventDefault();
     if (!verifyJwt.trim()) return;
     setBusyAction("verify");
     try {
@@ -127,7 +117,8 @@ export function CredentialsTab() {
     }
   };
 
-  const handleChallenge = async () => {
+  const handleChallenge = async (e: React.FormEvent) => {
+    e.preventDefault();
     if (!currentTenant) return;
     setBusyAction("challenge");
     try {
@@ -145,82 +136,121 @@ export function CredentialsTab() {
 
   return (
     <div className="tab-content">
-      <Card title="Issue Membership Credential">
-        <div className="form-row">
-          <input
-            type="text"
-            placeholder="Subject DID"
-            value={memberDid}
-            onChange={(e) => setMemberDid(e.target.value)}
-          />
-          <button className="btn-primary" onClick={issueMembership} disabled={busy}>
-            {busyAction === "membership" ? "Issuing..." : "Issue"}
-          </button>
-        </div>
-        <CodeResult value={memberResult} label="Credential" />
+      <Card title="Issue a membership credential">
+        <form className="field" onSubmit={issueMembership}>
+          <label htmlFor="cred-member-did">Subject DID</label>
+          <div className="inline-form">
+            <input
+              id="cred-member-did"
+              type="text"
+              className="mono"
+              placeholder="did:plc:..."
+              spellCheck={false}
+              value={memberDid}
+              onChange={(e) => setMemberDid(e.target.value)}
+            />
+            <button type="submit" disabled={busy || !memberDid.trim()}>
+              {busyAction === "membership" ? "Issuing…" : "Issue"}
+            </button>
+          </div>
+        </form>
+        <CodeResult value={memberResult} label="Membership credential" />
       </Card>
 
-      <Card title="Issue Role Credential">
-        <div className="form-stack">
-          <input
-            type="text"
-            placeholder="Subject DID"
-            value={roleDid}
-            onChange={(e) => setRoleDid(e.target.value)}
-          />
-          <input
-            type="text"
-            placeholder="Permissions to attest (comma-separated; blank = all of the member's role)"
-            value={rolePerms}
-            onChange={(e) => setRolePerms(e.target.value)}
-          />
-          <button className="btn-primary" onClick={issueRole} disabled={busy}>
-            {busyAction === "role" ? "Issuing..." : "Issue"}
+      <Card title="Issue a role credential">
+        <form className="form-stack" onSubmit={issueRole}>
+          <div className="field">
+            <label htmlFor="cred-role-did">Subject DID</label>
+            <input
+              id="cred-role-did"
+              type="text"
+              className="mono"
+              placeholder="did:plc:..."
+              spellCheck={false}
+              value={roleDid}
+              onChange={(e) => setRoleDid(e.target.value)}
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="cred-role-perms">Permissions to attest</label>
+            <input
+              id="cred-role-perms"
+              type="text"
+              value={rolePerms}
+              onChange={(e) => setRolePerms(e.target.value)}
+              aria-describedby="cred-role-perms-help"
+            />
+            <p className="help-text" id="cred-role-perms-help">
+              Comma-separated. Leave blank for all permissions of the member&apos;s role.
+            </p>
+          </div>
+          <button type="submit" disabled={busy || !roleDid.trim()}>
+            {busyAction === "role" ? "Issuing…" : "Issue"}
           </button>
-        </div>
-        <CodeResult value={roleResult} label="Credential" />
+        </form>
+        <CodeResult value={roleResult} label="Role credential" />
       </Card>
 
-      <Card title="Issue Capability Credential">
-        <div className="form-stack">
-          <input
-            type="text"
-            placeholder="Subject DID"
-            value={capDid}
-            onChange={(e) => setCapDid(e.target.value)}
-          />
-          <input
-            type="text"
-            placeholder="Capability (a permission the member holds, e.g. create_posts)"
-            value={capName}
-            onChange={(e) => setCapName(e.target.value)}
-          />
-          <button className="btn-primary" onClick={issueCapability} disabled={busy}>
-            {busyAction === "capability" ? "Issuing..." : "Issue"}
+      <Card title="Issue a capability credential">
+        <form className="form-stack" onSubmit={issueCapability}>
+          <div className="field">
+            <label htmlFor="cred-cap-did">Subject DID</label>
+            <input
+              id="cred-cap-did"
+              type="text"
+              className="mono"
+              placeholder="did:plc:..."
+              spellCheck={false}
+              value={capDid}
+              onChange={(e) => setCapDid(e.target.value)}
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="cred-cap-name">Capability</label>
+            <input
+              id="cred-cap-name"
+              type="text"
+              value={capName}
+              onChange={(e) => setCapName(e.target.value)}
+              aria-describedby="cred-cap-name-help"
+            />
+            <p className="help-text" id="cred-cap-name-help">
+              A permission the member holds, for example <code>create_posts</code>.
+            </p>
+          </div>
+          <button type="submit" disabled={busy || !capDid.trim() || !capName.trim()}>
+            {busyAction === "capability" ? "Issuing…" : "Issue"}
           </button>
-        </div>
-        <CodeResult value={capResult} label="Credential" />
+        </form>
+        <CodeResult value={capResult} label="Capability credential" />
       </Card>
 
-      <Card title="Verify Credential">
-        <div className="form-stack">
-          <textarea
-            placeholder="Paste JWT here"
-            value={verifyJwt}
-            onChange={(e) => setVerifyJwt(e.target.value)}
-            rows={4}
-          />
-          <button className="btn-primary" onClick={handleVerify} disabled={busy}>
-            {busyAction === "verify" ? "Verifying..." : "Verify"}
+      <Card title="Verify a credential">
+        <form className="form-stack" onSubmit={handleVerify}>
+          <div className="field">
+            <label htmlFor="cred-verify-jwt">Credential (JWT)</label>
+            <textarea
+              id="cred-verify-jwt"
+              className="mono"
+              spellCheck={false}
+              value={verifyJwt}
+              onChange={(e) => setVerifyJwt(e.target.value)}
+              rows={4}
+            />
+          </div>
+          <button type="submit" disabled={busy || !verifyJwt.trim()}>
+            {busyAction === "verify" ? "Verifying…" : "Verify"}
           </button>
-        </div>
-        <CodeResult value={verifyResult} label="Result" />
+        </form>
+        <CodeResult value={verifyResult} label="Verification result" />
       </Card>
 
-      <Card title="Challenge">
-        <button className="btn-primary" onClick={handleChallenge} disabled={busy}>
-          {busyAction === "challenge" ? "Generating..." : "Generate Challenge"}
-        </button>
+      <Card title="Holder challenge">
+        <form onSubmit={handleChallenge}>
+          <button type="submit" disabled={busy}>
+            {busyAction === "challenge" ? "Generating…" : "Generate challenge"}
+          </button>
+        </form>
         <CodeResult value={challenge} label="Challenge" />
       </Card>
     </div>

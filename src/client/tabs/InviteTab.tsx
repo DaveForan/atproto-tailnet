@@ -7,6 +7,8 @@ import { Card } from "../components/Card";
 import { CopyField } from "../components/CopyField";
 import { StatusBadge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
+import { Loading } from "../components/Loading";
+import { useConfirm } from "../components/ConfirmDialog";
 import { invitationService } from "../services/invitations";
 import { errorMessage, relativeTime, tryCopy } from "../lib/utils";
 import type { SentInvitation } from "../lib/types";
@@ -20,6 +22,7 @@ export function InviteTab() {
   const [sending, setSending] = useState(false);
   const [created, setCreated] = useState<SentInvitation | null>(null);
   const [shownLink, setShownLink] = useState<string | null>(null);
+  const confirm = useConfirm();
 
   const isDid = invitee.trim().startsWith("did:");
 
@@ -41,7 +44,7 @@ export function InviteTab() {
   };
 
   const handleRevoke = async (invitationId: string) => {
-    if (!confirm("Revoke this invitation? The link will stop working.")) return;
+    if (!(await confirm({ title: "Revoke this invitation?", message: "The link will stop working.", confirmLabel: "Revoke", danger: true }))) return;
     if (created?.id === invitationId) setCreated(null);
     await revokeMutate(
       `/invitations/${invitationId}`,
@@ -73,22 +76,23 @@ export function InviteTab() {
             Enter their Bluesky handle or DID. You&apos;ll get an invitation link to send them yourself;
             nothing is sent automatically.
           </p>
-          <form className="invite-form inline-form" onSubmit={handleSend}>
-            <input
-              type="text"
-              className="input"
-              placeholder="handle.bsky.social or did:plc:..."
-              aria-label="Handle or DID to invite"
-              value={invitee}
-              onChange={(e) => setInvitee(e.target.value)}
-            />
-            <button
-              className="btn btn-primary"
-              type="submit"
-              disabled={sending || !invitee.trim()}
-            >
-              {sending ? "Creating..." : isDid ? "Invite DID" : "Create invitation"}
-            </button>
+          <form className="field" onSubmit={handleSend}>
+            <label htmlFor="invitee">Handle or DID</label>
+            <div className="inline-form">
+              <input
+                id="invitee"
+                type="text"
+                placeholder="handle.bsky.social or did:plc:..."
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                value={invitee}
+                onChange={(e) => setInvitee(e.target.value)}
+              />
+              <button type="submit" disabled={sending || !invitee.trim()}>
+                {sending ? "Creating…" : isDid ? "Invite DID" : "Create invitation"}
+              </button>
+            </div>
           </form>
           {created && (
             <div className="form-section" aria-live="polite">
@@ -113,21 +117,23 @@ export function InviteTab() {
 
       <Card title="Pending invitations">
         {loading ? (
-          <div className="loading">Loading...</div>
+          <Loading />
         ) : pending.length === 0 ? (
           <EmptyState>No pending invitations.</EmptyState>
         ) : (
-          <ul className="invitation-list item-list">
+          <ul className="item-list">
             {pending.map((inv) => (
-              <li key={inv.id} className="invitation-row item-row item-row-wrap">
-                <div className="invitation-info item-info">
-                  <span className="invitation-handle item-name">{who(inv)}</span>
-                  <span className="invitation-time item-detail">{relativeTime(inv.createdAt)}</span>
+              <li key={inv.id} className="item-row item-row-wrap">
+                <div className="item-info">
+                  <span className="item-name">{who(inv)}</span>
+                  <span className="item-detail">{relativeTime(inv.createdAt)}</span>
                 </div>
-                <div className="invitation-actions btn-group">
+                <div className="item-actions">
                   {inv.inviteUrl && (
                     <button
+                      type="button"
                       className="btn-sm btn-ghost"
+                      aria-label={`Copy invitation link for ${who(inv)}`}
                       onClick={() => { void copyLink(inv); }}
                     >
                       Copy link
@@ -135,7 +141,9 @@ export function InviteTab() {
                   )}
                   {hasPerm("invite") && (
                     <button
+                      type="button"
                       className="btn-sm btn-danger"
+                      aria-label={`Revoke invitation for ${who(inv)}`}
                       onClick={() => handleRevoke(inv.id)}
                       disabled={revoking}
                     >
@@ -156,12 +164,12 @@ export function InviteTab() {
 
       {past.length > 0 && (
         <Card title="Past invitations">
-          <ul className="invitation-list item-list">
+          <ul className="item-list">
             {past.map((inv) => (
-              <li key={inv.id} className="invitation-row item-row">
-                <div className="invitation-info item-info">
-                  <span className="invitation-handle item-name">{who(inv)}</span>
-                  <span className="invitation-time item-detail">{relativeTime(inv.createdAt)}</span>
+              <li key={inv.id} className="item-row">
+                <div className="item-info">
+                  <span className="item-name">{who(inv)}</span>
+                  <span className="item-detail">{relativeTime(inv.createdAt)}</span>
                 </div>
                 <StatusBadge status={inv.status} />
               </li>

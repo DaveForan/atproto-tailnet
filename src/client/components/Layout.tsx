@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { useApp } from "../hooks/useAppState";
 import { securityService } from "../services/security";
 import { useToast } from "./Toast";
@@ -43,15 +43,26 @@ export function SidebarProvider({ children }: { children: ReactNode }) {
 
 export function Header({ minimal = false }: { minimal?: boolean }) {
   const { user } = useApp();
-  const { toggleSidebar } = useContext(SidebarCtx);
+  const { toggleSidebar, sidebarOpen } = useContext(SidebarCtx);
   if (!user) return null;
   const avatar = safeUrl(user.avatarUrl);
   return (
     <header>
       <div className="header-left">
         {!minimal && (
-          <button className="hamburger-btn" onClick={toggleSidebar} aria-label="Toggle navigation">
-            &#9776;
+          <button
+            type="button"
+            id="nav-toggle"
+            className="hamburger-btn"
+            onClick={toggleSidebar}
+            aria-label="Menu"
+            aria-expanded={sidebarOpen}
+            aria-controls="sidebar"
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+              strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <path d="M4 7h16M4 12h16M4 17h16" />
+            </svg>
           </button>
         )}
         <h1>atproto-tailnet</h1>
@@ -59,7 +70,7 @@ export function Header({ minimal = false }: { minimal?: boolean }) {
       <div className="user-info">
         {!minimal && <NotificationBell />}
         {avatar && <img src={avatar} alt="" />}
-        <span>{user.handle}</span>
+        <span className="user-handle" title={user.handle}>{user.handle}</span>
         <form action="/auth/logout" method="post" className="inline-block">
           <button className="btn-sm btn-ghost" type="submit">
             Sign out
@@ -74,6 +85,25 @@ export function Sidebar() {
   const { currentTenant, tenants, selectTenant, tab, setTab, hasPerm, settings, user } = useApp();
   const { sidebarOpen, closeSidebar } = useContext(SidebarCtx);
   const t = currentTenant;
+  const closeRef = useRef<HTMLButtonElement>(null);
+
+  // Drawer behaviour (phones and small tablets): Escape closes it, focus moves
+  // into it when it opens and back to the menu button when it closes.
+  useEffect(() => {
+    if (!sidebarOpen) return;
+    closeRef.current?.focus();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeSidebar();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      const toggle = document.getElementById("nav-toggle");
+      // The drawer is hidden now: never leave focus inside it
+      if (toggle && document.getElementById("sidebar")?.contains(document.activeElement)) toggle.focus();
+    };
+  }, [sidebarOpen, closeSidebar]);
+
   if (!t) return null;
 
   const handleTabClick = (tabId: string) => {
@@ -91,6 +121,12 @@ export function Sidebar() {
   return (
     <>
       <aside id="sidebar" className={`sidebar${sidebarOpen ? " open" : ""}`}>
+        <div className="sidebar-drawer-head">
+          <span>Menu</span>
+          <button ref={closeRef} type="button" className="btn-sm btn-ghost" onClick={closeSidebar}>
+            Close
+          </button>
+        </div>
         <div className="sidebar-tenant">
           {tenants.length > 1 ? (
             <select
@@ -117,14 +153,16 @@ export function Sidebar() {
             {roleBadge}
           </div>
         </div>
-        <nav>
+        <nav aria-label="Tailnet pages">
           {groups.map((group) => (
-            <div key={group.label}>
-              <div className="nav-group-header">{group.label}</div>
+            <div key={group.label} role="group" aria-label={group.label}>
+              <div className="nav-group-header" aria-hidden="true">{group.label}</div>
               {group.tabs.map((entry) => (
                 <button
                   key={entry.id}
+                  type="button"
                   className={`nav-item${tab === entry.id ? " active" : ""}`}
+                  aria-current={tab === entry.id ? "page" : undefined}
                   onClick={() => handleTabClick(entry.id)}
                 >
                   {entry.label}
@@ -137,6 +175,7 @@ export function Sidebar() {
       <div
         className={`sidebar-overlay${sidebarOpen ? " open" : ""}`}
         onClick={closeSidebar}
+        aria-hidden="true"
       />
     </>
   );
@@ -174,27 +213,33 @@ function buildVisibleGroups(
 export function LockdownBanner() {
   const { settings, hasPerm, currentTenant, reloadSettings } = useApp();
   const { toast, toastError } = useToast();
+  const [busy, setBusy] = useState(false);
   if (!settings?.lockdownMode) return null;
 
   const handleDisable = async () => {
-    if (!currentTenant) return;
+    if (!currentTenant || busy) return;
+    setBusy(true);
     try {
       await securityService.updateSetting(currentTenant.id, "lockdownMode", false);
       toast("Lockdown mode disabled");
       await reloadSettings();
     } catch (e) {
       toastError(e instanceof Error ? e.message : "Failed to disable lockdown mode");
+    } finally {
+      setBusy(false);
     }
   };
 
   return (
-    <div className="lockdown-banner">
+    <div className="lockdown-banner" role="status">
       <span>
-        LOCKDOWN MODE &mdash; No new invitations, joins, or device registrations
+        <strong>Lockdown mode is on.</strong> No new invitations, joins or device registrations are
         permitted.
       </span>
       {hasPerm("manage_settings") && (
-        <button className="btn-sm btn-warning" onClick={handleDisable}>Disable</button>
+        <button type="button" className="btn-sm btn-warning" onClick={handleDisable} disabled={busy}>
+          {busy ? "Turning off…" : "Turn off lockdown"}
+        </button>
       )}
     </div>
   );
@@ -226,6 +271,10 @@ export function LoginPage({ redirect, purpose }: { redirect?: string; purpose?: 
           name="handle"
           placeholder="yourname.bsky.social"
           aria-label="Bluesky handle"
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
+          autoComplete="username"
           required
         />
         {redirect && <input type="hidden" name="redirect" value={redirect} />}
@@ -245,7 +294,7 @@ export function StatsSummary() {
   const { stats } = useApp();
   if (!stats) return null;
   return (
-    <div className="stats-row">
+    <div className="stats-row" role="group" aria-label="Tailnet summary">
       <div className="stat-card">
         <div className="stat-value">{stats.totalDevices}</div>
         <div className="stat-label">Devices</div>

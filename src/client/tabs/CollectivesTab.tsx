@@ -6,6 +6,8 @@ import { useTenantMutation } from "../hooks/useMutation";
 import { Card } from "../components/Card";
 import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
+import { Loading } from "../components/Loading";
+import { useConfirm } from "../components/ConfirmDialog";
 import { errorCode, errorMessage } from "../lib/utils";
 import type { Ancestor, SubCollective, ComplianceData } from "../lib/types";
 
@@ -13,6 +15,7 @@ export function CollectivesTab() {
   const { currentTenant, hasPerm, user } = useApp();
   const { toast, toastError } = useToast();
   const { mutate, busy } = useTenantMutation();
+  const confirm = useConfirm();
 
   const [ancestors, setAncestors] = useState<Ancestor[]>([]);
   const [collectives, setCollectives] = useState<SubCollective[]>([]);
@@ -67,8 +70,8 @@ export function CollectivesTab() {
     }
   };
 
-  const ejectCollective = async (id: string) => {
-    if (!confirm("Eject this sub-collective? This cannot be undone.")) return;
+  const ejectCollective = async (id: string, name: string) => {
+    if (!(await confirm({ title: `Eject ${name}?`, message: "This sub-collective is removed from this tailnet. This cannot be undone.", confirmLabel: "Eject", danger: true }))) return;
     await mutate(
       `/collectives/${id}/eject`,
       { method: "POST" },
@@ -76,21 +79,21 @@ export function CollectivesTab() {
     );
   };
 
-  if (loading) return <div className="loading">Loading...</div>;
+  if (loading) return <Loading />;
 
   const violations = compliance?.violations ?? [];
 
   return (
     <div className="tab-content">
       {/* Ancestors */}
-      <Card title="Parent Chain">
+      <Card title="Parent chain">
         {ancestors.length > 0 ? (
           <ul className="item-list">
             {ancestors.map((a) => (
               <li key={a.id} className="item-row">
                 <div className="item-info">
                   <span className="item-name">{a.name}</span>
-                  <span className="item-detail">{a.slug}</span>
+                  <span className="item-detail mono">{a.slug}</span>
                 </div>
               </li>
             ))}
@@ -101,47 +104,32 @@ export function CollectivesTab() {
       </Card>
 
       {/* Sub-collectives */}
-      <Card title="Sub-Collectives">
+      <Card title="Sub-collectives">
         {collectives.length > 0 ? (
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Name</th>
-                <th>Slug</th>
-                <th>Status</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {collectives.map((c) => (
-                <tr key={c.id}>
-                  <td>
-                    <a
-                      href={`#collectives`}
-                      className="link"
-                    >
-                      {c.name}
-                    </a>
-                  </td>
-                  <td>{c.slug}</td>
-                  <td>
+          <ul className="item-list">
+            {collectives.map((c) => (
+              <li key={c.id} className="item-row">
+                <div className="item-info">
+                  <span className="item-header">
+                    <span className="item-name">{c.name}</span>
                     <Badge variant="role">{c.status}</Badge>
-                  </td>
-                  <td>
-                    {hasPerm("manage_sub_collectives") && (
-                      <button
-                        className="btn-sm btn-danger"
-                        onClick={() => ejectCollective(c.id)}
-                        disabled={busy}
-                      >
-                        Eject
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                  </span>
+                  <span className="item-detail mono">{c.slug}</span>
+                </div>
+                {hasPerm("manage_sub_collectives") && (
+                  <button
+                    type="button"
+                    className="btn-sm btn-danger"
+                    aria-label={`Eject ${c.name}`}
+                    onClick={() => ejectCollective(c.id, c.name)}
+                    disabled={busy}
+                  >
+                    Eject
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
         ) : (
           <EmptyState>No sub-collectives.</EmptyState>
         )}
@@ -159,25 +147,35 @@ export function CollectivesTab() {
           </p>
         )}
         {hasPerm("manage_sub_collectives") && !singleTailnet && !cannotCreate && (
-          <form className="inline-form" onSubmit={createCollective}>
-            <input
-              type="text"
-              placeholder="Collective name"
-              aria-label="Sub-collective name"
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              required
-            />
-            <input
-              type="text"
-              placeholder="Slug"
-              aria-label="Sub-collective slug"
-              value={newSlug}
-              onChange={(e) => setNewSlug(e.target.value)}
-              required
-            />
-            <button type="submit" className="btn-primary" disabled={creating}>
-              Create Sub-Collective
+          <form className="form-section form-stack" onSubmit={createCollective} aria-labelledby="new-collective-heading">
+            <h4 id="new-collective-heading">Create a sub-collective</h4>
+            <div className="field-row">
+              <div className="field">
+                <label htmlFor="collective-name">Name</label>
+                <input
+                  id="collective-name"
+                  type="text"
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="collective-slug">Slug</label>
+                <input
+                  id="collective-slug"
+                  type="text"
+                  className="mono"
+                  autoCapitalize="none"
+                  spellCheck={false}
+                  value={newSlug}
+                  onChange={(e) => setNewSlug(e.target.value)}
+                  required
+                />
+              </div>
+            </div>
+            <button type="submit" disabled={creating}>
+              {creating ? "Creating…" : "Create sub-collective"}
             </button>
           </form>
         )}
@@ -193,13 +191,7 @@ export function CollectivesTab() {
                   <span className="item-name">{v.type}</span>
                   <span className="item-detail">{v.message}</span>
                 </div>
-                <div className="item-actions">
-                  <Badge
-                    variant={v.severity === "error" ? "stopped" : "warning"}
-                  >
-                    {v.severity}
-                  </Badge>
-                </div>
+                <Badge variant={v.severity === "error" ? "stopped" : "warning"}>{v.severity}</Badge>
               </li>
             ))}
           </ul>

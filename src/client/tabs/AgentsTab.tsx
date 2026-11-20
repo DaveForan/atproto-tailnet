@@ -6,8 +6,11 @@ import { useTenantData } from "../hooks/useTenantData";
 import { useTenantMutation } from "../hooks/useMutation";
 import { Card } from "../components/Card";
 import { EmptyState } from "../components/EmptyState";
-import { StatusBadge } from "../components/Badge";
-import { copyToClipboard, relativeTime } from "../lib/utils";
+import { Loading } from "../components/Loading";
+import { CodeBlock } from "../components/CodeBlock";
+import { useConfirm } from "../components/ConfirmDialog";
+import { Badge, StatusBadge } from "../components/Badge";
+import { relativeTime } from "../lib/utils";
 import type { AgentToken } from "../lib/types";
 
 export function AgentsTab() {
@@ -21,6 +24,7 @@ export function AgentsTab() {
   const [selectedPerms, setSelectedPerms] = useState<string[]>([]);
   const [createdToken, setCreatedToken] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const confirm = useConfirm();
 
   const togglePerm = (perm: string) => {
     setSelectedPerms((prev) =>
@@ -28,8 +32,9 @@ export function AgentsTab() {
     );
   };
 
-  const handleCreate = async () => {
-    if (!currentTenant || !name.trim()) return;
+  const handleCreate = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentTenant || !name.trim() || creating) return;
     setCreating(true);
     try {
       const result = await agentsService.createAgentToken(currentTenant.id, {
@@ -54,7 +59,7 @@ export function AgentsTab() {
   };
 
   const handleRevoke = async (tokenId: string) => {
-    if (!confirm("Revoke this agent token? This cannot be undone.")) return;
+    if (!(await confirm({ title: "Revoke this agent token?", message: "This cannot be undone.", confirmLabel: "Revoke token", danger: true }))) return;
     await mutate(
       `/agent-tokens/${tokenId}`,
       { method: "DELETE" },
@@ -68,77 +73,70 @@ export function AgentsTab() {
     return "active";
   };
 
-  if (loading) return <div className="loading">Loading...</div>;
+  if (loading) return <Loading />;
 
   return (
     <div className="tab-content">
       {hasPerm("create_agent_tokens") && (
-        <Card title="Create Agent Token">
-          <div className="form-stack">
-            <input
-              type="text"
-              placeholder="Token name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-            />
-            <div className="form-row">
-              <label>Expires in:</label>
-              <select
-                value={expiryDays}
-                onChange={(e) => setExpiryDays(Number(e.target.value))}
-              >
-                <option value={7}>7 days</option>
-                <option value={30}>30 days</option>
-                <option value={90}>90 days</option>
-                <option value={365}>365 days</option>
-              </select>
+        <Card title="Create an agent token">
+          <form className="form-stack" onSubmit={handleCreate}>
+            <div className="field-row">
+              <div className="field">
+                <label htmlFor="agent-token-name">Token name</label>
+                <input
+                  id="agent-token-name"
+                  type="text"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="agent-token-expiry">Expires in</label>
+                <select
+                  id="agent-token-expiry"
+                  value={expiryDays}
+                  onChange={(e) => setExpiryDays(Number(e.target.value))}
+                >
+                  <option value={7}>7 days</option>
+                  <option value={30}>30 days</option>
+                  <option value={90}>90 days</option>
+                  <option value={365}>365 days</option>
+                </select>
+              </div>
             </div>
-            <div className="form-field">
-              <label>Permissions:</label>
+            <fieldset className="field">
+              <legend>Permissions</legend>
               <div className="chip-list">
                 {allPerms.map((perm) => (
                   <button
                     key={perm}
-                    className={`chip ${selectedPerms.includes(perm) ? "chip-active" : ""}`}
+                    type="button"
+                    className="chip"
+                    aria-pressed={selectedPerms.includes(perm)}
                     onClick={() => togglePerm(perm)}
                   >
                     {perm}
                   </button>
                 ))}
               </div>
-            </div>
-            <button
-              className="btn-primary"
-              onClick={handleCreate}
-              disabled={creating || !name.trim()}
-            >
-              {creating ? "Creating..." : "Create Token"}
+            </fieldset>
+            <button type="submit" disabled={creating || !name.trim()}>
+              {creating ? "Creating…" : "Create token"}
             </button>
-          </div>
+          </form>
         </Card>
       )}
 
       {createdToken && (
-        <Card title="New Token">
-          <p className="warning-text">
+        <Card title="New token">
+          <p className="notice" role="alert">
             Copy this token now. It will not be shown again.
           </p>
-          <div className="code-block-wrapper">
-            <code className="code-block">{createdToken}</code>
-            <button
-              className="btn-sm btn-ghost"
-              onClick={() => {
-                copyToClipboard(createdToken);
-                toast("Copied to clipboard");
-              }}
-            >
-              Copy
-            </button>
-          </div>
+          <CodeBlock value={createdToken} label="Agent token" />
         </Card>
       )}
 
-      <Card title="Agent Tokens">
+      <Card title="Agent tokens">
         {tokens.length === 0 ? (
           <EmptyState>No agent tokens created yet.</EmptyState>
         ) : (
@@ -151,13 +149,13 @@ export function AgentsTab() {
                     <div className="item-header">
                       <span className="item-name">{token.name}</span>
                       {status === "expired" ? (
-                        <span className="badge badge-stopped">expired</span>
+                        <Badge variant="stopped">expired</Badge>
                       ) : (
                         <StatusBadge status={status} />
                       )}
                     </div>
                     <div className="item-meta">
-                      <span>Prefix: {token.tokenPrefix}...</span>
+                      <span>Prefix: <span className="mono">{token.tokenPrefix}…</span></span>
                       {token.ownerHandle && (
                         <span>Owner: {token.ownerHandle}</span>
                       )}
@@ -168,17 +166,19 @@ export function AgentsTab() {
                         <span>Last used: {relativeTime(token.lastUsedAt)}</span>
                       )}
                     </div>
-                    <div className="chip-list">
-                      {token.permissions.map((p) => (
-                        <span key={p} className="chip chip-active">
-                          {p}
-                        </span>
-                      ))}
-                    </div>
+                    {token.permissions.length > 0 && (
+                      <ul className="chip-list mt-4" aria-label="Permissions">
+                        {token.permissions.map((p) => (
+                          <li key={p} className="chip">{p}</li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
                   {status === "active" && hasPerm("manage_agent_tokens") && (
                     <button
+                      type="button"
                       className="btn-sm btn-danger"
+                      aria-label={`Revoke token ${token.name}`}
                       onClick={() => handleRevoke(token.id)}
                       disabled={busy}
                     >

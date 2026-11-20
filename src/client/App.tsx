@@ -2,6 +2,8 @@ import { lazy, Suspense, useEffect, useState } from "react";
 import { useApp } from "./hooks/useAppState";
 import { Header, LockdownBanner, LoginPage, Sidebar, SidebarProvider, StatsSummary } from "./components/Layout";
 import { PendingInvitations } from "./components/PendingInvitations";
+import { Loading } from "./components/Loading";
+import { CodeBlock } from "./components/CodeBlock";
 import { InvitePage, NoAccessPage, SuspendedPage } from "./components/AccessPages";
 import { DeviceSignInPage } from "./components/DeviceSignIn";
 import { VerifyDevicePage } from "./components/VerifyDevice";
@@ -74,14 +76,14 @@ export function App() {
   }
 
   if (loading) {
-    return <div className="loading-screen">Loading...</div>;
+    return <div className="loading-screen" role="status">Loading…</div>;
   }
 
   if (error && !user) {
     return (
-      <div className="loading-screen">
+      <div className="loading-screen loading-screen-error" role="alert">
         <p>Failed to load the dashboard: {error}</p>
-        <button onClick={() => { void reload(); }}>Retry</button>
+        <button type="button" onClick={() => { void reload(); }}>Retry</button>
       </div>
     );
   }
@@ -97,7 +99,7 @@ export function App() {
       <>
         <Header minimal />
         <main className="access-main">
-          <Suspense fallback={<div className="tab-loading">Loading...</div>}>
+          <Suspense fallback={<Loading />}>
             <AccountTab onChanged={() => { void reload(); }} />
           </Suspense>
         </main>
@@ -144,9 +146,9 @@ export function App() {
       <Header minimal={!currentTenant || suspendedForMe} />
       {!suspendedForMe && <LockdownBanner />}
       {error && (
-        <div className="lockdown-banner">
+        <div className="lockdown-banner" role="alert">
           <span>{error}</span>
-          <button className="btn-sm btn-warning" onClick={() => { void reload(); }}>Retry</button>
+          <button type="button" className="btn-sm btn-warning" onClick={() => { void reload(); }}>Retry</button>
         </div>
       )}
       {!currentTenant ? <NoAccessPage /> : suspendedForMe ? <SuspendedPage /> : <Dashboard />}
@@ -169,13 +171,13 @@ function Dashboard() {
               connect until you unsuspend it.
             </span>
             {tab !== "instance" && (
-              <button className="btn-sm btn-warning" onClick={() => setTab("instance")}>Manage</button>
+              <button type="button" className="btn-sm btn-warning" onClick={() => setTab("instance")}>Manage</button>
             )}
           </div>
         )}
         <PendingInvitations invitations={invitations} onAction={() => { void reload(); }} />
         <StatsSummary />
-        <Suspense key={currentTenant?.id} fallback={<div className="tab-loading">Loading...</div>}>
+        <Suspense key={currentTenant?.id} fallback={<Loading />}>
           <TabComponent />
         </Suspense>
       </main>
@@ -197,8 +199,9 @@ function SetupWizard({ tenant }: { tenant: Tenant }) {
   const loginServer = address?.loginServer ?? "https://<login-server>";
 
   return (
-    <div className="wizard-overlay">
+    <main className="wizard-overlay">
       <div className="wizard-card">
+        <p className="wizard-step" aria-live="polite">Step {wizardStep} of 3</p>
         <h2>Welcome to {tenant.name}</h2>
         {wizardStep === 1 && tenant.isOriginator && address && (
           <div>
@@ -230,8 +233,8 @@ function SetupWizard({ tenant }: { tenant: Tenant }) {
           <div>
             <p>Your tailnet is ready. Let&apos;s connect your first device.</p>
             <div className="wizard-actions">
-              <button onClick={() => setWizardStep(2)}>Get Started</button>
-              <button className="btn-ghost" onClick={dismissWizard}>
+              <button type="button" onClick={() => setWizardStep(2)}>Get started</button>
+              <button type="button" className="btn-ghost" onClick={dismissWizard}>
                 Skip
               </button>
             </div>
@@ -240,27 +243,25 @@ function SetupWizard({ tenant }: { tenant: Tenant }) {
         {wizardStep === 2 && (
           <div>
             <p>
-              Install <a href="https://tailscale.com/download" target="_blank" rel="noopener">Tailscale</a> on your device, then go to the <strong>Add Device</strong> tab to generate an auth key.
+              Install <a href="https://tailscale.com/download" target="_blank" rel="noopener noreferrer">Tailscale</a> on your device, then go to the <strong>Add device</strong> tab to generate an auth key.
             </p>
             <div className="wizard-actions">
-              <button onClick={() => setWizardStep(3)}>Next</button>
-              <button className="btn-ghost" onClick={() => setWizardStep(1)}>Back</button>
+              <button type="button" onClick={() => setWizardStep(3)}>Next</button>
+              <button type="button" className="btn-ghost" onClick={() => setWizardStep(1)}>Back</button>
             </div>
           </div>
         )}
         {wizardStep === 3 && (
           <div>
             <p>Run this command with your auth key:</p>
-            <code className="code-block">
-              tailscale up --login-server {loginServer} --authkey YOUR_KEY
-            </code>
+            <CodeBlock value={`tailscale up --login-server ${loginServer} --authkey YOUR_KEY`} label="Connect command" />
             <div className="wizard-actions">
-              <button onClick={dismissWizard}>Go to Dashboard</button>
-              <button className="btn-ghost" onClick={() => setWizardStep(2)}>Back</button>
+              <button type="button" onClick={dismissWizard}>Go to the dashboard</button>
+              <button type="button" className="btn-ghost" onClick={() => setWizardStep(2)}>Back</button>
             </div>
           </div>
         )}
       </div>
-    </div>
+    </main>
   );
 }

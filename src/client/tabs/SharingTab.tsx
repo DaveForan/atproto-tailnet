@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useApp } from "../hooks/useAppState";
 import { useToast } from "../components/Toast";
+import { useConfirm } from "../components/ConfirmDialog";
 import { Card } from "../components/Card";
 import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
@@ -181,11 +182,11 @@ function ShareRow({ share, onChanged }: { share: Share; onChanged: () => void })
       )}
       <div className="btn-group">
         {share.awaitingMe && (
-          <button className="btn-sm" onClick={() => { void act(() => sharingService.acceptShare(tid, share.id), "Accepted"); }}>
+          <button type="button" className="btn-sm" onClick={() => { void act(() => sharingService.acceptShare(tid, share.id), "Accepted"); }}>
             Accept
           </button>
         )}
-        <button
+        <button type="button"
           className="btn-sm btn-ghost"
           onClick={() => { void act(() => sharingService.endShare(tid, share.id), share.status === "active" ? "Share ended" : "Removed"); }}
         >
@@ -199,6 +200,7 @@ function ShareRow({ share, onChanged }: { share: Share; onChanged: () => void })
 export function SharingTab() {
   const { currentTenant } = useApp();
   const { toast, toastError } = useToast();
+  const confirm = useConfirm();
   const [friends, setFriends] = useState<FriendsData | null>(null);
   const [shares, setShares] = useState<Share[]>([]);
   const [devices, setDevices] = useState<MyDevice[]>([]);
@@ -235,12 +237,12 @@ export function SharingTab() {
       <div className="tab-content">
         <Card>
           <p role="alert">Friends and shares could not be loaded.</p>
-          <button className="btn-sm" onClick={() => { void load(); }}>Retry</button>
+          <button type="button" className="btn-sm" onClick={() => { void load(); }}>Retry</button>
         </Card>
       </div>
     );
   }
-  if (!friends || !tid) return <div className="loading">Loading...</div>;
+  if (!friends || !tid) return <div className="loading" role="status">Loading…</div>;
 
   const act = async (fn: () => Promise<unknown>, done: string) => {
     try {
@@ -265,9 +267,9 @@ export function SharingTab() {
               <li key={p.id} className="post-card">
                 <div className="post-head"><h4>{who(p)} wants to be friends</h4></div>
                 <div className="btn-group">
-                  <button className="btn-sm" onClick={() => { void act(() => sharingService.acceptFriend(tid, p.id!), "You are now friends"); }}>Accept</button>
-                  <button className="btn-sm btn-ghost" onClick={() => { void act(() => sharingService.removeFriend(tid, p.id!), "Declined"); }}>Decline</button>
-                  <button className="btn-sm btn-ghost" onClick={() => { void act(() => sharingService.block(tid, p.userId), "Blocked"); }}>Block</button>
+                  <button type="button" className="btn-sm" onClick={() => { void act(() => sharingService.acceptFriend(tid, p.id!), "You are now friends"); }}>Accept</button>
+                  <button type="button" className="btn-sm btn-ghost" onClick={() => { void act(() => sharingService.removeFriend(tid, p.id!), "Declined"); }}>Decline</button>
+                  <button type="button" className="btn-sm btn-ghost" onClick={() => { void act(() => sharingService.block(tid, p.userId), "Blocked"); }}>Block</button>
                 </div>
               </li>
             ))}
@@ -306,10 +308,15 @@ export function SharingTab() {
               <li key={p.id} className="item-row">
                 <span>{who(p)}{p.displayName ? ` · ${p.displayName}` : ""}</span>
                 <span className="btn-group">
-                  <button
+                  <button type="button"
                     className="btn-sm btn-ghost"
-                    onClick={() => {
-                      if (window.confirm(`End your friendship with ${who(p)}? Every share between you ends too.`)) {
+                    onClick={async () => {
+                      if (await confirm({
+                        title: `End your friendship with ${who(p)}?`,
+                        message: "Every share between you ends too.",
+                        confirmLabel: "End friendship",
+                        danger: true,
+                      })) {
                         void act(() => sharingService.removeFriend(tid, p.id!), "Friendship ended");
                       }
                     }}
@@ -328,7 +335,7 @@ export function SharingTab() {
               {friends.outgoing.map((p) => (
                 <li key={p.id} className="item-row">
                   <span>{who(p)}</span>
-                  <button className="btn-sm btn-ghost" onClick={() => { void act(() => sharingService.removeFriend(tid, p.id!), "Request cancelled"); }}>Cancel</button>
+                  <button type="button" className="btn-sm btn-ghost" onClick={() => { void act(() => sharingService.removeFriend(tid, p.id!), "Request cancelled"); }}>Cancel</button>
                 </li>
               ))}
             </ul>
@@ -359,7 +366,7 @@ export function SharingTab() {
               {friends.blocked.map((p) => (
                 <li key={p.userId} className="item-row">
                   <span>{who(p)}</span>
-                  <button className="btn-sm btn-ghost" onClick={() => { void act(() => sharingService.unblock(tid, p.userId), "Unblocked"); }}>Unblock</button>
+                  <button type="button" className="btn-sm btn-ghost" onClick={() => { void act(() => sharingService.unblock(tid, p.userId), "Unblocked"); }}>Unblock</button>
                 </li>
               ))}
             </ul>

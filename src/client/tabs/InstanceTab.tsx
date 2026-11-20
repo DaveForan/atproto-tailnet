@@ -4,6 +4,8 @@ import { useToast } from "../components/Toast";
 import { Card } from "../components/Card";
 import { Badge, StatusBadge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
+import { Loading } from "../components/Loading";
+import { useConfirm } from "../components/ConfirmDialog";
 import { Toggle } from "../components/Toggle";
 import { ConnectClaude } from "../components/ConnectClaude";
 import { operatorService } from "../services/operator";
@@ -39,6 +41,7 @@ export function InstanceTab() {
   const [deleteText, setDeleteText] = useState("");
   const [conflict, setConflict] = useState<string[] | null>(null);
   const [creatorInput, setCreatorInput] = useState("");
+  const confirm = useConfirm();
 
   const load = useCallback(async () => {
     try {
@@ -77,10 +80,15 @@ export function InstanceTab() {
 
   const isMine = (tenantId: string) => myTenants.some((t) => t.id === tenantId);
 
-  const toggleSuspend = (t: OperatorTenant) => {
+  const toggleSuspend = async (t: OperatorTenant) => {
     if (
       !t.suspended &&
-      !confirm(`Suspend ${t.name}? Its members lose dashboard access and its devices can't connect until you unsuspend it.`)
+      !(await confirm({
+        title: `Suspend ${t.name}?`,
+        message: "Its members lose dashboard access and its devices can't connect until you unsuspend it.",
+        confirmLabel: "Suspend",
+        danger: true,
+      }))
     ) return;
     void run(
       () => operatorService.setSuspended(t.id, !t.suspended),
@@ -100,15 +108,14 @@ export function InstanceTab() {
     }
   };
 
-  const toggleUser = (u: OperatorUser) => {
+  const toggleUser = async (u: OperatorUser) => {
     if (!u.disabled) {
       const n = u.tenantCount;
       const msg =
-        `Disable @${u.handle}?\n\n` +
         `They won't be able to sign in, and their tokens and connected apps stop working. ` +
         `This also removes them from ${n === 1 ? "their tailnet" : `all ${n} of their tailnets`} ` +
         `and deletes their devices. Re-enabling them later does not restore memberships or devices.`;
-      if (!confirm(msg)) return;
+      if (!(await confirm({ title: `Disable @${u.handle}?`, message: msg, confirmLabel: "Disable user", danger: true }))) return;
     }
     void run(
       () => operatorService.setUserDisabled(u.id, !u.disabled),
@@ -153,9 +160,14 @@ export function InstanceTab() {
     if (ok) setCreatorInput("");
   };
 
-  const removeCreator = (c: TailnetCreator) => {
+  const removeCreator = async (c: TailnetCreator) => {
     const name = c.handle ? `@${c.handle}` : c.did;
-    if (!confirm(`Remove ${name} as a tailnet creator? ${c.hasTailnet ? "Their existing tailnet is not deleted; " : ""}They won't be able to create a new tailnet.`)) return;
+    if (!(await confirm({
+      title: `Remove ${name} as a tailnet creator?`,
+      message: `${c.hasTailnet ? "Their existing tailnet is not deleted; they" : "They"} won't be able to create a new tailnet.`,
+      confirmLabel: "Remove",
+      danger: true,
+    }))) return;
     void run(() => operatorService.removeCreator(c.id), `${name} removed`);
   };
 
@@ -163,14 +175,14 @@ export function InstanceTab() {
     return (
       <div className="tab-content">
         <Card title="Instance">
-          <p role="alert">{loadError}</p>
-          <button className="btn-sm mt-8" onClick={() => { void load(); }}>Retry</button>
+          <p className="form-error" role="alert">{loadError}</p>
+          <button type="button" className="btn-sm mt-8" onClick={() => { void load(); }}>Retry</button>
         </Card>
       </div>
     );
   }
 
-  if (!overview) return <div className="loading">Loading...</div>;
+  if (!overview) return <Loading />;
 
   const tenantName = (id: string | null) => overview.tenants.find((t) => t.id === id)?.name;
   const topLevel = overview.tenants.filter((t) => !t.parentId && t.status !== "deleted");
@@ -183,7 +195,7 @@ export function InstanceTab() {
           <EmptyState>No tailnets on this instance yet.</EmptyState>
         ) : (
           <div className="table-wrap">
-            <table className="data-table">
+            <table className="data-table stack">
               <caption className="sr-only">All tailnets on this instance</caption>
               <thead>
                 <tr>
@@ -198,35 +210,39 @@ export function InstanceTab() {
               <tbody>
                 {overview.tenants.map((t) => (
                   <tr key={t.id}>
-                    <td>
+                    <td data-label="Name">
+                      <div>
                       <div>{t.name}</div>
                       <div className="text-dim text-xs mono">{t.slug}</div>
                       {t.parentId && (
                         <div className="text-dim text-xs">sub-collective of {tenantName(t.parentId) ?? "another tailnet"}</div>
                       )}
+                      </div>
                     </td>
-                    <td>{t.owner ? `@${t.owner.handle}` : <span className="text-dim">none</span>}</td>
-                    <td>{t.memberCount}</td>
-                    <td>{t.deviceCount ?? <span className="text-dim" title="Device count unavailable">&mdash;</span>}</td>
-                    <td>
+                    <td data-label="Owner">{t.owner ? `@${t.owner.handle}` : <span className="text-dim">none</span>}</td>
+                    <td data-label="Members">{t.memberCount}</td>
+                    <td data-label="Devices">{t.deviceCount ?? <span className="text-dim" title="Device count unavailable">&mdash;</span>}</td>
+                    <td data-label="Status">
                       <span className="badge-stack">
                         <StatusBadge status={t.status} />
                         {t.suspended && <Badge variant="stopped">suspended</Badge>}
                         {settings.defaultTailnetId === t.id && <Badge variant="originator">default</Badge>}
                       </span>
                     </td>
-                    <td>
+                    <td className="cell-actions">
                       {t.status !== "deleted" && (
                         <div className="btn-group">
                           <button
-                            className={`btn-sm ${t.suspended ? "" : "btn-warning"}`}
+                            type="button"
+                            className={`btn-sm ${t.suspended ? "" : "btn-ghost"}`}
                             disabled={busy}
-                            onClick={() => toggleSuspend(t)}
+                            onClick={() => { void toggleSuspend(t); }}
                             aria-label={`${t.suspended ? "Unsuspend" : "Suspend"} ${t.name}`}
                           >
                             {t.suspended ? "Unsuspend" : "Suspend"}
                           </button>
                           <button
+                            type="button"
                             className="btn-sm btn-danger"
                             disabled={busy}
                             onClick={() => { setDeleteTarget(t); setDeleteText(""); }}
@@ -254,6 +270,8 @@ export function InstanceTab() {
             <div className="inline-form">
               <input
                 type="text"
+                className="mono"
+                spellCheck={false}
                 value={deleteText}
                 onChange={(e) => setDeleteText(e.target.value)}
                 aria-label={`Type ${deleteTarget.slug} to confirm deletion`}
@@ -276,7 +294,7 @@ export function InstanceTab() {
           <EmptyState>No users yet.</EmptyState>
         ) : (
           <div className="table-wrap">
-            <table className="data-table">
+            <table className="data-table stack">
               <caption className="sr-only">All users who have signed in to this instance</caption>
               <thead>
                 <tr>
@@ -290,22 +308,23 @@ export function InstanceTab() {
               <tbody>
                 {overview.users.map((u) => (
                   <tr key={u.id}>
-                    <td>@{u.handle}</td>
-                    <td className="mono text-xs break-all">{u.did}</td>
-                    <td>{u.tenantCount}</td>
-                    <td>
+                    <td data-label="Handle">@{u.handle}</td>
+                    <td data-label="DID" className="mono text-xs">{u.did}</td>
+                    <td data-label="Tailnets">{u.tenantCount}</td>
+                    <td className="cell-badges">
                       <span className="badge-stack">
                         {u.isOperator && <Badge variant="originator">operator</Badge>}
                         {u.disabled && <Badge variant="stopped">disabled</Badge>}
                         {u.id === user?.id && <Badge variant="role">you</Badge>}
                       </span>
                     </td>
-                    <td>
+                    <td className="cell-actions">
                       {!u.isOperator && u.id !== user?.id && (
                         <button
+                          type="button"
                           className={`btn-sm ${u.disabled ? "" : "btn-danger"}`}
                           disabled={busy}
-                          onClick={() => toggleUser(u)}
+                          onClick={() => { void toggleUser(u); }}
                           aria-label={`${u.disabled ? "Enable" : "Disable"} @${u.handle}`}
                         >
                           {u.disabled ? "Enable" : "Disable"}
@@ -343,12 +362,13 @@ export function InstanceTab() {
         )}
         <div className="form-section">
           <h4><label htmlFor="default-tailnet">Default tailnet</label></h4>
-          <p className="help-text">
+          <p className="help-text" id="default-tailnet-help">
             Signed-in people without a tailnet are offered a &ldquo;Request to join&rdquo; button for the
             default tailnet. Join requests are enabled on it; its admins approve them in the Security tab.
           </p>
           <select
             id="default-tailnet"
+            aria-describedby="default-tailnet-help"
             value={settings.defaultTailnetId ?? ""}
             disabled={busy}
             onChange={(e) => setDefault(e.target.value)}
@@ -372,15 +392,21 @@ export function InstanceTab() {
           Operators can always have a tailnet. Add other people here to let them have their own. Removing
           someone doesn&apos;t delete a tailnet they already have.
         </p>
-        <form className="inline-form" onSubmit={addCreator}>
-          <input
-            type="text"
-            placeholder="handle.bsky.social or did:plc:..."
-            aria-label="Handle or DID of the tailnet creator to add"
-            value={creatorInput}
-            onChange={(e) => setCreatorInput(e.target.value)}
-          />
-          <button type="submit" disabled={busy || !creatorInput.trim()}>Add creator</button>
+        <form className="field" onSubmit={addCreator}>
+          <label htmlFor="creator-input">Handle or DID</label>
+          <div className="inline-form">
+            <input
+              id="creator-input"
+              type="text"
+              placeholder="handle.bsky.social or did:plc:..."
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              value={creatorInput}
+              onChange={(e) => setCreatorInput(e.target.value)}
+            />
+            <button type="submit" disabled={busy || !creatorInput.trim()}>Add creator</button>
+          </div>
         </form>
         {creators.length === 0 ? (
           <EmptyState>No tailnet creators designated.</EmptyState>
@@ -395,14 +421,15 @@ export function InstanceTab() {
                     added {relativeTime(c.createdAt)}
                   </span>
                 </div>
-                <div className="btn-group">
+                <div className="item-actions">
                   <Badge variant={c.hasTailnet ? "running" : "role"}>
                     {c.hasTailnet ? "has tailnet" : "no tailnet yet"}
                   </Badge>
                   <button
+                    type="button"
                     className="btn-sm btn-danger"
                     disabled={busy}
-                    onClick={() => removeCreator(c)}
+                    onClick={() => { void removeCreator(c); }}
                     aria-label={`Remove ${c.handle ? `@${c.handle}` : c.did} as tailnet creator`}
                   >
                     Remove
@@ -452,9 +479,9 @@ function InstanceActivity() {
       <p className="help-text">
         Instance-level events: operator actions, disabled users, MCP connections.
       </p>
-      {error && <p className="help-text" role="alert">{error}</p>}
+      {error && <p className="form-error" role="alert">{error}</p>}
       {entries.length === 0 && !error ? (
-        <EmptyState>{loading ? "Loading…" : "No activity yet."}</EmptyState>
+        loading ? <Loading /> : <EmptyState>No activity yet.</EmptyState>
       ) : (
         <ul className="item-list">
           {entries.map((e) => (
@@ -473,7 +500,7 @@ function InstanceActivity() {
         </ul>
       )}
       {hasMore && (
-        <button className="btn-sm mt-12" disabled={loading} onClick={() => void loadPage(entries.length)}>
+        <button type="button" className="btn-ghost mt-12" disabled={loading} onClick={() => void loadPage(entries.length)}>
           {loading ? "Loading…" : "Load more"}
         </button>
       )}

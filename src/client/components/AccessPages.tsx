@@ -27,10 +27,10 @@ export function NoAccessPage() {
   if (user.isOperator && tab === "instance") {
     return (
       <main>
-        <button className="btn-sm btn-ghost mb-12" onClick={() => setTab("status")}>
+        <button type="button" className="btn-sm btn-ghost mb-12" onClick={() => setTab("status")}>
           &larr; Back
         </button>
-        <Suspense fallback={<div className="tab-loading">Loading...</div>}>
+        <Suspense fallback={<div className="loading" role="status">Loading…</div>}>
           <InstanceTab />
         </Suspense>
       </main>
@@ -51,7 +51,7 @@ export function NoAccessPage() {
         <JoinDefaultTailnet hasInvitations={invitations.length > 0} />
         <div className="btn-group mt-16">
           {user.isOperator && (
-            <button onClick={() => setTab("instance")}>Open Instance settings</button>
+            <button type="button" onClick={() => setTab("instance")}>Open Instance settings</button>
           )}
           <SignOutButton />
         </div>
@@ -121,13 +121,13 @@ function JoinDefaultTailnet({ hasInvitations }: { hasInvitations: boolean }) {
     }
   };
 
-  if (state.kind === "loading") return <div className="tab-loading">Loading...</div>;
+  if (state.kind === "loading") return <div className="loading" role="status">Loading…</div>;
 
   if (state.kind === "error") {
     return (
       <Card>
         <p role="alert">{state.message}</p>
-        <button className="btn-sm mt-8" onClick={() => { void load(); }}>Retry</button>
+        <button type="button" className="btn-sm mt-8" onClick={() => { void load(); }}>Retry</button>
       </Card>
     );
   }
@@ -154,7 +154,7 @@ function JoinDefaultTailnet({ hasInvitations }: { hasInvitations: boolean }) {
         onChange={(e) => setMessage(e.target.value)}
       />
       <div>
-        <button onClick={() => { void submit(tenantId); }} disabled={submitting}>
+        <button type="button" onClick={() => { void submit(tenantId); }} disabled={submitting}>
           {submitting ? "Sending..." : label}
         </button>
       </div>
@@ -178,7 +178,7 @@ function JoinDefaultTailnet({ hasInvitations }: { hasInvitations: boolean }) {
       {state.kind === "approved" && (
         <>
           <p><Badge variant="running">Approved</Badge> Your request was approved.</p>
-          <button className="mt-8" onClick={() => { void reload(); }}>Open dashboard</button>
+          <button type="button" className="mt-8" onClick={() => { void reload(); }}>Open dashboard</button>
         </>
       )}
       {state.kind === "rejected" && (
@@ -252,7 +252,7 @@ export function InvitePage({ id, onDone }: { id: string; onDone: (slug?: string)
             </p>
             <div className="btn-group justify-center mt-16">
               <SignOutButton className="" />
-              <button className="btn-ghost" onClick={() => onDone()}>Go to dashboard</button>
+              <button type="button" className="btn-ghost" onClick={() => onDone()}>Go to dashboard</button>
             </div>
           </>
         )}
@@ -261,7 +261,7 @@ export function InvitePage({ id, onDone }: { id: string; onDone: (slug?: string)
           <>
             <h1>Couldn&apos;t load this invitation</h1>
             <p className="text-dim" role="alert">{state.message}</p>
-            <button className="mt-16" onClick={() => onDone()}>Go to dashboard</button>
+            <button type="button" className="mt-16" onClick={() => onDone()}>Go to dashboard</button>
           </>
         )}
 
@@ -270,10 +270,10 @@ export function InvitePage({ id, onDone }: { id: string; onDone: (slug?: string)
             <h1>@{state.invitation.inviterHandle} invited you to {state.invitation.tenant.name}</h1>
             <p className="text-dim">Accept to join the tailnet and start adding your devices.</p>
             <div className="btn-group justify-center mt-16">
-              <button disabled={busy} onClick={() => { void act(true, state.invitation.tenant.slug); }}>
+              <button type="button" disabled={busy} onClick={() => { void act(true, state.invitation.tenant.slug); }}>
                 Accept
               </button>
-              <button
+              <button type="button"
                 className="btn-ghost"
                 disabled={busy}
                 onClick={() => { void act(false, state.invitation.tenant.slug); }}
@@ -288,7 +288,7 @@ export function InvitePage({ id, onDone }: { id: string; onDone: (slug?: string)
           <>
             <h1>{state.invitation.tenant.name}</h1>
             <p className="text-dim">{STATUS_TEXT[state.invitation.status] ?? "This invitation is no longer open."}</p>
-            <button
+            <button type="button"
               className="mt-16"
               onClick={() => onDone(state.invitation.status === "accepted" ? state.invitation.tenant.slug : undefined)}
             >

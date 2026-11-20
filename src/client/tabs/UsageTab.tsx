@@ -3,6 +3,7 @@ import { useTenantData } from "../hooks/useTenantData";
 import { useTenantMutation } from "../hooks/useMutation";
 import { useApp } from "../hooks/useAppState";
 import { Card } from "../components/Card";
+import { Loading } from "../components/Loading";
 import { relativeTime } from "../lib/utils";
 import type { UsageData } from "../lib/types";
 
@@ -41,14 +42,15 @@ export function UsageTab() {
     setMaxMembers(usage.limits.maxMembers);
   }, [usage.limits.maxDevices, usage.limits.maxMembers]);
 
-  const handleSave = async () => {
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
     await mutate("/limits", {
       method: "PUT",
       body: JSON.stringify({ maxDevices, maxMembers }),
     });
   };
 
-  if (loading) return <div className="loading">Loading...</div>;
+  if (loading) return <Loading />;
 
   const { current, limits, overLimit } = usage;
   const dirty = maxDevices !== limits.maxDevices || maxMembers !== limits.maxMembers;
@@ -72,7 +74,7 @@ export function UsageTab() {
         </div>
       )}
 
-      <Card title="Current Usage">
+      <Card title="Current usage">
         <div className="stats-row">
           <div className="stat-card">
             <div className="stat-value">
@@ -102,45 +104,45 @@ export function UsageTab() {
 
       <Card title="Limits">
         {isOriginator() ? (
-          <div className="form-stack">
+          <form className="form-stack" onSubmit={handleSave}>
             <p className="card-description">
               Caps are enforced when issuing auth keys, approving devices, accepting invitations,
-              and approving join requests. 0 means unlimited. A sub-collective's caps cannot exceed
-              its parent's.
+              and approving join requests. 0 means unlimited. A sub-collective&apos;s caps cannot exceed
+              its parent&apos;s.
             </p>
-            <div className="form-row">
-              <label htmlFor="limit-devices">Max devices</label>
-              <input
-                id="limit-devices"
-                type="number"
-                min={0}
-                max={MAX_CAP}
-                value={maxDevices}
-                onChange={(e) => setMaxDevices(clampCap(e.target.value))}
-              />
-            </div>
-            <div className="form-row">
-              <label htmlFor="limit-members">Max members</label>
-              <input
-                id="limit-members"
-                type="number"
-                min={0}
-                max={MAX_CAP}
-                value={maxMembers}
-                onChange={(e) => setMaxMembers(clampCap(e.target.value))}
-              />
+            <div className="field-row">
+              <div className="field">
+                <label htmlFor="limit-devices">Max devices</label>
+                <input
+                  id="limit-devices"
+                  type="number"
+                  min={0}
+                  max={MAX_CAP}
+                  value={maxDevices}
+                  onChange={(e) => setMaxDevices(clampCap(e.target.value))}
+                />
+              </div>
+              <div className="field">
+                <label htmlFor="limit-members">Max members</label>
+                <input
+                  id="limit-members"
+                  type="number"
+                  min={0}
+                  max={MAX_CAP}
+                  value={maxMembers}
+                  onChange={(e) => setMaxMembers(clampCap(e.target.value))}
+                />
+              </div>
             </div>
             {belowCurrent && (
-              <p className="help-text" role="status">
+              <p className="notice" role="status">
                 A cap below current usage blocks new additions but does not remove existing devices or members.
               </p>
             )}
-            <div>
-              <button className="btn-primary" onClick={handleSave} disabled={busy || !dirty}>
-                {busy ? "Saving..." : "Save limits"}
-              </button>
-            </div>
-          </div>
+            <button type="submit" disabled={busy || !dirty}>
+              {busy ? "Saving…" : "Save limits"}
+            </button>
+          </form>
         ) : (
           <p className="card-description">
             Max devices: {fmtLimit(limits.maxDevices)} · Max members: {fmtLimit(limits.maxMembers)}.
@@ -150,14 +152,16 @@ export function UsageTab() {
       </Card>
 
       {usage.history.length > 0 && (
-        <Card title="Snapshot History">
+        <Card title="Snapshot history">
+          <div className="table-wrap">
           <table className="data-table">
+            <caption className="sr-only">Usage snapshots, newest first</caption>
             <thead>
               <tr>
-                <th>Time</th>
-                <th>Devices</th>
-                <th>Members</th>
-                <th>Routes</th>
+                <th scope="col">Time</th>
+                <th scope="col">Devices</th>
+                <th scope="col">Members</th>
+                <th scope="col">Routes</th>
               </tr>
             </thead>
             <tbody>
@@ -171,6 +175,7 @@ export function UsageTab() {
               ))}
             </tbody>
           </table>
+          </div>
         </Card>
       )}
     </div>

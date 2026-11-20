@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Card } from "../components/Card";
+import { Loading } from "../components/Loading";
 import { useTenantData } from "../hooks/useTenantData";
 import { useTenantMutation } from "../hooks/useMutation";
 import type { IpConfig } from "../lib/types";
@@ -44,68 +45,61 @@ export function IpConfigTab() {
     });
   };
 
-  if (loading) return <div className="loading">Loading...</div>;
+  if (loading) return <Loading />;
 
   return (
     <div className="tab-content">
-      <Card title="IP Configuration">
-        <div className="warning-banner">
+      <Card title="IP ranges">
+        <p className="notice mb-12" role="note">
           Changing IP configuration will trigger a container restart. Connected
           devices may briefly lose connectivity.
-        </div>
+        </p>
 
-        <form className="form" onSubmit={handleSave}>
-          <div className="form-group">
-            <label className="form-label" htmlFor="ipv4-prefix">
-              IPv4 Prefix
-            </label>
-            <input
-              id="ipv4-prefix"
-              type="text"
-              className="input"
-              value={ipv4Prefix}
-              onChange={(e) => setIpv4Prefix(e.target.value)}
-              placeholder="100.64.0.0/10"
-            />
+        <form className="form-stack" onSubmit={handleSave}>
+          <div className="field-row">
+            <div className="field">
+              <label htmlFor="ipv4-prefix">IPv4 prefix</label>
+              <input
+                id="ipv4-prefix"
+                type="text"
+                className="mono"
+                value={ipv4Prefix}
+                onChange={(e) => setIpv4Prefix(e.target.value)}
+                placeholder="100.64.0.0/10"
+                spellCheck={false}
+              />
+            </div>
+
+            <div className="field">
+              <label htmlFor="ipv6-prefix">IPv6 prefix</label>
+              <input
+                id="ipv6-prefix"
+                type="text"
+                className="mono"
+                value={ipv6Prefix}
+                onChange={(e) => setIpv6Prefix(e.target.value)}
+                placeholder="fd7a:115c:a1e0::/48"
+                spellCheck={false}
+              />
+            </div>
+
+            <div className="field">
+              <label htmlFor="ip-allocation">Allocation strategy</label>
+              <select
+                id="ip-allocation"
+                value={ipAllocation}
+                onChange={(e) =>
+                  setIpAllocation(e.target.value as "sequential" | "random")
+                }
+              >
+                <option value="sequential">Sequential</option>
+                <option value="random">Random</option>
+              </select>
+            </div>
           </div>
 
-          <div className="form-group">
-            <label className="form-label" htmlFor="ipv6-prefix">
-              IPv6 Prefix
-            </label>
-            <input
-              id="ipv6-prefix"
-              type="text"
-              className="input"
-              value={ipv6Prefix}
-              onChange={(e) => setIpv6Prefix(e.target.value)}
-              placeholder="fd7a:115c:a1e0::/48"
-            />
-          </div>
-
-          <div className="form-group">
-            <label className="form-label" htmlFor="ip-allocation">
-              Allocation Strategy
-            </label>
-            <select
-              id="ip-allocation"
-              className="input"
-              value={ipAllocation}
-              onChange={(e) =>
-                setIpAllocation(e.target.value as "sequential" | "random")
-              }
-            >
-              <option value="sequential">Sequential</option>
-              <option value="random">Random</option>
-            </select>
-          </div>
-
-          <button
-            className="btn btn-primary"
-            type="submit"
-            disabled={busy}
-          >
-            {busy ? "Saving..." : "Save"}
+          <button type="submit" disabled={busy}>
+            {busy ? "Saving…" : "Save"}
           </button>
         </form>
       </Card>

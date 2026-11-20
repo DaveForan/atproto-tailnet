@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { useApp } from "../hooks/useAppState";
 import { useToast } from "../components/Toast";
+import { useConfirm } from "../components/ConfirmDialog";
 import { Card } from "../components/Card";
 import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
+import { InlinePrompt } from "../components/InlinePrompt";
 import { BoardText } from "../components/BoardText";
 import { errorMessage } from "../lib/utils";
 import { lintBoardText, BOARD_TEXT_MAX_LENGTH } from "../../shared/board-text";
@@ -41,7 +43,7 @@ function DevicePicker({
   idPrefix: string;
 }) {
   if (devices.length === 0) {
-    return <p className="help-text">You have no devices in this tailnet yet. Add one in the Add Device tab.</p>;
+    return <p className="help-text">You have no devices in this tailnet yet. Add one in the Add device tab.</p>;
   }
   return (
     <fieldset className="device-picker">
@@ -113,19 +115,19 @@ function PublicPostCard({ post, devices, onChanged }: { post: PublicPost; device
               The devices you select can reach this one port on the service device. Nothing else is opened.
             </p>
             <div className="btn-group">
-              <button disabled={busy || selected.length === 0} onClick={() => { void save(selected); }}>
+              <button type="button" disabled={busy || selected.length === 0} onClick={() => { void save(selected); }}>
                 {busy ? "Saving..." : "Connect selected devices"}
               </button>
               {connected && (
-                <button className="btn-danger" disabled={busy} onClick={() => { void save([]); }}>
+                <button type="button" className="btn-danger" disabled={busy} onClick={() => { void save([]); }}>
                   Disconnect all
                 </button>
               )}
-              <button className="btn-ghost" onClick={() => setOpen(false)}>Cancel</button>
+              <button type="button" className="btn-ghost" onClick={() => setOpen(false)}>Cancel</button>
             </div>
           </div>
         ) : (
-          <button className="btn-sm" onClick={() => setOpen(true)}>{connected ? "Change devices" : "Connect"}</button>
+          <button type="button" className="btn-sm" onClick={() => setOpen(true)}>{connected ? "Change devices" : "Connect"}</button>
         ))}
     </li>
   );
@@ -162,7 +164,7 @@ function NewServiceForm({ devices, baseDomain, onCreated }: { devices: MyDevice[
   };
 
   if (devices.length === 0) {
-    return <p className="help-text">Add a device first (Add Device tab). A service runs on one of your devices.</p>;
+    return <p className="help-text">Add a device first (Add device tab). A service runs on one of your devices.</p>;
   }
 
   return (
@@ -269,7 +271,7 @@ function ControllerBoardEditor({ initial, address, onSaved }: { initial: string;
           {problems[0] ?? `${text.length} / ${BOARD_TEXT_MAX_LENGTH} characters. Text only: HTML is shown as written.`}
         </p>
         <div className="btn-group">
-          <button disabled={busy || problems.length > 0 || text === initial} onClick={() => { void save(); }}>
+          <button type="button" disabled={busy || problems.length > 0 || text === initial} onClick={() => { void save(); }}>
             {busy ? "Saving..." : "Save"}
           </button>
           <a className="btn-sm btn-ghost" href={`/board/${address}`} target="_blank" rel="noopener noreferrer">
@@ -288,8 +290,10 @@ function ControllerBoardEditor({ initial, address, onSaved }: { initial: string;
 export function BoardsTab() {
   const { currentTenant, hasPerm } = useApp();
   const { toast, toastError } = useToast();
+  const confirm = useConfirm();
   const [state, setState] = useState<State | null>(null);
   const [failed, setFailed] = useState(false);
+  const [rejectingId, setRejectingId] = useState<string | null>(null);
   const canReview = hasPerm("approve_services");
   const tid = currentTenant?.id;
 
@@ -330,12 +334,12 @@ export function BoardsTab() {
       <div className="tab-content">
         <Card>
           <p role="alert">The boards could not be loaded.</p>
-          <button className="btn-sm" onClick={() => { void load(); }}>Retry</button>
+          <button type="button" className="btn-sm" onClick={() => { void load(); }}>Retry</button>
         </Card>
       </div>
     );
   }
-  if (!state || !tid) return <div className="loading">Loading...</div>;
+  if (!state || !tid) return <div className="loading" role="status">Loading…</div>;
 
   const act = async (fn: () => Promise<unknown>, done: string, fail: string) => {
     try {
@@ -386,19 +390,30 @@ export function BoardsTab() {
                 {p.description && <p className="post-desc">{p.description}</p>}
                 <p className="text-dim text-sm">by @{p.authorHandle}</p>
                 <div className="btn-group">
-                  <button className="btn-sm" onClick={() => { void act(() => boardsService.approve(tid, p.id), "Approved", "Could not approve"); }}>
+                  <button type="button" className="btn-sm" onClick={() => { void act(() => boardsService.approve(tid, p.id), "Approved", "Could not approve"); }}>
                     Approve
                   </button>
                   <button
+                    type="button"
                     className="btn-sm btn-danger"
-                    onClick={() => {
-                      const reason = window.prompt("Reason (shown to the author, optional)") ?? "";
-                      void act(() => boardsService.reject(tid, p.id, reason), "Not approved", "Could not reject");
-                    }}
+                    aria-expanded={rejectingId === p.id}
+                    onClick={() => setRejectingId(rejectingId === p.id ? null : p.id)}
                   >
                     Reject
                   </button>
                 </div>
+                {rejectingId === p.id && (
+                  <InlinePrompt
+                    label="Reason (shown to the author, optional)"
+                    submitLabel="Reject post"
+                    danger
+                    onCancel={() => setRejectingId(null)}
+                    onSubmit={(reason) => {
+                      setRejectingId(null);
+                      void act(() => boardsService.reject(tid, p.id, reason), "Not approved", "Could not reject");
+                    }}
+                  />
+                )}
               </li>
             ))}
           </ul>
@@ -421,7 +436,7 @@ export function BoardsTab() {
                   <span className="mono">{p.name}.{state.baseDomain}</span>
                   {p.device?.address && <span className="text-dim"> · {p.device.address}:{p.port} on {p.device.name}</span>}
                 </p>
-                <button className="btn-sm btn-ghost" onClick={() => { void act(() => boardsService.remove(tid, p.id), "Removed", "Could not remove"); }}>
+                <button type="button" className="btn-sm btn-ghost" onClick={() => { void act(() => boardsService.remove(tid, p.id), "Removed", "Could not remove"); }}>
                   Remove
                 </button>
               </li>
@@ -449,7 +464,7 @@ export function BoardsTab() {
                     {p.connections.map((c) => (
                       <li key={c.userId} className="item-row">
                         <span>@{c.handle} · {c.devices} device(s)</span>
-                        <button
+                        <button type="button"
                           className="btn-sm btn-ghost"
                           onClick={() => { void act(() => boardsService.disconnectMember(tid, p.id, c.userId), "Disconnected", "Could not disconnect"); }}
                         >
@@ -459,7 +474,7 @@ export function BoardsTab() {
                     ))}
                   </ul>
                 )}
-                <button className="btn-sm btn-ghost" onClick={() => { void act(() => boardsService.remove(tid, p.id), "Removed", "Could not remove"); }}>
+                <button type="button" className="btn-sm btn-ghost" onClick={() => { void act(() => boardsService.remove(tid, p.id), "Removed", "Could not remove"); }}>
                   Remove
                 </button>
               </li>
@@ -489,10 +504,15 @@ export function BoardsTab() {
               : "Open: every device in this tailnet can reach every other device on every port."}
           </p>
           <button
+            type="button"
             className="btn-sm"
-            onClick={() => {
+            onClick={async () => {
               const next = state.mode === "member" ? "open" : "member";
-              if (next === "member" && !window.confirm("Switch to members-only access? Devices of different members will stop reaching each other until they connect to a service or share.")) return;
+              if (next === "member" && !(await confirm({
+                title: "Switch to members-only access?",
+                message: "Devices of different members will stop reaching each other until they connect to a service or share.",
+                confirmLabel: "Switch",
+              }))) return;
               void act(() => boardsService.setAccessMode(tid, next), "Access mode changed", "Could not change the access mode");
             }}
           >

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Card } from "./Card";
 import { Badge } from "./Badge";
 import { useToast } from "./Toast";
+import { useConfirm } from "./ConfirmDialog";
 import { errorCode, errorMessage } from "../lib/utils";
 import { machineLockService, type MachineLockState } from "../services/machine-lock";
 
@@ -11,6 +12,7 @@ import { machineLockService, type MachineLockState } from "../services/machine-l
  */
 export function MachineLockCard({ tenantId, onChanged }: { tenantId: string; onChanged?: () => void }) {
   const { toast, toastError } = useToast();
+  const confirm = useConfirm();
   const [state, setState] = useState<MachineLockState | null>(null);
   const [keep, setKeep] = useState<Set<string>>(new Set());
   const [choosing, setChoosing] = useState(false);
@@ -57,7 +59,7 @@ export function MachineLockCard({ tenantId, onChanged }: { tenantId: string; onC
             Limit your devices in this tailnet to the ones you have now. While the lock is on, no other machine can
             join as you, also with a valid auth key or the correct sign-in.
           </p>
-          <button disabled={busy || state.devices.length === 0} onClick={() => setChoosing(true)}>
+          <button type="button" disabled={busy || state.devices.length === 0} onClick={() => setChoosing(true)}>
             Lock to my devices
           </button>
           {state.devices.length === 0 && <p className="help-text">Add a device first.</p>}
@@ -131,17 +133,22 @@ export function MachineLockCard({ tenantId, onChanged }: { tenantId: string; onC
             </p>
           )}
           <div className="btn-group">
-            <button className="btn-sm" disabled={busy || windowOpen} onClick={() => { void run(() => machineLockService.allowOne(tenantId), "The next new device will be let in"); }}>
+            <button type="button" className="btn-sm" disabled={busy || windowOpen} onClick={() => { void run(() => machineLockService.allowOne(tenantId), "The next new device will be let in"); }}>
               Allow one new device
             </button>
-            <button className="btn-sm btn-ghost" disabled={busy} onClick={() => setChoosing(true)}>
+            <button type="button" className="btn-sm btn-ghost" disabled={busy} onClick={() => setChoosing(true)}>
               Change devices
             </button>
-            <button
+            <button type="button"
               className="btn-sm btn-ghost"
               disabled={busy}
-              onClick={() => {
-                if (!window.confirm("Turn the lock off? Any machine with a valid key or sign-in can join as you again.")) return;
+              onClick={async () => {
+                if (!(await confirm({
+                  title: "Turn the lock off?",
+                  message: "Any machine with a valid key or sign-in can join as you again.",
+                  confirmLabel: "Turn off",
+                  danger: true,
+                }))) return;
                 void run(() => machineLockService.unlock(tenantId), "The lock is off");
               }}
             >

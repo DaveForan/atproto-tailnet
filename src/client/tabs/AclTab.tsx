@@ -5,6 +5,8 @@ import { useToast } from "../components/Toast";
 import { useTenantMutation } from "../hooks/useMutation";
 import { Card } from "../components/Card";
 import { EmptyState } from "../components/EmptyState";
+import { Loading } from "../components/Loading";
+import { useConfirm } from "../components/ConfirmDialog";
 import type { AclRule } from "../lib/types";
 
 export function AclTab() {
@@ -17,6 +19,8 @@ export function AclTab() {
   const [groups, setGroups] = useState<Record<string, string[]>>({});
   const [hosts, setHosts] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
+  const confirm = useConfirm();
+  const canManage = hasPerm("manage_acl");
 
   // Add rule form
   const [ruleSrc, setRuleSrc] = useState<string[]>([]);
@@ -68,7 +72,8 @@ export function AclTab() {
     );
   };
 
-  const addRule = () => {
+  const addRule = (e: React.FormEvent) => {
+    e.preventDefault();
     if (ruleSrc.length === 0 || ruleDst.length === 0) return;
     const dst = ruleDst.map((d) =>
       rulePort ? `${d}:${rulePort}` : `${d}:*`,
@@ -85,7 +90,8 @@ export function AclTab() {
     toast("Rule removed (unsaved)");
   };
 
-  const addGroup = () => {
+  const addGroup = (e: React.FormEvent) => {
+    e.preventDefault();
     const name = groupName.trim();
     if (!name || groupMembers.length === 0) return;
     setGroups({ ...groups, [name]: groupMembers });
@@ -101,7 +107,8 @@ export function AclTab() {
     toast("Group removed (unsaved)");
   };
 
-  const addHost = () => {
+  const addHost = (e: React.FormEvent) => {
+    e.preventDefault();
     const n = hostName.trim();
     const ip = hostIp.trim();
     if (!n || !ip) return;
@@ -125,107 +132,117 @@ export function AclTab() {
     }, { successMsg: "ACL policy saved" });
   };
 
-  const handleReset = () => {
-    if (!confirm("Reset ACL to allow-all? This removes all existing rules.")) return;
+  const handleReset = async () => {
+    if (!(await confirm({
+      title: "Reset the ACL to allow-all?",
+      message: "This removes all existing rules, groups and hosts. Nothing changes on the tailnet until you save.",
+      confirmLabel: "Reset",
+      danger: true,
+    }))) return;
     setAcls([{ action: "accept", src: ["*"], dst: ["*:*"] }]);
     setGroups({});
     setHosts({});
     toast("ACL reset to allow-all (unsaved)");
   };
 
-  if (loading) return <div className="loading">Loading...</div>;
+  if (loading) return <Loading />;
+
+  const chips = (
+    label: string,
+    options: string[],
+    selected: string[],
+    setter: React.Dispatch<React.SetStateAction<string[]>>,
+    empty: string,
+  ) => (
+    <fieldset className="field">
+      <legend>{label}</legend>
+      {options.length === 0 ? (
+        <p className="help-text">{empty}</p>
+      ) : (
+        <div className="chip-list">
+          {options.map((opt) => (
+            <button
+              key={opt}
+              type="button"
+              className="chip"
+              aria-pressed={selected.includes(opt)}
+              onClick={() => toggleMulti(selected, setter, opt)}
+            >
+              {opt}
+            </button>
+          ))}
+        </div>
+      )}
+    </fieldset>
+  );
 
   return (
     <div className="tab-content">
       {coordinatorMode && (
-        <p className="help-text" role="note">
+        <p className="notice mb-12" role="note">
           This tailnet runs on the built-in coordinator, which supports rules between hosts,
           IPs/CIDRs and <code>*</code>. Users, groups, tags and auto-approvers are not supported
           here; policies using them are rejected on save.
         </p>
       )}
-      <div className="form-row">
-        <button className="btn-primary" onClick={handleSave} disabled={busy || !hasPerm("manage_acl")}>
-          Save Policy
-        </button>
-        <button className="btn-sm btn-danger" onClick={handleReset} disabled={!hasPerm("manage_acl")}>
-          Reset to Allow-All
-        </button>
-      </div>
 
       <Card title="Rules">
         {acls.length === 0 ? (
           <EmptyState>No ACL rules defined.</EmptyState>
         ) : (
-          <table className="data-table">
-            <thead>
-              <tr>
-                <th>Source</th>
-                <th>Destination</th>
-                <th>Action</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {acls.map((rule, i) => (
-                <tr key={i}>
-                  <td>{rule.src.join(", ")}</td>
-                  <td>{rule.dst.join(", ")}</td>
-                  <td>{rule.action}</td>
-                  <td>
-                    <button
-                      className="btn-sm btn-danger"
-                      onClick={() => removeRule(i)}
-                    >
-                      Remove
-                    </button>
-                  </td>
+          <div className="table-wrap">
+            <table className="data-table stack">
+              <caption className="sr-only">ACL rules</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Source</th>
+                  <th scope="col">Destination</th>
+                  <th scope="col">Action</th>
+                  <th scope="col"><span className="sr-only">Actions</span></th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {acls.map((rule, i) => (
+                  <tr key={i}>
+                    <td data-label="Source" className="mono">{rule.src.join(", ")}</td>
+                    <td data-label="Destination" className="mono">{rule.dst.join(", ")}</td>
+                    <td data-label="Action">{rule.action}</td>
+                    <td className="cell-actions">
+                      <button
+                        type="button"
+                        className="btn-sm btn-ghost"
+                        aria-label={`Remove rule ${i + 1}`}
+                        onClick={() => removeRule(i)}
+                      >
+                        Remove
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
-        <div className="form-stack">
-          <div className="form-field">
-            <label>Source:</label>
-            <div className="chip-list">
-              {sourceOptions.map((opt) => (
-                <button
-                  key={opt}
-                  className={`chip ${ruleSrc.includes(opt) ? "chip-active" : ""}`}
-                  onClick={() => toggleMulti(ruleSrc, setRuleSrc, opt)}
-                >
-                  {opt}
-                </button>
-              ))}
+        <form className="form-section form-stack" onSubmit={addRule} aria-labelledby="acl-add-rule">
+          <h4 id="acl-add-rule">Add a rule</h4>
+          {chips("Source", sourceOptions, ruleSrc, setRuleSrc, "No sources available.")}
+          {chips("Destination", sourceOptions, ruleDst, setRuleDst, "No destinations available.")}
+          <div className="field">
+            <label htmlFor="acl-rule-port">Port (optional)</label>
+            <div className="inline-form">
+              <input
+                id="acl-rule-port"
+                type="text"
+                placeholder="e.g. 443"
+                value={rulePort}
+                onChange={(e) => setRulePort(e.target.value)}
+              />
+              <button type="submit" className="btn-ghost" disabled={!canManage || ruleSrc.length === 0 || ruleDst.length === 0}>
+                Add rule
+              </button>
             </div>
           </div>
-          <div className="form-field">
-            <label>Destination:</label>
-            <div className="chip-list">
-              {sourceOptions.map((opt) => (
-                <button
-                  key={opt}
-                  className={`chip ${ruleDst.includes(opt) ? "chip-active" : ""}`}
-                  onClick={() => toggleMulti(ruleDst, setRuleDst, opt)}
-                >
-                  {opt}
-                </button>
-              ))}
-            </div>
-          </div>
-          <div className="form-row">
-            <input
-              type="text"
-              placeholder="Port (optional, e.g. 443)"
-              value={rulePort}
-              onChange={(e) => setRulePort(e.target.value)}
-            />
-            <button className="btn-primary" onClick={addRule} disabled={!hasPerm("manage_acl")}>
-              Add Rule
-            </button>
-          </div>
-        </div>
+        </form>
       </Card>
 
       {!coordinatorMode && <Card title="Groups">
@@ -237,10 +254,12 @@ export function AclTab() {
               <li key={name} className="item-row">
                 <div className="item-info">
                   <span className="item-name">{name}</span>
-                  <span className="item-meta">{members.join(", ")}</span>
+                  <span className="item-detail">{members.join(", ")}</span>
                 </div>
                 <button
-                  className="btn-sm btn-danger"
+                  type="button"
+                  className="btn-sm btn-ghost"
+                  aria-label={`Remove group ${name}`}
                   onClick={() => removeGroup(name)}
                 >
                   Remove
@@ -249,33 +268,22 @@ export function AclTab() {
             ))}
           </ul>
         )}
-        <div className="form-stack">
-          <input
-            type="text"
-            placeholder="Group name"
-            value={groupName}
-            onChange={(e) => setGroupName(e.target.value)}
-          />
-          <div className="form-field">
-            <label>Members:</label>
-            <div className="chip-list">
-              {users.map((u) => (
-                <button
-                  key={u}
-                  className={`chip ${groupMembers.includes(u) ? "chip-active" : ""}`}
-                  onClick={() =>
-                    toggleMulti(groupMembers, setGroupMembers, u)
-                  }
-                >
-                  {u}
-                </button>
-              ))}
-            </div>
+        <form className="form-section form-stack" onSubmit={addGroup} aria-labelledby="acl-add-group">
+          <h4 id="acl-add-group">Add a group</h4>
+          <div className="field">
+            <label htmlFor="acl-group-name">Group name</label>
+            <input
+              id="acl-group-name"
+              type="text"
+              value={groupName}
+              onChange={(e) => setGroupName(e.target.value)}
+            />
           </div>
-          <button className="btn-primary" onClick={addGroup} disabled={!hasPerm("manage_acl")}>
-            Add Group
+          {chips("Members", users, groupMembers, setGroupMembers, "No users on this tailnet yet.")}
+          <button type="submit" className="btn-ghost" disabled={!canManage || !groupName.trim() || groupMembers.length === 0}>
+            Add group
           </button>
-        </div>
+        </form>
       </Card>}
 
       <Card title="Hosts">
@@ -287,10 +295,12 @@ export function AclTab() {
               <li key={name} className="item-row">
                 <div className="item-info">
                   <span className="item-name">{name}</span>
-                  <span className="item-meta">{ip}</span>
+                  <span className="item-detail mono">{ip}</span>
                 </div>
                 <button
-                  className="btn-sm btn-danger"
+                  type="button"
+                  className="btn-sm btn-ghost"
+                  aria-label={`Remove host ${name}`}
                   onClick={() => removeHost(name)}
                 >
                   Remove
@@ -299,24 +309,45 @@ export function AclTab() {
             ))}
           </ul>
         )}
-        <div className="form-row">
-          <input
-            type="text"
-            placeholder="Host name"
-            value={hostName}
-            onChange={(e) => setHostName(e.target.value)}
-          />
-          <input
-            type="text"
-            placeholder="IP address"
-            value={hostIp}
-            onChange={(e) => setHostIp(e.target.value)}
-          />
-          <button className="btn-primary" onClick={addHost} disabled={!hasPerm("manage_acl")}>
-            Add Host
+        <form className="form-section form-stack" onSubmit={addHost} aria-labelledby="acl-add-host">
+          <h4 id="acl-add-host">Add a host</h4>
+          <div className="field-row">
+            <div className="field">
+              <label htmlFor="acl-host-name">Host name</label>
+              <input
+                id="acl-host-name"
+                type="text"
+                value={hostName}
+                onChange={(e) => setHostName(e.target.value)}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="acl-host-ip">IP address or CIDR</label>
+              <input
+                id="acl-host-ip"
+                type="text"
+                className="mono"
+                spellCheck={false}
+                value={hostIp}
+                onChange={(e) => setHostIp(e.target.value)}
+              />
+            </div>
+          </div>
+          <button type="submit" className="btn-ghost" disabled={!canManage || !hostName.trim() || !hostIp.trim()}>
+            Add host
           </button>
-        </div>
+        </form>
       </Card>
+
+      <div className="form-footer btn-group">
+        <button type="button" onClick={handleSave} disabled={busy || !canManage}>
+          {busy ? "Saving…" : "Save policy"}
+        </button>
+        <span className="text-dim text-sm">Added and removed rules apply when you save.</span>
+        <button type="button" className="btn-sm btn-danger btn-apart" onClick={() => { void handleReset(); }} disabled={!canManage}>
+          Reset to allow-all
+        </button>
+      </div>
     </div>
   );
 }

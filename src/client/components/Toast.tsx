@@ -38,7 +38,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       {children}
       <div className="toast-container">
         {items.map((t) => (
-          <div key={t.id} className={`toast toast-${t.variant}`}>
+          <div key={t.id} className={`toast toast-${t.variant}`} role={t.variant === "error" ? "alert" : "status"}>
             {t.message}
           </div>
         ))}

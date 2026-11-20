@@ -1,6 +1,9 @@
 import { useApp } from "../hooks/useAppState";
 import { Card } from "../components/Card";
 import { EmptyState } from "../components/EmptyState";
+import { Loading } from "../components/Loading";
+import { Badge } from "../components/Badge";
+import { useConfirm } from "../components/ConfirmDialog";
 import { useTenantData } from "../hooks/useTenantData";
 import { useTenantMutation } from "../hooks/useMutation";
 import type { RouteData, RouteEntry } from "../lib/types";
@@ -19,6 +22,7 @@ export function RoutesTab() {
   });
 
   const canManage = hasPerm("manage_devices");
+  const confirm = useConfirm();
 
   const handleToggle = async (routeId: string, currentlyEnabled: boolean) => {
     const action = currentlyEnabled ? "disable" : "enable";
@@ -30,7 +34,12 @@ export function RoutesTab() {
   };
 
   const handleDelete = async (routeId: string) => {
-    if (!confirm("Delete this route?")) return;
+    if (!(await confirm({
+      title: "Delete this route?",
+      message: "This withdraws the route's approval.",
+      confirmLabel: "Delete route",
+      danger: true,
+    }))) return;
     await mutate(
       `/routes/${routeId}`,
       { method: "DELETE" },
@@ -38,11 +47,11 @@ export function RoutesTab() {
     );
   };
 
-  if (loading) return <div className="loading">Loading...</div>;
+  if (loading) return <Loading />;
 
   return (
     <div className="tab-content">
-      <Card title="Exit Nodes">
+      <Card title="Exit nodes">
         {routes.exitNodes.length > 0 ? (
           <RouteList
             entries={routes.exitNodes}
@@ -59,7 +68,7 @@ export function RoutesTab() {
         )}
       </Card>
 
-      <Card title="Subnet Routers">
+      <Card title="Subnet routers">
         {routes.subnets.length > 0 ? (
           <RouteList
             entries={routes.subnets}
@@ -93,38 +102,47 @@ function RouteList({
   canManage: boolean;
 }) {
   return (
-    <ul className="route-list">
-      {entries.map((route) => (
-        <li key={route.id} className="route-row">
-          <span
-            className={`online-dot ${route.node?.online ? "online" : "offline"}`}
-          />
-          <div className="route-info">
-            <span className="route-node">
-              {route.node?.givenName || route.node?.name || "Unknown node"}
-            </span>
-            <span className="route-prefix">{route.prefix}</span>
-          </div>
-          {canManage && (
-            <div className="route-actions">
-              <button
-                className={`btn-sm ${route.enabled ? "btn-warning" : "btn-primary"}`}
-                onClick={() => onToggle(route.id, route.enabled)}
-                disabled={busy}
-              >
-                {route.enabled ? "Disable" : "Enable"}
-              </button>
-              <button
-                className="btn-sm btn-danger"
-                onClick={() => onDelete(route.id)}
-                disabled={busy}
-              >
-                Delete
-              </button>
+    <ul className="item-list">
+      {entries.map((route) => {
+        const node = route.node?.givenName || route.node?.name || "Unknown node";
+        return (
+          <li key={route.id} className="item-row item-row-wrap">
+            <div className="item-lead">
+              <span className={`online-dot ${route.node?.online ? "online" : "offline"}`} aria-hidden="true" />
+              <div className="item-info">
+                <span className="item-header">
+                  <span className="item-name">{node}</span>
+                  <Badge variant={route.enabled ? "running" : "role"}>{route.enabled ? "enabled" : "not enabled"}</Badge>
+                  <span className="sr-only">({route.node?.online ? "online" : "offline"})</span>
+                </span>
+                <span className="item-detail mono">{route.prefix}</span>
+              </div>
             </div>
-          )}
-        </li>
-      ))}
+            {canManage && (
+              <div className="item-actions">
+                <button
+                  type="button"
+                  className={`btn-sm${route.enabled ? " btn-ghost" : ""}`}
+                  aria-label={`${route.enabled ? "Disable" : "Enable"} route ${route.prefix} on ${node}`}
+                  onClick={() => onToggle(route.id, route.enabled)}
+                  disabled={busy}
+                >
+                  {route.enabled ? "Disable" : "Enable"}
+                </button>
+                <button
+                  type="button"
+                  className="btn-sm btn-danger"
+                  aria-label={`Delete route ${route.prefix} on ${node}`}
+                  onClick={() => onDelete(route.id)}
+                  disabled={busy}
+                >
+                  Delete
+                </button>
+              </div>
+            )}
+          </li>
+        );
+      })}
     </ul>
   );
 }

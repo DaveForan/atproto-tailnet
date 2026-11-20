@@ -32,29 +32,40 @@ export function PendingInvitations({
   };
 
   return (
-    <section className="section" aria-labelledby="pending-invitations-heading">
-      <h2 id="pending-invitations-heading">Pending Invitations</h2>
-      <div className="card">
+    <section className="card" aria-labelledby="pending-invitations-heading">
+      <div className="card-header">
+        <h3 id="pending-invitations-heading">Invitations for you</h3>
+      </div>
+      <ul className="item-list">
         {invitations.map((inv) => (
-          <div key={inv.id} className="invitation-item">
-            <div>
-              <strong>{inv.tenantName}</strong>
-              <br />
-              <span className="text-dim text-sm">
-                from {inv.inviterDisplayName || inv.inviterHandle}
-              </span>
+          <li key={inv.id} className="item-row">
+            <div className="item-info">
+              <span className="item-name">{inv.tenantName}</span>
+              <span className="item-detail">from {inv.inviterDisplayName || inv.inviterHandle}</span>
             </div>
-            <div className="btn-group">
-              <button className="btn-sm" disabled={busy} onClick={() => act(inv.id, true)}>
+            <div className="item-actions">
+              <button
+                type="button"
+                className="btn-sm"
+                disabled={busy}
+                aria-label={`Accept invitation to ${inv.tenantName}`}
+                onClick={() => act(inv.id, true)}
+              >
                 Accept
               </button>
-              <button className="btn-sm btn-ghost" disabled={busy} onClick={() => act(inv.id, false)}>
+              <button
+                type="button"
+                className="btn-sm btn-ghost"
+                disabled={busy}
+                aria-label={`Decline invitation to ${inv.tenantName}`}
+                onClick={() => act(inv.id, false)}
+              >
                 Decline
               </button>
             </div>
-          </div>
+          </li>
         ))}
-      </div>
+      </ul>
     </section>
   );
 }

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Card } from "./Card";
+import { Loading } from "./Loading";
 import { api } from "../services/api";
 import { errorMessage } from "../lib/utils";
 
@@ -61,12 +62,12 @@ export function DeviceSignInPage({ id, onDone }: { id: string; onDone: () => voi
     }
   };
 
-  const back = <button className="btn-ghost" onClick={onDone}>Go to the dashboard</button>;
+  const back = <button type="button" className="btn-ghost mt-12" onClick={onDone}>Go to the dashboard</button>;
 
   return (
     <main className="access-main">
       <div className="access-page">
-        {state.kind === "loading" && <div className="tab-loading">Loading...</div>}
+        {state.kind === "loading" && <Loading />}
 
         {state.kind === "gone" && (
           <Card title="This sign-in link is no longer valid">
@@ -104,10 +105,10 @@ export function DeviceSignInPage({ id, onDone }: { id: string; onDone: () => voi
               devices.
             </p>
             {state.data.tailnets.length === 0 ? (
-              <p role="alert">You are not a member of a tailnet this device can join.</p>
+              <p className="notice" role="alert">You are not a member of a tailnet this device can join.</p>
             ) : (
-              <div className="form-stack">
-                <label htmlFor="device-tailnet" className="text-sm">Tailnet</label>
+              <div className="field">
+                <label htmlFor="device-tailnet">Tailnet</label>
                 <select id="device-tailnet" value={tenantId} onChange={(e) => setTenantId(e.target.value)}>
                   {state.data.tailnets.map((t) => (
                     <option key={t.id} value={t.id} disabled={!!t.blocked}>
@@ -120,12 +121,12 @@ export function DeviceSignInPage({ id, onDone }: { id: string; onDone: () => voi
                 ))}
               </div>
             )}
-            {error && <p role="alert">{error}</p>}
+            {error && <p className="form-error mt-12" role="alert">{error}</p>}
             <div className="btn-group mt-16">
-              <button disabled={busy || !tenantId} onClick={() => { void answer(true); }}>
-                {busy ? "Working..." : "Add device"}
+              <button type="button" disabled={busy || !tenantId} onClick={() => { void answer(true); }}>
+                {busy ? "Working…" : "Add device"}
               </button>
-              <button className="btn-danger" disabled={busy} onClick={() => { void answer(false); }}>Refuse</button>
+              <button type="button" className="btn-danger btn-apart" disabled={busy} onClick={() => { void answer(false); }}>Refuse</button>
             </div>
           </Card>
         )}

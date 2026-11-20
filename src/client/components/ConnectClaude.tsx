@@ -5,6 +5,9 @@ import { useToast } from "./Toast";
 import { Card } from "./Card";
 import { CopyField } from "./CopyField";
 import { EmptyState } from "./EmptyState";
+import { Loading } from "./Loading";
+import { Badge } from "./Badge";
+import { useConfirm } from "./ConfirmDialog";
 import { errorMessage, relativeTime } from "../lib/utils";
 import type { McpConnection } from "../lib/types";
 
@@ -14,6 +17,7 @@ export function ConnectClaude() {
   const [connections, setConnections] = useState<McpConnection[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const confirm = useConfirm();
   const url = `${window.location.origin}/mcp`;
 
   const load = useCallback(async () => {
@@ -29,7 +33,7 @@ export function ConnectClaude() {
   useEffect(() => { void load(); }, [load]);
 
   const revoke = async (c: McpConnection) => {
-    if (!confirm(`Disconnect ${c.clientName}? It will lose access immediately.`)) return;
+    if (!(await confirm({ title: `Disconnect ${c.clientName}?`, message: "It will lose access immediately.", confirmLabel: "Disconnect", danger: true }))) return;
     setBusy(true);
     try {
       await mcpService.revoke(c.id);
@@ -58,7 +62,7 @@ export function ConnectClaude() {
       </Card>
       <Card title="Connected apps">
         {loading ? (
-          <div className="loading">Loading...</div>
+          <Loading />
         ) : connections.length === 0 ? (
           <EmptyState>No apps connected.</EmptyState>
         ) : (
@@ -66,9 +70,9 @@ export function ConnectClaude() {
             {connections.map((c) => (
               <li key={c.id} className="item-row">
                 <div className="item-info">
-                  <span className="item-name">
-                    {c.clientName}
-                    {c.operator && <span className="badge badge-role ml-8">operator access</span>}
+                  <span className="item-header">
+                    <span className="item-name">{c.clientName}</span>
+                    {c.operator && <Badge variant="role">operator access</Badge>}
                   </span>
                   <span className="item-detail">
                     Connected {relativeTime(c.createdAt)}
@@ -76,6 +80,7 @@ export function ConnectClaude() {
                   </span>
                 </div>
                 <button
+                  type="button"
                   className="btn-sm btn-danger"
                   disabled={busy}
                   onClick={() => { void revoke(c); }}

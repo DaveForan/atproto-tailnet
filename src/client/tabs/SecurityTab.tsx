@@ -5,6 +5,7 @@ import { useApp } from "../hooks/useAppState";
 import { useToast } from "../components/Toast";
 import { Card } from "../components/Card";
 import { EmptyState } from "../components/EmptyState";
+import { Loading } from "../components/Loading";
 import { Toggle } from "../components/Toggle";
 import { errorMessage, relativeTime } from "../lib/utils";
 import { notificationService } from "../services/notifications";
@@ -20,14 +21,14 @@ type BoolSettingKey = {
 }[keyof Settings];
 
 const TOGGLE_SETTINGS: Array<{ key: BoolSettingKey; label: string; description: string }> = [
-  { key: "lockdownMode", label: "Lockdown Mode", description: "Block invitations, joins, and device registrations" },
-  { key: "requireDeviceApproval", label: "Require Device Approval", description: "New devices wait for admin approval before they can join. Admins get a dashboard notification (and a webhook call, if configured below) for each request." },
-  { key: "requireServiceDeviceApproval", label: "Require Service Device Approval", description: "Service devices need admin approval" },
-  { key: "requireServiceApproval", label: "Require Service Approval", description: "Services need admin approval before activation" },
-  { key: "allowJoinRequests", label: "Allow Join Requests", description: "Allow non-members to request to join" },
-  { key: "boardEnabled", label: "Board Enabled", description: "Enable the public message board" },
-  { key: "allowAgentTokens", label: "Allow Agent Tokens", description: "Enable AI agent token creation" },
-  { key: "allowMemberAgentTokens", label: "Allow Member Agent Tokens", description: "Allow non-originator members to create agent tokens" },
+  { key: "lockdownMode", label: "Lockdown mode", description: "Block invitations, joins, and device registrations" },
+  { key: "requireDeviceApproval", label: "Require device approval", description: "New devices wait for admin approval before they can join. Admins get a dashboard notification (and a webhook call, if configured below) for each request." },
+  { key: "requireServiceDeviceApproval", label: "Require service device approval", description: "Service devices need admin approval" },
+  { key: "requireServiceApproval", label: "Require service approval", description: "Services need admin approval before activation" },
+  { key: "allowJoinRequests", label: "Allow join requests", description: "Allow non-members to request to join" },
+  { key: "boardEnabled", label: "Board enabled", description: "Enable the public message board" },
+  { key: "allowAgentTokens", label: "Allow agent tokens", description: "Enable AI agent token creation" },
+  { key: "allowMemberAgentTokens", label: "Allow member agent tokens", description: "Allow non-originator members to create agent tokens" },
 ];
 
 export function SecurityTab() {
@@ -74,11 +75,15 @@ export function SecurityTab() {
     await mutate(
       "/settings",
       { method: "PATCH", body: JSON.stringify({ [key]: value }) },
-      { successMsg: `${key} ${value ? "enabled" : "disabled"}`, reload: reloadSettings },
+      {
+        successMsg: `${TOGGLE_SETTINGS.find((t) => t.key === key)?.label ?? key} ${value ? "turned on" : "turned off"}`,
+        reload: reloadSettings,
+      },
     );
   };
 
-  const handleSaveHibernation = async () => {
+  const handleSaveHibernation = async (e: React.FormEvent) => {
+    e.preventDefault();
     await mutate(
       "/settings",
       { method: "PATCH", body: JSON.stringify({ hibernateAfterDays: hibernateDays }) },
@@ -86,8 +91,9 @@ export function SecurityTab() {
     );
   };
 
-  const handleSaveBoardLimits = async () => {
-    if (!currentTenant) return;
+  const handleSaveBoardLimits = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentTenant || boardLimitsBusy) return;
     setBoardLimitsBusy(true);
     const errors: string[] = [];
     try {
@@ -143,7 +149,7 @@ export function SecurityTab() {
     }
   };
 
-  if (loading) return <div className="loading">Loading...</div>;
+  if (loading) return <Loading />;
 
   const pendingApprovals = deviceApprovals.filter(
     (da) => da.status === "pending",
@@ -152,7 +158,8 @@ export function SecurityTab() {
 
   return (
     <div className="tab-content">
-      <Card title="Security Settings">
+      <Card title="Security settings">
+        <div className="toggle-group">
         {TOGGLE_SETTINGS.map((toggle) => (
           <Toggle
             key={toggle.key}
@@ -163,60 +170,62 @@ export function SecurityTab() {
             disabled={mutBusy}
           />
         ))}
+        </div>
       </Card>
 
       <NotificationsCard canEdit={hasPerm("manage_settings")} />
 
       <Card title="Hibernation">
-        <div className="form-row">
-          <label>Hibernate after (days, 0 = disabled):</label>
-          <input
-            type="number"
-            min={0}
-            value={hibernateDays}
-            onChange={(e) => setHibernateDays(Number(e.target.value))}
-          />
-          <button
-            className="btn-primary"
-            onClick={handleSaveHibernation}
-            disabled={mutBusy}
-          >
-            {mutBusy ? "Saving..." : "Save"}
-          </button>
-        </div>
-      </Card>
-
-      <Card title="Board Limits">
-        <div className="form-stack">
-          <div className="form-row">
-            <label>Max posts:</label>
+        <form className="field" onSubmit={handleSaveHibernation}>
+          <label htmlFor="hibernate-days">Hibernate after this many idle days</label>
+          <div className="inline-form">
             <input
+              id="hibernate-days"
               type="number"
               min={0}
-              value={maxPosts}
-              onChange={(e) => setMaxPosts(Number(e.target.value))}
+              value={hibernateDays}
+              onChange={(e) => setHibernateDays(Number(e.target.value))}
+              aria-describedby="hibernate-days-help"
             />
+            <button type="submit" disabled={mutBusy}>
+              {mutBusy ? "Saving…" : "Save"}
+            </button>
           </div>
-          <div className="form-row">
-            <label>Max posts displayed:</label>
-            <input
-              type="number"
-              min={0}
-              value={maxPostsDisplayed}
-              onChange={(e) => setMaxPostsDisplayed(Number(e.target.value))}
-            />
-          </div>
-          <button
-            className="btn-primary"
-            onClick={handleSaveBoardLimits}
-            disabled={boardLimitsBusy}
-          >
-            {boardLimitsBusy ? "Saving..." : "Save"}
-          </button>
-        </div>
+          <p className="help-text" id="hibernate-days-help">0 turns hibernation off.</p>
+        </form>
       </Card>
 
-      <Card title="Pending Device Approvals">
+      <Card title="Board limits">
+        <form className="form-stack" onSubmit={handleSaveBoardLimits}>
+          <div className="field-row">
+            <div className="field">
+              <label htmlFor="max-posts">Max posts</label>
+              <input
+                id="max-posts"
+                type="number"
+                min={0}
+                value={maxPosts}
+                onChange={(e) => setMaxPosts(Number(e.target.value))}
+              />
+            </div>
+            <div className="field">
+              <label htmlFor="max-posts-displayed">Max posts displayed</label>
+              <input
+                id="max-posts-displayed"
+                type="number"
+                min={0}
+                value={maxPostsDisplayed}
+                onChange={(e) => setMaxPostsDisplayed(Number(e.target.value))}
+              />
+            </div>
+          </div>
+          <button type="submit" disabled={boardLimitsBusy}>
+            {boardLimitsBusy ? "Saving…" : "Save"}
+          </button>
+        </form>
+      </Card>
+
+      <Card title="Pending device approvals">
         {pendingApprovals.length === 0 ? (
           <EmptyState>No pending device approvals.</EmptyState>
         ) : (
@@ -228,20 +237,24 @@ export function SecurityTab() {
                     {da.displayName || da.handle}
                   </span>
                   <span className="item-meta">
-                    Key: {da.machineKey.slice(0, 16)}... |{" "}
-                    {relativeTime(da.createdAt)}
+                    <span>Key: <span className="mono">{da.machineKey.slice(0, 16)}…</span></span>
+                    <span>{relativeTime(da.createdAt)}</span>
                   </span>
                 </div>
-                <div className="btn-group">
+                <div className="item-actions">
                   <button
-                    className="btn-sm btn-primary"
+                    type="button"
+                    className="btn-sm"
+                    aria-label={`Approve ${da.displayName || da.handle}`}
                     onClick={() => handleDeviceApproval(da.id, "approve")}
                     disabled={mutBusy}
                   >
                     Approve
                   </button>
                   <button
+                    type="button"
                     className="btn-sm btn-danger"
+                    aria-label={`Reject ${da.displayName || da.handle}`}
                     onClick={() => handleDeviceApproval(da.id, "reject")}
                     disabled={mutBusy}
                   >
@@ -254,7 +267,7 @@ export function SecurityTab() {
         )}
       </Card>
 
-      <Card title="Pending Join Requests">
+      <Card title="Pending join requests">
         {pendingJoins.length === 0 ? (
           <EmptyState>No pending join requests.</EmptyState>
         ) : (
@@ -266,22 +279,26 @@ export function SecurityTab() {
                     {jr.userDisplayName || jr.userHandle}
                   </span>
                   {jr.message && (
-                    <span className="item-meta">{jr.message}</span>
+                    <span className="item-detail">{jr.message}</span>
                   )}
                   <span className="item-meta">
                     {relativeTime(jr.requestedAt)}
                   </span>
                 </div>
-                <div className="btn-group">
+                <div className="item-actions">
                   <button
-                    className="btn-sm btn-primary"
+                    type="button"
+                    className="btn-sm"
+                    aria-label={`Approve ${jr.userDisplayName || jr.userHandle}`}
                     onClick={() => handleJoinRequest(jr.id, "approve")}
                     disabled={mutBusy}
                   >
                     Approve
                   </button>
                   <button
+                    type="button"
                     className="btn-sm btn-danger"
+                    aria-label={`Reject ${jr.userDisplayName || jr.userHandle}`}
                     onClick={() => handleJoinRequest(jr.id, "reject")}
                     disabled={mutBusy}
                   >
@@ -329,8 +346,9 @@ function NotificationsCard({ canEdit }: { canEdit: boolean }) {
     );
   }
 
-  const handleSave = async () => {
-    if (!currentTenant) return;
+  const handleSave = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentTenant || saving) return;
     const body: { notificationWebhookUrl: string | null; notificationWebhookSecret?: string | null } = {
       notificationWebhookUrl: url.trim() || null,
     };
@@ -379,8 +397,8 @@ function NotificationsCard({ canEdit }: { canEdit: boolean }) {
         (e.g. a self-hosted ntfy, Gotify, or Matrix bridge). Requests are signed with
         an HMAC-SHA256 <code>X-Atproto-Tailnet-Signature</code> header when a secret is set.
       </p>
-      <div className="form-stack">
-        <div className="form-field">
+      <form className="form-stack" onSubmit={handleSave} noValidate>
+        <div className="field">
           <label htmlFor="webhook-url">Webhook URL</label>
           <input
             id="webhook-url"
@@ -391,66 +409,69 @@ function NotificationsCard({ canEdit }: { canEdit: boolean }) {
             onChange={(e) => setUrl(e.target.value)}
           />
         </div>
-        <div className="form-field">
-          <label htmlFor="webhook-secret">Signing secret</label>
-          {secretMode === "replace" ? (
-            <div className="form-row">
+        {secretMode === "replace" ? (
+          <div className="field">
+            <label htmlFor="webhook-secret">New signing secret</label>
+            <div className="inline-form">
               <input
                 id="webhook-secret"
                 type="password"
                 autoComplete="new-password"
-                placeholder="New secret"
                 value={secret}
                 onChange={(e) => setSecret(e.target.value)}
               />
-              <button className="btn-sm btn-ghost" onClick={() => { setSecretMode("keep"); setSecret(""); }}>
+              <button type="button" className="btn-sm btn-ghost" onClick={() => { setSecretMode("keep"); setSecret(""); }}>
                 Cancel
               </button>
             </div>
-          ) : (
-            <div className="form-row" id="webhook-secret">
-              <span className="text-dim text-sm">
+          </div>
+        ) : (
+          <div className="field" role="group" aria-labelledby="webhook-secret-label">
+            <span className="field-label" id="webhook-secret-label">Signing secret</span>
+            <div className="btn-group">
+              <span className="text-sm" role="status">
                 {secretMode === "clear"
                   ? "Secret will be removed on save"
                   : hasSecret ? "Secret set" : "No secret set"}
               </span>
-              <button className="btn-sm btn-ghost" onClick={() => setSecretMode("replace")}>
+              <button type="button" className="btn-sm btn-ghost" onClick={() => setSecretMode("replace")}>
                 {hasSecret ? "Replace" : "Set secret"}
               </button>
               {hasSecret && secretMode !== "clear" && (
-                <button className="btn-sm btn-danger" onClick={() => setSecretMode("clear")}>
+                <button type="button" className="btn-sm btn-danger" onClick={() => setSecretMode("clear")}>
                   Clear
                 </button>
               )}
               {secretMode === "clear" && (
-                <button className="btn-sm btn-ghost" onClick={() => setSecretMode("keep")}>
+                <button type="button" className="btn-sm btn-ghost" onClick={() => setSecretMode("keep")}>
                   Undo
                 </button>
               )}
             </div>
-          )}
-        </div>
-        <div className="btn-group">
-          <button className="btn-primary" onClick={handleSave} disabled={saving || !dirty}>
-            {saving ? "Saving..." : "Save"}
+          </div>
+        )}
+        <div className="form-footer">
+          <button type="submit" disabled={saving || !dirty}>
+            {saving ? "Saving…" : "Save"}
           </button>
           <button
+            type="button"
             className="btn-ghost"
             onClick={handleTest}
             disabled={testing || !savedUrl || dirty}
             title={dirty ? "Save changes before testing" : undefined}
           >
-            {testing ? "Sending..." : "Send test"}
+            {testing ? "Sending…" : "Send test"}
           </button>
         </div>
         {testResult && (
-          <p className="help-text" role="status">
+          <p className={`notice${testResult.ok ? " notice-ok" : ""}`} role="status">
             {testResult.ok
               ? `Test delivered${testResult.status ? ` (HTTP ${testResult.status})` : ""}.`
               : `Test failed${testResult.status ? ` (HTTP ${testResult.status})` : ""}${testResult.error ? `: ${testResult.error}` : ""}.`}
           </p>
         )}
-      </div>
+      </form>
     </Card>
   );
 }
