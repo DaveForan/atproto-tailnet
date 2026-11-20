@@ -53,6 +53,7 @@ docker compose -f docker-compose.coordinator.yml up -d
 - **Coordinator mode** (`COORDINATOR_URL`): when set, tenant provisioning (`orchestrator/tenant-provisioning.ts`) creates tenants via the coordinator REST API (`POST /api/tenants`), stores the coordinator-side UUID in `tenants.coordinatorTenantId`, and skips Docker container lifecycle. Caddy routes all tenant subdomains to the single coordinator. Health monitor skips Docker restarts
 - `req.params` values are `string | string[]` in Express 5 — use `param(req, "name")` from `routes/helpers.ts`
 - `getTenantForUser(tenantId, userId)` in `routes/helpers.ts` — shared membership+tenant lookup for all protected routes
+- `tenantGuard({ param?, originatorOnly?, noAgentToken?, permission? (one or any-of), permissionError?, notLockedDown? })` in `routes/guard.ts` — route middleware (after `requireAuth`/`stepUpForSession`) that runs the lookup and guard clauses with the exact inline bodies (404 "Tenant not found", 403 "Insufficient permissions", 403 "Tenant is in lockdown mode"); handlers read `tenantCtx(res)` → `{tenant, membership, role, userId}`. Use it for new tenant routes; keep checks inline only when they must run in a different order (body validation before lookup, conditional permission/lockdown)
 - `hasPermission(membership, role, permission, req)` — originators always pass, others check role's JSONB permissions array; `req` param is required to enforce agent token scope intersection (omitting it would bypass token scoping)
 - `Permission` type and `ALL_PERMISSIONS` constant live in `members/permissions.ts`
 - Two system roles per tenant: "originator" (all perms) and "citizen" (default for new members, customizable)
@@ -103,7 +104,7 @@ docker compose -f docker-compose.coordinator.yml up -d
 - Agent auth helpers: `authUserId(req)` returns user ID from session or token; `authUserDid(req)` resolves DID (session or DB lookup). All route files use these instead of `req.session.userId` directly
 - Agent scope enforcement: `enforceAgentScope` allows `/api/me`, `/api/permissions`, `/api/tenants`, `/health` without tenant UUID; all other non-tenant routes blocked
 - Non-member responses: always 404 "Tenant not found" (never 403 — avoids leaking tenant existence)
-- Guard clause ordering: param extraction → getTenantForUser → hasPermission → lockdown check → body validation → business logic
+- Guard clause ordering: param extraction → getTenantForUser → hasPermission → lockdown check → body validation → business logic (`tenantGuard` order: lookup → originatorOnly → noAgentToken → permission → lockdown)
 - List queries capped at `.limit(200)` with explicit `.orderBy()`
 - Tenant lifecycle (delete/start/stop) audit-logged as `tenant_deleted`/`tenant_started`/`tenant_stopped`
 - 17 permissions total: invite, kick, manage_roles, manage_settings, approve_devices, approve_joins, approve_services, lock_devices, view_audit_log, manage_devices, manage_services, manage_board, create_posts, create_agent_tokens, manage_agent_tokens, manage_acl
@@ -211,7 +212,7 @@ src/
     api.ts                 — /api/me, /api/tenants, /health, public tenant lookup, join request submit/status
     invitations.ts         — Create/accept/decline/revoke invitations (permission-gated)
     devices.ts             — Node listing, auth key generation, member management (permission-gated)
-    security.ts            — Tenant settings, role CRUD, role assignment, device approvals/locks, join request management, audit log
+    security.ts            — Composes notifications, /api/permissions, settings.ts, roles.ts (CRUD, assignment, default role), device-approvals.ts, join-requests.ts, device-locks.ts, audit-log.ts (mount order)
     boards.ts              — Controller board, public board (service posts, approval, Connect), private board, access mode
     sharing.ts             — Friends, blocks and device shares between members
     agents.ts              — Agent token CRUD (create, list, revoke)
@@ -225,6 +226,7 @@ src/
     credentials.ts         — VC-JWT issuance, public verify, holder-binding challenges, revocation, service-auth presentation
     dashboard.ts           — HTML shell serving React SPA bundles (dashboard + join page)
     helpers.ts             — Shared middleware, param(), permission checks, agent token resolution, hs username/URL helpers
+    guard.ts               — tenantGuard() / tenantCtx(): the shared tenant guard middleware
 docs/adr/                  — Architecture Decision Records (0001-0036)
 BUILD_PLAN.md              — Phased build tracker
 coordinator/               — Rust mesh coordinator workspace

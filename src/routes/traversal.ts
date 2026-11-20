@@ -11,11 +11,9 @@ import { tenants } from "../db/schema.js";
 import {
   requireAuth,
   param,
-  getTenantForUser,
-  hasPermission,
   authUserId,
-  isLockedDown,
 } from "./helpers.js";
+import { tenantGuard } from "./guard.js";
 import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
 import { parsePolicy } from "../policy-engine/parser.js";
@@ -27,18 +25,9 @@ export const traversalRouter = Router();
 traversalRouter.get(
   "/api/tenants/:tenantId/traversal-policy",
   requireAuth,
+  tenantGuard({ permission: "manage_settings" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!hasPermission(result.membership, result.role, "manage_settings", req)) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
 
     const rows = await db
       .select({
@@ -60,23 +49,9 @@ traversalRouter.get(
 traversalRouter.put(
   "/api/tenants/:tenantId/traversal-policy",
   requireAuth,
+  tenantGuard({ permission: "manage_settings", notLockedDown: true }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!hasPermission(result.membership, result.role, "manage_settings", req)) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
-
-    if (isLockedDown(result.tenant)) {
-      res.status(403).json({ error: "Tenant is in lockdown mode" });
-      return;
-    }
 
     const { egress, ingress } = req.body ?? {};
     const errors: string[] = [];
@@ -136,18 +111,9 @@ traversalRouter.put(
 traversalRouter.post(
   "/api/tenants/:tenantId/traversal-policy/evaluate",
   requireAuth,
+  tenantGuard({ permission: "manage_settings" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!hasPermission(result.membership, result.role, "manage_settings", req)) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
 
     const { identity, sourceCollective, destinationCollective, requestedResources } = req.body ?? {};
     if (

@@ -17,7 +17,7 @@
 
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
-import { eq, and, desc, sql } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { brokerSessions, collectiveDids, federationLinks, tenants } from "../db/schema.js";
 import { logger } from "../logger.js";

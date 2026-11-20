@@ -59,11 +59,25 @@ import { aclRouter } from "../routes/acl.js";
 import { deviceSignInRouter } from "../routes/device-signin.js";
 import { csrfTokenMatches } from "../routes/helpers.js";
 
-type Layer = { route?: { path: string; methods: Record<string, boolean>; stack: Array<{ handle: unknown }> } };
+type Layer = {
+  route?: { path: string; methods: Record<string, boolean>; stack: Array<{ handle: unknown }> };
+  /** A mounted sub-router (`router.use(subRouter)`) carries its own stack. */
+  handle?: { stack?: Layer[] };
+};
+
+/** The route layer for `method path`, searching mounted sub-routers too. */
+function findRoute(stack: Layer[], method: string, path: string): Layer | undefined {
+  for (const l of stack) {
+    if (l.route?.path === path && l.route.methods[method]) return l;
+    const nested = l.handle?.stack ? findRoute(l.handle.stack, method, path) : undefined;
+    if (nested) return nested;
+  }
+  return undefined;
+}
 
 /** True when `method path` on the router runs `stepUpForSession` before its handler. */
 function hasStepUp(router: Router, method: string, path: string): boolean {
-  const layer = (router.stack as unknown as Layer[]).find((l) => l.route?.path === path && l.route.methods[method]);
+  const layer = findRoute(router.stack as unknown as Layer[], method, path);
   if (!layer?.route) throw new Error(`route not found: ${method} ${path}`);
   return layer.route.stack.some((l) => l.handle === stepUpForSession);
 }

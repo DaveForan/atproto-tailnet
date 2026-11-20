@@ -18,10 +18,9 @@ import { AclTranslationError } from "../orchestrator/coordinator-acl.js";
 import {
   requireAuth,
   param,
-  getTenantForUser,
-  hasPermission,
   authUserId,
 } from "./helpers.js";
+import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
 import { stepUpForSession } from "../auth/step-up.js";
 import { logger } from "../logger.js";
@@ -67,18 +66,10 @@ const aclPolicySchema = z.object({
 aclRouter.get(
   "/api/tenants/:tenantId/acl",
   requireAuth,
+  tenantGuard({ permission: "manage_acl" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!hasPermission(result.membership, result.role, "manage_acl", req)) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     if (!instanceAvailable(result.tenant)) {
       res.status(503).json({ error: "Tenant instance not available" });
@@ -108,18 +99,10 @@ aclRouter.put(
   "/api/tenants/:tenantId/acl",
   requireAuth,
   stepUpForSession,
+  tenantGuard({ permission: "manage_acl" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!hasPermission(result.membership, result.role, "manage_acl", req)) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     if (!instanceAvailable(result.tenant)) {
       res.status(503).json({ error: "Tenant instance not available" });

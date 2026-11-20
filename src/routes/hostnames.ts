@@ -8,7 +8,8 @@
  */
 import { Router } from "express";
 import { config } from "../config.js";
-import { requireAuth, param, getTenantForUser, authUserId } from "./helpers.js";
+import { requireAuth, param, authUserId } from "./helpers.js";
+import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
 import { syncTenantRoutes } from "../orchestrator/caddy.js";
@@ -39,12 +40,8 @@ const ERRORS: Record<HostnameError, { status: number; message: string }> = {
   },
 };
 
-hostnamesRouter.get("/api/tenants/:tenantId/hostnames", requireAuth, async (req, res) => {
-  const result = await getTenantForUser(param(req, "tenantId"), authUserId(req));
-  if (!result) {
-    res.status(404).json({ error: "Tenant not found" });
-    return;
-  }
+hostnamesRouter.get("/api/tenants/:tenantId/hostnames", requireAuth, tenantGuard(), async (req, res) => {
+  const result = tenantCtx(res);
   const names = await listHostnames(result.tenant.id);
   res.json({
     baseDomain: config.baseDomain,
@@ -65,16 +62,8 @@ async function resyncRoutes(tenantId: string): Promise<void> {
   await syncTenantAccess(tenantId);
 }
 
-hostnamesRouter.put("/api/tenants/:tenantId/hostnames/primary", requireAuth, stepUpForSession, async (req, res) => {
-  const result = await getTenantForUser(param(req, "tenantId"), authUserId(req));
-  if (!result) {
-    res.status(404).json({ error: "Tenant not found" });
-    return;
-  }
-  if (!result.membership.isOriginator || req.agentToken) {
-    res.status(403).json({ error: "Only the tailnet's originator can change its address" });
-    return;
-  }
+hostnamesRouter.put("/api/tenants/:tenantId/hostnames/primary", requireAuth, stepUpForSession, tenantGuard({ originatorOnly: "Only the tailnet's originator can change its address", noAgentToken: "Only the tailnet's originator can change its address" }), async (req, res) => {
+  const result = tenantCtx(res);
   const outcome = await setPrimaryHostname(result.tenant.id, (req.body ?? {}).name);
   if (!outcome.ok) {
     const e = ERRORS[outcome.error];
@@ -93,16 +82,8 @@ hostnamesRouter.put("/api/tenants/:tenantId/hostnames/primary", requireAuth, ste
   res.json({ primary: outcome.name, hostnames: await listHostnames(result.tenant.id) });
 });
 
-hostnamesRouter.delete("/api/tenants/:tenantId/hostnames/:name", requireAuth, stepUpForSession, async (req, res) => {
-  const result = await getTenantForUser(param(req, "tenantId"), authUserId(req));
-  if (!result) {
-    res.status(404).json({ error: "Tenant not found" });
-    return;
-  }
-  if (!result.membership.isOriginator || req.agentToken) {
-    res.status(403).json({ error: "Only the tailnet's originator can change its address" });
-    return;
-  }
+hostnamesRouter.delete("/api/tenants/:tenantId/hostnames/:name", requireAuth, stepUpForSession, tenantGuard({ originatorOnly: "Only the tailnet's originator can change its address", noAgentToken: "Only the tailnet's originator can change its address" }), async (req, res) => {
+  const result = tenantCtx(res);
   const name = param(req, "name");
   if (!(await retireHostname(result.tenant.id, name))) {
     res.status(404).json({ error: "Not an active alias of this tailnet (the primary address cannot be retired)" });

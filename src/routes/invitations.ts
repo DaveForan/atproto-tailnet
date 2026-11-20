@@ -19,12 +19,11 @@ import { getControlClient } from "../orchestrator/control-client.js";
 import {
   requireAuth,
   param,
-  getTenantForUser,
-  hasPermission,
   isLockedDown,
   authUserId,
   authUserDid,
 } from "./helpers.js";
+import { tenantGuard } from "./guard.js";
 import { logAudit } from "../audit/log.js";
 import { enforceMemberLimit } from "./limits.js";
 import {
@@ -42,18 +41,9 @@ export const invitationsRouter = Router();
 invitationsRouter.get(
   "/api/tenants/:tenantId/invitations",
   requireAuth,
+  tenantGuard({ permission: "invite" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!hasPermission(result.membership, result.role, "invite", req)) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
 
     const rows = await db
       .select({
@@ -82,24 +72,9 @@ export function inviteUrl(invitationId: string): string {
 invitationsRouter.post(
   "/api/tenants/:tenantId/invitations",
   requireAuth,
+  tenantGuard({ permission: "invite", permissionError: "You do not have permission to invite", notLockedDown: true }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!hasPermission(result.membership, result.role, "invite", req)) {
-      res.status(403).json({ error: "You do not have permission to invite" });
-      return;
-    }
-
-    if (isLockedDown(result.tenant)) {
-      res.status(403).json({ error: "Tenant is in lockdown mode" });
-      return;
-    }
 
     const body = (req.body ?? {}) as { handle?: unknown; did?: unknown };
     const handle = typeof body.handle === "string" ? body.handle.trim() : "";
@@ -416,20 +391,10 @@ invitationsRouter.post(
 invitationsRouter.delete(
   "/api/tenants/:tenantId/invitations/:invitationId",
   requireAuth,
+  tenantGuard({ permission: "invite", permissionError: "You do not have permission to revoke invitations" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const invitationId = param(req, "invitationId");
-
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!hasPermission(result.membership, result.role, "invite", req)) {
-      res.status(403).json({ error: "You do not have permission to revoke invitations" });
-      return;
-    }
 
     const [target] = await db
       .select()

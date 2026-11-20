@@ -15,24 +15,19 @@ import { markRead, unreadCount } from "../notifications/service.js";
 import {
   requireAuth,
   param,
-  getTenantForUser,
-  hasPermission,
   authUserId,
 } from "./helpers.js";
+import { tenantGuard, tenantCtx } from "./guard.js";
 
 export const notificationsRouter = Router();
 
 notificationsRouter.get(
   "/api/tenants/:tenantId/notifications",
   requireAuth,
+  tenantGuard(),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const userId = authUserId(req);
-    const result = await getTenantForUser(tenantId, userId);
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
 
     const unreadOnly = req.query.unread === "1" || req.query.unread === "true";
     const rawLimit = Number(req.query.limit ?? 50);
@@ -68,14 +63,10 @@ const readBody = z.union([
 notificationsRouter.post(
   "/api/tenants/:tenantId/notifications/read",
   requireAuth,
+  tenantGuard(),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const userId = authUserId(req);
-    const result = await getTenantForUser(tenantId, userId);
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
 
     const parsed = readBody.safeParse(req.body);
     if (!parsed.success) {
@@ -91,18 +82,10 @@ notificationsRouter.post(
 notificationsRouter.post(
   "/api/tenants/:tenantId/notifications/webhook/test",
   requireAuth,
+  tenantGuard({ permission: "manage_settings" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const userId = authUserId(req);
-    const result = await getTenantForUser(tenantId, userId);
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-    if (!hasPermission(result.membership, result.role, "manage_settings", req)) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     const { tenant } = result;
     if (!tenant.notificationWebhookUrl) {

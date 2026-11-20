@@ -16,11 +16,9 @@ import { tenants, federationLinks } from "../db/schema.js";
 import {
   requireAuth,
   param,
-  getTenantForUser,
-  hasPermission,
   authUserId,
-  isLockedDown,
 } from "./helpers.js";
+import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
 import { randomUUID } from "node:crypto";
@@ -69,20 +67,9 @@ export const federationRouter = Router();
 federationRouter.get(
   "/api/tenants/:tenantId/federation",
   requireAuth,
+  tenantGuard({ permission: "manage_settings" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (
-      !hasPermission(result.membership, result.role, "manage_settings", req)
-    ) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
 
     const links = await db
       .select()
@@ -126,25 +113,10 @@ export const createFederationBody = z.object({
 federationRouter.post(
   "/api/tenants/:tenantId/federation",
   requireAuth,
+  tenantGuard({ permission: "manage_settings", notLockedDown: true }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (
-      !hasPermission(result.membership, result.role, "manage_settings", req)
-    ) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
-
-    if (isLockedDown(result.tenant)) {
-      res.status(403).json({ error: "Tenant is in lockdown mode" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     const parsed = createFederationBody.safeParse(req.body);
     if (!parsed.success) {
@@ -404,21 +376,11 @@ export const respondBody = z.object({
 federationRouter.post(
   "/api/tenants/:tenantId/federation/:linkId/accept",
   requireAuth,
+  tenantGuard({ permission: "manage_settings" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const linkId = param(req, "linkId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (
-      !hasPermission(result.membership, result.role, "manage_settings", req)
-    ) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     const parsed = respondBody.safeParse(req.body);
     if (!parsed.success) {
@@ -566,21 +528,10 @@ federationRouter.post(
 federationRouter.post(
   "/api/tenants/:tenantId/federation/:linkId/reject",
   requireAuth,
+  tenantGuard({ permission: "manage_settings" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const linkId = param(req, "linkId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (
-      !hasPermission(result.membership, result.role, "manage_settings", req)
-    ) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
 
     // Only the receiving side rejects; the requester withdraws via revoke.
     const linkRows = await db
@@ -673,21 +624,10 @@ federationRouter.post(
 federationRouter.post(
   "/api/tenants/:tenantId/federation/:linkId/revoke",
   requireAuth,
+  tenantGuard({ permission: "manage_settings" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const linkId = param(req, "linkId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (
-      !hasPermission(result.membership, result.role, "manage_settings", req)
-    ) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
 
     const linkRows = await db
       .select()
@@ -795,18 +735,9 @@ federationRouter.post(
 federationRouter.get(
   "/api/tenants/:tenantId/federation/did",
   requireAuth,
+  tenantGuard({ permission: "manage_settings" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!hasPermission(result.membership, result.role, "manage_settings", req)) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
 
     try {
       const { did, publicKeyJwk } = await ensureCollectiveDid(tenantId);
@@ -826,18 +757,9 @@ federationRouter.get(
 federationRouter.post(
   "/api/tenants/:tenantId/federation/did/rotate",
   requireAuth,
+  tenantGuard({ originatorOnly: "Only the originator can rotate the DID key" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!result.membership.isOriginator) {
-      res.status(403).json({ error: "Only the originator can rotate the DID key" });
-      return;
-    }
 
     try {
       const { did, publicKeyJwk } = await rotateCollectiveDid(tenantId);
@@ -868,18 +790,9 @@ federationRouter.post(
 federationRouter.get(
   "/api/tenants/:tenantId/federation/broker",
   requireAuth,
+  tenantGuard({ permission: "manage_settings" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!hasPermission(result.membership, result.role, "manage_settings", req)) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
 
     try {
       const status = await getBrokerStatus(tenantId);
@@ -895,18 +808,9 @@ federationRouter.get(
 federationRouter.get(
   "/api/tenants/:tenantId/federation/routes",
   requireAuth,
+  tenantGuard({ permission: "manage_settings" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!hasPermission(result.membership, result.role, "manage_settings", req)) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
 
     try {
       const routes = await getRouteTable(tenantId);
@@ -1054,18 +958,9 @@ federationRouter.get("/.well-known/did.json", async (req, res) => {
 federationRouter.get(
   "/api/tenants/:tenantId/federation/scope",
   requireAuth,
+  tenantGuard({ permission: "manage_settings" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!hasPermission(result.membership, result.role, "manage_settings", req)) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
 
     const rows = await db
       .select({
@@ -1091,18 +986,9 @@ federationRouter.get(
 federationRouter.put(
   "/api/tenants/:tenantId/federation/scope",
   requireAuth,
+  tenantGuard({ permission: "manage_settings" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!hasPermission(result.membership, result.role, "manage_settings", req)) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
 
     const parsed = scopeDeclarationSchema.safeParse(req.body);
     if (!parsed.success) {
@@ -1143,18 +1029,9 @@ const postureBody = z.object({
 federationRouter.get(
   "/api/tenants/:tenantId/federation/posture",
   requireAuth,
+  tenantGuard({ permission: "manage_settings" }),
   async (req, res) => {
-    const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!hasPermission(result.membership, result.role, "manage_settings", req)) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     res.json({ posture: result.tenant.federationPosture });
   },
@@ -1163,18 +1040,10 @@ federationRouter.get(
 federationRouter.put(
   "/api/tenants/:tenantId/federation/posture",
   requireAuth,
+  tenantGuard({ permission: "manage_settings" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!hasPermission(result.membership, result.role, "manage_settings", req)) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     const parsed = postureBody.safeParse(req.body);
     if (!parsed.success) {

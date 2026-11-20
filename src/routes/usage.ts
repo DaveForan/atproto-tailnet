@@ -14,9 +14,9 @@ import { getControlClient, useCoordinator } from "../orchestrator/control-client
 import {
   requireAuth,
   param,
-  getTenantForUser,
   authUserId,
 } from "./helpers.js";
+import { tenantGuard, tenantCtx } from "./guard.js";
 import { MAX_LIMIT, checkChildLimit, countMembers, isOverLimit } from "./limits.js";
 import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
@@ -26,13 +26,10 @@ export const usageRouter = Router();
 usageRouter.get(
   "/api/tenants/:tenantId/usage",
   requireAuth,
+  tenantGuard(),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     const { tenant } = result;
 
@@ -95,22 +92,10 @@ const limitsBody = z
 usageRouter.put(
   "/api/tenants/:tenantId/limits",
   requireAuth,
+  tenantGuard({ originatorOnly: "Only the originator can change limits", noAgentToken: "Agent tokens cannot change limits" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!result.membership.isOriginator) {
-      res.status(403).json({ error: "Only the originator can change limits" });
-      return;
-    }
-    if (req.agentToken) {
-      res.status(403).json({ error: "Agent tokens cannot change limits" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     const parsed = limitsBody.safeParse(req.body);
     if (!parsed.success) {

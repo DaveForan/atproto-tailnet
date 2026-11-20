@@ -19,7 +19,8 @@ import {
 import { syncTenantRoutes } from "../orchestrator/caddy.js";
 import { releaseTenantPort } from "../orchestrator/ports.js";
 import { getCoordinatorClient, useCoordinator } from "../orchestrator/control-client.js";
-import { requireAuth, param, getTenantForUser, authUserId } from "./helpers.js";
+import { requireAuth, param, authUserId } from "./helpers.js";
+import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
 import { stepUpForSession } from "../auth/step-up.js";
 import { checkTenantHealth } from "../orchestrator/monitor.js";
@@ -204,12 +205,8 @@ apiRouter.get("/api/tenants", requireAuth, async (req, res) => {
   );
 });
 
-apiRouter.get("/api/tenants/:id", requireAuth, async (req, res) => {
-  const result = await getTenantForUser(param(req, "id"), authUserId(req));
-  if (!result) {
-    res.status(404).json({ error: "Tenant not found" });
-    return;
-  }
+apiRouter.get("/api/tenants/:id", requireAuth, tenantGuard({ param: "id" }), async (req, res) => {
+  const result = tenantCtx(res);
 
   res.json({
     id: result.tenant.id,
@@ -504,23 +501,10 @@ export async function deleteTenantInstance(tenant: typeof tenants.$inferSelect):
   );
 }
 
-apiRouter.delete("/api/tenants/:id", requireAuth, stepUpForSession, async (req, res) => {
+// Destructive lifecycle action: interactive session only, never agent tokens
+apiRouter.delete("/api/tenants/:id", requireAuth, stepUpForSession, tenantGuard({ param: "id", originatorOnly: "Only the tenant originator can delete", noAgentToken: "Agent tokens cannot delete a tenant" }), async (req, res) => {
   const tenantId = param(req, "id");
-  const result = await getTenantForUser(tenantId, authUserId(req));
-
-  if (!result) {
-    res.status(404).json({ error: "Tenant not found" });
-    return;
-  }
-  if (!result.membership.isOriginator) {
-    res.status(403).json({ error: "Only the tenant originator can delete" });
-    return;
-  }
-  // Destructive lifecycle action: interactive session only, never agent tokens
-  if (req.agentToken) {
-    res.status(403).json({ error: "Agent tokens cannot delete a tenant" });
-    return;
-  }
+  const result = tenantCtx(res);
 
   try {
     await deleteTenantInstance(result.tenant);
@@ -540,21 +524,9 @@ apiRouter.delete("/api/tenants/:id", requireAuth, stepUpForSession, async (req, 
   }
 });
 
-apiRouter.post("/api/tenants/:id/start", requireAuth, async (req, res) => {
-  const result = await getTenantForUser(param(req, "id"), authUserId(req));
-  if (!result) {
-    res.status(404).json({ error: "Tenant not found" });
-    return;
-  }
-  if (!result.membership.isOriginator) {
-    res.status(403).json({ error: "Only the tenant originator can start" });
-    return;
-  }
-  // Destructive lifecycle action: interactive session only, never agent tokens
-  if (req.agentToken) {
-    res.status(403).json({ error: "Agent tokens cannot start a tenant" });
-    return;
-  }
+// Destructive lifecycle action: interactive session only, never agent tokens
+apiRouter.post("/api/tenants/:id/start", requireAuth, tenantGuard({ param: "id", originatorOnly: "Only the tenant originator can start", noAgentToken: "Agent tokens cannot start a tenant" }), async (req, res) => {
+  const result = tenantCtx(res);
   if (useCoordinator) {
     res.status(501).json({ error: "Tenant lifecycle is managed by the coordinator — start/stop is not applicable" });
     return;
@@ -585,21 +557,9 @@ apiRouter.post("/api/tenants/:id/start", requireAuth, async (req, res) => {
   }
 });
 
-apiRouter.post("/api/tenants/:id/stop", requireAuth, async (req, res) => {
-  const result = await getTenantForUser(param(req, "id"), authUserId(req));
-  if (!result) {
-    res.status(404).json({ error: "Tenant not found" });
-    return;
-  }
-  if (!result.membership.isOriginator) {
-    res.status(403).json({ error: "Only the tenant originator can stop" });
-    return;
-  }
-  // Destructive lifecycle action: interactive session only, never agent tokens
-  if (req.agentToken) {
-    res.status(403).json({ error: "Agent tokens cannot stop a tenant" });
-    return;
-  }
+// Destructive lifecycle action: interactive session only, never agent tokens
+apiRouter.post("/api/tenants/:id/stop", requireAuth, tenantGuard({ param: "id", originatorOnly: "Only the tenant originator can stop", noAgentToken: "Agent tokens cannot stop a tenant" }), async (req, res) => {
+  const result = tenantCtx(res);
   if (useCoordinator) {
     res.status(501).json({ error: "Tenant lifecycle is managed by the coordinator — start/stop is not applicable" });
     return;
@@ -634,12 +594,9 @@ apiRouter.post("/api/tenants/:id/stop", requireAuth, async (req, res) => {
 apiRouter.get(
   "/api/tenants/:id/health",
   requireAuth,
+  tenantGuard({ param: "id" }),
   async (req, res) => {
-    const result = await getTenantForUser(param(req, "id"), authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     const reachable = useCoordinator
       ? Boolean(result.tenant.coordinatorTenantId)

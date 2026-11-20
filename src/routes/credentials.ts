@@ -19,13 +19,11 @@ import {
 import {
   requireAuth,
   param,
-  getTenantForUser,
-  hasPermission,
   authUserId,
   authUserDid,
-  isLockedDown,
   missingPermissions,
 } from "./helpers.js";
+import { tenantGuard, tenantCtx } from "./guard.js";
 import { ALL_PERMISSIONS } from "../members/permissions.js";
 import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
@@ -41,7 +39,6 @@ import { loadCollectiveKeyPair } from "../orchestrator/federation-broker.js";
 import { verifyCredential, verifyHolderBinding } from "../credentials/verifier.js";
 import { verifyServiceAuth } from "../credentials/service-auth.js";
 import { getResolver } from "../identity/resolver.js";
-import { config } from "../config.js";
 import * as jose from "jose";
 
 export const credentialsRouter = Router();
@@ -94,23 +91,9 @@ async function getCollectiveIssuerKeys(tenantId: string): Promise<IssuerKeyPair 
 credentialsRouter.post(
   "/api/tenants/:tenantId/credentials/membership",
   requireAuth,
+  tenantGuard({ permission: "manage_settings", notLockedDown: true }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!hasPermission(result.membership, result.role, "manage_settings", req)) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
-
-    if (isLockedDown(result.tenant)) {
-      res.status(403).json({ error: "Tenant is in lockdown mode" });
-      return;
-    }
 
     const userDid = subjectDidFrom(req.body);
     if (!userDid) {
@@ -172,23 +155,10 @@ credentialsRouter.post(
 credentialsRouter.post(
   "/api/tenants/:tenantId/credentials/role",
   requireAuth,
+  tenantGuard({ permission: "manage_settings", notLockedDown: true }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!hasPermission(result.membership, result.role, "manage_settings", req)) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
-
-    if (isLockedDown(result.tenant)) {
-      res.status(403).json({ error: "Tenant is in lockdown mode" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     const userDid = subjectDidFrom(req.body);
     if (!userDid) {
@@ -259,23 +229,10 @@ credentialsRouter.post(
 credentialsRouter.post(
   "/api/tenants/:tenantId/credentials/capability",
   requireAuth,
+  tenantGuard({ permission: "manage_settings", notLockedDown: true }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!hasPermission(result.membership, result.role, "manage_settings", req)) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
-
-    if (isLockedDown(result.tenant)) {
-      res.status(403).json({ error: "Tenant is in lockdown mode" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     const userDid = subjectDidFrom(req.body);
     if (!userDid) {
@@ -356,19 +313,10 @@ credentialsRouter.post(
 credentialsRouter.post(
   "/api/tenants/:tenantId/credentials/bundle",
   requireAuth,
+  tenantGuard({ notLockedDown: true }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const userId = authUserId(req);
-    const result = await getTenantForUser(tenantId, userId);
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (isLockedDown(result.tenant)) {
-      res.status(403).json({ error: "Tenant is in lockdown mode" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     const userDid = await authUserDid(req);
     if (!userDid) {
@@ -424,13 +372,9 @@ credentialsRouter.post(
 credentialsRouter.get(
   "/api/tenants/:tenantId/credentials/challenge",
   requireAuth,
+  tenantGuard(),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
 
     const holderDid = req.query.did as string | undefined;
     const challenge = generateHolderChallenge();
@@ -449,13 +393,9 @@ credentialsRouter.get(
 credentialsRouter.post(
   "/api/tenants/:tenantId/credentials/challenge/verify",
   requireAuth,
+  tenantGuard(),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
 
     const { nonce, signature, did: holderDid } = req.body ?? {};
     if (!nonce || !signature || !holderDid) {
@@ -607,24 +547,10 @@ async function trustedIssuerDids(tenantId: string, ownDid: string): Promise<Set<
 credentialsRouter.post(
   "/api/tenants/:tenantId/credentials/:credentialId/revoke",
   requireAuth,
+  tenantGuard({ permission: "manage_settings", notLockedDown: true }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const credentialId = param(req, "credentialId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!hasPermission(result.membership, result.role, "manage_settings", req)) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
-
-    if (isLockedDown(result.tenant)) {
-      res.status(403).json({ error: "Tenant is in lockdown mode" });
-      return;
-    }
 
     const { jwt, reason } = req.body ?? {};
     if (typeof jwt !== "string" || !jwt) {
@@ -690,13 +616,9 @@ credentialsRouter.post(
 credentialsRouter.post(
   "/api/tenants/:tenantId/credentials/present",
   requireAuth,
+  tenantGuard(),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
 
     const { credentials, serviceAuthToken } = req.body ?? {};
     if (!Array.isArray(credentials) || credentials.length === 0) {

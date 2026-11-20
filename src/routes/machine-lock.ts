@@ -10,10 +10,11 @@
  * session cannot open the lock.
  */
 
-import { Router, type Request, type Response } from "express";
+import { Router, type Response } from "express";
 import { z } from "zod";
 import type { tenants } from "../db/schema.js";
-import { requireSession, param, getTenantForUser } from "./helpers.js";
+import { requireSession } from "./helpers.js";
+import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
 import type { CoordinatorApiClient, OwnerLockView } from "../orchestrator/coordinator-api.js";
@@ -39,20 +40,15 @@ function coordinatorFor(tenant: Tenant): CoordinatorApiClient | null {
   return useCoordinator && tenant.coordinatorTenantId ? getCoordinatorClient(tenant) : null;
 }
 
-/** The caller's membership and the coordinator client, or a response and null. */
-async function context(req: Request, res: Response) {
-  const userId = req.session.userId!;
-  const result = await getTenantForUser(param(req, "tenantId"), userId);
-  if (!result) {
-    res.status(404).json({ error: "Tenant not found" });
-    return null;
-  }
-  const coord = coordinatorFor(result.tenant);
+/** The caller's membership and the coordinator client, or a response and null. Runs after {@link tenantGuard}. */
+function context(res: Response) {
+  const { userId, tenant } = tenantCtx(res);
+  const coord = coordinatorFor(tenant);
   if (!coord) {
     res.status(409).json({ error: "This tailnet cannot lock devices", code: "unsupported" });
     return null;
   }
-  return { userId, tenant: result.tenant, coord };
+  return { userId, tenant, coord };
 }
 
 async function view(tenant: Tenant, userId: string, lock: OwnerLockView) {
@@ -68,13 +64,9 @@ async function view(tenant: Tenant, userId: string, lock: OwnerLockView) {
   };
 }
 
-machineLockRouter.get("/api/tenants/:tenantId/machine-lock", requireSession, async (req, res) => {
+machineLockRouter.get("/api/tenants/:tenantId/machine-lock", requireSession, tenantGuard(), async (req, res) => {
   const userId = req.session.userId!;
-  const result = await getTenantForUser(param(req, "tenantId"), userId);
-  if (!result) {
-    res.status(404).json({ error: "Tenant not found" });
-    return;
-  }
+  const result = tenantCtx(res);
   const coord = coordinatorFor(result.tenant);
   if (!coord) {
     res.json({ supported: false, locked: false, devices: [], allowOneUntil: null, maxDevices: null, refused: [] });
@@ -84,8 +76,8 @@ machineLockRouter.get("/api/tenants/:tenantId/machine-lock", requireSession, asy
 });
 
 /** Lock to the chosen devices. The member's other devices leave the tailnet. */
-machineLockRouter.put("/api/tenants/:tenantId/machine-lock", requireSession, async (req, res) => {
-  const ctx = await context(req, res);
+machineLockRouter.put("/api/tenants/:tenantId/machine-lock", requireSession, tenantGuard(), async (req, res) => {
+  const ctx = context(res);
   if (!ctx || !(await requireFreshDeviceProof(req, res))) return;
   const parsed = lockSchema.safeParse(req.body);
   if (!parsed.success) {
@@ -122,8 +114,8 @@ machineLockRouter.put("/api/tenants/:tenantId/machine-lock", requireSession, asy
 });
 
 /** For a short time, the next new machine of this member is added to the lock. */
-machineLockRouter.post("/api/tenants/:tenantId/machine-lock/allow-one", requireSession, async (req, res) => {
-  const ctx = await context(req, res);
+machineLockRouter.post("/api/tenants/:tenantId/machine-lock/allow-one", requireSession, tenantGuard(), async (req, res) => {
+  const ctx = context(res);
   if (!ctx || !(await requireFreshDeviceProof(req, res))) return;
   const lock = await ctx.coord.allowOneMachine(ctx.userId, ALLOW_ONE_SECONDS);
   if (!lock) {
@@ -145,8 +137,8 @@ machineLockRouter.post("/api/tenants/:tenantId/machine-lock/allow-one", requireS
   res.json(await view(ctx.tenant, ctx.userId, lock));
 });
 
-machineLockRouter.delete("/api/tenants/:tenantId/machine-lock", requireSession, async (req, res) => {
-  const ctx = await context(req, res);
+machineLockRouter.delete("/api/tenants/:tenantId/machine-lock", requireSession, tenantGuard(), async (req, res) => {
+  const ctx = context(res);
   if (!ctx || !(await requireFreshDeviceProof(req, res))) return;
   await ctx.coord.deleteOwnerLock(ctx.userId);
   logAudit({

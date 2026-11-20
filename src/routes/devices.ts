@@ -11,7 +11,6 @@ import { z } from "zod";
 import { eq, and, desc } from "drizzle-orm";
 import { db } from "../db/index.js";
 import {
-  tenants,
   memberships,
   roles,
   users,
@@ -22,7 +21,6 @@ import { getControlClient, useCoordinator } from "../orchestrator/control-client
 import {
   requireAuth,
   param,
-  getTenantForUser,
   hasPermission,
   isLockedDown,
   toHsUsername,
@@ -30,6 +28,7 @@ import {
   isDeviceLocked,
   DEVICE_LOCKED_ERROR,
 } from "./helpers.js";
+import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
 import { removeMemberCascade } from "../members/cascade.js";
 import { stepUpForSession } from "../auth/step-up.js";
@@ -62,15 +61,9 @@ const authKeyBody = z.object({
 devicesRouter.get(
   "/api/tenants/:tenantId/devices",
   requireAuth,
+  tenantGuard(),
   async (req, res) => {
-    const result = await getTenantForUser(
-      param(req, "tenantId"),
-      authUserId(req),
-    );
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     const client = getControlClient(result.tenant);
 
@@ -139,13 +132,10 @@ devicesRouter.post(
   "/api/tenants/:tenantId/devices/auth-key",
   requireAuth,
   stepUpForSession,
+  tenantGuard(),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     // Session users keep self-service key generation; an agent token minting
     // join keys must be explicitly scoped for device management.
@@ -273,15 +263,11 @@ devicesRouter.post(
 devicesRouter.delete(
   "/api/tenants/:tenantId/devices/:nodeId",
   requireAuth,
+  tenantGuard(),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const nodeId = param(req, "nodeId");
-
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     const client = getControlClient(result.tenant);
 
@@ -335,14 +321,11 @@ const CONTROL_KEY_PREFIX = "cp:";
 devicesRouter.get(
   "/api/tenants/:tenantId/auth-keys",
   requireAuth,
+  tenantGuard(),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const userId = authUserId(req);
-    const result = await getTenantForUser(tenantId, userId);
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
+    const result = tenantCtx(res);
     const canManage = hasPermission(result.membership, result.role, "manage_devices", req);
 
     const rows = await db
@@ -415,15 +398,12 @@ devicesRouter.get(
 devicesRouter.delete(
   "/api/tenants/:tenantId/auth-keys/:keyId",
   requireAuth,
+  tenantGuard(),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const keyId = param(req, "keyId");
     const userId = authUserId(req);
-    const result = await getTenantForUser(tenantId, userId);
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
+    const result = tenantCtx(res);
     const canManage = hasPermission(result.membership, result.role, "manage_devices", req);
 
     let controlKeyId: string | null;
@@ -489,15 +469,8 @@ devicesRouter.delete(
 devicesRouter.get(
   "/api/tenants/:tenantId/members",
   requireAuth,
+  tenantGuard(),
   async (req, res) => {
-    const result = await getTenantForUser(
-      param(req, "tenantId"),
-      authUserId(req),
-    );
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
 
     const members = await db
       .select({
@@ -524,20 +497,11 @@ devicesRouter.get(
 devicesRouter.delete(
   "/api/tenants/:tenantId/members/:userId",
   requireAuth,
+  tenantGuard({ permission: "kick", permissionError: "You do not have permission to remove members" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const removedUserId = param(req, "userId");
-
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!hasPermission(result.membership, result.role, "kick", req)) {
-      res.status(403).json({ error: "You do not have permission to remove members" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     if (removedUserId === authUserId(req)) {
       res.status(400).json({ error: "Cannot remove yourself" });

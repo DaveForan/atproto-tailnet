@@ -12,11 +12,10 @@ import { tenants, memberships, roles } from "../db/schema.js";
 import {
   requireAuth,
   param,
-  getTenantForUser,
-  hasPermission,
   authUserId,
   authUserDid,
 } from "./helpers.js";
+import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
 import { allocateTenantPort } from "../orchestrator/ports.js";
@@ -60,13 +59,10 @@ const floorPolicyBody = z.object({
 collectivesRouter.get(
   "/api/tenants/:tenantId/collectives",
   requireAuth,
+  tenantGuard(),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     const children = await db
       .select({
@@ -103,13 +99,9 @@ collectivesRouter.get(
 collectivesRouter.get(
   "/api/tenants/:tenantId/ancestors",
   requireAuth,
+  tenantGuard(),
   async (req, res) => {
-    const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     const ancestors: Array<{ id: string; slug: string; name: string; depth: number }> = [];
     let current = result.tenant;
@@ -139,19 +131,11 @@ collectivesRouter.get(
 collectivesRouter.post(
   "/api/tenants/:tenantId/collectives",
   requireAuth,
+  tenantGuard({ permission: "manage_sub_collectives" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const userId = authUserId(req);
-    const result = await getTenantForUser(tenantId, userId);
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!hasPermission(result.membership, result.role, "manage_sub_collectives", req)) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     const parsed = createSubCollectiveBody.safeParse(req.body);
     if (!parsed.success) {
@@ -350,24 +334,15 @@ function escapeLike(value: string): string {
 collectivesRouter.post(
   "/api/tenants/:tenantId/detach",
   requireAuth,
+  // Hierarchy-changing action: interactive session only, never agent tokens
+  tenantGuard({
+    originatorOnly: "Only the originator can detach a collective",
+    noAgentToken: "Agent tokens cannot detach a collective",
+  }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const userId = authUserId(req);
-    const result = await getTenantForUser(tenantId, userId);
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!result.membership.isOriginator) {
-      res.status(403).json({ error: "Only the originator can detach a collective" });
-      return;
-    }
-    // Hierarchy-changing action: interactive session only, never agent tokens
-    if (req.agentToken) {
-      res.status(403).json({ error: "Agent tokens cannot detach a collective" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     const { tenant } = result;
     if (!tenant.parentId) {
@@ -407,21 +382,11 @@ collectivesRouter.post(
 collectivesRouter.post(
   "/api/tenants/:tenantId/collectives/:childId/eject",
   requireAuth,
+  tenantGuard({ permission: "manage_sub_collectives" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const childId = param(req, "childId");
     const userId = authUserId(req);
-
-    const result = await getTenantForUser(tenantId, userId);
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!hasPermission(result.membership, result.role, "manage_sub_collectives", req)) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
 
     const [child] = await db
       .select()
@@ -463,19 +428,10 @@ collectivesRouter.post(
 collectivesRouter.put(
   "/api/tenants/:tenantId/floor-policies",
   requireAuth,
+  tenantGuard({ permission: "manage_sub_collectives" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const userId = authUserId(req);
-    const result = await getTenantForUser(tenantId, userId);
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!hasPermission(result.membership, result.role, "manage_sub_collectives", req)) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
 
     const parsed = floorPolicyBody.safeParse(req.body);
     if (!parsed.success) {
@@ -505,13 +461,9 @@ collectivesRouter.put(
 collectivesRouter.get(
   "/api/tenants/:tenantId/tree",
   requireAuth,
+  tenantGuard(),
   async (req, res) => {
-    const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     const { tenant } = result;
     const pathPrefix = tenant.path ? `${tenant.path}.` : `${tenant.slug}.`;
@@ -566,21 +518,12 @@ const quotaBody = z.object({
 collectivesRouter.put(
   "/api/tenants/:tenantId/collectives/:childId/quota",
   requireAuth,
+  tenantGuard({ permission: "manage_sub_collectives" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const childId = param(req, "childId");
     const userId = authUserId(req);
-
-    const result = await getTenantForUser(tenantId, userId);
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!hasPermission(result.membership, result.role, "manage_sub_collectives", req)) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     const parsed = quotaBody.safeParse(req.body);
     if (!parsed.success) {
@@ -634,18 +577,10 @@ collectivesRouter.put(
 collectivesRouter.get(
   "/api/tenants/:tenantId/compliance",
   requireAuth,
+  tenantGuard({ permission: "manage_sub_collectives" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!hasPermission(result.membership, result.role, "manage_sub_collectives", req)) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     const floor = (result.tenant.floorPolicies ?? {}) as Record<string, unknown>;
     if (Object.keys(floor).length === 0) {

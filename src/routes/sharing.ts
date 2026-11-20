@@ -9,12 +9,13 @@
  * end it at any time. Operators have no access to these routes' data.
  */
 
-import { Router, type Request, type Response } from "express";
+import { Router } from "express";
 import { z } from "zod";
 import { and, eq, inArray, or } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { users, memberships, friendships, memberBlocks, deviceShares, type AccessPortSpec } from "../db/schema.js";
-import { requireAuth, param, getTenantForUser, isLockedDown, authUserId } from "./helpers.js";
+import { requireAuth, param } from "./helpers.js";
+import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
 import { notifyUser } from "../notifications/service.js";
 import { listUserDevices } from "../access/devices.js";
@@ -43,22 +44,12 @@ const portSpec = z
   .refine((p) => p.proto === "icmp" || p.first >= 1, "ports start at 1");
 const ports = z.array(portSpec).min(1).max(MAX_SHARE_PORTS);
 
-type Ctx = NonNullable<Awaited<ReturnType<typeof getTenantForUser>>>;
-
-async function member(req: Request, res: Response): Promise<{ ctx: Ctx; userId: string } | null> {
-  const userId = authUserId(req);
-  const ctx = await getTenantForUser(param(req, "tenantId"), userId);
-  if (!ctx) {
-    res.status(404).json({ error: "Tenant not found" });
-    return null;
-  }
-  // Sharing is a personal decision: an agent token cannot make it for the member
-  if (req.agentToken) {
-    res.status(403).json({ error: "Agent tokens cannot manage friends or shares" });
-    return null;
-  }
-  return { ctx, userId };
-}
+// Sharing is a personal decision: an agent token cannot make it for the member
+const member = tenantGuard({ noAgentToken: "Agent tokens cannot manage friends or shares" });
+const memberNotLockedDown = tenantGuard({
+  noAgentToken: "Agent tokens cannot manage friends or shares",
+  notLockedDown: true,
+});
 
 function pair(tenantId: string, a: string, b: string) {
   return and(
@@ -118,10 +109,9 @@ async function handles(ids: string[]): Promise<Map<string, { handle: string; dis
 
 // ── Friends ─────────────────────────────────────────────────────────────
 
-sharingRouter.get("/api/tenants/:tenantId/friends", requireAuth, async (req, res) => {
-  const m = await member(req, res);
-  if (!m) return;
-  const tenantId = m.ctx.tenant.id;
+sharingRouter.get("/api/tenants/:tenantId/friends", requireAuth, member, async (req, res) => {
+  const m = tenantCtx(res);
+  const tenantId = m.tenant.id;
   const rows = await db
     .select()
     .from(friendships)
@@ -147,27 +137,21 @@ sharingRouter.get("/api/tenants/:tenantId/friends", requireAuth, async (req, res
 });
 
 /** Members of the tailnet the caller could send a friend request to. */
-sharingRouter.get("/api/tenants/:tenantId/friends/candidates", requireAuth, async (req, res) => {
-  const m = await member(req, res);
-  if (!m) return;
+sharingRouter.get("/api/tenants/:tenantId/friends/candidates", requireAuth, member, async (req, res) => {
+  const m = tenantCtx(res);
   const rows = await db
     .select({ userId: users.id, handle: users.handle, displayName: users.displayName })
     .from(memberships)
     .innerJoin(users, eq(memberships.userId, users.id))
-    .where(eq(memberships.tenantId, m.ctx.tenant.id))
+    .where(eq(memberships.tenantId, m.tenant.id))
     .orderBy(users.handle)
     .limit(200);
   res.json({ members: rows.filter((r) => r.userId !== m.userId) });
 });
 
-sharingRouter.post("/api/tenants/:tenantId/friends", requireAuth, async (req, res) => {
-  const m = await member(req, res);
-  if (!m) return;
-  const tenantId = m.ctx.tenant.id;
-  if (isLockedDown(m.ctx.tenant)) {
-    res.status(403).json({ error: "Tenant is in lockdown mode" });
-    return;
-  }
+sharingRouter.post("/api/tenants/:tenantId/friends", requireAuth, memberNotLockedDown, async (req, res) => {
+  const m = tenantCtx(res);
+  const tenantId = m.tenant.id;
   const parsed = z.object({ userId: z.string().uuid() }).safeParse(req.body);
   if (!parsed.success || parsed.data.userId === m.userId) {
     res.status(400).json({ error: "userId of another member is required" });
@@ -227,18 +211,13 @@ sharingRouter.post("/api/tenants/:tenantId/friends", requireAuth, async (req, re
   res.status(201).json({ id: row.id, status: "pending" });
 });
 
-sharingRouter.post("/api/tenants/:tenantId/friends/:friendshipId/accept", requireAuth, async (req, res) => {
-  const m = await member(req, res);
-  if (!m) return;
-  // A new friendship lets the two ask for each other's devices: not during lockdown
-  if (isLockedDown(m.ctx.tenant)) {
-    res.status(403).json({ error: "Tenant is in lockdown mode" });
-    return;
-  }
+// A new friendship lets the two ask for each other's devices: not during lockdown
+sharingRouter.post("/api/tenants/:tenantId/friends/:friendshipId/accept", requireAuth, memberNotLockedDown, async (req, res) => {
+  const m = tenantCtx(res);
   const [row] = await db
     .select()
     .from(friendships)
-    .where(and(eq(friendships.id, param(req, "friendshipId")), eq(friendships.tenantId, m.ctx.tenant.id)));
+    .where(and(eq(friendships.id, param(req, "friendshipId")), eq(friendships.tenantId, m.tenant.id)));
   if (!row || row.addresseeId !== m.userId || row.status !== "pending") {
     res.status(404).json({ error: "Friend request not found" });
     return;
@@ -253,15 +232,14 @@ sharingRouter.post("/api/tenants/:tenantId/friends/:friendshipId/accept", requir
     res.status(404).json({ error: "Friend request not found" });
     return;
   }
-  notifyUser(m.ctx.tenant.id, row.requesterId, "friend_accepted", { title: "Friend request accepted", link: "/#sharing" });
+  notifyUser(m.tenant.id, row.requesterId, "friend_accepted", { title: "Friend request accepted", link: "/#sharing" });
   res.json({ id: row.id, status: "accepted" });
 });
 
 /** Decline a request, cancel one you sent, or end a friendship (and its shares). */
-sharingRouter.delete("/api/tenants/:tenantId/friends/:friendshipId", requireAuth, async (req, res) => {
-  const m = await member(req, res);
-  if (!m) return;
-  const tenantId = m.ctx.tenant.id;
+sharingRouter.delete("/api/tenants/:tenantId/friends/:friendshipId", requireAuth, member, async (req, res) => {
+  const m = tenantCtx(res);
+  const tenantId = m.tenant.id;
   const [row] = await db
     .select()
     .from(friendships)
@@ -282,10 +260,9 @@ sharingRouter.delete("/api/tenants/:tenantId/friends/:friendshipId", requireAuth
 
 // ── Blocks ──────────────────────────────────────────────────────────────
 
-sharingRouter.post("/api/tenants/:tenantId/blocks", requireAuth, async (req, res) => {
-  const m = await member(req, res);
-  if (!m) return;
-  const tenantId = m.ctx.tenant.id;
+sharingRouter.post("/api/tenants/:tenantId/blocks", requireAuth, member, async (req, res) => {
+  const m = tenantCtx(res);
+  const tenantId = m.tenant.id;
   const parsed = z.object({ userId: z.string().uuid() }).safeParse(req.body);
   if (!parsed.success || parsed.data.userId === m.userId) {
     res.status(400).json({ error: "userId of another member is required" });
@@ -299,14 +276,13 @@ sharingRouter.post("/api/tenants/:tenantId/blocks", requireAuth, async (req, res
   res.json({ status: "blocked", sharesEnded: ended });
 });
 
-sharingRouter.delete("/api/tenants/:tenantId/blocks/:userId", requireAuth, async (req, res) => {
-  const m = await member(req, res);
-  if (!m) return;
+sharingRouter.delete("/api/tenants/:tenantId/blocks/:userId", requireAuth, member, async (req, res) => {
+  const m = tenantCtx(res);
   await db
     .delete(memberBlocks)
     .where(
       and(
-        eq(memberBlocks.tenantId, m.ctx.tenant.id),
+        eq(memberBlocks.tenantId, m.tenant.id),
         eq(memberBlocks.blockerId, m.userId),
         eq(memberBlocks.blockedId, param(req, "userId")),
       ),
@@ -316,37 +292,35 @@ sharingRouter.delete("/api/tenants/:tenantId/blocks/:userId", requireAuth, async
 
 // ── A friend's devices (names only, to ask for one) ─────────────────────
 
-sharingRouter.get("/api/tenants/:tenantId/friends/:userId/devices", requireAuth, async (req, res) => {
-  const m = await member(req, res);
-  if (!m) return;
+sharingRouter.get("/api/tenants/:tenantId/friends/:userId/devices", requireAuth, member, async (req, res) => {
+  const m = tenantCtx(res);
   const other = param(req, "userId");
-  if (!(await areFriends(m.ctx.tenant.id, m.userId, other))) {
+  if (!(await areFriends(m.tenant.id, m.userId, other))) {
     res.status(404).json({ error: "Friend not found" });
     return;
   }
-  const devices = await listUserDevices(m.ctx.tenant, other).catch(() => []);
+  const devices = await listUserDevices(m.tenant, other).catch(() => []);
   // Names only: addresses appear once a share is active
   res.json({ devices: devices.map((d) => ({ id: d.id, name: d.name })) });
 });
 
 // ── Shares ──────────────────────────────────────────────────────────────
 
-sharingRouter.get("/api/tenants/:tenantId/shares", requireAuth, async (req, res) => {
-  const m = await member(req, res);
-  if (!m) return;
+sharingRouter.get("/api/tenants/:tenantId/shares", requireAuth, member, async (req, res) => {
+  const m = tenantCtx(res);
   const rows = await db
     .select()
     .from(deviceShares)
     .where(
       and(
-        eq(deviceShares.tenantId, m.ctx.tenant.id),
+        eq(deviceShares.tenantId, m.tenant.id),
         inArray(deviceShares.status, ["requested", "offered", "active"]),
         or(eq(deviceShares.ownerId, m.userId), eq(deviceShares.guestId, m.userId)),
       ),
     )
     .limit(500);
   const who = await handles(rows.flatMap((r) => [r.ownerId, r.guestId]));
-  const mine = await listUserDevices(m.ctx.tenant, m.userId).catch(() => []);
+  const mine = await listUserDevices(m.tenant, m.userId).catch(() => []);
   const myDevice = new Map(mine.map((d) => [d.id, d]));
   const now = Date.now();
   res.json({
@@ -387,14 +361,9 @@ const shareBody = z.object({
  * device. `offer`: the caller is the owner and offers one of their devices.
  * Nothing is opened until the other side accepts.
  */
-sharingRouter.post("/api/tenants/:tenantId/shares", requireAuth, stepUpForSession, async (req, res) => {
-  const m = await member(req, res);
-  if (!m) return;
-  const tenantId = m.ctx.tenant.id;
-  if (isLockedDown(m.ctx.tenant)) {
-    res.status(403).json({ error: "Tenant is in lockdown mode" });
-    return;
-  }
+sharingRouter.post("/api/tenants/:tenantId/shares", requireAuth, stepUpForSession, memberNotLockedDown, async (req, res) => {
+  const m = tenantCtx(res);
+  const tenantId = m.tenant.id;
   const parsed = shareBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
@@ -408,7 +377,7 @@ sharingRouter.post("/api/tenants/:tenantId/shares", requireAuth, stepUpForSessio
   const ownerId = d.kind === "offer" ? m.userId : d.friendId;
   const guestId = d.kind === "offer" ? d.friendId : m.userId;
 
-  const ownerDevices = await listUserDevices(m.ctx.tenant, ownerId).catch(() => null);
+  const ownerDevices = await listUserDevices(m.tenant, ownerId).catch(() => null);
   if (!ownerDevices?.some((dev) => dev.id === d.ownerNodeId)) {
     res.status(400).json({ error: "That device does not belong to the member who would expose it" });
     return;
@@ -419,7 +388,7 @@ sharingRouter.post("/api/tenants/:tenantId/shares", requireAuth, stepUpForSessio
       res.status(400).json({ error: "The guest chooses their own devices when they accept" });
       return;
     }
-    const mine = await listUserDevices(m.ctx.tenant, m.userId).catch(() => null);
+    const mine = await listUserDevices(m.tenant, m.userId).catch(() => null);
     const owned = new Set(mine?.map((dev) => dev.id));
     if (!d.guestNodeIds.every((id) => owned.has(id))) {
       res.status(400).json({ error: "You can only connect your own devices" });
@@ -475,14 +444,9 @@ export function portsWithin(narrow: AccessPortSpec[], wide: AccessPortSpec[]): b
   );
 }
 
-sharingRouter.post("/api/tenants/:tenantId/shares/:shareId/accept", requireAuth, stepUpForSession, async (req, res) => {
-  const m = await member(req, res);
-  if (!m) return;
-  const tenantId = m.ctx.tenant.id;
-  if (isLockedDown(m.ctx.tenant)) {
-    res.status(403).json({ error: "Tenant is in lockdown mode" });
-    return;
-  }
+sharingRouter.post("/api/tenants/:tenantId/shares/:shareId/accept", requireAuth, stepUpForSession, memberNotLockedDown, async (req, res) => {
+  const m = tenantCtx(res);
+  const tenantId = m.tenant.id;
   const [share] = await db
     .select()
     .from(deviceShares)
@@ -506,7 +470,7 @@ sharingRouter.post("/api/tenants/:tenantId/shares/:shareId/accept", requireAuth,
 
   if (ownerAnswers) {
     // The device must still be the owner's
-    const mine = await listUserDevices(m.ctx.tenant, m.userId).catch(() => null);
+    const mine = await listUserDevices(m.tenant, m.userId).catch(() => null);
     if (!mine?.some((dev) => dev.id === share.ownerNodeId)) {
       res.status(409).json({ error: "That device is no longer one of your devices" });
       return;
@@ -536,7 +500,7 @@ sharingRouter.post("/api/tenants/:tenantId/shares/:shareId/accept", requireAuth,
       return;
     }
   } else if (parsed.data.guestNodeIds) {
-    const mine = await listUserDevices(m.ctx.tenant, m.userId).catch(() => null);
+    const mine = await listUserDevices(m.tenant, m.userId).catch(() => null);
     const owned = new Set(mine?.map((dev) => dev.id));
     if (!parsed.data.guestNodeIds.every((id) => owned.has(id))) {
       res.status(400).json({ error: "You can only connect your own devices" });
@@ -577,10 +541,9 @@ sharingRouter.post("/api/tenants/:tenantId/shares/:shareId/accept", requireAuth,
 });
 
 /** Decline, cancel or end a share. Either side, at any time; access ends at once. */
-sharingRouter.delete("/api/tenants/:tenantId/shares/:shareId", requireAuth, async (req, res) => {
-  const m = await member(req, res);
-  if (!m) return;
-  const tenantId = m.ctx.tenant.id;
+sharingRouter.delete("/api/tenants/:tenantId/shares/:shareId", requireAuth, member, async (req, res) => {
+  const m = tenantCtx(res);
+  const tenantId = m.tenant.id;
   const [share] = await db
     .select()
     .from(deviceShares)
@@ -610,10 +573,9 @@ sharingRouter.delete("/api/tenants/:tenantId/shares/:shareId", requireAuth, asyn
 });
 
 /** Stop all sharing of one of the caller's devices. */
-sharingRouter.delete("/api/tenants/:tenantId/my-devices/:nodeId/shares", requireAuth, async (req, res) => {
-  const m = await member(req, res);
-  if (!m) return;
-  const tenantId = m.ctx.tenant.id;
+sharingRouter.delete("/api/tenants/:tenantId/my-devices/:nodeId/shares", requireAuth, member, async (req, res) => {
+  const m = tenantCtx(res);
+  const tenantId = m.tenant.id;
   const ended = await db
     .update(deviceShares)
     .set({ status: "ended", endedAt: new Date() })

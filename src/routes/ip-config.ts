@@ -20,10 +20,9 @@ import {
 import {
   requireAuth,
   param,
-  getTenantForUser,
-  hasPermission,
   authUserId,
 } from "./helpers.js";
+import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
 import { useCoordinator } from "../orchestrator/control-client.js";
@@ -48,20 +47,9 @@ export const ipConfigBody = z.object({
 ipConfigRouter.get(
   "/api/tenants/:tenantId/ip-config",
   requireAuth,
+  tenantGuard({ permission: "manage_settings" }),
   async (req, res) => {
-    const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (
-      !hasPermission(result.membership, result.role, "manage_settings", req)
-    ) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     res.json({
       ipv4Prefix: result.tenant.ipv4Prefix,
@@ -74,20 +62,10 @@ ipConfigRouter.get(
 ipConfigRouter.put(
   "/api/tenants/:tenantId/ip-config",
   requireAuth,
+  tenantGuard({ permission: "manage_settings" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (
-      !hasPermission(result.membership, result.role, "manage_settings", req)
-    ) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     if (useCoordinator) {
       res.status(501).json({ error: "IP ranges are managed by the coordinator's tenant CIDR prefixes, not per-tenant Headscale config" });

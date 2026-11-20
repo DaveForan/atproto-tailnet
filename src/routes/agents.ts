@@ -45,11 +45,11 @@ import { agentTokens, users } from "../db/schema.js";
 import {
   requireAuth,
   param,
-  getTenantForUser,
   hasPermission,
   authUserId,
   isLockedDown,
 } from "./helpers.js";
+import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
 import { ALL_PERMISSIONS } from "../members/permissions.js";
 import { stepUpForSession } from "../auth/step-up.js";
@@ -81,15 +81,11 @@ agentsRouter.post(
   "/api/tenants/:tenantId/agent-tokens",
   requireAuth,
   stepUpForSession,
+  tenantGuard(),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const userId = authUserId(req);
-
-    const result = await getTenantForUser(tenantId, userId);
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     if (!result.tenant.allowAgentTokens) {
       res.status(403).json({ error: "Agent tokens are not enabled for this tenant" });
@@ -195,15 +191,11 @@ agentsRouter.post(
 agentsRouter.get(
   "/api/tenants/:tenantId/agent-tokens",
   requireAuth,
+  tenantGuard(),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const userId = authUserId(req);
-
-    const result = await getTenantForUser(tenantId, userId);
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     const canManageAll = hasPermission(
       result.membership,
@@ -251,16 +243,12 @@ agentsRouter.get(
 agentsRouter.delete(
   "/api/tenants/:tenantId/agent-tokens/:tokenId",
   requireAuth,
+  tenantGuard(),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const tokenId = param(req, "tokenId");
     const userId = authUserId(req);
-
-    const result = await getTenantForUser(tenantId, userId);
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     const [token] = await db
       .select()

@@ -17,11 +17,11 @@ import { tenants, users, servicePosts, serviceConnections, instanceSettings } fr
 import {
   requireAuth,
   param,
-  getTenantForUser,
   hasPermission,
   isLockedDown,
   authUserId,
 } from "./helpers.js";
+import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
 import { httpsServicesAvailable } from "../orchestrator/gateway.js";
 import { notify, notifyUser } from "../notifications/service.js";
@@ -73,9 +73,8 @@ async function webServiceProblem(
   return null;
 }
 
-function canReview(result: NonNullable<Awaited<ReturnType<typeof getTenantForUser>>>, req: Request) {
-  return hasPermission(result.membership, result.role, "approve_services", req);
-}
+/** Reviewing public posts needs approve_services. */
+const reviewGuard = tenantGuard({ permission: "approve_services" });
 
 /** Validated service name, null when none was given, or an error message. */
 function serviceName(raw: string | undefined, required: boolean): { name: string | null } | { error: string } {
@@ -108,12 +107,8 @@ async function loadPost(tenantId: string, postId: string): Promise<Post | null> 
 
 // ── A member's own devices ──────────────────────────────────────────────
 
-boardsRouter.get("/api/tenants/:tenantId/my-devices", requireAuth, async (req, res) => {
-  const result = await getTenantForUser(param(req, "tenantId"), authUserId(req));
-  if (!result) {
-    res.status(404).json({ error: "Tenant not found" });
-    return;
-  }
+boardsRouter.get("/api/tenants/:tenantId/my-devices", requireAuth, tenantGuard(), async (req, res) => {
+  const result = tenantCtx(res);
   try {
     res.json({ devices: await listUserDevices(result.tenant, authUserId(req)), supported: useCoordinator });
   } catch {
@@ -123,13 +118,9 @@ boardsRouter.get("/api/tenants/:tenantId/my-devices", requireAuth, async (req, r
 
 // ── Public board ────────────────────────────────────────────────────────
 
-boardsRouter.get("/api/tenants/:tenantId/boards/public", requireAuth, async (req, res) => {
+boardsRouter.get("/api/tenants/:tenantId/boards/public", requireAuth, tenantGuard(), async (req, res) => {
   const userId = authUserId(req);
-  const result = await getTenantForUser(param(req, "tenantId"), userId);
-  if (!result) {
-    res.status(404).json({ error: "Tenant not found" });
-    return;
-  }
+  const result = tenantCtx(res);
   const posts = await db
     .select({ post: servicePosts, authorHandle: users.handle, authorName: users.displayName })
     .from(servicePosts)
@@ -176,13 +167,9 @@ boardsRouter.get("/api/tenants/:tenantId/boards/public", requireAuth, async (req
 });
 
 /** The caller's own posts on both boards, any status except removed. */
-boardsRouter.get("/api/tenants/:tenantId/boards/mine", requireAuth, async (req, res) => {
+boardsRouter.get("/api/tenants/:tenantId/boards/mine", requireAuth, tenantGuard(), async (req, res) => {
   const userId = authUserId(req);
-  const result = await getTenantForUser(param(req, "tenantId"), userId);
-  if (!result) {
-    res.status(404).json({ error: "Tenant not found" });
-    return;
-  }
+  const result = tenantCtx(res);
   const posts = await db
     .select()
     .from(servicePosts)
@@ -224,16 +211,8 @@ boardsRouter.get("/api/tenants/:tenantId/boards/mine", requireAuth, async (req, 
 });
 
 /** Posts waiting for review (operators of the tailnet). */
-boardsRouter.get("/api/tenants/:tenantId/boards/pending", requireAuth, async (req, res) => {
-  const result = await getTenantForUser(param(req, "tenantId"), authUserId(req));
-  if (!result) {
-    res.status(404).json({ error: "Tenant not found" });
-    return;
-  }
-  if (!canReview(result, req)) {
-    res.status(403).json({ error: "Insufficient permissions" });
-    return;
-  }
+boardsRouter.get("/api/tenants/:tenantId/boards/pending", requireAuth, reviewGuard, async (req, res) => {
+  const result = tenantCtx(res);
   const posts = await db
     .select({ post: servicePosts, authorHandle: users.handle })
     .from(servicePosts)
@@ -248,17 +227,9 @@ boardsRouter.get("/api/tenants/:tenantId/boards/pending", requireAuth, async (re
 
 // ── Create / change / remove a post ─────────────────────────────────────
 
-boardsRouter.post("/api/tenants/:tenantId/boards/posts", requireAuth, async (req, res) => {
+boardsRouter.post("/api/tenants/:tenantId/boards/posts", requireAuth, tenantGuard({ notLockedDown: true }), async (req, res) => {
   const userId = authUserId(req);
-  const result = await getTenantForUser(param(req, "tenantId"), userId);
-  if (!result) {
-    res.status(404).json({ error: "Tenant not found" });
-    return;
-  }
-  if (isLockedDown(result.tenant)) {
-    res.status(403).json({ error: "Tenant is in lockdown mode" });
-    return;
-  }
+  const result = tenantCtx(res);
   const parsed = postBody.safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
@@ -353,13 +324,9 @@ boardsRouter.post("/api/tenants/:tenantId/boards/posts", requireAuth, async (req
   }
 });
 
-boardsRouter.patch("/api/tenants/:tenantId/boards/posts/:postId", requireAuth, async (req, res) => {
+boardsRouter.patch("/api/tenants/:tenantId/boards/posts/:postId", requireAuth, tenantGuard(), async (req, res) => {
   const userId = authUserId(req);
-  const result = await getTenantForUser(param(req, "tenantId"), userId);
-  if (!result) {
-    res.status(404).json({ error: "Tenant not found" });
-    return;
-  }
+  const result = tenantCtx(res);
   const post = await loadPost(result.tenant.id, param(req, "postId"));
   if (!post || post.authorId !== userId) {
     res.status(404).json({ error: "Post not found" });
@@ -460,13 +427,9 @@ boardsRouter.patch("/api/tenants/:tenantId/boards/posts/:postId", requireAuth, a
 });
 
 /** Remove a post: its author, or an operator with `manage_board`. Access ends at once. */
-boardsRouter.delete("/api/tenants/:tenantId/boards/posts/:postId", requireAuth, async (req, res) => {
+boardsRouter.delete("/api/tenants/:tenantId/boards/posts/:postId", requireAuth, tenantGuard(), async (req, res) => {
   const userId = authUserId(req);
-  const result = await getTenantForUser(param(req, "tenantId"), userId);
-  if (!result) {
-    res.status(404).json({ error: "Tenant not found" });
-    return;
-  }
+  const result = tenantCtx(res);
   const post = await loadPost(result.tenant.id, param(req, "postId"));
   const isAuthor = post?.authorId === userId;
   // Operators manage the public board only; a private post is its owner's business
@@ -500,17 +463,10 @@ boardsRouter.delete("/api/tenants/:tenantId/boards/posts/:postId", requireAuth, 
 
 // ── Review ──────────────────────────────────────────────────────────────
 
+/** Approve or reject a public post. Runs after {@link reviewGuard}. */
 async function review(req: Request, res: Response, approve: boolean) {
   const userId = authUserId(req);
-  const result = await getTenantForUser(param(req, "tenantId"), userId);
-  if (!result) {
-    res.status(404).json({ error: "Tenant not found" });
-    return;
-  }
-  if (!canReview(result, req)) {
-    res.status(403).json({ error: "Insufficient permissions" });
-    return;
-  }
+  const result = tenantCtx(res);
   const post = await loadPost(result.tenant.id, param(req, "postId"));
   if (!post || post.board !== "public") {
     res.status(404).json({ error: "Post not found" });
@@ -559,8 +515,8 @@ async function review(req: Request, res: Response, approve: boolean) {
   res.json(updated);
 }
 
-boardsRouter.post("/api/tenants/:tenantId/boards/posts/:postId/approve", requireAuth, (req, res) => review(req, res, true));
-boardsRouter.post("/api/tenants/:tenantId/boards/posts/:postId/reject", requireAuth, (req, res) => review(req, res, false));
+boardsRouter.post("/api/tenants/:tenantId/boards/posts/:postId/approve", requireAuth, reviewGuard, (req, res) => review(req, res, true));
+boardsRouter.post("/api/tenants/:tenantId/boards/posts/:postId/reject", requireAuth, reviewGuard, (req, res) => review(req, res, false));
 
 // ── Connect ─────────────────────────────────────────────────────────────
 
@@ -569,13 +525,9 @@ boardsRouter.post("/api/tenants/:tenantId/boards/posts/:postId/reject", requireA
  * disconnects). Each connected device may reach the post's device on the
  * post's port, and nothing else.
  */
-boardsRouter.put("/api/tenants/:tenantId/boards/posts/:postId/connections", requireAuth, async (req, res) => {
+boardsRouter.put("/api/tenants/:tenantId/boards/posts/:postId/connections", requireAuth, tenantGuard(), async (req, res) => {
   const userId = authUserId(req);
-  const result = await getTenantForUser(param(req, "tenantId"), userId);
-  if (!result) {
-    res.status(404).json({ error: "Tenant not found" });
-    return;
-  }
+  const result = tenantCtx(res);
   const post = await loadPost(result.tenant.id, param(req, "postId"));
   if (!post || post.board !== "public" || post.status !== "approved") {
     res.status(404).json({ error: "Post not found" });
@@ -616,13 +568,9 @@ boardsRouter.put("/api/tenants/:tenantId/boards/posts/:postId/connections", requ
 });
 
 /** The author removes one member's devices from their post. */
-boardsRouter.delete("/api/tenants/:tenantId/boards/posts/:postId/connections/:userId", requireAuth, async (req, res) => {
+boardsRouter.delete("/api/tenants/:tenantId/boards/posts/:postId/connections/:userId", requireAuth, tenantGuard(), async (req, res) => {
   const userId = authUserId(req);
-  const result = await getTenantForUser(param(req, "tenantId"), userId);
-  if (!result) {
-    res.status(404).json({ error: "Tenant not found" });
-    return;
-  }
+  const result = tenantCtx(res);
   const post = await loadPost(result.tenant.id, param(req, "postId"));
   if (!post || post.authorId !== userId) {
     res.status(404).json({ error: "Post not found" });
@@ -637,12 +585,8 @@ boardsRouter.delete("/api/tenants/:tenantId/boards/posts/:postId/connections/:us
 
 // ── Access mode of the tailnet ──────────────────────────────────────────
 
-boardsRouter.get("/api/tenants/:tenantId/access-mode", requireAuth, async (req, res) => {
-  const result = await getTenantForUser(param(req, "tenantId"), authUserId(req));
-  if (!result) {
-    res.status(404).json({ error: "Tenant not found" });
-    return;
-  }
+boardsRouter.get("/api/tenants/:tenantId/access-mode", requireAuth, tenantGuard(), async (req, res) => {
+  const result = tenantCtx(res);
   res.json({
     mode: result.tenant.accessMode === "member" ? "member" : "open",
     supported: useCoordinator,
@@ -655,17 +599,9 @@ boardsRouter.get("/api/tenants/:tenantId/access-mode", requireAuth, async (req, 
  * posts and shares between friends. "open": every device reaches every
  * device (or the ACL policy applies).
  */
-boardsRouter.put("/api/tenants/:tenantId/access-mode", requireAuth, async (req, res) => {
+boardsRouter.put("/api/tenants/:tenantId/access-mode", requireAuth, tenantGuard({ permission: "manage_acl" }), async (req, res) => {
   const userId = authUserId(req);
-  const result = await getTenantForUser(param(req, "tenantId"), userId);
-  if (!result) {
-    res.status(404).json({ error: "Tenant not found" });
-    return;
-  }
-  if (!hasPermission(result.membership, result.role, "manage_acl", req)) {
-    res.status(403).json({ error: "Insufficient permissions" });
-    return;
-  }
+  const result = tenantCtx(res);
   const parsed = z.object({ mode: z.enum(["open", "member"]) }).safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: 'mode must be "open" or "member"' });
@@ -693,12 +629,8 @@ boardsRouter.put("/api/tenants/:tenantId/access-mode", requireAuth, async (req, 
 
 // ── Controller board ────────────────────────────────────────────────────
 
-boardsRouter.get("/api/tenants/:tenantId/controller-board", requireAuth, async (req, res) => {
-  const result = await getTenantForUser(param(req, "tenantId"), authUserId(req));
-  if (!result) {
-    res.status(404).json({ error: "Tenant not found" });
-    return;
-  }
+boardsRouter.get("/api/tenants/:tenantId/controller-board", requireAuth, tenantGuard(), async (req, res) => {
+  const result = tenantCtx(res);
   res.json({
     text: result.tenant.controllerBoardText ?? "",
     canEdit: result.membership.isOriginator && !req.agentToken,
@@ -707,17 +639,9 @@ boardsRouter.get("/api/tenants/:tenantId/controller-board", requireAuth, async (
 });
 
 /** Only the originator writes the public page of the tailnet. */
-boardsRouter.put("/api/tenants/:tenantId/controller-board", requireAuth, async (req, res) => {
+boardsRouter.put("/api/tenants/:tenantId/controller-board", requireAuth, tenantGuard({ originatorOnly: "Only the tailnet's originator can edit the controller board", noAgentToken: "Only the tailnet's originator can edit the controller board" }), async (req, res) => {
   const userId = authUserId(req);
-  const result = await getTenantForUser(param(req, "tenantId"), userId);
-  if (!result) {
-    res.status(404).json({ error: "Tenant not found" });
-    return;
-  }
-  if (!result.membership.isOriginator || req.agentToken) {
-    res.status(403).json({ error: "Only the tailnet's originator can edit the controller board" });
-    return;
-  }
+  const result = tenantCtx(res);
   const text = (req.body ?? {}).text;
   const problems = lintBoardText(text);
   if (problems.length > 0) {

@@ -14,10 +14,9 @@ import { getControlClient } from "../orchestrator/control-client.js";
 import {
   requireAuth,
   param,
-  getTenantForUser,
-  hasPermission,
   authUserId,
 } from "./helpers.js";
+import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
 
@@ -26,18 +25,10 @@ export const routesRouter = Router();
 routesRouter.get(
   "/api/tenants/:tenantId/routes",
   requireAuth,
+  tenantGuard({ permission: "manage_devices" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!hasPermission(result.membership, result.role, "manage_devices", req)) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     if (!result.tenant.apiKey || !result.tenant.port) {
       res.status(503).json({ error: "Tenant instance not available" });
@@ -66,19 +57,11 @@ routesRouter.get(
 routesRouter.post(
   "/api/tenants/:tenantId/routes/:routeId/enable",
   requireAuth,
+  tenantGuard({ permission: "manage_devices" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const routeId = param(req, "routeId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!hasPermission(result.membership, result.role, "manage_devices", req)) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     if (!result.tenant.apiKey || !result.tenant.port) {
       res.status(503).json({ error: "Tenant instance not available" });
@@ -113,19 +96,11 @@ routesRouter.post(
 routesRouter.post(
   "/api/tenants/:tenantId/routes/:routeId/disable",
   requireAuth,
+  tenantGuard({ permission: "manage_devices" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const routeId = param(req, "routeId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!hasPermission(result.membership, result.role, "manage_devices", req)) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     if (!result.tenant.apiKey || !result.tenant.port) {
       res.status(503).json({ error: "Tenant instance not available" });
@@ -160,19 +135,11 @@ routesRouter.post(
 routesRouter.delete(
   "/api/tenants/:tenantId/routes/:routeId",
   requireAuth,
+  tenantGuard({ permission: "manage_devices" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const routeId = param(req, "routeId");
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
-
-    if (!hasPermission(result.membership, result.role, "manage_devices", req)) {
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
+    const result = tenantCtx(res);
 
     if (!result.tenant.apiKey || !result.tenant.port) {
       res.status(503).json({ error: "Tenant instance not available" });
