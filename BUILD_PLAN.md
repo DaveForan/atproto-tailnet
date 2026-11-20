@@ -355,8 +355,8 @@ Order matters: each stage gives value alone and unblocks the next.
 
 ### 6.9b Device visibility and consensual sharing (ADR-0036)
 - [ ] Coordinator: tenant access mode, per-device packet filter and peer list, persisted access rules + admin API
-- [ ] TS service: published services open a port; "See published services" setting; shares (request/offer, accept, scope per device and port, expiry, end)
-- [ ] Originator controls (mode, turn off shares or published services); audit and notifications
+- [ ] TS service: board solicitations bound to one device + port; Connect with a choice of own devices; shares (request/offer, accept, scope per device, port and protocol, expiry, role shares, block list, limits)
+- [ ] Administrators control solicitations only (remove, approve); access mode per tailnet; audit and notifications
 - [ ] Dashboard: publish, share and review screens
 - [ ] Verify with two members and two devices
 

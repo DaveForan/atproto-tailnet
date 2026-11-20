@@ -20,8 +20,9 @@ to their own devices.
 The operator requires this model:
 
 - By default, a member reaches only their own devices.
-- A **published service** is a device that offers a service through the board.
-  Members can choose to see published services.
+- The board shows **solicitations**: a member offers a service on one device
+  and one port. Each other member chooses which of their own devices connect
+  to it.
 - Members can ask to see the devices of other members, and can show their own
   devices to other members. Both members must agree.
 - Each member controls which of their devices and which ports are exposed.
@@ -37,16 +38,25 @@ the peers that it can reach or that can reach it.
 Existing tailnets keep the `open` mode (allow all) until the originator changes
 it. A tailnet with a custom ACL policy stays in the `custom` mode.
 
-### 2. Published services
+### 2. Solicitations on the board
 
-- A member publishes a service on one of their devices: a name and a TCP port
-  (or a port range), with a board post.
-- Each member has a setting **See published services** (off by default), for
-  all of their devices or per device.
-- A device of a member with this setting reaches the published port of the
-  publishing device, and no other port.
-- The publisher can stop publishing at any time. Access ends at once.
-- Named HTTPS services through the gateway (ADR-0030) build on this record.
+The board lists **solicitations**: open offers of a service that a member runs.
+
+- A solicitation is for one device and one port (TCP or UDP) of the member who
+  posts it, with a title and a description. A member who runs two applications
+  on one device (one for everybody on one port, one for their own devices on
+  another port) solicits only the first port. The second port stays private.
+- A solicitation alone opens nothing. Next to each solicitation there is a
+  **Connect** button. The viewer selects one or more of their own devices. The
+  selected devices can then reach that device and that port, and no other
+  port. The board shows the address to use (tailnet address and port; the name
+  of the service when ADR-0030 is built).
+- The post is the consent of the publisher. The **Connect** action is the
+  consent of the viewer. No approval step is necessary for each viewer.
+- The viewer can disconnect a device at any time. The publisher can remove the
+  solicitation at any time. Access ends at once for all connected devices.
+- The publisher sees how many members and devices are connected, and can
+  remove one of them.
 
 ### 3. Shares between members
 
@@ -69,13 +79,32 @@ member. It has a direction: the *owner* exposes, the *guest* connects.
 - A share can have an expiry.
 - Lockdown blocks new shares. Removal of a member ends their shares.
 
-### 4. Controls of the originator
+### 4. Controls of administrators
 
+Administrators control solicitations, because solicitations are public to the
+tailnet. They do not control private shares between members.
+
+- Holders of `manage_board` can remove a solicitation. If the tailnet requires
+  service approval (`requireServiceApproval`), a solicitation is visible only
+  after a holder of `approve_services` approves it.
 - The originator, or a holder of `manage_acl`, selects the access mode of the
-  tailnet: `member` (this ADR), `open`, or `custom` (the ACL policy).
-- In the `member` mode, the originator can turn off shares between members or
-  published services for the whole tailnet.
-- The audit log records shares and published services.
+  tailnet: `member` (this ADR), `open`, or `custom` (the ACL policy). The
+  originator can turn off the board, or shares, for the whole tailnet.
+- Administrators cannot read, change or create shares of other members.
+- The audit log records solicitations, and that a share started or ended (not
+  its scope, which belongs to the two members).
+
+### 4b. First version
+
+Included: an expiry on each share (the interface asks for it), one screen per
+device that shows who can reach it with "stop all sharing", shares to a role
+(each member of the role accepts for themselves), notifications, protocol with
+the port (TCP, UDP, ICMP), a block list, and limits on pending requests with a
+cool-down after a refusal.
+
+Later: last-use information for shares, and shares between a tailnet and its
+sub-tailnets. When ADR-0035 is built, a member with trusted devices must
+confirm on a trusted device to accept or widen a share.
 
 ### 5. Enforcement
 
@@ -103,9 +132,12 @@ member. It has a direction: the *owner* exposes, the *guest* connects.
 ## Acceptance
 
 - New tailnet, two members: neither reaches a device of the other.
-- Member A publishes port 3000 on a device. Member B, with "See published
-  services" on, reaches port 3000 and no other port. Member C, with the setting
-  off, reaches nothing.
+- Member A solicits port 3000 of a device and runs a private application on
+  port 4000 of the same device. Member B presses Connect and selects one
+  device. That device reaches port 3000 and not port 4000. The other devices of
+  B, and member C who did not connect, reach nothing.
+- A holder of `manage_board` removes the solicitation. B loses access.
+- An administrator cannot list or change a share between A and B.
 - A requests access to a device of B. Before B accepts, nothing changes. After
   B accepts ports 22 and 443 only, A reaches those two ports only.
 - B ends the share. A loses access in less than 5 seconds.
