@@ -24,6 +24,7 @@ import {
   authUserId,
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
+import { stepUpForSession } from "../auth/step-up.js";
 import { logger } from "../logger.js";
 
 /** True when the tenant has a reachable control plane to read/write policy on. */
@@ -108,6 +109,7 @@ aclRouter.get(
 aclRouter.put(
   "/api/tenants/:tenantId/acl",
   requireAuth,
+  stepUpForSession,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const result = await getTenantForUser(tenantId, authUserId(req));

@@ -1,7 +1,7 @@
 import { StrictMode, useCallback, useEffect, useState } from "react";
 import { errorMessage } from "./lib/utils";
 import { createRoot } from "react-dom/client";
-import { api, fetchCsrfToken } from "./services/api";
+import { api, apiOrNull, fetchCsrfToken } from "./services/api";
 import { ToastProvider, useToast } from "./components/Toast";
 import { Badge } from "./components/Badge";
 import { applyTheme } from "./lib/theme";
@@ -48,7 +48,7 @@ function JoinApp() {
         return;
       }
 
-      const me = await api<{ id: string }>("/api/me");
+      const me = await apiOrNull<{ id: string }>("/api/me");
       const loggedIn = !!me?.id;
 
       if (loggedIn) {

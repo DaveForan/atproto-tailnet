@@ -26,16 +26,16 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-tower = { workspace = true }
-tower-http = { workspace = true }
 bytes = { workspace = true }
 hex = { workspace = true }
+ipnetwork = { workspace = true }
 chrono = { workspace = true }
 uuid = { workspace = true }
 zstd = { workspace = true }
 tokio-stream = { workspace = true }
 
 [dev-dependencies]
+tower = { workspace = true }
 crypto_box = { version = "0.9", features = ["salsa20"] }
 reqwest = { version = "0.12", features = ["json"] }
 h2 = "0.4"

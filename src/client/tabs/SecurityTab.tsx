@@ -15,6 +15,7 @@ import type {
   DeviceApproval,
   JoinRequest,
 } from "../lib/types";
+import { LoadError } from "../components/LoadError";
 
 type BoolSettingKey = {
   [K in keyof Settings]-?: Settings[K] extends boolean ? K : never;
@@ -37,6 +38,7 @@ export function SecurityTab() {
   const [deviceApprovals, setDeviceApprovals] = useState<DeviceApproval[]>([]);
   const [joinRequests, setJoinRequests] = useState<JoinRequest[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const [hibernateDays, setHibernateDays] = useState(
     settings?.hibernateAfterDays ?? 0,
@@ -59,10 +61,9 @@ export function SecurityTab() {
       }
       setDeviceApprovals(da);
       setJoinRequests(jr);
+      setLoadError(null);
     } catch (e) {
-      toastError(
-        e instanceof Error ? e.message : "Failed to load security data",
-      );
+      setLoadError(errorMessage(e, "Failed to load security data"));
     } finally {
       setLoading(false);
     }
@@ -157,6 +158,7 @@ export function SecurityTab() {
 
   return (
     <div className="tab-content">
+      <LoadError error={loadError} onRetry={loadSecurity} />
       <Card title="Security settings">
         <div className="toggle-group">
         {TOGGLE_SETTINGS.map((toggle) => (

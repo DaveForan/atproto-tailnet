@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useApp } from "./hooks/useAppState";
 import { Header, LockdownBanner, LoginPage, Sidebar, SidebarProvider, StatsSummary } from "./components/Layout";
 import { PendingInvitations } from "./components/PendingInvitations";
@@ -10,6 +10,7 @@ import { VerifyDevicePage } from "./components/VerifyDevice";
 import type { HostnamesData, TabId, Tenant } from "./lib/types";
 import { AddressForm } from "./components/TailnetAddress";
 import { hostnamesService } from "./services/hostnames";
+import { onSessionExpired, SESSION_EXPIRED_MESSAGE } from "./services/api";
 
 const StatusTab = lazy(() => import("./tabs/StatusTab").then((m) => ({ default: m.StatusTab })));
 const DevicesTab = lazy(() => import("./tabs/DevicesTab").then((m) => ({ default: m.DevicesTab })));
@@ -64,7 +65,41 @@ const tabComponents: Record<TabId, React.LazyExoticComponent<React.ComponentType
 const DEVICE_PATH = /^\/device\/([0-9a-f]{32})\/?$/;
 const INVITE_PATH = /^\/invite\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i;
 
+/**
+ * The session ended while the dashboard was open (an API call answered 401).
+ * Nothing on the page can succeed any more: say so and offer the sign-in.
+ */
+function SessionExpired() {
+  const [expired, setExpired] = useState(false);
+  const signIn = useRef<HTMLButtonElement>(null);
+  useEffect(() => onSessionExpired(() => setExpired(true)), []);
+  useEffect(() => {
+    if (expired) signIn.current?.focus();
+  }, [expired]);
+  if (!expired) return null;
+  return (
+    <div className="session-expired-backdrop">
+      <div className="session-expired" role="alertdialog" aria-modal="true" aria-labelledby="session-expired-title">
+        <h2 id="session-expired-title">{SESSION_EXPIRED_MESSAGE}</h2>
+        <p>You were signed out, so changes cannot be saved. Sign in again to continue.</p>
+        <button ref={signIn} type="button" className="mt-12" onClick={() => window.location.reload()}>
+          Sign in again
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function App() {
+  return (
+    <>
+      <AppContent />
+      <SessionExpired />
+    </>
+  );
+}
+
+function AppContent() {
   const { user, loading, error, currentTenant, showWizard, reload, reloadAndSelect } = useApp();
   const [path, setPath] = useState(window.location.pathname);
   const inviteId = INVITE_PATH.exec(path)?.[1] ?? null;

@@ -5,6 +5,7 @@ import { Loading } from "../components/Loading";
 import { TailnetAddressCard } from "../components/TailnetAddress";
 import { useTenantParallel } from "../hooks/useTenantData";
 import type { DevicesData, HealthData } from "../lib/types";
+import { LoadError } from "../components/LoadError";
 
 interface StatusData {
   devices: DevicesData | null;
@@ -18,7 +19,7 @@ const STATUS_SPECS = [
 const STATUS_FALLBACK: StatusData = { devices: null, health: null };
 
 export function StatusTab() {
-  const { data, loading } = useTenantParallel<StatusData>(
+  const { data, loading, error, reload } = useTenantParallel<StatusData>(
     STATUS_SPECS,
     STATUS_FALLBACK,
   );
@@ -39,6 +40,7 @@ export function StatusTab() {
 
   return (
     <div className="tab-content">
+      <LoadError error={error} onRetry={reload} />
       <Card title="Health">
         <div className="stats-row">
           <div className="stat-card">

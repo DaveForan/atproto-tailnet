@@ -149,7 +149,7 @@ impl Store {
     }
 
     /// Every stored configuration value of a tenant, as (kind, value).
-    pub async fn get_tenant_configs(&self, tenant_id: TenantId) -> Vec<(String, serde_json::Value)> {
+    pub async fn get_tenant_configs(&self, tenant_id: TenantId) -> Result<Vec<(String, serde_json::Value)>, CoordError> {
         match self {
             Store::Memory(m) => m.get_tenant_configs(tenant_id),
             Store::Pg(p) => p.get_tenant_configs(tenant_id).await,
@@ -158,7 +158,7 @@ impl Store {
     }
 
     /// Every stored configuration value of every tenant.
-    pub async fn list_tenant_configs(&self) -> Vec<(TenantId, String, serde_json::Value)> {
+    pub async fn list_tenant_configs(&self) -> Result<Vec<(TenantId, String, serde_json::Value)>, CoordError> {
         match self {
             Store::Memory(m) => m.list_tenant_configs(),
             Store::Pg(p) => p.list_tenant_configs().await,
@@ -181,11 +181,11 @@ impl Store {
     }
 
     /// Start a pending sign-in; replaces any other pending sign-in of the machine.
-    pub async fn sign_in_start(&self, id: &str, machine_key: &[u8; 32], hostname: &str, os: &str) -> Result<(), CoordError> {
+    pub async fn sign_in_start(&self, id: &str, machine_key: &[u8; 32], hostname: &str, os: &str, requester_ip: Option<&str>) -> Result<(), CoordError> {
         match self {
-            Store::Memory(m) => m.sign_in_start(id, machine_key, hostname, os),
-            Store::Pg(p) => p.sign_in_start(id, machine_key, hostname, os).await,
-            Store::Sqlite(s) => s.sign_in_start(id, machine_key, hostname, os).await,
+            Store::Memory(m) => m.sign_in_start(id, machine_key, hostname, os, requester_ip),
+            Store::Pg(p) => p.sign_in_start(id, machine_key, hostname, os, requester_ip).await,
+            Store::Sqlite(s) => s.sign_in_start(id, machine_key, hostname, os, requester_ip).await,
         }
     }
 
@@ -258,16 +258,18 @@ impl Store {
         }
     }
 
-    /// The machine lock of an owner in a tenant (ADR-0035), if any.
-    pub async fn get_owner_lock(&self, tenant_id: TenantId, owner: &str) -> Option<coord_core::OwnerLock> {
+    /// The machine lock of an owner in a tenant (ADR-0035). A storage error
+    /// is an error (callers refuse: fail closed); an undecodable row is
+    /// `LockRead::Malformed`, which counts as locked.
+    pub async fn get_owner_lock(&self, tenant_id: TenantId, owner: &str) -> Result<coord_core::LockRead, CoordError> {
         match self {
-            Store::Memory(m) => m.get_owner_lock(tenant_id, owner),
+            Store::Memory(m) => Ok(m.get_owner_lock(tenant_id, owner)),
             Store::Pg(p) => p.get_owner_lock(tenant_id, owner).await,
             Store::Sqlite(s) => s.get_owner_lock(tenant_id, owner).await,
         }
     }
 
-    /// Every machine lock, as (tenant, owner, lock).
+    /// Every well-formed machine lock, as (tenant, owner, lock).
     pub async fn list_owner_locks(&self) -> Vec<(TenantId, String, coord_core::OwnerLock)> {
         match self {
             Store::Memory(m) => m.list_owner_locks(),
@@ -276,18 +278,57 @@ impl Store {
         }
     }
 
-    /// Set or (with `None`) remove an owner's machine lock.
+    /// Read-modify-write one owner's lock atomically: `f` sees the current
+    /// lock and decides what to write, and no other update of the same
+    /// (tenant, owner) — on this or another replica — can interleave. A
+    /// storage error means nothing was written.
+    pub async fn update_owner_lock<R, F>(&self, tenant_id: TenantId, owner: &str, f: F) -> Result<R, CoordError>
+    where
+        F: FnOnce(coord_core::LockRead) -> (coord_core::LockWrite, R) + Send,
+        R: Send,
+    {
+        match self {
+            Store::Memory(m) => m.update_owner_lock(tenant_id, owner, f),
+            Store::Pg(p) => p.update_owner_lock(tenant_id, owner, f).await,
+            Store::Sqlite(s) => s.update_owner_lock(tenant_id, owner, f).await,
+        }
+    }
+
+    /// Set or (with `None`) remove an owner's machine lock unconditionally.
     pub async fn set_owner_lock(
         &self,
         tenant_id: TenantId,
         owner: &str,
         lock: Option<coord_core::OwnerLock>,
     ) -> Result<(), CoordError> {
-        match self {
-            Store::Memory(m) => m.set_owner_lock(tenant_id, owner, lock),
-            Store::Pg(p) => p.set_owner_lock(tenant_id, owner, lock).await,
-            Store::Sqlite(s) => s.set_owner_lock(tenant_id, owner, lock).await,
-        }
+        let write = match lock {
+            Some(l) => coord_core::LockWrite::Set(l),
+            None => coord_core::LockWrite::Remove,
+        };
+        self.update_owner_lock(tenant_id, owner, move |_| (write, ())).await
+    }
+
+    /// Decide whether `machine_key` may register for `owner`, recording the
+    /// decision in the lock in the same atomic step (a consumed "allow one"
+    /// window, a refused attempt). `Ok(None)` = the owner has no lock.
+    pub async fn check_owner_lock(
+        &self,
+        tenant_id: TenantId,
+        owner: &str,
+        machine_key: &[u8; 32],
+        hostname: &str,
+        os: &str,
+        fingerprint: &str,
+    ) -> Result<Option<coord_core::LockOutcome>, CoordError> {
+        let hex_key = hex::encode(machine_key);
+        let now = chrono::Utc::now();
+        self.update_owner_lock(tenant_id, owner, |read| {
+            if read == coord_core::LockRead::Malformed {
+                tracing::error!(tenant = %tenant_id, "machine lock is malformed: refusing registration");
+            }
+            coord_core::lock::registration_check(read, &hex_key, now, hostname, os, fingerprint)
+        })
+        .await
     }
 
     pub async fn is_tenant_suspended(&self, tenant_id: TenantId) -> bool {

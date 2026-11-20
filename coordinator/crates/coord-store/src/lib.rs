@@ -20,23 +20,34 @@ pub enum RemoteEvent {
     TenantChanged(coord_core::TenantId),
     /// A pending device sign-in was decided.
     SignInDecided(String),
+    /// Notifications may have been lost (the LISTEN connection dropped and
+    /// came back): every cached tenant and every live stream must resync from
+    /// the store. Raised locally only; never carried in a NOTIFY payload.
+    Resync,
 }
 
 pub(crate) fn now_secs() -> i64 {
     chrono::Utc::now().timestamp()
 }
 
+/// Columns read for a pending sign-in, in the order `sign_in_from_row` expects.
+pub(crate) const SIGN_IN_COLUMNS: &str = "machine_key, hostname, os, decision, requester_ip, requested_at, expires_at";
+
+pub(crate) type SignInRow = (String, String, String, Option<String>, Option<String>, Option<i64>, i64);
+
 /// Shared row decoding for pending sign-ins (PostgreSQL and SQLite).
-pub(crate) fn sign_in_from_row(
-    row: (String, String, String, Option<String>),
-) -> Option<coord_core::PendingSignIn> {
-    let (machine_key, hostname, os, decision) = row;
+pub(crate) fn sign_in_from_row(row: SignInRow) -> Option<coord_core::PendingSignIn> {
+    let (machine_key, hostname, os, decision, requester_ip, requested_at, expires_at) = row;
     let machine_key: [u8; 32] = hex::decode(machine_key).ok()?.try_into().ok()?;
+    // Rows from before requested_at existed: started one TTL before expiry
+    let started = requested_at.unwrap_or(expires_at - coord_core::signin::SIGN_IN_TTL_SECS);
     Some(coord_core::PendingSignIn {
         machine_key,
         hostname,
         os,
         decision: decision.and_then(|d| serde_json::from_str(&d).ok()),
+        requester_ip,
+        requested_at: chrono::DateTime::from_timestamp(started, 0).unwrap_or_default(),
     })
 }
 
@@ -46,6 +57,19 @@ pub(crate) fn generate_auth_key() -> String {
     let mut buf = [0u8; 32];
     rand::rng().fill_bytes(&mut buf);
     format!("tskey-auth-{}", hex::encode(buf))
+}
+
+/// How a pre-auth key is stored and looked up: SHA-256 of the key, lowercase
+/// hex. The key itself is never stored (ADR-0035 hardening).
+pub fn hash_preauth_key(key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(key.as_bytes()))
+}
+
+/// A short, non-secret tag of a presented key for logs (first 8 hex digits of
+/// its hash): lets an operator correlate attempts without logging the key.
+pub fn preauth_key_log_id(key: &str) -> String {
+    hash_preauth_key(key)[..8].to_string()
 }
 
 pub(crate) fn generate_random_id() -> String {

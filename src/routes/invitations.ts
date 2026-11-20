@@ -31,6 +31,7 @@ import { enforceMemberLimit } from "./limits.js";
 import {
   didWebToUrl,
   guardedGetJson,
+  guardedRequest,
   MAX_DID_DOC_BYTES,
   resolvesToPublicAddresses,
 } from "../identity/resolver.js";
@@ -202,15 +203,17 @@ export async function resolveHandleToDid(handle: string): Promise<string | null>
 
   // The handle is user input: only fetch its .well-known when every address
   // it resolves to is public (no probing of internal services), with a
-  // timeout and no redirects.
+  // timeout and no redirects. The check is repeated at connect time
+  // (`guardedRequest`), so a DNS answer that changes after it cannot reach
+  // an internal address.
   try {
     if (await resolvesToPublicAddresses(cleanHandle)) {
-      const res = await fetch(`https://${cleanHandle}/.well-known/atproto-did`, {
-        signal: AbortSignal.timeout(RESOLVE_TIMEOUT_MS),
-        redirect: "error",
+      const res = await guardedRequest(`https://${cleanHandle}/.well-known/atproto-did`, {
+        timeoutMs: RESOLVE_TIMEOUT_MS,
+        maxBytes: 2048,
       });
       if (res.ok) {
-        const did = (await res.text()).slice(0, 2048).trim();
+        const did = res.text.slice(0, 2048).trim();
         if (did.startsWith("did:")) return did;
       }
     }

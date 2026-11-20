@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { api, fetchCsrfToken } from "../services/api";
+import { api, apiOrNull, fetchCsrfToken } from "../services/api";
 import { deviceService } from "../services/devices";
 import { rolesService } from "../services/roles";
 import { securityService } from "../services/security";
@@ -148,7 +148,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const init = useCallback(async (silent = false) => {
     const seq = ++initSeqRef.current;
     try {
-      const user = await api<User>("/api/me");
+      const user = await apiOrNull<User>("/api/me");
       if (seq !== initSeqRef.current) return;
       if (!user) {
         setState((s) => ({ ...s, user: null, loading: false, error: null }));

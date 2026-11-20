@@ -8,10 +8,14 @@ use coord_store::PeerEvent;
 
 use crate::state::CoordinatorState;
 
+/// `client_ip` is the address the Noise connection came from (see
+/// `client_ip::TrustedProxies`); it is only recorded on a new interactive
+/// sign-in, for the approval page.
 pub async fn handle_register(
     state: &Arc<CoordinatorState>,
     machine_key: &[u8; 32],
     body: &str,
+    client_ip: Option<std::net::IpAddr>,
 ) -> Result<(String, Option<u64>), Box<dyn std::error::Error + Send + Sync>> {
     let req: RegisterRequest = serde_json::from_str(body)?;
 
@@ -49,14 +53,34 @@ pub async fn handle_register(
             // A real re-auth (`tailscale up --force-reauth`) generates a new node
             // key and takes the key path below.
             let identity_resp = authorized_response(state, detail.tenant_id, detail.attrs.owner.as_deref());
-            if !suspended && current == node_key_bytes.as_slice() {
+            let same_key = !suspended && current == node_key_bytes.as_slice();
+            // Key rotation without an auth key keeps the node's identity. With an
+            // auth key the machine is re-authenticating: fall through so the new
+            // key's owner/tags/ephemeral replace the old ones (the key path
+            // checks the machine lock of the key's owner).
+            let rotation = old_key.filter(|k| auth_key.is_none() && !suspended && current == k.as_slice());
+            if same_key || rotation.is_some() {
+                // ADR-0035 §2: a locked owner's machine outside the lock is refused
+                // also when it was registered before (a node that survived the lock
+                // being set, or one whose machine was taken out of the set).
+                if let Err(resp) = enforce_owner_lock(
+                    state,
+                    detail.tenant_id,
+                    detail.attrs.owner.as_deref(),
+                    machine_key,
+                    &detail.info.hostname,
+                    &detail.info.os,
+                )
+                .await
+                {
+                    return Ok((serde_json::to_string(&resp)?, None));
+                }
+            }
+            if same_key {
                 sync_node_routes(state, existing, advertised).await;
                 return Ok((serde_json::to_string(&identity_resp)?, None));
             }
-            // Key rotation without an auth key keeps the node's identity. With an
-            // auth key the machine is re-authenticating: fall through so the new
-            // key's owner/tags/ephemeral replace the old ones.
-            if let Some(old) = old_key.filter(|k| auth_key.is_none() && !suspended && current == k.as_slice()) {
+            if let Some(old) = rotation {
                 state.store.rotate_node_key(machine_key, &old, &node_key_bytes).await?;
                 info!(node_id = existing.as_i64(), "node key rotated on re-register");
                 sync_node_routes(state, existing, advertised).await;
@@ -84,13 +108,13 @@ pub async fn handle_register(
         Some(key) => match state.store.validate_preauth_key(key).await {
             Some(grant) => grant,
             None => {
-                let prefix: String = key.chars().take(12).collect();
-                warn!(auth_key_prefix = %prefix, "invalid pre-auth key");
+                // Never log the key or its start: only a short tag of its hash.
+                warn!(auth_key_hash = %coord_store::preauth_key_log_id(key), "invalid pre-auth key");
                 return Ok((serde_json::to_string(&error_response("invalid or expired pre-auth key"))?, None));
             }
         },
         // No key: interactive sign-in (ADR-0032)
-        None => match interactive_sign_in(state, machine_key, &req, known_tenant).await {
+        None => match interactive_sign_in(state, machine_key, &req, known_tenant, client_ip).await {
             Ok(grant) => grant,
             Err(resp) => return Ok((serde_json::to_string(&resp)?, None)),
         },
@@ -134,25 +158,8 @@ pub async fn handle_register(
 
     // Machine lock (ADR-0035): an owner locked to a set of machines cannot add
     // another one, whatever credential it presents.
-    if let Some(owner_id) = owner.as_deref() {
-        if let Some(mut lock) = state.store.get_owner_lock(tenant_id, owner_id).await {
-            let outcome = lock.check(
-                &hex::encode(machine_key),
-                chrono::Utc::now(),
-                &node_info.hostname,
-                &node_info.os,
-                &crate::device_auth::fingerprint(machine_key),
-            );
-            if outcome != coord_core::LockOutcome::Allowed {
-                if let Err(e) = state.store.set_owner_lock(tenant_id, owner_id, Some(lock)).await {
-                    warn!(error = %e, "failed to update owner lock");
-                }
-            }
-            if outcome == coord_core::LockOutcome::Refused {
-                warn!(tenant = %tenant_id, "register refused: owner is locked to other machines");
-                return Ok((serde_json::to_string(&error_response(MACHINE_LOCKED_MSG))?, None));
-            }
-        }
+    if let Err(resp) = enforce_owner_lock(state, tenant_id, owner.as_deref(), machine_key, &node_info.hostname, &node_info.os).await {
+        return Ok((serde_json::to_string(&resp)?, None));
     }
     let registration = NodeRegistration {
         owner: grant.owner,
@@ -192,6 +199,39 @@ pub async fn handle_register(
     Ok((serde_json::to_string(&resp)?, Some(generation)))
 }
 
+/// Apply the owner's machine lock (ADR-0035 §2) to a registering machine, in
+/// one atomic store step (the "allow one" window admits exactly one machine,
+/// and a refusal is recorded). Fails closed: a store error or a malformed lock
+/// refuses the registration with a clean error.
+async fn enforce_owner_lock(
+    state: &Arc<CoordinatorState>,
+    tenant_id: TenantId,
+    owner: Option<&str>,
+    machine_key: &[u8; 32],
+    hostname: &str,
+    os: &str,
+) -> Result<(), RegisterResponse> {
+    let Some(owner) = owner else {
+        return Ok(());
+    };
+    let fingerprint = crate::device_auth::fingerprint(machine_key);
+    match state.store.check_owner_lock(tenant_id, owner, machine_key, hostname, os, &fingerprint).await {
+        Ok(None) | Ok(Some(coord_core::LockOutcome::Allowed)) => Ok(()),
+        Ok(Some(coord_core::LockOutcome::AllowedNew)) => {
+            info!(tenant = %tenant_id, "new machine admitted by the machine lock's window");
+            Ok(())
+        }
+        Ok(Some(coord_core::LockOutcome::Refused)) => {
+            warn!(tenant = %tenant_id, "register refused: owner is locked to other machines");
+            Err(error_response(MACHINE_LOCKED_MSG))
+        }
+        Err(e) => {
+            tracing::error!(tenant = %tenant_id, error = %e, "register refused: machine lock could not be checked");
+            Err(error_response(LOCK_UNAVAILABLE_MSG))
+        }
+    }
+}
+
 /// Interactive sign-in: the device gets a URL, the user approves it on the
 /// dashboard, and the device's follow-up request then receives the grant.
 /// `Err` carries the response to send while there is no grant yet.
@@ -200,6 +240,7 @@ async fn interactive_sign_in(
     machine_key: &[u8; 32],
     req: &RegisterRequest,
     known_tenant: Option<TenantId>,
+    client_ip: Option<std::net::IpAddr>,
 ) -> Result<coord_core::PreAuthGrant, RegisterResponse> {
     use crate::device_auth::{self, Decision};
     let Some(base) = state.device_auth_url.as_deref() else {
@@ -240,7 +281,7 @@ async fn interactive_sign_in(
         .and_then(sanitize::dns_label)
         .unwrap_or_else(|| HOSTNAME_PLACEHOLDER.into());
     let os = sanitize::os(hostinfo.and_then(|h| h.os.as_deref()));
-    match state.device_auth.start(&state.store, *machine_key, &hostname, &os).await {
+    match state.device_auth.start(&state.store, *machine_key, &hostname, &os, client_ip).await {
         Some(id) => Err(sign_in_url(&id)),
         None => Err(error_response("sign-in is not available right now; try again")),
     }
@@ -251,6 +292,9 @@ const HOSTNAME_PLACEHOLDER: &str = "node";
 
 pub(crate) const MACHINE_LOCKED_MSG: &str =
     "this account only allows its current devices; allow a new device in the dashboard first";
+
+pub(crate) const LOCK_UNAVAILABLE_MSG: &str =
+    "this account's device lock could not be checked right now; try again in a moment";
 
 pub(crate) const TENANT_SUSPENDED_MSG: &str = "this tailnet is suspended by the instance operator";
 
@@ -353,12 +397,14 @@ pub fn peer_ids_in(map_json: &str) -> Vec<i64> {
         .unwrap_or_default()
 }
 
+/// The delta for a device of tenant `viewer` (`None` when the event is not
+/// for it or does not check out against the store).
 pub async fn build_delta_response(
     state: &Arc<CoordinatorState>,
-    _machine_key: &[u8; 32],
+    viewer: TenantId,
     event: &PeerEvent,
 ) -> Option<String> {
-    let resp = state.netmap.build_delta(event).await?;
+    let resp = state.netmap.build_delta(viewer, event).await?;
     serde_json::to_string(&resp).ok()
 }
 

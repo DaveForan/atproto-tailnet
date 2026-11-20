@@ -19,7 +19,6 @@ coord-api = { workspace = true }
 coord-derp = { workspace = true }
 coord-federation = { workspace = true }
 coord-store = { workspace = true }
-sqlx = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

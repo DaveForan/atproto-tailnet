@@ -18,6 +18,22 @@ vi.mock("node:dns/promises", () => ({
   }),
 }));
 
+// Peer URLs go through the connect-time guarded request; route it to the
+// stubbed global fetch so these tests can fake the peer.
+const { guardedRequest } = vi.hoisted(() => ({
+  guardedRequest: vi.fn(async (url: string, opts: { method?: string; headers?: Record<string, string>; body?: string }) => {
+    const r = (await fetch(url, { method: opts.method ?? "GET", headers: opts.headers, body: opts.body })) as unknown as {
+      ok: boolean; status?: number; json?: () => Promise<unknown>; text?: () => Promise<string>;
+    };
+    if (!r.ok) return { ok: false, status: r.status ?? 500, text: "" };
+    return { ok: true, status: r.status ?? 200, text: r.json ? JSON.stringify(await r.json()) : await r.text!() };
+  }),
+}));
+vi.mock("../identity/resolver.js", async (orig) => ({
+  ...(await orig<typeof import("../identity/resolver.js")>()),
+  guardedRequest,
+}));
+
 import * as crypto from "node:crypto";
 import { discoverPeer, isAllowedBrokerUrl } from "../federation/discovery.js";
 import { signedPayload } from "../federation/auth.js";
@@ -121,7 +137,8 @@ describe("discoverPeer", () => {
 
     const result = await discoverPeer("unreachable@unreachable.example.com");
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error).toContain("ECONNREFUSED");
+    // A short, sanitized reason, never the raw error
+    if (!result.ok) expect(result.error).toBe("Discovery failed: unreachable");
   });
 
   it("returns error when HTTP status is not ok", async () => {
@@ -150,6 +167,17 @@ describe("discoverPeer", () => {
     const result = await discoverPeer("partial@partial.example.com");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toContain("Incomplete");
+  });
+
+  it("fetches the descriptor through the connect-time guarded request", async () => {
+    guardedRequest.mockClear();
+    guardedRequest.mockRejectedValueOnce(Object.assign(new Error("Host resolves to a non-public address"), { code: "EPRIVATE" }));
+    const result = await discoverPeer("test@remote.example.com");
+    expect(guardedRequest).toHaveBeenCalledWith(
+      "https://remote.example.com/.well-known/collective-federation?collective=test",
+      expect.objectContaining({ maxBytes: expect.any(Number) }),
+    );
+    expect(result).toEqual({ ok: false, error: "Discovery failed: address not allowed" });
   });
 });
 

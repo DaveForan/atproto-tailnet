@@ -11,7 +11,54 @@ use rand::RngCore;
 struct Backend {
     name: &'static str,
     store: Arc<Store>,
+    /// Direct SQL access, for tests that plant rows the store would never write.
+    raw: Option<RawDb>,
     _cleanup: Option<TempDb>,
+}
+
+enum RawDb {
+    Sqlite(sqlx::SqlitePool),
+    Pg(sqlx::PgPool),
+}
+
+impl RawDb {
+    async fn put_raw_lock(&self, t: TenantId, owner: &str, json: &str) {
+        match self {
+            RawDb::Sqlite(p) => {
+                sqlx::query("INSERT INTO coord_owner_locks (tenant_id, owner, lock) VALUES (?1, ?2, ?3)")
+                    .bind(t.as_uuid().to_string())
+                    .bind(owner)
+                    .bind(json)
+                    .execute(p)
+                    .await
+                    .unwrap();
+            }
+            RawDb::Pg(p) => {
+                sqlx::query("INSERT INTO coord_owner_locks (tenant_id, owner, lock) VALUES ($1, $2, $3::jsonb)")
+                    .bind(t.as_uuid())
+                    .bind(owner)
+                    .bind(json)
+                    .execute(p)
+                    .await
+                    .unwrap();
+            }
+        }
+    }
+
+    async fn stored_key_columns(&self, t: TenantId) -> Vec<(String, String)> {
+        match self {
+            RawDb::Sqlite(p) => sqlx::query_as("SELECT key, key_prefix FROM coord_preauth_keys WHERE tenant_id = ?1")
+                .bind(t.as_uuid().to_string())
+                .fetch_all(p)
+                .await
+                .unwrap(),
+            RawDb::Pg(p) => sqlx::query_as("SELECT key, key_prefix FROM coord_preauth_keys WHERE tenant_id = $1")
+                .bind(t.as_uuid())
+                .fetch_all(p)
+                .await
+                .unwrap(),
+        }
+    }
 }
 
 struct TempDb(std::path::PathBuf);
@@ -30,20 +77,36 @@ async fn backends() -> Vec<Backend> {
     let mut out = vec![Backend {
         name: "memory",
         store: Arc::new(Store::Memory(Box::new(coord_store::MemoryStore::new()))),
+        raw: None,
         _cleanup: None,
     }];
 
     let path = std::env::temp_dir().join(format!("coord-parity-{}.db", hex::encode(rand_bytes::<8>())));
     let pool = coord_store::create_sqlite_pool(path.to_str().unwrap()).await.unwrap();
-    let sqlite = coord_store::SqliteStore::new(pool).await.unwrap();
-    out.push(Backend { name: "sqlite", store: Arc::new(Store::Sqlite(sqlite)), _cleanup: Some(TempDb(path)) });
+    let sqlite = coord_store::SqliteStore::new(pool.clone()).await.unwrap();
+    out.push(Backend { name: "sqlite", store: Arc::new(Store::Sqlite(sqlite)), raw: Some(RawDb::Sqlite(pool)), _cleanup: Some(TempDb(path)) });
 
-    if let Ok(url) = std::env::var("TEST_DATABASE_URL") {
+    if let Some(url) = test_database_url() {
         let pool = sqlx::PgPool::connect(&url).await.expect("connect to test DB");
-        let pg = coord_store::PgStore::new(pool).await.expect("PgStore::new");
-        out.push(Backend { name: "postgres", store: Arc::new(Store::Pg(pg)), _cleanup: None });
+        let pg = coord_store::PgStore::new(pool.clone()).await.expect("PgStore::new");
+        out.push(Backend { name: "postgres", store: Arc::new(Store::Pg(pg)), raw: Some(RawDb::Pg(pool)), _cleanup: None });
     }
     out
+}
+
+/// TEST_DATABASE_URL, or `None` to skip PostgreSQL. In CI (env `CI` set) a
+/// missing URL is a failure, so the PostgreSQL tests cannot silently skip.
+fn test_database_url() -> Option<String> {
+    match std::env::var("TEST_DATABASE_URL") {
+        Ok(url) if !url.is_empty() => Some(url),
+        _ if std::env::var_os("CI").is_some() => {
+            panic!("CI is set but TEST_DATABASE_URL is not: the PostgreSQL tests must run in CI")
+        }
+        _ => {
+            eprintln!("NOTICE: TEST_DATABASE_URL not set; PostgreSQL backend skipped in backend_parity");
+            None
+        }
+    }
 }
 
 fn rand_bytes<const N: usize>() -> [u8; N] {
@@ -567,21 +630,106 @@ async fn tenant_dns_round_trip_and_default() {
 
 #[tokio::test]
 async fn owner_lock_round_trip_and_removal() {
-    use coord_core::OwnerLock;
+    use coord_core::{LockRead, OwnerLock};
     for b in backends().await {
         let s = &b.store;
         let t = tenant(s, "lock").await;
-        assert_eq!(s.get_owner_lock(t, "alice").await, None, "{}", b.name);
+        assert_eq!(s.get_owner_lock(t, "alice").await.unwrap(), LockRead::Unlocked, "{}", b.name);
         let lock = OwnerLock { machines: vec!["ab".repeat(32)], allow_one_until: Some(chrono::Utc::now()), refused: vec![], max_machines: Some(3) };
         s.set_owner_lock(t, "alice", Some(lock.clone())).await.unwrap();
         let got = s.get_owner_lock(t, "alice").await.unwrap();
+        let got = got.lock().unwrap();
         assert_eq!(got.machines, lock.machines, "{}", b.name);
         assert!(got.allow_one_until.is_some(), "{}", b.name);
         assert_eq!(got.max_machines, Some(3), "{}", b.name);
         assert!(s.list_owner_locks().await.iter().any(|(tid, o, l)| *tid == t && o == "alice" && l.max_machines == Some(3)), "{}", b.name);
-        assert_eq!(s.get_owner_lock(t, "bob").await, None, "locks are per owner ({})", b.name);
+        assert_eq!(s.get_owner_lock(t, "bob").await.unwrap(), LockRead::Unlocked, "locks are per owner ({})", b.name);
         s.set_owner_lock(t, "alice", None).await.unwrap();
-        assert_eq!(s.get_owner_lock(t, "alice").await, None, "{}", b.name);
+        assert_eq!(s.get_owner_lock(t, "alice").await.unwrap(), LockRead::Unlocked, "{}", b.name);
+        assert!(s.set_owner_lock(TenantId::new(uuid::Uuid::new_v4()), "alice", None).await.is_err(), "{}", b.name);
+    }
+}
+
+#[tokio::test]
+async fn owner_lock_check_records_and_consumes_the_window_atomically() {
+    use coord_core::{LockOutcome, OwnerLock};
+    for b in backends().await {
+        let s = &b.store;
+        let t = tenant(s, "lockchk").await;
+        let known = [1u8; 32];
+        assert_eq!(s.check_owner_lock(t, "alice", &known, "h", "linux", "f").await.unwrap(), None, "unlocked ({})", b.name);
+        let lock = OwnerLock { machines: vec![hex::encode(known)], ..Default::default() };
+        s.set_owner_lock(t, "alice", Some(lock)).await.unwrap();
+        assert_eq!(s.check_owner_lock(t, "alice", &known, "h", "linux", "f").await.unwrap(), Some(LockOutcome::Allowed), "{}", b.name);
+        assert_eq!(s.check_owner_lock(t, "alice", &[2u8; 32], "evil", "linux", "f").await.unwrap(), Some(LockOutcome::Refused), "{}", b.name);
+        let stored = s.get_owner_lock(t, "alice").await.unwrap();
+        assert_eq!(stored.lock().unwrap().refused.len(), 1, "the refusal is persisted ({})", b.name);
+
+        // Open the window, then race many new machines: exactly one gets in.
+        s.update_owner_lock(t, "alice", |read| {
+            let mut l = read.lock().unwrap().clone();
+            l.allow_one_until = Some(chrono::Utc::now() + chrono::Duration::minutes(10));
+            (coord_core::LockWrite::Set(l), ())
+        })
+        .await
+        .unwrap();
+        let mut tasks = Vec::new();
+        for i in 10u8..18 {
+            let s = b.store.clone();
+            tasks.push(tokio::spawn(async move { s.check_owner_lock(t, "alice", &[i; 32], "new", "linux", "f").await.unwrap() }));
+        }
+        let mut admitted = 0;
+        for task in tasks {
+            if task.await.unwrap() == Some(LockOutcome::AllowedNew) {
+                admitted += 1;
+            }
+        }
+        assert_eq!(admitted, 1, "one window admits exactly one machine ({})", b.name);
+        let after = s.get_owner_lock(t, "alice").await.unwrap();
+        let after = after.lock().unwrap();
+        assert_eq!(after.machines.len(), 2, "{}", b.name);
+        assert_eq!(after.allow_one_until, None, "{}", b.name);
+        assert_eq!(after.refused.len(), 1 + 7, "every loser is recorded, none lost to a stale write ({})", b.name);
+    }
+}
+
+#[tokio::test]
+async fn a_malformed_stored_lock_refuses_every_machine() {
+    use coord_core::{LockOutcome, LockRead};
+    for b in backends().await {
+        let Some(raw) = &b.raw else { continue };
+        let s = &b.store;
+        let t = tenant(s, "lockbad").await;
+        raw.put_raw_lock(t, "alice", "{\"machines\": 42}").await;
+        assert_eq!(s.get_owner_lock(t, "alice").await.unwrap(), LockRead::Malformed, "{}", b.name);
+        assert_eq!(s.check_owner_lock(t, "alice", &[1u8; 32], "h", "linux", "f").await.unwrap(), Some(LockOutcome::Refused), "{}", b.name);
+        assert_eq!(s.get_owner_lock(t, "alice").await.unwrap(), LockRead::Malformed, "left for an admin to fix ({})", b.name);
+        // An admin can replace or remove it
+        s.set_owner_lock(t, "alice", None).await.unwrap();
+        assert_eq!(s.check_owner_lock(t, "alice", &[1u8; 32], "h", "linux", "f").await.unwrap(), None, "{}", b.name);
+    }
+}
+
+#[tokio::test]
+async fn preauth_keys_are_stored_hashed_and_listed_by_prefix() {
+    for b in backends().await {
+        let s = &b.store;
+        let t = tenant(s, "keyhash").await;
+        let created = s.create_preauth_key_with(t, PreAuthKeyOptions { reusable: true, ..Default::default() }).await.unwrap();
+        let listed = s.list_preauth_keys(t).await;
+        assert_eq!(listed.len(), 1, "{}", b.name);
+        assert_eq!(listed[0].prefix, coord_core::preauth_key_prefix(&created.key), "{}", b.name);
+        assert!(!created.key.starts_with(&listed[0].prefix) || listed[0].prefix.len() < created.key.len(), "{}", b.name);
+        assert_eq!(s.preauth_key_tenant(&created.key).await, Some(t), "{}", b.name);
+        assert!(s.validate_preauth_key(&created.key).await.is_some(), "{}", b.name);
+        // The digest itself is not a credential
+        let digest = coord_store::hash_preauth_key(&created.key);
+        assert!(s.validate_preauth_key(&digest).await.is_none(), "{}", b.name);
+        assert_eq!(s.preauth_key_tenant(&digest).await, None, "{}", b.name);
+        if let Some(raw) = &b.raw {
+            let stored = raw.stored_key_columns(t).await;
+            assert_eq!(stored, vec![(digest.clone(), listed[0].prefix.clone())], "only the hash is at rest ({})", b.name);
+        }
     }
 }
 
@@ -590,21 +738,21 @@ async fn tenant_config_round_trip_list_and_removal() {
     for b in backends().await {
         let s = &b.store;
         let t = tenant(s, "cfg").await;
-        assert!(s.get_tenant_configs(t).await.is_empty(), "{}", b.name);
+        assert!(s.get_tenant_configs(t).await.unwrap().is_empty(), "{}", b.name);
         s.set_tenant_config(t, "acl", Some(serde_json::json!({"rules": [1, 2]}))).await.unwrap();
         s.set_tenant_config(t, "identity", Some(serde_json::json!({"tailnet_name": "x"}))).await.unwrap();
         s.set_tenant_config(t, "acl", Some(serde_json::json!({"rules": [3]}))).await.unwrap();
-        let mut got = s.get_tenant_configs(t).await;
+        let mut got = s.get_tenant_configs(t).await.unwrap();
         got.sort_by(|a, b| a.0.cmp(&b.0));
         assert_eq!(got, vec![
             ("acl".to_string(), serde_json::json!({"rules": [3]})),
             ("identity".to_string(), serde_json::json!({"tailnet_name": "x"})),
         ], "{}", b.name);
-        assert!(s.list_tenant_configs().await.iter().any(|(tid, k, _)| *tid == t && k == "acl"), "{}", b.name);
+        assert!(s.list_tenant_configs().await.unwrap().iter().any(|(tid, k, _)| *tid == t && k == "acl"), "{}", b.name);
         s.set_tenant_config(t, "acl", None).await.unwrap();
-        assert_eq!(s.get_tenant_configs(t).await.len(), 1, "{}", b.name);
+        assert_eq!(s.get_tenant_configs(t).await.unwrap().len(), 1, "{}", b.name);
         s.delete_tenant(t).await.unwrap();
-        assert!(s.get_tenant_configs(t).await.is_empty(), "config goes with the tenant ({})", b.name);
+        assert!(s.get_tenant_configs(t).await.unwrap().is_empty(), "config goes with the tenant ({})", b.name);
     }
 }
 
@@ -616,15 +764,20 @@ async fn sign_in_is_decided_once_and_taken_once() {
         let t = tenant(s, "signin").await;
         let key = [7u8; 32];
         let id = format!("{}-first", b.name);
-        s.sign_in_start(&id, &key, "phone", "iOS").await.unwrap();
+        let before = chrono::Utc::now().timestamp();
+        s.sign_in_start(&id, &key, "phone", "iOS", Some("203.0.113.7")).await.unwrap();
         let p = s.sign_in_get(&id).await.unwrap();
-        assert_eq!((p.machine_key, p.hostname.as_str(), p.decision), (key, "phone", None), "{}", b.name);
+        assert_eq!((p.machine_key, p.hostname.as_str(), p.decision.clone()), (key, "phone", None), "{}", b.name);
+        assert_eq!(p.requester_ip.as_deref(), Some("203.0.113.7"), "{}", b.name);
+        let at = p.requested_at.timestamp();
+        assert!(at >= before && at <= chrono::Utc::now().timestamp(), "{}", b.name);
         assert_eq!(s.sign_in_take(&id).await, None, "a pending sign-in cannot be taken ({})", b.name);
 
         // A new sign-in of the same machine replaces the old one
         let id2 = format!("{}-second", b.name);
-        s.sign_in_start(&id2, &key, "phone", "iOS").await.unwrap();
+        s.sign_in_start(&id2, &key, "phone", "iOS", None).await.unwrap();
         assert!(s.sign_in_get(&id).await.is_none(), "{}", b.name);
+        assert_eq!(s.sign_in_get(&id2).await.unwrap().requester_ip, None, "{}", b.name);
 
         let yes = SignInDecision::Approved { tenant_id: t, owner: "alice".into() };
         assert!(s.sign_in_decide(&id2, &yes).await, "{}", b.name);
@@ -672,4 +825,33 @@ async fn relays_are_listed_while_fresh_and_home_relays_are_recorded() {
         }
         assert_eq!(updates, 2, "peers hear about each change once ({})", b.name);
     }
+}
+
+#[tokio::test]
+async fn sqlite_hashes_plain_keys_stored_before_the_migration() {
+    let path = std::env::temp_dir().join(format!("coord-keymig-{}.db", hex::encode(rand_bytes::<8>())));
+    let _cleanup = TempDb(path.clone());
+    let pool = coord_store::create_sqlite_pool(path.to_str().unwrap()).await.unwrap();
+    let store = Store::Sqlite(coord_store::SqliteStore::new(pool.clone()).await.unwrap());
+    let t = tenant(&store, "legacy").await;
+    // A row as an older version wrote it: the key in plain text, no prefix
+    let plain = format!("tskey-auth-{}", hex::encode(rand_bytes::<32>()));
+    sqlx::query("INSERT INTO coord_preauth_keys (key, id, tenant_id, reusable, key_prefix) VALUES (?1, ?2, ?3, 1, '')")
+        .bind(&plain)
+        .bind(uuid::Uuid::new_v4().to_string())
+        .bind(t.as_uuid().to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+    // Opening the store again finishes the migration
+    let store = Store::Sqlite(coord_store::SqliteStore::new(pool.clone()).await.unwrap());
+    let (key, prefix): (String, String) = sqlx::query_as("SELECT key, key_prefix FROM coord_preauth_keys WHERE tenant_id = ?1")
+        .bind(t.as_uuid().to_string())
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(key, coord_store::hash_preauth_key(&plain));
+    assert_eq!(prefix, coord_core::preauth_key_prefix(&plain));
+    assert_eq!(store.list_preauth_keys(t).await[0].prefix, prefix);
+    assert!(store.validate_preauth_key(&plain).await.is_some(), "the old key keeps working");
 }

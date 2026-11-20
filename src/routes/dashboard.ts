@@ -12,7 +12,7 @@ const DASHBOARD_HTML = `<!DOCTYPE html>
 </head>
 <body>
   <div id="app"></div>
-  <script src="/js/dashboard.js"></script>
+  <script type="module" src="/js/dashboard.js"></script>
 </body>
 </html>`;
 
@@ -26,7 +26,7 @@ const JOIN_PAGE_HTML = `<!DOCTYPE html>
 </head>
 <body>
   <div id="app"></div>
-  <script src="/js/join.js"></script>
+  <script type="module" src="/js/join.js"></script>
 </body>
 </html>`;
 

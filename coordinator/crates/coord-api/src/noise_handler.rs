@@ -114,13 +114,21 @@ pub async fn ts2021_handler(
         "noise handshake complete"
     );
 
+    // Where the connection came from (behind Caddy: X-Forwarded-For, but only
+    // from a trusted proxy). Shown on the device sign-in approval page.
+    let peer = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|c| c.0.ip());
+    let client_ip = state.trusted_proxies.client_ip(peer, req.headers());
+
     let on_upgrade = hyper::upgrade::on(req);
 
     tokio::spawn(async move {
         let _permit = permit;
         match on_upgrade.await {
             Ok(upgraded) => {
-                if let Err(e) = run_noise_session(state, upgraded, split_keys, response_msg, machine_key).await {
+                if let Err(e) = run_noise_session(state, upgraded, split_keys, response_msg, machine_key, client_ip).await {
                     warn!(error = %e, "noise session ended with error");
                 }
             }
@@ -142,6 +150,7 @@ async fn run_noise_session(
     split_keys: coord_noise::handshake::SplitKeys,
     response_msg: Vec<u8>,
     machine_key: [u8; 32],
+    client_ip: Option<std::net::IpAddr>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut io = hyper_util::rt::TokioIo::new(upgraded);
 
@@ -154,7 +163,7 @@ async fn run_noise_session(
     );
     let cleartext_stream = coord_noise::spawn_noise_bridge(io, transport);
 
-    serve_control_h2(state, cleartext_stream, machine_key).await
+    serve_control_h2(state, cleartext_stream, machine_key, client_ip).await
 }
 
 /// Serve the control protocol's HTTP/2 over an already-authenticated-by-Noise
@@ -163,6 +172,7 @@ pub(crate) async fn serve_control_h2<IO>(
     state: Arc<CoordinatorState>,
     io: IO,
     machine_key: [u8; 32],
+    client_ip: Option<std::net::IpAddr>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
 where
     IO: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
@@ -181,7 +191,7 @@ where
         let mk = machine_key;
         let sg = session_gen_for_service.clone();
         async move {
-            handle_control_request(state, mk, sg, req).await
+            handle_control_request(state, mk, client_ip, sg, req).await
         }
     });
 
@@ -229,6 +239,7 @@ fn json_error(status: StatusCode, msg: &str) -> Response<BoxBody> {
 async fn handle_control_request(
     state: Arc<CoordinatorState>,
     machine_key: [u8; 32],
+    client_ip: Option<std::net::IpAddr>,
     session_gen: Arc<AtomicU64>,
     req: Request<hyper::body::Incoming>,
 ) -> Result<Response<BoxBody>, std::io::Error> {
@@ -262,7 +273,7 @@ async fn handle_control_request(
     };
 
     match path.as_str() {
-        "/machine/register" => Ok(handle_register_request(state, machine_key, session_gen, &body_str).await),
+        "/machine/register" => Ok(handle_register_request(state, machine_key, client_ip, session_gen, &body_str).await),
         "/machine/map" => Ok(handle_map_request(state, machine_key, &body_str).await),
         _ => Ok(json_error(StatusCode::NOT_FOUND, "not found")),
     }
@@ -271,10 +282,11 @@ async fn handle_control_request(
 async fn handle_register_request(
     state: Arc<CoordinatorState>,
     machine_key: [u8; 32],
+    client_ip: Option<std::net::IpAddr>,
     session_gen: Arc<AtomicU64>,
     body: &str,
 ) -> Response<BoxBody> {
-    match control::handle_register(&state, &machine_key, body).await {
+    match control::handle_register(&state, &machine_key, body, client_ip).await {
         Ok((response_body, generation)) => {
             if let Some(g) = generation {
                 session_gen.store(g, Ordering::Release);
@@ -407,6 +419,11 @@ async fn handle_streaming_map(
             tokio::time::Instant::now() + keepalive_period,
             keepalive_period,
         );
+        // Jittered so the streams of one replica do not all rebuild at once.
+        let resync_period = state_clone.stream_resync_period;
+        let jitter = Duration::from_millis(rand::random_range(0..=resync_period.as_millis() as u64 / 10));
+        let mut resync = tokio::time::interval_at(tokio::time::Instant::now() + resync_period + jitter, resync_period);
+        resync.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
         loop {
             tokio::select! {
@@ -423,9 +440,7 @@ async fn handle_streaming_map(
                     if !affected {
                         continue;
                     }
-                    if state_clone.store.get_node_tenant(node_id).await != Some(tenant_id)
-                        || state_clone.store.is_tenant_suspended(tenant_id).await
-                    {
+                    if !stream_still_valid(&state_clone, tenant_id, node_id, &machine_key).await {
                         send_cutoff(&state_clone, &tx, tenant_id, node_id).await;
                         break;
                     }
@@ -506,7 +521,7 @@ async fn handle_streaming_map(
 
                     let delta = control::build_delta_response(
                         &state_clone,
-                        &machine_key,
+                        tenant_id,
                         &event,
                     ).await;
 
@@ -518,10 +533,28 @@ async fn handle_streaming_map(
                         }
                     }
                 }
+                _ = resync.tick() => {
+                    // Safety net for lost notifications: a full, re-checked
+                    // snapshot every few minutes whatever the events said.
+                    if !stream_still_valid(&state_clone, tenant_id, node_id, &machine_key).await {
+                        send_cutoff(&state_clone, &tx, tenant_id, node_id).await;
+                        break;
+                    }
+                    child_tenant_ids = state_clone.store.get_child_tenants(tenant_id).await
+                        .into_iter()
+                        .filter(|t| t.visible_to_parent())
+                        .map(|t| t.id)
+                        .collect();
+                    if let Ok(json) = control::build_map_update(&state_clone, &machine_key, &mut last_peers).await {
+                        if let Ok(framed) = frame_map_response(json.as_bytes()) {
+                            if tx.send(Ok(hyper::body::Frame::data(Bytes::from(framed)))).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                }
                 _ = keepalive.tick() => {
-                    if state_clone.store.get_node_tenant(node_id).await != Some(tenant_id)
-                        || state_clone.store.is_tenant_suspended(tenant_id).await
-                    {
+                    if !stream_still_valid(&state_clone, tenant_id, node_id, &machine_key).await {
                         send_cutoff(&state_clone, &tx, tenant_id, node_id).await;
                         break;
                     }
@@ -579,6 +612,37 @@ mod base64 {
             }
         }
         Ok(out)
+    }
+}
+
+/// Whether a live map stream may go on: the node still exists in the same
+/// tenant, the tenant is not suspended, and the owner's machine lock (if
+/// any) still lists this machine. A store error reading the lock keeps the
+/// stream (registration is where the lock fails closed); a malformed lock
+/// ends it.
+async fn stream_still_valid(
+    state: &Arc<CoordinatorState>,
+    tenant_id: coord_core::TenantId,
+    node_id: coord_core::NodeId,
+    machine_key: &[u8; 32],
+) -> bool {
+    let Some(detail) = state.store.get_node_info(node_id).await else {
+        return false;
+    };
+    if detail.tenant_id != tenant_id || state.store.is_tenant_suspended(tenant_id).await {
+        return false;
+    }
+    let Some(owner) = detail.attrs.owner.as_deref() else {
+        return true;
+    };
+    match state.store.get_owner_lock(tenant_id, owner).await {
+        Ok(coord_core::LockRead::Unlocked) => true,
+        Ok(coord_core::LockRead::Locked(l)) => l.allows(&hex::encode(machine_key)),
+        Ok(coord_core::LockRead::Malformed) => false,
+        Err(e) => {
+            tracing::warn!(error = %e, "machine lock not readable during stream re-check");
+            true
+        }
     }
 }
 

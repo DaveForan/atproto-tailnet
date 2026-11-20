@@ -9,8 +9,16 @@ export function safeUrl(url?: string | null): string {
   return "";
 }
 
-export function copyToClipboard(text: string): Promise<void> {
-  return navigator.clipboard.writeText(text).catch(() => {});
+/**
+ * A redirect that stays on this site. Mirrors the server's `/auth/login`
+ * rule (`^\/[a-z0-9]`), so `//host` and `/\host` (which browsers treat as
+ * `//host`) are refused; a backslash anywhere is refused. "/" and our own
+ * "/#tab" links are allowed.
+ */
+export function localRedirect(redirect: string | null | undefined): string {
+  if (!redirect || redirect.includes("\\")) return "/";
+  if (redirect === "/" || /^\/#[a-z0-9-]*$/.test(redirect)) return redirect;
+  return /^\/[a-z0-9]/.test(redirect) ? redirect : "/";
 }
 
 export async function tryCopy(text: string): Promise<boolean> {

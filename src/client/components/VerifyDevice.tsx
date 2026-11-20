@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Card } from "./Card";
 import { deviceTrustService } from "../services/device-trust";
 import { ensureDeviceKey, loadDeviceKey, setDeviceId, signChallenge, suggestedDeviceName, deviceKeysSupported } from "../lib/device-key";
-import { errorMessage } from "../lib/utils";
+import { errorMessage, localRedirect } from "../lib/utils";
 
 type View =
   | { kind: "checking" }
@@ -25,7 +25,7 @@ export function VerifyDevicePage() {
   const poll = useRef<number | null>(null);
 
   const finish = (redirect: string) => {
-    window.location.replace(redirect && redirect.startsWith("/") && !redirect.startsWith("//") ? redirect : "/");
+    window.location.replace(localRedirect(redirect));
   };
 
   /** Prove this browser if it holds a trusted key. Returns true when signed in. */

@@ -27,17 +27,87 @@ export interface CoordinatorAccess {
 
 export interface CompileInput {
   mode: AccessMode;
-  posts: Array<{ id: string; board: string; status: string; nodeId: string; proto: "tcp" | "udp"; port: number }>;
-  connections: Array<{ postId: string; nodeId: string }>;
-  shares: Array<{
+  posts: Array<{
+    id: string;
+    board: string;
     status: string;
+    nodeId: string;
+    proto: "tcp" | "udp";
+    port: number;
+    authorId?: string;
+  }>;
+  connections: Array<{ postId: string; nodeId: string; userId?: string }>;
+  shares: Array<{
+    id?: string;
+    status: string;
+    ownerId?: string;
     guestId: string;
     ownerNodeId: string;
     guestNodeIds: string[];
     ports: AccessPortSpec[];
     expiresAt: Date | null;
   }>;
+  /**
+   * Current owner (user id) of each device, from the control plane. A device
+   * keeps its node id when it registers again under another member, so a post,
+   * connection or share whose recorded owner differs from this is stale and
+   * opens nothing. Devices absent from the map are not checked.
+   */
+  nodeOwners?: ReadonlyMap<string, string>;
   now?: Date;
+}
+
+/** What no longer matches the control plane's device owners (see `nodeOwners`). */
+export interface StaleAccess {
+  /** Posts whose device now belongs to someone other than the author. */
+  postIds: string[];
+  /** Connections whose device now belongs to someone other than the member who connected it. */
+  connections: Array<{ postId: string; nodeId: string }>;
+  /** Shares whose exposed device now belongs to someone other than the owner. */
+  shareIds: string[];
+  /** Shares that keep some, but lose other, chosen guest devices: the devices that remain. */
+  guestNodes: Array<{ shareId: string; keep: string[] }>;
+}
+
+function ownerMoved(owners: ReadonlyMap<string, string> | undefined, nodeId: string, recorded: string | undefined): boolean {
+  if (!owners || recorded === undefined) return false;
+  const now = owners.get(nodeId);
+  return now !== undefined && now !== recorded;
+}
+
+/**
+ * Find the posts, connections and shares that a device's change of owner
+ * made stale. Ended shares and removed posts are ignored.
+ */
+export function findStaleAccess(input: Pick<CompileInput, "posts" | "connections" | "shares" | "nodeOwners">): StaleAccess {
+  const owners = input.nodeOwners;
+  const stale: StaleAccess = { postIds: [], connections: [], shareIds: [], guestNodes: [] };
+  if (!owners) return stale;
+  for (const post of input.posts) {
+    if (post.status !== "removed" && ownerMoved(owners, post.nodeId, post.authorId)) stale.postIds.push(post.id);
+  }
+  for (const c of input.connections) {
+    if (ownerMoved(owners, c.nodeId, c.userId)) stale.connections.push({ postId: c.postId, nodeId: c.nodeId });
+  }
+  for (const share of input.shares) {
+    if (share.status === "ended" || !share.id) continue;
+    if (ownerMoved(owners, share.ownerNodeId, share.ownerId)) {
+      stale.shareIds.push(share.id);
+      continue;
+    }
+    if (share.guestNodeIds.length === 0) continue;
+    const keep = share.guestNodeIds.filter((n) => !ownerMoved(owners, n, share.guestId));
+    if (keep.length === share.guestNodeIds.length) continue;
+    // Every chosen device left the guest: the share ends rather than widening to all devices
+    if (keep.length === 0) stale.shareIds.push(share.id);
+    else stale.guestNodes.push({ shareId: share.id, keep });
+  }
+  return stale;
+}
+
+/** True when a share is active and its expiry has not passed at `now`. */
+export function shareIsLive(share: { status: string; expiresAt: Date | null }, now: Date): boolean {
+  return share.status === "active" && !(share.expiresAt && share.expiresAt.getTime() <= now.getTime());
 }
 
 /** Control-plane node ids are positive integers; anything else is dropped. */
@@ -62,8 +132,10 @@ export function compileAccess(input: CompileInput): CoordinatorAccess {
   const now = input.now ?? new Date();
   const rules: CoordinatorAccessRule[] = [];
 
+  const owners = input.nodeOwners;
   const byPost = new Map<string, number[]>();
   for (const c of input.connections) {
+    if (ownerMoved(owners, c.nodeId, c.userId)) continue;
     const n = nodeNumber(c.nodeId);
     if (n === null) continue;
     const list = byPost.get(c.postId) ?? [];
@@ -72,6 +144,7 @@ export function compileAccess(input: CompileInput): CoordinatorAccess {
   }
   for (const post of input.posts) {
     if (post.board !== "public" || post.status !== "approved") continue;
+    if (ownerMoved(owners, post.nodeId, post.authorId)) continue;
     const dst = nodeNumber(post.nodeId);
     const sources = (byPost.get(post.id) ?? []).filter((n) => n !== dst).sort((a, b) => a - b);
     if (dst === null || sources.length === 0) continue;
@@ -85,8 +158,10 @@ export function compileAccess(input: CompileInput): CoordinatorAccess {
   }
 
   for (const share of input.shares) {
-    if (share.status !== "active") continue;
-    if (share.expiresAt && share.expiresAt.getTime() <= now.getTime()) continue;
+    // An expired share is closed from the first push after its expiry, even
+    // before the monitor marks it ended
+    if (!shareIsLive(share, now)) continue;
+    if (ownerMoved(owners, share.ownerNodeId, share.ownerId)) continue;
     const dst = nodeNumber(share.ownerNodeId);
     if (dst === null || share.ports.length === 0) continue;
     const ports = share.ports.map((p) => ({ proto: p.proto, first: p.first, last: p.last }));
@@ -94,7 +169,8 @@ export function compileAccess(input: CompileInput): CoordinatorAccess {
       rules.push({ src_owner: share.guestId, dst_node: dst, ports });
       continue;
     }
-    const sources = [...new Set(share.guestNodeIds.map(nodeNumber).filter((n): n is number => n !== null))].sort(
+    const guestNodes = share.guestNodeIds.filter((n) => !ownerMoved(owners, n, share.guestId));
+    const sources = [...new Set(guestNodes.map(nodeNumber).filter((n): n is number => n !== null))].sort(
       (a, b) => a - b,
     );
     // Chosen devices that no longer exist must not widen the share to all devices
@@ -140,7 +216,9 @@ export interface DnsInput {
     port?: number;
     web?: boolean;
   }>;
-  connections: Array<{ postId: string; nodeId: string }>;
+  connections: Array<{ postId: string; nodeId: string; userId?: string }>;
+  /** As in `CompileInput`: names on a device that changed owner are dropped. */
+  nodeOwners?: ReadonlyMap<string, string>;
 }
 
 /**
@@ -158,15 +236,16 @@ export function compileDns(input: DnsInput): CoordinatorDns {
     if (!post.name || post.name === input.tailnetLabel) continue;
     const node = nodeNumber(post.nodeId);
     if (node === null) continue;
+    if (ownerMoved(input.nodeOwners, post.nodeId, post.authorId)) continue;
     // A web service is reached through the gateway on its HTTPS name
     const web = post.web && post.proto === "tcp" && post.port ? { port: post.port } : {};
-    if (post.board === "private" && post.status !== "removed") {
+    if (post.board === "private" && post.status !== "removed" && post.status !== "rejected") {
       records.push({ name: post.name, node, owner: post.authorId, ...web });
     } else if (post.board === "public" && post.status === "approved") {
       const nodes = [
         ...new Set(
           input.connections
-            .filter((c) => c.postId === post.id)
+            .filter((c) => c.postId === post.id && !ownerMoved(input.nodeOwners, c.nodeId, c.userId))
             .map((c) => nodeNumber(c.nodeId))
             .filter((n): n is number => n !== null),
         ),

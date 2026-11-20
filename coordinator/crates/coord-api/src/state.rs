@@ -37,7 +37,7 @@ pub struct CoordinatorState {
     /// The gateway node of each tenant that has one (cache of the store).
     pub(crate) gateway_nodes: Arc<coord_netmap::GatewayRegistry>,
     /// Set when this process runs gateways (ADR-0029).
-    pub(crate) gateways_cfg: Option<Arc<crate::gateway::Gateways>>,
+    pub(crate) gateways_cfg: std::sync::OnceLock<Arc<crate::gateway::Gateways>>,
     pub(crate) netmap: NetmapService,
     /// Fires when a tenant's ACL or DERP config changes so live map streams resend a snapshot.
     pub(crate) config_changed: broadcast::Sender<TenantId>,
@@ -52,7 +52,15 @@ pub struct CoordinatorState {
     /// Caps request bodies being buffered at once across all Noise connections
     /// (pre-auth memory bound: permits x MAX_CONTROL_BODY).
     pub(crate) noise_body_reads: Arc<Semaphore>,
+    /// Interval of the full snapshot every live map stream sends regardless
+    /// of events (safety net for lost notifications).
+    pub(crate) stream_resync_period: std::time::Duration,
+    /// Proxies whose X-Forwarded-For is believed (`COORD_TRUSTED_PROXIES`).
+    pub(crate) trusted_proxies: crate::client_ip::TrustedProxies,
 }
+
+/// Default interval of the periodic full snapshot of a live map stream.
+pub const STREAM_RESYNC_PERIOD: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Kinds of per-tenant configuration kept in the store (`coord_tenant_config`).
 pub const CONFIG_ACL: &str = "acl";
@@ -96,7 +104,7 @@ impl CoordinatorState {
             role: Role::All,
             own_relay: None,
             gateway_nodes,
-            gateways_cfg: None,
+            gateways_cfg: std::sync::OnceLock::new(),
             netmap,
             config_changed,
             federation_inbound: Arc::new(InboundHandler::new(
@@ -109,7 +117,21 @@ impl CoordinatorState {
             noise_conns: Arc::new(Semaphore::new(DEFAULT_MAX_NOISE_CONNECTIONS)),
             max_noise_conns: DEFAULT_MAX_NOISE_CONNECTIONS,
             noise_body_reads: Arc::new(Semaphore::new(MAX_CONCURRENT_BODY_READS)),
+            stream_resync_period: STREAM_RESYNC_PERIOD,
+            trusted_proxies: crate::client_ip::TrustedProxies::default(),
         }
+    }
+
+    /// Proxies (Caddy) whose X-Forwarded-For gives the client address.
+    pub fn with_trusted_proxies(mut self, proxies: crate::client_ip::TrustedProxies) -> Self {
+        self.trusted_proxies = proxies;
+        self
+    }
+
+    /// Change the periodic full-snapshot interval of live map streams (tests shorten it).
+    pub fn with_stream_resync_period(mut self, period: std::time::Duration) -> Self {
+        self.stream_resync_period = period.max(std::time::Duration::from_millis(10));
+        self
     }
 
     pub fn with_federation_store(mut self, store: Arc<dyn FederationStore>) -> Self {
@@ -187,13 +209,27 @@ impl CoordinatorState {
 
     /// Run gateways in this process: `secret` gives each tenant's gateway its
     /// keys, `certificate` is the wildcard certificate of the base domain.
-    pub fn with_gateway(mut self, secret: [u8; 32], certificate: Arc<coord_gateway::proxy::Certificate>) -> Self {
-        self.gateways_cfg = Some(Arc::new(crate::gateway::Gateways::new(secret, certificate)));
+    pub fn with_gateway(self, secret: [u8; 32], certificate: Arc<coord_gateway::proxy::Certificate>) -> Self {
+        let _ = self.gateways_cfg.set(Arc::new(crate::gateway::Gateways::new(secret, certificate)));
         self
     }
 
+    /// Turn the gateway on in a running process (the certificate can arrive
+    /// after start-up). Returns false when it was already on.
+    pub async fn enable_gateway(
+        self: &Arc<Self>,
+        secret: [u8; 32],
+        certificate: Arc<coord_gateway::proxy::Certificate>,
+    ) -> bool {
+        if self.gateways_cfg.set(Arc::new(crate::gateway::Gateways::new(secret, certificate))).is_err() {
+            return false;
+        }
+        self.start_gateways().await;
+        true
+    }
+
     pub fn gateways(&self) -> Option<&Arc<crate::gateway::Gateways>> {
-        self.gateways_cfg.as_ref()
+        self.gateways_cfg.get()
     }
 
     pub fn with_role(mut self, role: Role) -> Self {
@@ -305,37 +341,108 @@ impl CoordinatorState {
         self.gateway_nodes.remove(tenant);
     }
 
-    fn apply_config(&self, tenant: TenantId, kind: &str, value: serde_json::Value) {
-        let ok = match kind {
-            CONFIG_ACL => serde_json::from_value(value).map(|v| self.acl.set_policy(tenant, v)).is_ok(),
-            CONFIG_DERP => serde_json::from_value(value).map(|v| self.derp.set_tenant(tenant, v)).is_ok(),
-            CONFIG_AUTO_APPROVERS => serde_json::from_value(value).map(|v| self.auto_approvers.set_tenant(tenant, v)).is_ok(),
-            CONFIG_IDENTITY => serde_json::from_value(value).map(|v| self.identity.set_tenant(tenant, v)).is_ok(),
-            CONFIG_GATEWAY => value.get("node_id").and_then(|n| n.as_i64()).map(|n| self.gateway_nodes.set(tenant, n)).is_some(),
-            _ => true, // a kind written by a newer version: ignore
+    /// Make the cached configuration of one tenant equal `stored`. Every value
+    /// is parsed first; then each registry entry is replaced in one step (set,
+    /// or removed when the kind is no longer stored). A netmap built meanwhile
+    /// sees either the old or the new entry, never an empty gap. A value that
+    /// cannot be read keeps the cached entry.
+    fn replace_tenant_config(&self, tenant: TenantId, stored: Vec<(String, serde_json::Value)>) {
+        fn parse<T: serde::de::DeserializeOwned>(tenant: TenantId, kind: &str, v: Option<serde_json::Value>) -> Option<Option<T>> {
+            match v.map(serde_json::from_value::<T>) {
+                None => Some(None),
+                Some(Ok(t)) => Some(Some(t)),
+                Some(Err(e)) => {
+                    tracing::warn!(tenant = %tenant, kind, error = %e, "stored tenant configuration could not be read; keeping the cached value");
+                    None
+                }
+            }
+        }
+        let mut by_kind: std::collections::HashMap<String, serde_json::Value> = stored.into_iter().collect();
+        let acl = parse::<coord_acl::AclPolicy>(tenant, CONFIG_ACL, by_kind.remove(CONFIG_ACL));
+        let derp = parse::<coord_netmap::TenantDerp>(tenant, CONFIG_DERP, by_kind.remove(CONFIG_DERP));
+        let approvers = parse::<coord_netmap::AutoApprovers>(tenant, CONFIG_AUTO_APPROVERS, by_kind.remove(CONFIG_AUTO_APPROVERS));
+        let identity = parse::<coord_netmap::TenantIdentity>(tenant, CONFIG_IDENTITY, by_kind.remove(CONFIG_IDENTITY));
+        let gateway = match by_kind.remove(CONFIG_GATEWAY) {
+            None => Some(None),
+            Some(v) => match v.get("node_id").and_then(|n| n.as_i64()) {
+                Some(n) => Some(Some(n)),
+                None => {
+                    tracing::warn!(tenant = %tenant, kind = CONFIG_GATEWAY, "stored tenant configuration could not be read; keeping the cached value");
+                    None
+                }
+            },
         };
-        if !ok {
-            tracing::warn!(tenant = %tenant, kind, "stored tenant configuration could not be read");
+        // Kinds written by a newer version are ignored (left in `by_kind`).
+        match acl {
+            Some(Some(v)) => self.acl.set_policy(tenant, v),
+            Some(None) => self.acl.remove_policy(tenant),
+            None => {}
+        }
+        match derp {
+            Some(Some(v)) => self.derp.set_tenant(tenant, v),
+            Some(None) => self.derp.remove_tenant(tenant),
+            None => {}
+        }
+        match approvers {
+            Some(Some(v)) => self.auto_approvers.set_tenant(tenant, v),
+            Some(None) => self.auto_approvers.remove_tenant(tenant),
+            None => {}
+        }
+        match identity {
+            Some(Some(v)) => self.identity.set_tenant(tenant, v),
+            Some(None) => self.identity.remove_tenant(tenant),
+            None => {}
+        }
+        match gateway {
+            Some(Some(n)) => self.gateway_nodes.set(tenant, n),
+            Some(None) => self.gateway_nodes.remove(tenant),
+            None => {}
         }
     }
 
-    /// Fill the caches from the store. Call once at startup.
+    /// Fill the caches from the store. Call once at startup, and after
+    /// notifications may have been lost: every tenant with stored
+    /// configuration is replaced, and cached tenants with none are cleared.
     pub async fn load_config(&self) {
-        let all = self.store.list_tenant_configs().await;
+        let all = match self.store.list_tenant_configs().await {
+            Ok(all) => all,
+            Err(e) => {
+                tracing::error!(error = %e, "could not load tenant configuration; keeping the cache");
+                return;
+            }
+        };
         let count = all.len();
+        let mut by_tenant: std::collections::HashMap<TenantId, Vec<(String, serde_json::Value)>> = std::collections::HashMap::new();
         for (tenant, kind, value) in all {
-            self.apply_config(tenant, &kind, value);
+            by_tenant.entry(tenant).or_default().push((kind, value));
+        }
+        for tenant in self.store.list_tenants().await.into_iter().map(|t| t.id) {
+            by_tenant.entry(tenant).or_default();
+        }
+        for (tenant, stored) in by_tenant {
+            self.replace_tenant_config(tenant, stored);
         }
         tracing::info!(count, "tenant configuration loaded from the store");
     }
 
-    /// Replace the cached configuration of one tenant with what the store holds.
+    /// Replace the cached configuration of one tenant with what the store
+    /// holds. On a store error the cache is left as it is.
     pub async fn reload_tenant_config(&self, tenant: TenantId) {
-        let stored = self.store.get_tenant_configs(tenant).await;
-        self.forget_tenant_config(tenant);
-        for (kind, value) in stored {
-            self.apply_config(tenant, &kind, value);
+        match self.store.get_tenant_configs(tenant).await {
+            Ok(stored) => self.replace_tenant_config(tenant, stored),
+            Err(e) => tracing::error!(tenant = %tenant, error = %e, "could not reload tenant configuration; keeping the cache"),
         }
+    }
+
+    /// Everything may be stale (missed notifications): reload every tenant's
+    /// configuration and make every live stream re-check its node, tenant,
+    /// suspension and machine lock and send a full snapshot.
+    pub async fn resync_all(self: &Arc<Self>) {
+        self.load_config().await;
+        for tenant in self.store.list_tenants().await {
+            self.sync_gateway(tenant.id).await;
+        }
+        let _ = self.config_changed.send(all_tenants());
     }
 
     /// React to what other replicas did (ADR-0034). Call once at startup.
@@ -352,8 +459,11 @@ impl CoordinatorState {
                         let _ = state.config_changed.send(tenant);
                     }
                     Ok(coord_store::RemoteEvent::SignInDecided(_)) => state.device_auth.wake(),
-                    // Missed events: every cached tenant may be stale
-                    Err(RecvError::Lagged(_)) => state.load_config().await,
+                    // Missed events (lost LISTEN connection, or this channel lagged)
+                    Ok(coord_store::RemoteEvent::Resync) | Err(RecvError::Lagged(_)) => {
+                        state.resync_all().await;
+                        state.device_auth.wake();
+                    }
                     Err(RecvError::Closed) => return,
                 }
             }
@@ -460,7 +570,7 @@ pub fn relay_region(relay: &coord_core::RelayInfo) -> DerpRegion {
             cert_name: None,
             ipv4: None,
             ipv6: None,
-            stun_port: relay.stun_port.into(),
+            stun_port: relay.stun_port,
             derp_port: 443,
             stun_only: None,
             insecure_for_tests: None,

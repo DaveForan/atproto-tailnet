@@ -51,7 +51,7 @@ import { federationMessagesRouter } from "./routes/federation-messages.js";
 import { dashboardRouter } from "./routes/dashboard.js";
 import { operatorRouter, instanceRouter } from "./routes/operator.js";
 import { enforceOperatorState } from "./operator/access.js";
-import { resolveAgentToken, enforceAgentScope } from "./routes/helpers.js";
+import { resolveAgentToken, enforceAgentScope, csrfTokenMatches } from "./routes/helpers.js";
 import { oauthRouter, mcpRouter, isInternalMcpCall } from "./mcp/index.js";
 import { mcpConnectionsRouter } from "./routes/mcp-connections.js";
 import { startHealthMonitor } from "./orchestrator/monitor.js";
@@ -223,8 +223,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     next();
     return;
   }
-  const token = req.headers["x-csrf-token"];
-  if (!token || token !== req.session.csrfToken) {
+  if (!csrfTokenMatches(req.headers["x-csrf-token"], req.session.csrfToken)) {
     res.status(403).json({ error: "Invalid or missing CSRF token" });
     return;
   }

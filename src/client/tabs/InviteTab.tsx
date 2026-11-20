@@ -12,11 +12,12 @@ import { useConfirm } from "../components/ConfirmDialog";
 import { invitationService } from "../services/invitations";
 import { errorMessage, relativeTime, tryCopy } from "../lib/utils";
 import type { SentInvitation } from "../lib/types";
+import { LoadError } from "../components/LoadError";
 
 export function InviteTab() {
   const { hasPerm, currentTenant } = useApp();
   const { toast, toastError } = useToast();
-  const { data: invitations, loading, reload } = useTenantData<SentInvitation[]>("/invitations", []);
+  const { data: invitations, loading, error, reload } = useTenantData<SentInvitation[]>("/invitations", []);
   const { mutate: revokeMutate, busy: revoking } = useTenantMutation();
   const [invitee, setInvitee] = useState("");
   const [sending, setSending] = useState(false);
@@ -70,6 +71,7 @@ export function InviteTab() {
 
   return (
     <div className="tab-content">
+      <LoadError error={error} onRetry={reload} />
       {hasPerm("invite") && (
         <Card title="Invite someone">
           <p className="help-text">
@@ -118,7 +120,7 @@ export function InviteTab() {
       <Card title="Pending invitations">
         {loading ? (
           <Loading />
-        ) : pending.length === 0 ? (
+        ) : error && pending.length === 0 ? null : pending.length === 0 ? (
           <EmptyState>No pending invitations.</EmptyState>
         ) : (
           <ul className="item-list">

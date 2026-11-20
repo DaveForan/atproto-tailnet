@@ -11,7 +11,7 @@ pub mod sanitize;
 
 pub use access::{AccessMode, AccessPort, AccessProto, AccessRule, TenantAccess};
 pub use dns::{DnsRecord, TenantDns};
-pub use lock::{LockOutcome, OwnerLock, RefusedMachine};
+pub use lock::{LockOutcome, LockRead, LockWrite, OwnerLock, RefusedMachine};
 pub use relay::RelayInfo;
 pub use signin::{PendingSignIn, SignInDecision};
 pub use types::*;

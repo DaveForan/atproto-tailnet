@@ -143,6 +143,8 @@ export const auditActionEnum = pgEnum("audit_action", [
   // MCP OAuth grants (0027) — instance-level rows (tenant_id NULL)
   "mcp_grant_created",
   "mcp_grant_revoked",
+  // Interactive device sign-in approved (ADR-0032; 0036)
+  "device_signin_approved",
 ]);
 
 export const deviceApprovalStatusEnum = pgEnum("device_approval_status", [

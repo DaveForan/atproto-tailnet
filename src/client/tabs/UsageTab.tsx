@@ -6,6 +6,7 @@ import { Card } from "../components/Card";
 import { Loading } from "../components/Loading";
 import { relativeTime } from "../lib/utils";
 import type { UsageData } from "../lib/types";
+import { LoadError } from "../components/LoadError";
 
 const USAGE_FALLBACK: UsageData = {
   current: { devices: 0, onlineDevices: 0, members: 0 },
@@ -25,7 +26,7 @@ function clampCap(v: string): number {
 
 export function UsageTab() {
   const { isOriginator } = useApp();
-  const { data: usage, loading, reload } = useTenantData<UsageData>(
+  const { data: usage, loading, error, reload } = useTenantData<UsageData>(
     "/usage",
     USAGE_FALLBACK,
   );
@@ -60,6 +61,7 @@ export function UsageTab() {
 
   return (
     <div className="tab-content">
+      <LoadError error={error} onRetry={reload} />
       {(overLimit.devices || overLimit.members) && (
         <div className="lockdown-banner" role="alert">
           <span>

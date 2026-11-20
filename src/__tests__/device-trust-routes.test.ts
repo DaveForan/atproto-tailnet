@@ -52,6 +52,7 @@ import express from "express";
 import type { Request, Response, NextFunction } from "express";
 import { deviceTrustRouter, enforceDeviceEnrollment } from "../routes/device-trust.js";
 import { hashDeviceCookie } from "../auth/device-trust.js";
+import { stepUpMissing } from "../auth/step-up.js";
 
 const MAC_SAFARI = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15";
 const WIN_CHROME = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
@@ -299,6 +300,28 @@ describe("managing trusted devices", () => {
     expect(r.json).toEqual({ status: "removed", locked: false });
     expect(writes.some((w) => w.op === "delete" && w.table === "recovery_codes")).toBe(true);
     expect(session.trustedDeviceId).toBeUndefined();
+  });
+
+  it("removing the current device while others remain leaves a session that needs step-up again", async () => {
+    const d = device();
+    session = signedIn({ trustedDeviceId: DEV });
+    const { json } = await call("POST", "/api/trusted-devices/challenge");
+    results.push([row(d.jwk)]);
+    expect((await call("POST", "/api/trusted-devices/step-up", { signature: d.signIt(json.challenge) })).status).toBe(200);
+
+    results.push([{ id: DEV }], [{ id: "other-device" }]); // delete returning; one device left
+    const r = await call("DELETE", `/api/trusted-devices/${DEV}`);
+    expect(r.json).toEqual({ status: "removed", locked: true });
+    // Not an ordinary session now: the proof is gone and cannot be renewed here
+    expect(session.deviceVerifiedAt).toBeUndefined();
+    expect(stepUpMissing({ session } as never)).toBe(true);
+    // Every lock change is refused, also via the shared requireFreshDeviceProof rule
+    results.push([{ id: "other-device" }]);
+    expect((await call("PUT", "/api/trusted-devices/limit", { max: 2 })).json.code).toBe("step_up_required");
+    // And the removed device cannot step up again
+    const again = await call("POST", "/api/trusted-devices/challenge");
+    results.push([]);
+    expect((await call("POST", "/api/trusted-devices/step-up", { signature: d.signIt(again.json.challenge) })).status).toBe(403);
   });
 
   it("approving a new device needs a fresh proof and the right code; a wrong code ends the request", async () => {

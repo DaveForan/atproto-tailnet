@@ -37,6 +37,26 @@ const HEADER_TIMEOUT: Duration = Duration::from_secs(15);
 pub const USER_HEADER: &str = "x-tailnet-user";
 pub const DEVICE_HEADER: &str = "x-tailnet-device";
 const IDENTITY_PREFIX: &str = "x-tailnet-";
+/// How often an open connection checks that its caller may still use the
+/// service. Access ends when the viewer disconnects from a post, the post is
+/// withdrawn, the device is removed or the tailnet is suspended.
+pub const RECHECK_EVERY: Duration = Duration::from_secs(30);
+/// The longest life of one caller connection, upgraded (WebSocket) or not.
+/// The browser then opens a new one, which is checked like any other.
+pub const MAX_CONNECTION_LIFETIME: Duration = Duration::from_secs(12 * 3600);
+
+/// Limits of caller connections. [`Limits::default`] is what production uses.
+#[derive(Debug, Clone, Copy)]
+pub struct Limits {
+    pub recheck_every: Duration,
+    pub max_lifetime: Duration,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self { recheck_every: RECHECK_EVERY, max_lifetime: MAX_CONNECTION_LIFETIME }
+    }
+}
 
 /// Where a service lives and who is calling it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,13 +69,29 @@ pub struct Route {
     pub device: String,
 }
 
+/// Why a caller does not get a service.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Denied {
+    /// No such service, or one this caller may not see. Both look the same
+    /// to the caller.
+    NotFound,
+    /// The caller may see the service, but the gateway does not know the
+    /// sign-in name of the device's owner (yet). The request is refused
+    /// rather than sent with a shared placeholder identity, which two
+    /// different members would then present alike.
+    UnknownUser,
+    /// The calling device has no owner (for example a tagged device), so
+    /// there is no member identity to give the application.
+    NoOwner,
+}
+
 /// The services of one tailnet. The coordinator answers from its store.
 #[async_trait::async_trait]
 pub trait Services: Send + Sync + 'static {
     /// The service with this full name, as the device at `caller` may use
-    /// it. `None` when there is no such service or this device may not see
-    /// it: the two cases must look the same to the caller.
-    async fn route(&self, server_name: &str, caller: Ipv4Addr) -> Option<Route>;
+    /// it. [`Denied::NotFound`] when there is no such service or this device
+    /// may not see it: the two cases must look the same to the caller.
+    async fn route(&self, server_name: &str, caller: Ipv4Addr) -> Result<Route, Denied>;
 }
 
 // ── Certificate ─────────────────────────────────────────────────────────
@@ -145,8 +181,46 @@ fn not_found() -> Response<Body> {
     text(StatusCode::NOT_FOUND, "Not found\n")
 }
 
+fn denied(why: Denied) -> Response<Body> {
+    match why {
+        Denied::NotFound => not_found(),
+        Denied::UnknownUser => {
+            let mut r = text(StatusCode::SERVICE_UNAVAILABLE, "The gateway does not know the member who owns this device yet. Try again in a minute.\n");
+            r.headers_mut().insert(http::header::RETRY_AFTER, HeaderValue::from_static("30"));
+            r
+        }
+        Denied::NoOwner => text(StatusCode::FORBIDDEN, "This device has no owner. Services are for the devices of members.\n"),
+    }
+}
+
+/// Resolves when `caller` may no longer use the service (checked every
+/// `recheck_every`), or when the connection reached its longest life. With
+/// `granted`, the service must also still lead to the same application for
+/// the same member.
+async fn access_ends(services: &dyn Services, server_name: &str, caller: Ipv4Addr, granted: Option<&Route>, limits: Limits) {
+    let deadline = tokio::time::Instant::now() + limits.max_lifetime;
+    loop {
+        tokio::select! {
+            _ = tokio::time::sleep_until(deadline) => return,
+            _ = tokio::time::sleep(limits.recheck_every) => {}
+        }
+        match services.route(server_name, caller).await {
+            Ok(now) if granted.is_none_or(|g| g.target == now.target && g.user == now.user) => {}
+            _ => {
+                debug!(%caller, server_name, "access to the service ended: connection closed");
+                return;
+            }
+        }
+    }
+}
+
 /// Serve the named services of one tailnet until the stack stops.
 pub async fn serve(stack: NetStack, certificate: Arc<Certificate>, services: Arc<dyn Services>) -> std::io::Result<()> {
+    serve_with(stack, certificate, services, Limits::default()).await
+}
+
+/// [`serve`] with other connection limits (tests use short ones).
+pub async fn serve_with(stack: NetStack, certificate: Arc<Certificate>, services: Arc<dyn Services>, limits: Limits) -> std::io::Result<()> {
     let mut https = stack.listen(HTTPS_PORT).await?;
     let mut http = stack.listen(HTTP_PORT).await?;
     loop {
@@ -155,7 +229,7 @@ pub async fn serve(stack: NetStack, certificate: Arc<Certificate>, services: Arc
                 let Some(accepted) = accepted else { return Ok(()) };
                 let (stack, certificate, services) = (stack.clone(), certificate.clone(), services.clone());
                 tokio::spawn(async move {
-                    if let Err(e) = https_connection(accepted, stack, certificate, services).await {
+                    if let Err(e) = https_connection(accepted, stack, certificate, services, limits).await {
                         debug!(error = %e, "service connection ended with an error");
                     }
                 });
@@ -199,6 +273,7 @@ async fn https_connection(
     stack: NetStack,
     certificate: Arc<Certificate>,
     services: Arc<dyn Services>,
+    limits: Limits,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let caller = *accepted.peer.ip();
     let tls = tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, certificate.acceptor().accept(accepted.stream)).await??;
@@ -208,16 +283,23 @@ async fn https_connection(
         return Ok(()); // no name: nothing to serve
     };
     let upstream: Upstream = Arc::new(Mutex::new(None));
+    let (watch_services, watch_name) = (services.clone(), server_name.clone());
     let service = service_fn(move |req| {
         let (stack, services, server_name, upstream) = (stack.clone(), services.clone(), server_name.clone(), upstream.clone());
-        async move { Ok::<_, hyper::Error>(handle(req, caller, &server_name, stack, services, upstream).await) }
+        async move { Ok::<_, hyper::Error>(handle(req, caller, server_name, stack, services, upstream, limits).await) }
     });
-    hyper::server::conn::http1::Builder::new()
+    let connection = hyper::server::conn::http1::Builder::new()
         .timer(TokioTimer::new())
         .header_read_timeout(HEADER_TIMEOUT)
         .serve_connection(TokioIo::new(tls), service)
-        .with_upgrades()
-        .await?;
+        .with_upgrades();
+    // A keep-alive connection or a long response (for example server-sent
+    // events) ends when the caller loses access. Dropping the connection
+    // closes it. An upgraded connection is watched by its own task.
+    tokio::select! {
+        served = connection => served?,
+        _ = access_ends(&*watch_services, &watch_name, caller, None, limits) => {}
+    }
     Ok(())
 }
 
@@ -229,23 +311,35 @@ fn host_of(req: &Request<Incoming>) -> Option<String> {
 /// Headers that belong to one hop and are not passed on.
 const HOP_HEADERS: [&str; 7] = ["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding"];
 
+/// True for a header that only the gateway may set: identity headers and
+/// what proxies say about the client. Names are compared after mapping `_`
+/// to `-`, because many servers (CGI, PHP, Rack, WSGI) treat `X-Tailnet_User`
+/// and `X-Tailnet-User` as the same header.
+fn gateway_only(name: &HeaderName) -> bool {
+    let name = name.as_str().replace('_', "-"); // header names are lowercase already
+    name.starts_with(IDENTITY_PREFIX) || name.starts_with("x-forwarded-") || name == "forwarded" || name == "x-real-ip"
+}
+
 async fn handle(
     mut req: Request<Incoming>,
     caller: Ipv4Addr,
-    server_name: &str,
+    server_name: String,
     stack: NetStack,
     services: Arc<dyn Services>,
     upstream: Upstream,
+    limits: Limits,
 ) -> Response<Body> {
-    if host_of(&req).as_deref() != Some(server_name) {
+    if host_of(&req).as_deref() != Some(server_name.as_str()) {
         return text(StatusCode::MISDIRECTED_REQUEST, "This connection is for another name\n");
     }
-    let Some(route) = services.route(server_name, caller).await else {
-        return not_found();
+    let route = match services.route(&server_name, caller).await {
+        Ok(route) => route,
+        Err(why) => return denied(why),
     };
 
-    // Identity headers come from the gateway only: remove what the caller sent
-    let forged: Vec<HeaderName> = req.headers().keys().filter(|k| k.as_str().starts_with(IDENTITY_PREFIX)).cloned().collect();
+    // Identity and forwarding headers come from the gateway only: remove
+    // what the caller sent, including lookalike names
+    let forged: Vec<HeaderName> = req.headers().keys().filter(|k| gateway_only(k)).cloned().collect();
     for name in forged {
         req.headers_mut().remove(name);
     }
@@ -272,7 +366,8 @@ async fn handle(
     set(&mut req, DEVICE_HEADER, &route.device);
     set(&mut req, "x-forwarded-for", &caller.to_string());
     set(&mut req, "x-forwarded-proto", "https");
-    set(&mut req, "x-forwarded-host", server_name);
+    set(&mut req, "x-forwarded-host", &server_name);
+    set(&mut req, "forwarded", &format!("for={caller};proto=https;host={server_name}"));
 
     let client_upgrade = upgrade.is_some().then(|| hyper::upgrade::on(&mut req));
 
@@ -310,9 +405,16 @@ async fn handle(
     if response.status() == StatusCode::SWITCHING_PROTOCOLS {
         if let Some(client_upgrade) = client_upgrade {
             let app_upgrade = hyper::upgrade::on(&mut response);
+            let route = route.clone();
             tokio::spawn(async move {
                 if let (Ok(client), Ok(app)) = (client_upgrade.await, app_upgrade.await) {
-                    let _ = tokio::io::copy_bidirectional(&mut TokioIo::new(client), &mut TokioIo::new(app)).await;
+                    // Piped until either side closes, the caller loses access
+                    // or the connection is too old; dropping both ends closes them
+                    let (mut client, mut app) = (TokioIo::new(client), TokioIo::new(app));
+                    tokio::select! {
+                        _ = tokio::io::copy_bidirectional(&mut client, &mut app) => {}
+                        _ = access_ends(&*services, &server_name, caller, Some(&route), limits) => {}
+                    }
                 }
             });
         }

@@ -1,5 +1,5 @@
 //! Two coordinator replicas on one PostgreSQL database (ADR-0034).
-//! Skipped unless TEST_DATABASE_URL is set.
+//! Skipped unless TEST_DATABASE_URL is set (a failure when env CI is set).
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,8 +12,23 @@ use tower::ServiceExt;
 
 const ADMIN_KEY: &str = "test-admin-key-for-replica-tests";
 
+/// TEST_DATABASE_URL, or `None` to skip. In CI (env `CI` set) a missing URL
+/// is a failure, so these PostgreSQL tests cannot silently skip.
+fn test_database_url() -> Option<String> {
+    match std::env::var("TEST_DATABASE_URL") {
+        Ok(url) if !url.is_empty() => Some(url),
+        _ if std::env::var_os("CI").is_some() => {
+            panic!("CI is set but TEST_DATABASE_URL is not: the PostgreSQL tests must run in CI")
+        }
+        _ => {
+            eprintln!("NOTICE: TEST_DATABASE_URL not set; PostgreSQL test skipped");
+            None
+        }
+    }
+}
+
 async fn replica() -> Option<(axum::Router, Arc<CoordinatorState>)> {
-    let url = std::env::var("TEST_DATABASE_URL").ok()?;
+    let url = test_database_url()?;
     let pool = sqlx::PgPool::connect(&url).await.expect("connect to test DB");
     let store = coord_store::PgStore::new(pool).await.expect("PgStore::new");
     let state = Arc::new(

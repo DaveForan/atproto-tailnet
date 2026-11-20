@@ -281,3 +281,32 @@ async fn a_service_port_of_zero_is_refused() {
     let (status, _) = call(&app, "PUT", format!("/api/tenants/{tenant}/dns"), Some(dns)).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn gateway_can_be_enabled_after_startup() {
+    let state = Arc::new(
+        CoordinatorState::new(coord_noise::generate_control_key())
+            .with_admin_api_key(Some(ADMIN_KEY.to_string()))
+            .with_builtin_relay_region("derp.example.com", 3478),
+    );
+    assert!(state.gateways().is_none(), "no certificate at start: gateway off");
+
+    let made = rcgen::generate_simple_self_signed(vec![format!("*.{BASE}")]).unwrap();
+    let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(made.signing_key.serialize_der()));
+    let certificate = Arc::new(Certificate::from_der(vec![made.cert.der().clone()], key).unwrap());
+
+    assert!(state.enable_gateway([5; 32], certificate.clone()).await, "first enable turns it on");
+    assert!(state.gateways().is_some());
+    assert!(!state.enable_gateway([6; 32], certificate).await, "second enable is a no-op");
+
+    let resp = tower::ServiceExt::oneshot(
+        coord_api::router(state.clone()),
+        Request::builder().uri("/health").body(Body::empty()).unwrap(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = http_body_util::BodyExt::collect(resp.into_body()).await.unwrap().to_bytes();
+    let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(json["gateway"], true, "health reports the gateway once enabled");
+}

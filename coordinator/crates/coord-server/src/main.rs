@@ -172,8 +172,20 @@ async fn main() -> anyhow::Result<()> {
                 })?;
 
             let pool = coord_store::create_pool(&database_url).await?;
-            let pg_store = coord_store::PgStore::new(pool.clone()).await?;
-            tracing::info!("store: PostgreSQL (migrations applied)");
+            // Relays may use a least-privilege role (scripts/relay-db-role.sql)
+            // that cannot create tables: they only check that the schema is
+            // current. Control processes apply the migrations.
+            let pg_store = if role == coord_api::Role::Relay {
+                let s = coord_store::PgStore::new_verified(pool.clone())
+                    .await
+                    .map_err(|e| anyhow::anyhow!("relay store check failed: {e}"))?;
+                tracing::info!(version = coord_store::PgStore::required_schema_version(), "store: PostgreSQL (relay: schema verified, no migrations run)");
+                s
+            } else {
+                let s = coord_store::PgStore::new(pool.clone()).await?;
+                tracing::info!("store: PostgreSQL (migrations applied)");
+                s
+            };
             coordinator = coordinator.with_store(coord_store::Store::Pg(pg_store));
 
             let fed_store = std::sync::Arc::new(coord_federation::PgFederationStore::new(pool));
@@ -220,6 +232,14 @@ async fn main() -> anyhow::Result<()> {
     // the wildcard certificate of the base domain and the relay of this process.
     let gateway_cert = std::env::var("COORD_GATEWAY_CERT").ok().filter(|p| !p.is_empty());
     let gateway_key = std::env::var("COORD_GATEWAY_KEY").ok().filter(|p| !p.is_empty());
+    if role.serves_relay() && (gateway_cert.is_none() || gateway_key.is_none()) {
+        tracing::warn!(
+            cert_set = gateway_cert.is_some(),
+            key_set = gateway_key.is_some(),
+            "COORD_GATEWAY_CERT / COORD_GATEWAY_KEY not both set: this relay runs no gateway, named HTTPS services (ADR-0029) are off here"
+        );
+    }
+    let mut pending_gateway: Option<([u8; 32], String, String)> = None;
     if let (Some(cert), Some(key), true) = (gateway_cert, gateway_key, role.serves_relay()) {
         let secret_path = std::env::var("COORD_GATEWAY_SECRET_PATH").ok().or_else(|| {
             let dir = std::path::Path::new(control_key_path.as_deref()?).parent()?;
@@ -227,23 +247,20 @@ async fn main() -> anyhow::Result<()> {
         });
         let secret = load_or_create_secret(secret_path, "gateway secret")?
             .ok_or_else(|| anyhow::anyhow!("the gateway needs COORD_GATEWAY_SECRET_PATH or COORD_CONTROL_KEY_PATH for its secret"))?;
-        // The certificate may arrive a little after the first start (another
-        // container copies it). Without it this process runs with no gateway.
-        let mut loaded = None;
-        for attempt in 0..30 {
-            match coord_gateway::proxy::Certificate::from_files(&cert, &key) {
-                Ok(c) => {
-                    loaded = Some(Arc::new(c));
-                    break;
-                }
-                Err(e) if attempt == 29 => tracing::warn!(error = %e, "gateway certificate not usable: named HTTPS services are off"),
-                Err(_) => tokio::time::sleep(std::time::Duration::from_secs(2)).await,
+        // The certificate usually arrives after the first start (Caddy obtains
+        // it, then a helper copies it). Start without it and turn the gateway
+        // on when it appears; don't hold up start-up waiting for it.
+        match coord_gateway::proxy::Certificate::from_files(&cert, &key) {
+            Ok(c) => {
+                let certificate = Arc::new(c);
+                coord_gateway::proxy::spawn_reload(certificate.clone(), std::time::Duration::from_secs(6 * 3600));
+                coordinator = coordinator.with_gateway(secret, certificate);
+                tracing::info!(cert = %cert, "gateway enabled: named HTTPS services");
             }
-        }
-        if let Some(certificate) = loaded {
-            coord_gateway::proxy::spawn_reload(certificate.clone(), std::time::Duration::from_secs(6 * 3600));
-            coordinator = coordinator.with_gateway(secret, certificate);
-            tracing::info!(cert = %cert, "gateway enabled: named HTTPS services");
+            Err(e) => {
+                tracing::warn!(error = %e, cert = %cert, key = %key, "gateway certificate not usable yet: will enable named HTTPS services when it appears");
+                pending_gateway = Some((secret, cert, key));
+            }
         }
     }
 
@@ -253,6 +270,17 @@ async fn main() -> anyhow::Result<()> {
         None => tracing::info!("COORD_DEVICE_AUTH_URL not set: devices need an auth key"),
     }
     coordinator = coordinator.with_device_auth_url(device_auth_url);
+
+    // Behind Caddy every connection comes from the proxy: X-Forwarded-For is
+    // believed only from these addresses (CIDRs, comma-separated; default none).
+    let trusted_proxies = coord_api::client_ip::TrustedProxies::parse(
+        &std::env::var("COORD_TRUSTED_PROXIES").unwrap_or_default(),
+    )
+    .map_err(|e| anyhow::anyhow!("COORD_TRUSTED_PROXIES: {e}"))?;
+    if trusted_proxies.is_empty() {
+        tracing::info!("COORD_TRUSTED_PROXIES not set: client addresses are the TCP peers");
+    }
+    coordinator = coordinator.with_trusted_proxies(trusted_proxies);
 
     // The TS service is the authoritative federation endpoint; the Rust CFP
     // implementation only runs when explicitly enabled.
@@ -272,6 +300,32 @@ async fn main() -> anyhow::Result<()> {
     state.spawn_relay_tasks();
     // Tailnets that already have HTTPS services get their gateway back
     state.start_gateways().await;
+    if let Some((secret, cert, key)) = pending_gateway {
+        let state = state.clone();
+        tokio::spawn(async move {
+            let mut warned = 0u32;
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+                match coord_gateway::proxy::Certificate::from_files(&cert, &key) {
+                    Ok(c) => {
+                        let certificate = Arc::new(c);
+                        coord_gateway::proxy::spawn_reload(certificate.clone(), std::time::Duration::from_secs(6 * 3600));
+                        if state.enable_gateway(secret, certificate).await {
+                            tracing::info!(cert = %cert, "gateway certificate arrived: named HTTPS services enabled");
+                        }
+                        return;
+                    }
+                    Err(e) => {
+                        warned += 1;
+                        // Every ~10 minutes, so a missing certificate stays visible in the logs.
+                        if warned % 60 == 0 {
+                            tracing::error!(error = %e, cert = %cert, key = %key, "gateway certificate still not usable: named HTTPS services are off");
+                        }
+                    }
+                }
+            }
+        });
+    }
 
     if federation_enabled && role.serves_control() {
         // Spawn the federation broker background loop.
@@ -315,7 +369,8 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!(%listen_addr, domain = %config.domain, "listening");
     let listener = tokio::net::TcpListener::bind(listen_addr).await?;
-    axum::serve(listener, app).await?;
+    // Peer addresses feed the client address of device sign-ins (ADR-0032)
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
 
     Ok(())
 }

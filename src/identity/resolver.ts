@@ -565,14 +565,24 @@ export function guardedLookup(
   });
 }
 
+/** Answer of {@link guardedRequest}. The body of a non-2xx answer is discarded. */
+export interface GuardedResponse {
+  ok: boolean;
+  status: number;
+  text: string;
+}
+
 /**
- * HTTPS GET of a JSON document from an untrusted host: public addresses only
- * (checked at connect time), no redirects, timeout, and a body size cap.
+ * HTTPS request to an untrusted host: public addresses only (checked at
+ * connect time by {@link guardedLookup}, so a DNS-rebinding answer after an
+ * earlier check cannot reach an internal service), no redirects, timeout, and
+ * a body size cap. The body of a non-2xx answer is never read, so a remote
+ * error page cannot leak into our error messages.
  */
-export function guardedGetJson(
+export function guardedRequest(
   url: string,
-  opts: { timeoutMs: number; maxBytes: number },
-): Promise<{ ok: boolean; status: number; json: unknown }> {
+  opts: { method?: "GET" | "POST"; headers?: Record<string, string>; body?: string; timeoutMs: number; maxBytes: number },
+): Promise<GuardedResponse> {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
     if (u.protocol !== "https:") {
@@ -584,10 +594,14 @@ export function guardedGetJson(
       reject(new Error("Host is a non-public address"));
       return;
     }
-    const req = https.get(
+    const req = https.request(
       u,
       {
-        headers: { Accept: "application/did+json,application/json" },
+        method: opts.method ?? "GET",
+        headers: {
+          ...(opts.headers ?? {}),
+          ...(opts.body !== undefined ? { "Content-Length": String(Buffer.byteLength(opts.body)) } : {}),
+        },
         lookup: guardedLookup as unknown as typeof dns.lookup,
         signal: AbortSignal.timeout(opts.timeoutMs),
         timeout: opts.timeoutMs,
@@ -596,7 +610,7 @@ export function guardedGetJson(
         const status = res.statusCode ?? 0;
         if (status < 200 || status >= 300) {
           res.resume(); // 3xx is never followed
-          resolve({ ok: false, status, json: null });
+          resolve({ ok: false, status, text: "" });
           return;
         }
         const declared = Number(res.headers["content-length"]);
@@ -616,16 +630,40 @@ export function guardedGetJson(
           chunks.push(chunk);
         });
         res.on("error", reject);
-        res.on("end", () => {
-          try {
-            resolve({ ok: true, status, json: JSON.parse(Buffer.concat(chunks).toString("utf8")) });
-          } catch (err) {
-            reject(err);
-          }
-        });
+        res.on("end", () => resolve({ ok: true, status, text: Buffer.concat(chunks).toString("utf8") }));
       },
     );
     req.on("timeout", () => req.destroy(new Error("Request timed out")));
     req.on("error", reject);
+    req.end(opts.body);
   });
+}
+
+/**
+ * HTTPS GET of a JSON document from an untrusted host, through
+ * {@link guardedRequest}.
+ */
+export async function guardedGetJson(
+  url: string,
+  opts: { timeoutMs: number; maxBytes: number },
+): Promise<{ ok: boolean; status: number; json: unknown }> {
+  const res = await guardedRequest(url, {
+    headers: { Accept: "application/did+json,application/json" },
+    timeoutMs: opts.timeoutMs,
+    maxBytes: opts.maxBytes,
+  });
+  return { ok: res.ok, status: res.status, json: res.ok ? JSON.parse(res.text) : null };
+}
+
+/**
+ * A short error text for a failed outbound request, safe to show: never the
+ * remote body or internal details.
+ */
+export function outboundErrorText(err: unknown): string {
+  const e = err as { code?: string; name?: string; message?: string } | null;
+  if (e?.code === "EPRIVATE" || /non-public/.test(e?.message ?? "")) return "address not allowed";
+  if (e?.name === "TimeoutError" || e?.name === "AbortError" || /timed out/i.test(e?.message ?? "")) return "timed out";
+  if (/too large/i.test(e?.message ?? "")) return "response too large";
+  if (/https/.test(e?.message ?? "") && /Only/.test(e?.message ?? "")) return "https required";
+  return "unreachable";
 }

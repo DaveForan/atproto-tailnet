@@ -10,6 +10,7 @@ import { Loading } from "../components/Loading";
 import { useConfirm } from "../components/ConfirmDialog";
 import { errorCode, errorMessage } from "../lib/utils";
 import type { Ancestor, SubCollective, ComplianceData } from "../lib/types";
+import { LoadError } from "../components/LoadError";
 
 export function CollectivesTab() {
   const { currentTenant, hasPerm, user } = useApp();
@@ -21,6 +22,7 @@ export function CollectivesTab() {
   const [collectives, setCollectives] = useState<SubCollective[]>([]);
   const [compliance, setCompliance] = useState<ComplianceData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const [newName, setNewName] = useState("");
   const [newSlug, setNewSlug] = useState("");
@@ -39,16 +41,15 @@ export function CollectivesTab() {
     setCompliance(data.compliance);
   }, [currentTenant?.id]);
 
-  useEffect(() => {
+  const loadAll = useCallback(() => {
     setLoading(true);
-    loadData()
-      .catch((e) => {
-        toastError(
-          e instanceof Error ? e.message : "Failed to load collectives",
-        );
-      })
+    return loadData()
+      .then(() => setLoadError(null))
+      .catch((e) => setLoadError(errorMessage(e, "Failed to load collectives")))
       .finally(() => setLoading(false));
   }, [loadData]);
+
+  useEffect(() => { void loadAll(); }, [loadAll]);
 
   const createCollective = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -85,6 +86,7 @@ export function CollectivesTab() {
 
   return (
     <div className="tab-content">
+      <LoadError error={loadError} onRetry={loadAll} />
       {/* Ancestors */}
       <Card title="Parent chain">
         {ancestors.length > 0 ? (

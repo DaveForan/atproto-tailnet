@@ -169,6 +169,24 @@ describe("service posts", () => {
     expect(syncTenantAccess).toHaveBeenCalled();
   });
 
+  it("renaming an approved public post sends it back for approval; connections stay", async () => {
+    // post, then the name check (not a tailnet address), then the update
+    results.push(ctx(), [post({ authorId: BOB, nodeId: "20", name: "app" })], [], [post({ authorId: BOB, status: "pending", name: "other" })]);
+    const r = await call("PATCH", `/boards/posts/${POST}`, { name: "other" });
+    expect(r.status).toBe(200);
+    const update = writes.find((w) => w.op === "update" && w.table === "service_posts")?.arg as Record<string, unknown>;
+    expect(update).toMatchObject({ name: "other", status: "pending", reviewedById: null });
+    expect(writes.some((w) => w.op === "delete" && w.table === "service_connections")).toBe(false);
+    expect(syncTenantAccess).toHaveBeenCalledWith(T);
+  });
+
+  it("renaming a private post needs no approval", async () => {
+    results.push(ctx(), [post({ authorId: BOB, nodeId: "20", board: "private", name: "notes" })], [], [post({ board: "private" })]);
+    await call("PATCH", `/boards/posts/${POST}`, { name: "notes2" });
+    const update = writes.find((w) => w.op === "update" && w.table === "service_posts")?.arg as Record<string, unknown>;
+    expect(update.status).toBeUndefined();
+  });
+
   it("only the author can change a post", async () => {
     results.push(ctx(), [post()]); // alice's post, bob calling
     expect((await call("PATCH", `/boards/posts/${POST}`, { title: "x" })).status).toBe(404);
@@ -179,6 +197,14 @@ describe("review", () => {
   it("needs approve_services", async () => {
     results.push(ctx());
     expect((await call("POST", `/boards/posts/${POST}/approve`)).status).toBe(403);
+  });
+
+  it("approving is blocked by lockdown; withdrawing is not", async () => {
+    results.push(ctx({ perms: ["approve_services"], lockdown: true }), [post({ status: "pending" })]);
+    expect((await call("POST", `/boards/posts/${POST}/approve`)).status).toBe(403);
+    expect(writes.some((w) => w.op === "update" && w.table === "service_posts")).toBe(false);
+    results.push(ctx({ perms: ["approve_services"], lockdown: true }), [post()], undefined, [post({ status: "rejected" })]);
+    expect((await call("POST", `/boards/posts/${POST}/reject`, { reason: "no" })).status).toBe(200);
   });
 
   it("an operator approves a pending post", async () => {
@@ -310,14 +336,14 @@ describe("friends and shares", () => {
   });
 
   it("the owner accepts a request: the share becomes active and rules are pushed", async () => {
-    results.push(ctx(), [share()], [{ status: "accepted" }]);
+    results.push(ctx(), [share()], [{ status: "accepted" }], [{ id: "s1" }]);
     const r = await call("POST", "/shares/s1/accept", {}, { "x-user": ALICE });
     expect(r.json.status).toBe("active");
     expect(syncTenantAccess).toHaveBeenCalledWith(T);
   });
 
   it("an owner who narrows the ports sends it back to the guest; nothing opens", async () => {
-    results.push(ctx(), [share()], [{ status: "accepted" }]);
+    results.push(ctx(), [share()], [{ status: "accepted" }], [{ id: "s1" }]);
     const r = await call("POST", "/shares/s1/accept", { ports: [{ proto: "tcp", first: 22, last: 22 }] }, { "x-user": ALICE });
     expect(r.json.status).toBe("offered");
     expect(syncTenantAccess).not.toHaveBeenCalled();
@@ -327,6 +353,42 @@ describe("friends and shares", () => {
     results.push(ctx(), [share()], [{ status: "accepted" }]);
     const r = await call("POST", "/shares/s1/accept", { ports: [{ proto: "tcp", first: 1, last: 65535 }] }, { "x-user": ALICE });
     expect(r.status).toBe(400);
+  });
+
+  it("accepting only moves the share from the state that was answered", async () => {
+    results.push(ctx(), [share()], [{ status: "accepted" }], []); // ended meanwhile: the conditional update matches nothing
+    const r = await call("POST", "/shares/s1/accept", {}, { "x-user": ALICE });
+    expect(r.status).toBe(409);
+    expect(syncTenantAccess).not.toHaveBeenCalled();
+    const update = writes.find((w) => w.op === "update" && w.table === "device_shares")?.arg as Record<string, unknown>;
+    expect(update).toMatchObject({ status: "active" });
+  });
+
+  it("a guest accepting an offer with chosen devices sets them in the same update", async () => {
+    results.push(ctx(), [share({ status: "offered" })], [{ status: "accepted" }], [{ id: "s1" }]);
+    const r = await call("POST", "/shares/s1/accept", { guestNodeIds: ["20"] });
+    expect(r.json.status).toBe("active");
+    const updates = writes.filter((w) => w.op === "update" && w.table === "device_shares");
+    expect(updates).toHaveLength(1);
+    expect(updates[0].arg).toMatchObject({ status: "active", guestNodeIds: ["20"] });
+  });
+
+  it("accepting a share is blocked by lockdown", async () => {
+    results.push(ctx({ lockdown: true }));
+    expect((await call("POST", "/shares/s1/accept", {}, { "x-user": ALICE })).status).toBe(403);
+  });
+
+  it("accepting a friend request is blocked by lockdown", async () => {
+    results.push(ctx({ lockdown: true }));
+    expect((await call("POST", "/friends/f1/accept")).status).toBe(403);
+    expect(writes.some((w) => w.op === "update" && w.table === "friendships")).toBe(false);
+  });
+
+  it("a friend request withdrawn meanwhile is not revived", async () => {
+    results.push(ctx(), [{ id: "f1", tenantId: T, requesterId: ALICE, addresseeId: BOB, status: "pending" }], []);
+    expect((await call("POST", "/friends/f1/accept")).status).toBe(404);
+    results.push(ctx(), [{ id: "f1", tenantId: T, requesterId: ALICE, addresseeId: BOB, status: "pending" }], [{ id: "f1" }]);
+    expect((await call("POST", "/friends/f1/accept")).json.status).toBe("accepted");
   });
 
   it("accepting fails if the two are no longer friends", async () => {

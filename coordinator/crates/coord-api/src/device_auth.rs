@@ -51,11 +51,20 @@ impl DeviceAuthRegistry {
 
     /// Start a sign-in for a machine and return its id (128 random bits, hex).
     /// A machine has one pending sign-in at a time: a new one replaces the old.
-    pub async fn start(&self, store: &Store, machine_key: [u8; 32], hostname: &str, os: &str) -> Option<String> {
+    /// `requester_ip` is the client address of the request that started it.
+    pub async fn start(
+        &self,
+        store: &Store,
+        machine_key: [u8; 32],
+        hostname: &str,
+        os: &str,
+        requester_ip: Option<std::net::IpAddr>,
+    ) -> Option<String> {
         let mut id_bytes = [0u8; 16];
         rand::rng().fill_bytes(&mut id_bytes);
         let id = hex::encode(id_bytes);
-        match store.sign_in_start(&id, &machine_key, hostname, os).await {
+        let ip = requester_ip.map(|ip| ip.to_string());
+        match store.sign_in_start(&id, &machine_key, hostname, os, ip.as_deref()).await {
             Ok(()) => Some(id),
             Err(e) => {
                 tracing::warn!(error = %e, "could not store a pending device sign-in");
@@ -135,7 +144,7 @@ mod tests {
     async fn approve_wakes_the_waiting_device_once() {
         let reg = DeviceAuthRegistry::new();
         let store = store();
-        let id = reg.start(&store, [1; 32], "phone", "iOS").await.unwrap();
+        let id = reg.start(&store, [1; 32], "phone", "iOS", None).await.unwrap();
         let waiter = {
             let (reg, store, id) = (reg.clone(), store.clone(), id.clone());
             tokio::spawn(async move { reg.wait(&store, &id, &[1; 32], Duration::from_secs(5)).await })
@@ -155,7 +164,7 @@ mod tests {
     async fn wait_times_out_as_pending_and_rejects_other_machines() {
         let reg = DeviceAuthRegistry::new();
         let store = store();
-        let id = reg.start(&store, [1; 32], "phone", "iOS").await.unwrap();
+        let id = reg.start(&store, [1; 32], "phone", "iOS", None).await.unwrap();
         assert_eq!(reg.wait(&store, &id, &[1; 32], Duration::from_millis(20)).await, Some(Decision::Pending));
         assert_eq!(reg.wait(&store, &id, &[2; 32], Duration::from_millis(20)).await, None, "another machine cannot claim the id");
         assert_eq!(reg.wait(&store, "00000000000000000000000000000000", &[1; 32], Duration::from_millis(20)).await, None);
@@ -166,7 +175,7 @@ mod tests {
         // As if another replica decided and its notification was lost
         let reg = DeviceAuthRegistry::new();
         let store = store();
-        let id = reg.start(&store, [1; 32], "phone", "iOS").await.unwrap();
+        let id = reg.start(&store, [1; 32], "phone", "iOS", None).await.unwrap();
         let waiter = {
             let (reg, store, id) = (reg.clone(), store.clone(), id.clone());
             tokio::spawn(async move { reg.wait(&store, &id, &[1; 32], Duration::from_secs(10)).await })
@@ -180,8 +189,8 @@ mod tests {
     async fn a_machine_has_one_pending_sign_in_and_a_decision_is_final() {
         let reg = DeviceAuthRegistry::new();
         let store = store();
-        let first = reg.start(&store, [1; 32], "a", "linux").await.unwrap();
-        let second = reg.start(&store, [1; 32], "a", "linux").await.unwrap();
+        let first = reg.start(&store, [1; 32], "a", "linux", None).await.unwrap();
+        let second = reg.start(&store, [1; 32], "a", "linux", None).await.unwrap();
         assert!(reg.get(&store, &first).await.is_none());
         assert!(reg.get(&store, &second).await.is_some());
         assert!(reg.decide(&store, &second, SignInDecision::Denied).await);

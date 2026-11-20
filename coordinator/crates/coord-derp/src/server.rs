@@ -29,6 +29,10 @@ const NOT_HERE_INTERVAL: Duration = Duration::from_secs(1);
 /// Who may talk to whom through the relay. Nodes are grouped by tenant; a
 /// node reaches nodes of its own tenant and of its tenant's parent or
 /// children (the same visibility the coordinator's netmap gives them).
+///
+/// `parent` is the link to the parent tenant, and both directions of
+/// parent/child relaying depend on it: admission sets it only while the
+/// child is visible to its parent (posture not Closed, neither suspended).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scope {
     pub tenant: [u8; 16],
@@ -190,10 +194,22 @@ struct Client {
     /// Distinguishes this connection from a later one with the same key.
     id: u64,
     key: [u8; 32],
-    scope: Scope,
+    /// Re-read at every admission re-check: a parent/child link can close
+    /// (posture, suspension) while the client stays connected.
+    scope: RwLock<Scope>,
     queue: SendQueue,
     /// Peers that sent packets here; told when this client disconnects.
     senders: Mutex<HashSet<[u8; 32]>>,
+}
+
+impl Client {
+    fn scope(&self) -> Scope {
+        self.scope.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn set_scope(&self, scope: Scope) {
+        *self.scope.write().unwrap_or_else(|e| e.into_inner()) = scope;
+    }
 }
 
 pub struct DerpServer {
@@ -238,7 +254,7 @@ impl DerpServer {
         let client = Arc::new(Client {
             id: self.next_id.fetch_add(1, Ordering::Relaxed),
             key,
-            scope,
+            scope: RwLock::new(scope),
             queue: SendQueue {
                 items: Mutex::new(VecDeque::new()),
                 notify: Notify::new(),
@@ -281,7 +297,7 @@ impl DerpServer {
         let client = Arc::new(Client {
             id: self.next_id.fetch_add(1, Ordering::Relaxed),
             key,
-            scope,
+            scope: RwLock::new(scope),
             queue: SendQueue {
                 items: Mutex::new(VecDeque::new()),
                 notify: Notify::new(),
@@ -403,7 +419,7 @@ impl DerpServer {
             .cloned()
             // A peer outside the sender's scope is treated exactly like an
             // unknown one, so the relay does not reveal who is connected.
-            .filter(|t| from.scope.can_reach(&t.scope));
+            .filter(|t| from.scope().can_reach(&t.scope()));
         match target {
             Some(t) => {
                 {
@@ -443,9 +459,14 @@ impl DerpServer {
                 _ = client.queue.notify.notified() => {}
                 _ = tokio::time::sleep_until(next_keep_alive) => {
                     // A node removed or suspended after it connected loses the relay here.
-                    if self.admission.admit(&client.key).await.is_none() {
-                        info!(node = %hex::encode(&client.key[..8]), "derp client no longer admitted");
-                        return Err(DerpError::NotAdmitted);
+                    match self.admission.admit(&client.key).await {
+                        None => {
+                            info!(node = %hex::encode(&client.key[..8]), "derp client no longer admitted");
+                            return Err(DerpError::NotAdmitted);
+                        }
+                        // The reach of the client follows its tenant (a child that
+                        // turned Closed, a parent that was suspended).
+                        Some(scope) => client.set_scope(scope),
                     }
                     client.queue.push(Outbound::KeepAlive);
                     next_keep_alive = Instant::now() + self.keep_alive_interval();
@@ -455,8 +476,10 @@ impl DerpServer {
     }
 
     fn keep_alive_interval(&self) -> Duration {
-        // Jitter spreads keep-alives of clients that connected together.
-        self.config.keep_alive + Duration::from_millis(rand::random_range(0..5000))
+        // Jitter spreads keep-alives of clients that connected together
+        // (up to 5 s, less for short intervals).
+        let max_jitter = (self.config.keep_alive.as_millis() / 12).clamp(1, 5000) as u64;
+        self.config.keep_alive + Duration::from_millis(rand::random_range(0..max_jitter))
     }
 
     fn unregister(&self, client: &Arc<Client>) {
@@ -615,9 +638,19 @@ mod tests {
             }
         }
 
+        /// No frame other than keep-alives for a short while.
         async fn expect_silence(&mut self) {
-            let r = tokio::time::timeout(Duration::from_millis(150), read_header(&mut self.io)).await;
-            assert!(r.is_err(), "expected no frame");
+            let deadline = tokio::time::Instant::now() + Duration::from_millis(150);
+            loop {
+                match tokio::time::timeout_at(deadline, read_header(&mut self.io)).await {
+                    Err(_) => return,
+                    Ok(Ok((FRAME_KEEP_ALIVE, len))) => {
+                        let mut body = vec![0u8; len as usize];
+                        self.io.read_exact(&mut body).await.unwrap();
+                    }
+                    Ok(other) => panic!("expected no frame, got {other:?}"),
+                }
+            }
         }
     }
 
@@ -752,6 +785,67 @@ mod tests {
         stranger.send(parent.key, &disco_packet()).await;
         let (ty, body) = stranger.recv().await;
         assert_eq!((ty, body[32]), (FRAME_PEER_GONE, PEER_GONE_NOT_HERE));
+    }
+
+    /// Tenant 1 is the parent of tenant 2; `linked` says whether the child is
+    /// visible to the parent (posture not Closed, neither suspended), as
+    /// `StoreAdmission` decides it from the store.
+    struct LinkedChild {
+        linked: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl Admission for LinkedChild {
+        async fn admit(&self, node_key: &[u8; 32]) -> Option<Scope> {
+            let seed = (1u8..=99).find(|s| SecretKey::from([*s; 32]).public_key().as_bytes() == node_key)?;
+            match seed / 10 {
+                1 => Some(Scope { tenant: [1; 16], parent: None }),
+                2 => Some(Scope {
+                    tenant: [2; 16],
+                    parent: self.linked.load(Ordering::SeqCst).then_some([1; 16]),
+                }),
+                _ => None,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_closed_or_suspended_child_gets_no_relay_to_or_from_its_parent() {
+        let s = server(Arc::new(LinkedChild { linked: AtomicBool::new(false) }));
+        let mut parent = TestClient::connect(&s, 10).await.unwrap();
+        let mut child = TestClient::connect(&s, 20).await.unwrap();
+        let mut child_sibling = TestClient::connect(&s, 21).await.unwrap();
+        wait_for_clients(&s, 3).await;
+
+        child.send(parent.key, b"up").await;
+        parent.expect_silence().await;
+        parent.send(child.key, b"down").await;
+        child.expect_silence().await;
+        // Inside the child tenant relaying still works
+        child.send(child_sibling.key, b"same tenant").await;
+        assert_eq!(&child_sibling.recv().await.1[32..], b"same tenant");
+    }
+
+    #[tokio::test]
+    async fn closing_the_parent_link_takes_effect_at_the_next_admission_check() {
+        let admission = Arc::new(LinkedChild { linked: AtomicBool::new(true) });
+        let config = DerpConfig { keep_alive: Duration::from_millis(40), ..DerpConfig::default() };
+        let s = Arc::new(DerpServer::new([42; 32], admission.clone(), config));
+        let mut parent = TestClient::connect(&s, 10).await.unwrap();
+        let mut child = TestClient::connect(&s, 20).await.unwrap();
+        wait_for_clients(&s, 2).await;
+
+        child.send(parent.key, b"while linked").await;
+        assert_eq!(&parent.recv().await.1[32..], b"while linked");
+
+        // The child turns Closed (or the parent is suspended) while both stay connected
+        admission.linked.store(false, Ordering::SeqCst);
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        child.send(parent.key, b"after close").await;
+        parent.expect_silence().await;
+        parent.send(child.key, b"after close").await;
+        child.expect_silence().await;
+        assert_eq!(s.connected_clients(), 2, "both stay connected inside their own tenant");
     }
 
     #[tokio::test]

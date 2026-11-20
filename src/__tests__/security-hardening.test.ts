@@ -61,9 +61,10 @@ vi.mock("../db/index.js", () => ({
   pool: {},
 }));
 
-const { notify, resolvesToPublicAddresses } = vi.hoisted(() => ({
+const { notify, resolvesToPublicAddresses, guardedRequest } = vi.hoisted(() => ({
   notify: vi.fn(),
   resolvesToPublicAddresses: vi.fn(async (_h: string) => false),
+  guardedRequest: vi.fn(async (..._a: unknown[]) => ({ ok: false, status: 404, text: "" })),
 }));
 vi.mock("../notifications/service.js", async (orig) => ({
   ...(await orig<typeof import("../notifications/service.js")>()),
@@ -72,6 +73,7 @@ vi.mock("../notifications/service.js", async (orig) => ({
 vi.mock("../identity/resolver.js", async (orig) => ({
   ...(await orig<typeof import("../identity/resolver.js")>()),
   resolvesToPublicAddresses,
+  guardedRequest,
 }));
 vi.mock("node:dns/promises", async (orig) => ({
   ...(await orig<typeof import("node:dns/promises")>()),
@@ -378,16 +380,19 @@ describe("handle resolution and DID normalisation", () => {
     }
   });
 
-  it("fetches .well-known for public hosts with a timeout and no redirects", async () => {
+  it("fetches .well-known for public hosts through the connect-time guarded request", async () => {
     resolvesToPublicAddresses.mockResolvedValueOnce(true);
-    const spy = vi
-      .spyOn(globalThis, "fetch")
-      .mockResolvedValue(new Response("did:plc:abcdefghijklmnopqrstuvwx\n", { status: 200 }));
+    guardedRequest.mockResolvedValueOnce({ ok: true, status: 200, text: "did:plc:abcdefghijklmnopqrstuvwx\n" });
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}", { status: 404 }));
     try {
       expect(await resolveHandleToDid("alice.example")).toBe("did:plc:abcdefghijklmnopqrstuvwx");
-      expect(String(spy.mock.calls[0][0])).toBe("https://alice.example/.well-known/atproto-did");
-      expect(spy.mock.calls[0][1]?.redirect).toBe("error");
-      expect(spy.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
+      // The handle host is re-checked at connect time (no DNS rebinding after
+      // the pre-check), with a timeout and a size cap; never a plain fetch
+      expect(guardedRequest).toHaveBeenCalledWith(
+        "https://alice.example/.well-known/atproto-did",
+        expect.objectContaining({ timeoutMs: expect.any(Number), maxBytes: 2048 }),
+      );
+      expect(spy.mock.calls.some((c) => String(c[0]).includes("alice.example/.well-known"))).toBe(false);
     } finally {
       spy.mockRestore();
     }

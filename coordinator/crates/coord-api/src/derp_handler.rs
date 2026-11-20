@@ -14,7 +14,9 @@ use tracing::{debug, warn};
 use crate::state::CoordinatorState;
 
 /// Admits nodes registered with this coordinator whose tenant is not
-/// suspended. The scope is the node's tenant and that tenant's parent.
+/// suspended. The scope is the node's tenant, plus the link to its parent
+/// only while the netmap would show the child to the parent (see
+/// [`relay_scope`]).
 pub struct StoreAdmission {
     pub(crate) store: Arc<Store>,
 }
@@ -30,15 +32,25 @@ impl Admission for StoreAdmission {
     async fn admit(&self, node_key: &[u8; 32]) -> Option<Scope> {
         let node = self.store.get_node_by_node_key(node_key).await?;
         let detail = self.store.get_node_info(node).await?;
-        if self.store.is_tenant_suspended(detail.tenant_id).await {
-            return None;
-        }
-        let tenant = self.store.get_tenant(detail.tenant_id).await?;
-        Some(Scope {
-            tenant: *tenant.id.as_uuid().as_bytes(),
-            parent: tenant.parent_id.map(|p| *p.as_uuid().as_bytes()),
-        })
+        relay_scope(&self.store, detail.tenant_id).await
     }
+}
+
+/// The relay scope of a tenant's nodes, or `None` when the tenant is missing
+/// or suspended. Cross-tenant relaying follows the same rule as peers in the
+/// netmap: a child is linked to its parent only when its posture is not
+/// Closed and neither the child nor the parent is suspended. Without the
+/// link, neither side reaches the other (`Scope::can_reach`).
+pub async fn relay_scope(store: &Store, tenant_id: coord_core::TenantId) -> Option<Scope> {
+    let tenant = store.get_tenant(tenant_id).await?;
+    if tenant.suspended {
+        return None;
+    }
+    let parent = match tenant.parent_id {
+        Some(p) if tenant.visible_to_parent() && !store.is_tenant_suspended(p).await => Some(*p.as_uuid().as_bytes()),
+        _ => None,
+    };
+    Some(Scope { tenant: *tenant.id.as_uuid().as_bytes(), parent })
 }
 
 /// `GET /derp` with `Upgrade: DERP` — hands the connection to the relay.
@@ -99,4 +111,42 @@ pub async fn generate_204_handler(headers: HeaderMap) -> Response {
         }
     }
     resp.body(Body::empty()).unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use coord_core::FederationPosture;
+
+    #[tokio::test]
+    async fn parent_link_follows_posture_and_suspension() {
+        let store = Store::Memory(Box::new(coord_store::MemoryStore::new()));
+        let parent = store.create_tenant("p".into(), None, None).await.unwrap().id;
+        let child = store.create_tenant("c".into(), Some(parent), Some(FederationPosture::Open)).await.unwrap().id;
+        let pb = *parent.as_uuid().as_bytes();
+
+        assert_eq!(relay_scope(&store, child).await.unwrap().parent, Some(pb));
+        assert_eq!(relay_scope(&store, parent).await.unwrap().parent, None);
+
+        store.update_tenant_posture(child, FederationPosture::Selective).await.unwrap();
+        assert_eq!(relay_scope(&store, child).await.unwrap().parent, Some(pb));
+
+        // Closed: no link, so neither side reaches the other
+        store.update_tenant_posture(child, FederationPosture::Closed).await.unwrap();
+        let closed = relay_scope(&store, child).await.unwrap();
+        assert_eq!(closed.parent, None);
+        assert!(!closed.can_reach(&relay_scope(&store, parent).await.unwrap()));
+        assert!(!relay_scope(&store, parent).await.unwrap().can_reach(&closed));
+
+        // Suspended parent: the parent is refused and the child loses the link
+        store.update_tenant_posture(child, FederationPosture::Open).await.unwrap();
+        store.set_tenant_suspended(parent, true).await.unwrap();
+        assert!(relay_scope(&store, parent).await.is_none());
+        assert_eq!(relay_scope(&store, child).await.unwrap().parent, None);
+
+        // Suspended child: refused outright
+        store.set_tenant_suspended(parent, false).await.unwrap();
+        store.set_tenant_suspended(child, true).await.unwrap();
+        assert!(relay_scope(&store, child).await.is_none());
+    }
 }

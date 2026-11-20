@@ -2,8 +2,10 @@ import { useEffect, useState } from "react";
 import { Card } from "../components/Card";
 import { Loading } from "../components/Loading";
 import { useTenantData } from "../hooks/useTenantData";
+import { useApp } from "../hooks/useAppState";
 import { useTenantMutation } from "../hooks/useMutation";
 import type { IpConfig } from "../lib/types";
+import { LoadError } from "../components/LoadError";
 
 const IP_FALLBACK: IpConfig = {
   ipv4Prefix: "",
@@ -12,7 +14,22 @@ const IP_FALLBACK: IpConfig = {
 };
 
 export function IpConfigTab() {
-  const { data: ipConfig, loading, reload } = useTenantData<IpConfig>(
+  const { currentTenant } = useApp();
+  // Reached only by an old link: the tab is hidden in coordinator mode
+  if (currentTenant?.coordinatorMode) {
+    return (
+      <div className="tab-content">
+        <Card title="IP ranges">
+          <p className="card-description">The coordinator assigns the address ranges of this tailnet.</p>
+        </Card>
+      </div>
+    );
+  }
+  return <IpConfigForm />;
+}
+
+function IpConfigForm() {
+  const { data: ipConfig, loading, error, reload } = useTenantData<IpConfig>(
     "/ip-config",
     IP_FALLBACK,
   );
@@ -49,6 +66,7 @@ export function IpConfigTab() {
 
   return (
     <div className="tab-content">
+      <LoadError error={error} onRetry={reload} />
       <Card title="IP ranges">
         <p className="notice mb-12" role="note">
           Changing IP configuration will trigger a container restart. Connected

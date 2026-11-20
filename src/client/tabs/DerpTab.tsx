@@ -9,10 +9,12 @@ import { Loading } from "../components/Loading";
 import { Badge } from "../components/Badge";
 import { Toggle } from "../components/Toggle";
 import type { DerpConfig, DerpNode, DerpRegion } from "../lib/types";
+import { LoadError } from "../components/LoadError";
+import { errorMessage } from "../lib/utils";
 
 export function DerpTab() {
   const { currentTenant } = useApp();
-  const { toast, toastError } = useToast();
+  const { toast } = useToast();
   const { mutate, busy } = useTenantMutation();
   const [config, setConfig] = useState<DerpConfig>({
     regions: [],
@@ -20,14 +22,16 @@ export function DerpTab() {
     usePublicDerp: true,
   });
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!currentTenant) return;
     try {
       const data = await networkService.getDerp(currentTenant.id);
       if (data) setConfig(data);
+      setLoadError(null);
     } catch (e) {
-      toastError(e instanceof Error ? e.message : "Failed to load DERP config");
+      setLoadError(errorMessage(e, "Failed to load DERP config"));
     } finally {
       setLoading(false);
     }
@@ -79,6 +83,7 @@ export function DerpTab() {
 
   return (
     <div className="tab-content">
+      <LoadError error={loadError} onRetry={load} />
       <Card title="DERP relays">
         <p className="card-description">
           DERP (Designated Encrypted Relay for Packets) relays help devices
@@ -91,14 +96,17 @@ export function DerpTab() {
             checked={config.usePublicDerp}
             onChange={(v) => setConfig((c) => ({ ...c, usePublicDerp: v }))}
           />
-          <Toggle
-            label="Embedded DERP server"
-            description="Run a DERP relay inside this Headscale container (requires restart)"
-            checked={config.embeddedDerpEnabled}
-            onChange={(v) =>
-              setConfig((c) => ({ ...c, embeddedDerpEnabled: v }))
-            }
-          />
+          {/* The coordinator runs the relays itself; the server forces this off there */}
+          {!currentTenant?.coordinatorMode && (
+            <Toggle
+              label="Embedded DERP server"
+              description="Run a DERP relay inside this Headscale container (requires restart)"
+              checked={config.embeddedDerpEnabled}
+              onChange={(v) =>
+                setConfig((c) => ({ ...c, embeddedDerpEnabled: v }))
+              }
+            />
+          )}
         </div>
       </Card>
 

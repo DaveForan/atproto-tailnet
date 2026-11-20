@@ -1,4 +1,4 @@
-import { api } from "./api";
+import { api, apiOrNull } from "./api";
 import { deviceTraits, ensureDeviceKey, setDeviceId, signChallenge } from "../lib/device-key";
 
 export interface TrustedDevice {
@@ -61,12 +61,12 @@ export const deviceTrustService = {
   deny: (id: string) => api(`/api/trusted-devices/requests/${id}/deny`, post()),
   newRecoveryCodes: () => api<{ recoveryCodes: string[] }>("/api/trusted-devices/recovery-codes", post()),
 
-  // ── Pending sign-in ──
-  pending: () => api<{ handle: string | null; challenge: string }>("/api/device-trust/pending"),
+  // ── Pending sign-in (no dashboard session yet: a 401 means "nothing pending") ──
+  pending: () => apiOrNull<{ handle: string | null; challenge: string }>("/api/device-trust/pending"),
   verify: (deviceId: string, signature: string) =>
-    api<{ redirect: string }>("/api/device-trust/pending/verify", post({ deviceId, signature, profile: deviceTraits() })),
-  recover: (code: string) => api<{ redirect: string }>("/api/device-trust/pending/recover", post({ code })),
+    apiOrNull<{ redirect: string }>("/api/device-trust/pending/verify", post({ deviceId, signature, profile: deviceTraits() })),
+  recover: (code: string) => apiOrNull<{ redirect: string }>("/api/device-trust/pending/recover", post({ code })),
   requestTrust: (name: string, publicKeyJwk: unknown) =>
-    api<{ id: string; code: string; expiresAt: string }>("/api/device-trust/pending/request", post({ name, publicKeyJwk, profile: deviceTraits() })),
-  requestStatus: () => api<{ status: "pending" | "approved" | "denied" | "expired"; deviceId: string | null }>("/api/device-trust/pending/request"),
+    apiOrNull<{ id: string; code: string; expiresAt: string }>("/api/device-trust/pending/request", post({ name, publicKeyJwk, profile: deviceTraits() })),
+  requestStatus: () => apiOrNull<{ status: "pending" | "approved" | "denied" | "expired"; deviceId: string | null }>("/api/device-trust/pending/request"),
 };

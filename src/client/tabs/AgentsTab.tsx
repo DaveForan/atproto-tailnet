@@ -12,11 +12,12 @@ import { useConfirm } from "../components/ConfirmDialog";
 import { Badge, StatusBadge } from "../components/Badge";
 import { relativeTime } from "../lib/utils";
 import type { AgentToken } from "../lib/types";
+import { LoadError } from "../components/LoadError";
 
 export function AgentsTab() {
   const { currentTenant, allPerms, hasPerm } = useApp();
   const { toast, toastError } = useToast();
-  const { data: tokens, loading, reload } = useTenantData<AgentToken[]>("/agent-tokens", []);
+  const { data: tokens, loading, error, reload } = useTenantData<AgentToken[]>("/agent-tokens", []);
   const { mutate, busy } = useTenantMutation();
 
   const [name, setName] = useState("");
@@ -77,6 +78,7 @@ export function AgentsTab() {
 
   return (
     <div className="tab-content">
+      <LoadError error={error} onRetry={reload} />
       {hasPerm("create_agent_tokens") && (
         <Card title="Create an agent token">
           <form className="form-stack" onSubmit={handleCreate}>
@@ -137,7 +139,9 @@ export function AgentsTab() {
       )}
 
       <Card title="Agent tokens">
-        {tokens.length === 0 ? (
+        {error && tokens.length === 0 ? (
+          <p className="help-text">The token list could not be loaded.</p>
+        ) : tokens.length === 0 ? (
           <EmptyState>No agent tokens created yet.</EmptyState>
         ) : (
           <ul className="item-list">

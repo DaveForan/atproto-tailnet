@@ -65,6 +65,8 @@ beforeAll(async () => {
   app.use(session({ secret: "test-secret", resave: false, saveUninitialized: false }));
   app.get("/test/login", (req, res) => {
     req.session.userId = String(req.query.user);
+    // A recovery-code session (ADR-0035): must enrol a trusted device first
+    if (req.query.mustEnroll) req.session.mustEnrollDevice = true;
     res.json({ ok: true });
   });
   app.use(createOAuthRouter({ provider: oauthProvider, publicUrl: PUBLIC_URL, disableRateLimits: true }));
@@ -308,6 +310,17 @@ describe("authorize", () => {
     expect(loc.searchParams.get("error")).toBe("access_denied");
     expect(loc.searchParams.get("state")).toBe("st-123");
     expect(loc.searchParams.get("code")).toBeNull();
+  });
+
+  it("a recovery-code session cannot allow a connection (step-up as for other sensitive actions)", async () => {
+    const { json: client } = await register();
+    const res = await fetch(`${base}/test/login?user=u1&mustEnroll=1`);
+    const cookie = res.headers.getSetCookie().map((c) => c.split(";")[0]).join("; ");
+    const { challenge } = pkce();
+    const c = await getConsent(cookie, String(client.client_id), challenge);
+    const r = await consent(cookie, c.requestId, c.csrf, "allow", { operator: "1" });
+    expect(r.status).toBe(403);
+    expect(r.location).toBe("");
   });
 
   it("consent POST requires the session CSRF token and is single use", async () => {

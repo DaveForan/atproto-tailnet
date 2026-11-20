@@ -10,6 +10,19 @@ use coord_core::{
 use crate::memory::PeerEvent;
 use crate::{generate_auth_key, generate_random_id};
 
+fn decode_owner_lock(tenant_id: TenantId, row: Option<String>) -> coord_core::LockRead {
+    match row {
+        None => coord_core::LockRead::Unlocked,
+        Some(v) => match serde_json::from_str(&v) {
+            Ok(l) => coord_core::LockRead::Locked(l),
+            Err(e) => {
+                tracing::error!(tenant = %tenant_id, error = %e, "malformed machine lock (treated as locked)");
+                coord_core::LockRead::Malformed
+            }
+        },
+    }
+}
+
 fn db(e: sqlx::Error) -> StorageError {
     StorageError::new(e)
 }
@@ -25,12 +38,38 @@ pub struct SqliteStore {
     remote_tx: broadcast::Sender<crate::RemoteEvent>,
 }
 
+/// Finish migration 010: SQLite has no SHA-256 function, so keys stored in
+/// plain text before it are hashed here, in one transaction, before the store
+/// is used. Idempotent: a hex digest never starts with "tskey-".
+async fn hash_plain_preauth_keys(pool: &SqlitePool) -> Result<(), StorageError> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(db)?;
+    let plain: Vec<String> = sqlx::query_scalar("SELECT key FROM coord_preauth_keys WHERE key LIKE 'tskey-%'")
+        .fetch_all(&mut *tx)
+        .await
+        .map_err(db)?;
+    for key in &plain {
+        sqlx::query("UPDATE coord_preauth_keys SET key = ?1, key_prefix = ?2 WHERE key = ?3")
+            .bind(crate::hash_preauth_key(key))
+            .bind(coord_core::preauth_key_prefix(key))
+            .bind(key)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+    }
+    tx.commit().await.map_err(db)?;
+    if !plain.is_empty() {
+        tracing::info!(count = plain.len(), "stored pre-auth keys hashed");
+    }
+    Ok(())
+}
+
 impl SqliteStore {
     pub async fn new(pool: SqlitePool) -> Result<Self, StorageError> {
         sqlx::migrate!("../../migrations_sqlite")
             .run(&pool)
             .await
             .map_err(db_migrate)?;
+        hash_plain_preauth_keys(&pool).await?;
 
         let (peer_tx, _) = broadcast::channel(crate::PEER_EVENT_CHANNEL_CAPACITY);
         Ok(Self { pool, peer_tx, remote_tx: broadcast::channel(16).0 })
@@ -175,23 +214,25 @@ impl SqliteStore {
         Ok(())
     }
 
-    pub async fn get_tenant_configs(&self, tenant_id: TenantId) -> Vec<(String, serde_json::Value)> {
+    /// A value that is not valid JSON comes back as `null` (the kind is still
+    /// listed, so a reader can tell "unreadable" from "absent").
+    pub async fn get_tenant_configs(&self, tenant_id: TenantId) -> Result<Vec<(String, serde_json::Value)>, CoordError> {
         let rows: Vec<(String, String)> = sqlx::query_as("SELECT kind, value FROM coord_tenant_config WHERE tenant_id = ?1")
             .bind(tenant_id.as_uuid().to_string())
             .fetch_all(&self.pool)
             .await
-            .unwrap_or_default();
-        rows.into_iter().filter_map(|(k, v)| Some((k, serde_json::from_str(&v).ok()?))).collect()
+            .map_err(db)?;
+        Ok(rows.into_iter().map(|(k, v)| (k, serde_json::from_str(&v).unwrap_or_default())).collect())
     }
 
-    pub async fn list_tenant_configs(&self) -> Vec<(TenantId, String, serde_json::Value)> {
+    pub async fn list_tenant_configs(&self) -> Result<Vec<(TenantId, String, serde_json::Value)>, CoordError> {
         let rows: Vec<(String, String, String)> = sqlx::query_as("SELECT tenant_id, kind, value FROM coord_tenant_config")
             .fetch_all(&self.pool)
             .await
-            .unwrap_or_default();
-        rows.into_iter()
-            .filter_map(|(t, k, v)| Some((TenantId::new(t.parse().ok()?), k, serde_json::from_str(&v).ok()?)))
-            .collect()
+            .map_err(db)?;
+        Ok(rows.into_iter()
+            .filter_map(|(t, k, v)| Some((TenantId::new(t.parse().ok()?), k, serde_json::from_str(&v).unwrap_or_default())))
+            .collect())
     }
 
     pub async fn set_tenant_config(&self, tenant_id: TenantId, kind: &str, value: Option<serde_json::Value>) -> Result<(), CoordError> {
@@ -219,7 +260,7 @@ impl SqliteStore {
         Ok(())
     }
 
-    pub async fn sign_in_start(&self, id: &str, machine_key: &[u8; 32], hostname: &str, os: &str) -> Result<(), CoordError> {
+    pub async fn sign_in_start(&self, id: &str, machine_key: &[u8; 32], hostname: &str, os: &str, requester_ip: Option<&str>) -> Result<(), CoordError> {
         let now = crate::now_secs();
         let machine = hex::encode(machine_key);
         sqlx::query("DELETE FROM coord_sign_ins WHERE machine_key = ?1 OR expires_at <= ?2")
@@ -228,12 +269,14 @@ impl SqliteStore {
             .execute(&self.pool)
             .await
             .map_err(db)?;
-        sqlx::query("INSERT INTO coord_sign_ins (id, machine_key, hostname, os, expires_at) VALUES (?1, ?2, ?3, ?4, ?5)")
+        sqlx::query("INSERT INTO coord_sign_ins (id, machine_key, hostname, os, expires_at, requester_ip, requested_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)")
             .bind(id)
             .bind(&machine)
             .bind(hostname)
             .bind(os)
             .bind(now + coord_core::signin::SIGN_IN_TTL_SECS)
+            .bind(requester_ip)
+            .bind(now)
             .execute(&self.pool)
             .await
             .map_err(db)?;
@@ -250,8 +293,8 @@ impl SqliteStore {
     }
 
     pub async fn sign_in_get(&self, id: &str) -> Option<coord_core::PendingSignIn> {
-        let row: Option<(String, String, String, Option<String>)> = sqlx::query_as(
-            "SELECT machine_key, hostname, os, decision FROM coord_sign_ins WHERE id = ?1 AND expires_at > ?2"
+        let row: Option<crate::SignInRow> = sqlx::query_as(
+            &format!("SELECT {} FROM coord_sign_ins WHERE id = ?1 AND expires_at > ?2", crate::SIGN_IN_COLUMNS)
         )
             .bind(id)
             .bind(crate::now_secs())
@@ -347,49 +390,86 @@ impl SqliteStore {
     }
 
     pub async fn list_owner_locks(&self) -> Vec<(TenantId, String, coord_core::OwnerLock)> {
-        let rows: Vec<(String, String, String)> = sqlx::query_as("SELECT tenant_id, owner, lock FROM coord_owner_locks")
+        let rows: Vec<(String, String, String)> = match sqlx::query_as("SELECT tenant_id, owner, lock FROM coord_owner_locks")
             .fetch_all(&self.pool)
             .await
-            .unwrap_or_default();
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!(error = %e, "could not list machine locks");
+                return vec![];
+            }
+        };
         rows.into_iter()
-            .filter_map(|(t, o, l)| Some((TenantId::new(t.parse().ok()?), o, serde_json::from_str(&l).ok()?)))
+            .filter_map(|(t, o, l)| match serde_json::from_str(&l) {
+                Ok(lock) => Some((TenantId::new(t.parse().ok()?), o, lock)),
+                Err(e) => {
+                    tracing::error!(tenant = %t, error = %e, "malformed machine lock skipped in listing");
+                    None
+                }
+            })
             .collect()
     }
 
-    pub async fn get_owner_lock(&self, tenant_id: TenantId, owner: &str) -> Option<coord_core::OwnerLock> {
+    pub async fn get_owner_lock(&self, tenant_id: TenantId, owner: &str) -> Result<coord_core::LockRead, CoordError> {
         let row: Option<String> = sqlx::query_scalar("SELECT lock FROM coord_owner_locks WHERE tenant_id = ?1 AND owner = ?2")
             .bind(tenant_id.as_uuid().to_string())
             .bind(owner)
             .fetch_optional(&self.pool)
             .await
-            .ok()
-            .flatten();
-        row.and_then(|v| serde_json::from_str(&v).ok())
+            .map_err(db)?;
+        Ok(decode_owner_lock(tenant_id, row))
     }
 
-    pub async fn set_owner_lock(&self, tenant_id: TenantId, owner: &str, lock: Option<coord_core::OwnerLock>) -> Result<(), CoordError> {
-        if self.get_tenant(tenant_id).await.is_none() {
+    /// BEGIN IMMEDIATE takes the write lock before the read, so updates
+    /// (from any connection) cannot interleave.
+    pub async fn update_owner_lock<R, F>(&self, tenant_id: TenantId, owner: &str, f: F) -> Result<R, CoordError>
+    where
+        F: FnOnce(coord_core::LockRead) -> (coord_core::LockWrite, R),
+    {
+        let tid = tenant_id.as_uuid().to_string();
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await.map_err(db)?;
+        let tenant: Option<String> = sqlx::query_scalar("SELECT id FROM coord_tenants WHERE id = ?1")
+            .bind(&tid)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db)?;
+        if tenant.is_none() {
             return Err(CoordError::TenantNotFound(tenant_id));
         }
-        match lock {
-            Some(l) => sqlx::query(
-                "INSERT INTO coord_owner_locks (tenant_id, owner, lock) VALUES (?1, ?2, ?3) \
-                 ON CONFLICT (tenant_id, owner) DO UPDATE SET lock = excluded.lock, updated_at = datetime('now')"
-            )
-                .bind(tenant_id.as_uuid().to_string())
-                .bind(owner)
-                .bind(serde_json::to_string(&l).unwrap_or_default())
-                .execute(&self.pool)
-                .await
-                .map_err(db)?,
-            None => sqlx::query("DELETE FROM coord_owner_locks WHERE tenant_id = ?1 AND owner = ?2")
-                .bind(tenant_id.as_uuid().to_string())
-                .bind(owner)
-                .execute(&self.pool)
-                .await
-                .map_err(db)?,
-        };
-        Ok(())
+        let row: Option<String> = sqlx::query_scalar("SELECT lock FROM coord_owner_locks WHERE tenant_id = ?1 AND owner = ?2")
+            .bind(&tid)
+            .bind(owner)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db)?;
+        let (write, out) = f(decode_owner_lock(tenant_id, row));
+        match write {
+            coord_core::LockWrite::Keep => {}
+            coord_core::LockWrite::Set(l) => {
+                let value = serde_json::to_string(&l).map_err(|e| CoordError::Protocol(e.to_string()))?;
+                sqlx::query(
+                    "INSERT INTO coord_owner_locks (tenant_id, owner, lock) VALUES (?1, ?2, ?3) \
+                     ON CONFLICT (tenant_id, owner) DO UPDATE SET lock = excluded.lock, updated_at = datetime('now')"
+                )
+                    .bind(&tid)
+                    .bind(owner)
+                    .bind(value)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db)?;
+            }
+            coord_core::LockWrite::Remove => {
+                sqlx::query("DELETE FROM coord_owner_locks WHERE tenant_id = ?1 AND owner = ?2")
+                    .bind(&tid)
+                    .bind(owner)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db)?;
+            }
+        }
+        tx.commit().await.map_err(db)?;
+        Ok(out)
     }
 
     pub async fn list_tenants(&self) -> Vec<Tenant> {
@@ -531,10 +611,11 @@ impl SqliteStore {
         let key = generate_auth_key();
         let id = uuid::Uuid::new_v4();
         sqlx::query(
-            "INSERT INTO coord_preauth_keys (key, id, tenant_id, reusable, ephemeral, expires_at, owner, tags) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"
+            "INSERT INTO coord_preauth_keys (key, key_prefix, id, tenant_id, reusable, ephemeral, expires_at, owner, tags) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)"
         )
-            .bind(&key)
+            .bind(crate::hash_preauth_key(&key))
+            .bind(coord_core::preauth_key_prefix(&key))
             .bind(id.to_string())
             .bind(tenant_id.as_uuid().to_string())
             .bind(opts.reusable)
@@ -551,7 +632,7 @@ impl SqliteStore {
     pub async fn list_preauth_keys(&self, tenant_id: TenantId) -> Vec<PreAuthKeyInfo> {
         type Row = (String, String, Option<String>, String, bool, bool, bool, Option<String>, String, Option<String>);
         let rows = sqlx::query_as::<_, Row>(
-            "SELECT id, key, owner, tags, reusable, ephemeral, used, expires_at, created_at, revoked_at \
+            "SELECT id, key_prefix, owner, tags, reusable, ephemeral, used, expires_at, created_at, revoked_at \
              FROM coord_preauth_keys WHERE tenant_id = ?1 ORDER BY created_at, id"
         )
             .bind(tenant_id.as_uuid().to_string())
@@ -560,11 +641,11 @@ impl SqliteStore {
             .unwrap_or_default();
 
         rows.into_iter()
-            .filter_map(|(id, key, owner, tags, reusable, ephemeral, used, expires_at, created_at, revoked_at)| {
+            .filter_map(|(id, prefix, owner, tags, reusable, ephemeral, used, expires_at, created_at, revoked_at)| {
                 Some(PreAuthKeyInfo {
                     id: uuid::Uuid::parse_str(&id).ok()?,
                     tenant_id,
-                    prefix: coord_core::preauth_key_prefix(&key),
+                    prefix,
                     owner,
                     tags: from_json(&tags),
                     reusable,
@@ -609,7 +690,7 @@ impl SqliteStore {
     /// Tenant a pre-auth key belongs to, without validating or consuming it.
     pub async fn preauth_key_tenant(&self, key: &str) -> Option<TenantId> {
         let tid: String = sqlx::query_scalar("SELECT tenant_id FROM coord_preauth_keys WHERE key = ?1")
-            .bind(key)
+            .bind(crate::hash_preauth_key(key))
             .fetch_optional(&self.pool)
             .await
             .ok()??;
@@ -625,7 +706,7 @@ impl SqliteStore {
                AND (expires_at IS NULL OR expires_at > datetime('now')) \
              RETURNING tenant_id, owner, tags, ephemeral"
         )
-            .bind(key)
+            .bind(crate::hash_preauth_key(key))
             .fetch_optional(&self.pool)
             .await
             .ok()?;

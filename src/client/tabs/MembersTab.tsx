@@ -1,22 +1,22 @@
 import { useCallback, useEffect, useState } from "react";
 import { useApp } from "../hooks/useAppState";
-import { useToast } from "../components/Toast";
 import { useTenantMutation } from "../hooks/useMutation";
 import { Card } from "../components/Card";
 import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
 import { Loading } from "../components/Loading";
 import { useConfirm } from "../components/ConfirmDialog";
-import { safeUrl } from "../lib/utils";
+import { errorMessage, safeUrl } from "../lib/utils";
 import { deviceService } from "../services/devices";
 import type { Member } from "../lib/types";
+import { LoadError } from "../components/LoadError";
 
 export function MembersTab() {
   const { currentTenant, hasPerm, roles, reload } = useApp();
-  const { toastError } = useToast();
   const [members, setMembers] = useState<Member[]>([]);
   const [lockInfo, setLockInfo] = useState<Map<string, boolean>>(new Map());
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const loadMembers = useCallback(async (showSpinner = true) => {
     if (!currentTenant) return;
@@ -41,8 +41,9 @@ export function MembersTab() {
         }
         setLockInfo(locks);
       }
+      setLoadError(null);
     } catch (e) {
-      toastError(e instanceof Error ? e.message : "Failed to load members");
+      setLoadError(errorMessage(e, "Failed to load members"));
     } finally {
       setLoading(false);
     }
@@ -90,8 +91,13 @@ export function MembersTab() {
   if (members.length === 0) {
     return (
       <div className="tab-content">
+        <LoadError error={loadError} onRetry={loadMembers} />
         <Card title="Members">
-          <EmptyState>No members yet. Send an invitation to get started.</EmptyState>
+          {loadError ? (
+            <p className="help-text">The member list could not be loaded.</p>
+          ) : (
+            <EmptyState>No members yet. Send an invitation to get started.</EmptyState>
+          )}
         </Card>
       </div>
     );
@@ -101,6 +107,7 @@ export function MembersTab() {
 
   return (
     <div className="tab-content">
+      <LoadError error={loadError} onRetry={loadMembers} />
       <Card title="Members">
         <ul className="item-list">
           {members.map((member) => {

@@ -195,10 +195,15 @@ sharingRouter.post("/api/tenants/:tenantId/friends", requireAuth, async (req, re
   if (existing) {
     // The other member already asked: this is the acceptance
     if (existing.addresseeId === m.userId) {
-      await db
+      const accepted = await db
         .update(friendships)
         .set({ status: "accepted", respondedAt: new Date() })
-        .where(eq(friendships.id, existing.id));
+        .where(and(eq(friendships.id, existing.id), eq(friendships.status, "pending")))
+        .returning({ id: friendships.id });
+      if (accepted.length === 0) {
+        res.status(409).json({ error: "That friend request was withdrawn" });
+        return;
+      }
       notifyUser(tenantId, other, "friend_accepted", { title: "Friend request accepted", link: "/#sharing" });
       res.json({ id: existing.id, status: "accepted" });
       return;
@@ -225,6 +230,11 @@ sharingRouter.post("/api/tenants/:tenantId/friends", requireAuth, async (req, re
 sharingRouter.post("/api/tenants/:tenantId/friends/:friendshipId/accept", requireAuth, async (req, res) => {
   const m = await member(req, res);
   if (!m) return;
+  // A new friendship lets the two ask for each other's devices: not during lockdown
+  if (isLockedDown(m.ctx.tenant)) {
+    res.status(403).json({ error: "Tenant is in lockdown mode" });
+    return;
+  }
   const [row] = await db
     .select()
     .from(friendships)
@@ -233,7 +243,16 @@ sharingRouter.post("/api/tenants/:tenantId/friends/:friendshipId/accept", requir
     res.status(404).json({ error: "Friend request not found" });
     return;
   }
-  await db.update(friendships).set({ status: "accepted", respondedAt: new Date() }).where(eq(friendships.id, row.id));
+  // Only from pending: a request withdrawn meanwhile (row deleted) stays withdrawn
+  const accepted = await db
+    .update(friendships)
+    .set({ status: "accepted", respondedAt: new Date() })
+    .where(and(eq(friendships.id, row.id), eq(friendships.status, "pending")))
+    .returning({ id: friendships.id });
+  if (accepted.length === 0) {
+    res.status(404).json({ error: "Friend request not found" });
+    return;
+  }
   notifyUser(m.ctx.tenant.id, row.requesterId, "friend_accepted", { title: "Friend request accepted", link: "/#sharing" });
   res.json({ id: row.id, status: "accepted" });
 });
@@ -500,7 +519,15 @@ sharingRouter.post("/api/tenants/:tenantId/shares/:shareId/accept", requireAuth,
     const changed = narrowed && JSON.stringify(narrowed) !== JSON.stringify(share.ports);
     if (changed) {
       // The guest sees the final scope before anything opens
-      await db.update(deviceShares).set({ ports: narrowed, status: "offered" }).where(eq(deviceShares.id, share.id));
+      const moved = await db
+        .update(deviceShares)
+        .set({ ports: narrowed, status: "offered" })
+        .where(and(eq(deviceShares.id, share.id), eq(deviceShares.status, share.status)))
+        .returning({ id: deviceShares.id });
+      if (moved.length === 0) {
+        res.status(409).json({ error: "This share changed meanwhile; reload and try again" });
+        return;
+      }
       notifyUser(tenantId, share.guestId, "share_offered", {
         title: "A friend answered your request with fewer ports",
         link: "/#sharing",
@@ -515,13 +542,23 @@ sharingRouter.post("/api/tenants/:tenantId/shares/:shareId/accept", requireAuth,
       res.status(400).json({ error: "You can only connect your own devices" });
       return;
     }
-    await db
-      .update(deviceShares)
-      .set({ guestNodeIds: [...new Set(parsed.data.guestNodeIds)] })
-      .where(eq(deviceShares.id, share.id));
   }
 
-  await db.update(deviceShares).set({ status: "active", acceptedAt: new Date() }).where(eq(deviceShares.id, share.id));
+  // Only from the state that was answered: a share or friendship ended
+  // meanwhile (status "ended") must not come back to life
+  const activated = await db
+    .update(deviceShares)
+    .set({
+      status: "active",
+      acceptedAt: new Date(),
+      ...(guestAnswers && parsed.data.guestNodeIds ? { guestNodeIds: [...new Set(parsed.data.guestNodeIds)] } : {}),
+    })
+    .where(and(eq(deviceShares.id, share.id), eq(deviceShares.status, share.status)))
+    .returning({ id: deviceShares.id });
+  if (activated.length === 0) {
+    res.status(409).json({ error: "This share was ended or changed meanwhile" });
+    return;
+  }
   const applied = await syncTenantAccess(tenantId);
   // Operators see that a share started, never its scope
   logAudit({

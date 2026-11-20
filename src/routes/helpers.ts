@@ -12,7 +12,7 @@
  * - {@link resolveAgentToken} — Bearer token → agent context (or MCP user) middleware
  */
 
-import { createHash } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import type { Request, Response, NextFunction } from "express";
 import { eq, and, ne } from "drizzle-orm";
 import { db } from "../db/index.js";
@@ -210,6 +210,17 @@ export function enforceAgentScope(
     }
   }
   next();
+}
+
+/**
+ * Constant-time check of the `X-CSRF-Token` header against the session's
+ * token. False when either is missing or not a single string.
+ */
+export function csrfTokenMatches(header: unknown, expected: string | undefined): boolean {
+  if (typeof header !== "string" || !header || !expected) return false;
+  const a = Buffer.from(header);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 /**

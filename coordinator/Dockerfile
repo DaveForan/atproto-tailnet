@@ -2,9 +2,13 @@
 # Rust mesh coordinator  --  multi-stage production build
 # ---------------------------------------------------------------------------
 
+# Base images are pinned by digest. To update: `docker buildx imagetools
+# inspect <image:tag>` and copy the new digest here. The CI workflow
+# (.github/workflows/ci.yml) uses the same Rust version.
+
 # ---- build stage ---------------------------------------------------------
 # smoltcp (the gateway's TCP/IP stack) needs Rust 1.91 or newer
-FROM rust:1.94-alpine AS build
+FROM rust:1.94-alpine@sha256:77237dd363a0b127bb5ef532c2d64c0deb380b738e43a9c4bdac73398d6d0a08 AS build
 
 RUN apk add --no-cache musl-dev pkgconfig openssl-dev openssl-libs-static
 
@@ -43,7 +47,7 @@ RUN find crates -name "*.rs" -exec touch {} + && \
     cargo build --release --package coord-server
 
 # ---- runtime stage -------------------------------------------------------
-FROM alpine:3.21
+FROM alpine:3.21@sha256:bc21487101ae47172509130ee1092cc273a831968d64b617776d1f69c81e42ab
 
 RUN apk add --no-cache tini ca-certificates \
     && mkdir -p /var/lib/coordinator \

@@ -404,11 +404,12 @@ fn not_found(msg: &str) -> axum::response::Response {
     (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": msg}))).into_response()
 }
 
-fn required_owner(query: OwnerQuery) -> Result<String, axum::response::Response> {
+/// The validated `owner` query parameter, or the message of a 400.
+fn required_owner(query: OwnerQuery) -> Result<String, String> {
     let Some(owner) = query.owner else {
-        return Err(bad_request("owner query parameter is required"));
+        return Err("owner query parameter is required".into());
     };
-    validate_owner(&owner).map_err(bad_request)?;
+    validate_owner(&owner)?;
     Ok(owner)
 }
 
@@ -475,7 +476,7 @@ pub async fn revoke_preauth_keys_by_owner(
     };
     let owner = match required_owner(query) {
         Ok(o) => o,
-        Err(r) => return r,
+        Err(msg) => return bad_request(msg),
     };
     match state.store.revoke_preauth_keys_by_owner(tenant_id, &owner).await {
         Ok(n) => Json(serde_json::json!({"revoked": n})).into_response(),
@@ -495,7 +496,7 @@ pub async fn delete_tenant_nodes_by_owner(
     };
     let owner = match required_owner(query) {
         Ok(o) => o,
-        Err(r) => return r,
+        Err(msg) => return bad_request(msg),
     };
     match state.store.delete_nodes_by_owner(tenant_id, &owner).await {
         Ok(ids) => {
@@ -674,11 +675,28 @@ fn valid_owner(owner: &str) -> bool {
     !owner.is_empty() && owner.len() <= 128
 }
 
-async fn owner_lock_view(state: &CoordinatorState, tenant_id: TenantId, owner: &str) -> serde_json::Value {
-    let lock = state.store.get_owner_lock(tenant_id, owner).await;
-    let nodes = state.store.list_tenant_nodes(tenant_id).await;
-    let allowed: Vec<i64> = match &lock {
-        Some(l) => nodes
+fn lock_store_error(e: coord_core::CoordError) -> axum::response::Response {
+    match e {
+        coord_core::CoordError::TenantNotFound(_) => not_found("tenant not found"),
+        e => {
+            tracing::error!(error = %e, "machine lock store error");
+            (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({ "error": "the machine lock could not be read or written; try again" }))).into_response()
+        }
+    }
+}
+
+async fn owner_lock_view(state: &CoordinatorState, tenant_id: TenantId, owner: &str) -> Result<serde_json::Value, axum::response::Response> {
+    let read = state.store.get_owner_lock(tenant_id, owner).await.map_err(lock_store_error)?;
+    Ok(owner_lock_json(state, tenant_id, owner, &read).await)
+}
+
+async fn owner_lock_json(state: &CoordinatorState, tenant_id: TenantId, owner: &str, read: &coord_core::LockRead) -> serde_json::Value {
+    let lock = read.lock();
+    let allowed: Vec<i64> = match lock {
+        Some(l) => state
+            .store
+            .list_tenant_nodes(tenant_id)
+            .await
             .iter()
             .filter(|n| n.owner.as_deref() == Some(owner) && l.allows(&hex::encode(&n.machine_key)))
             .map(|n| n.node_id.as_i64())
@@ -686,11 +704,13 @@ async fn owner_lock_view(state: &CoordinatorState, tenant_id: TenantId, owner: &
         None => vec![],
     };
     serde_json::json!({
-        "locked": lock.is_some(),
+        "locked": read.is_locked(),
+        // A stored lock that cannot be read: it refuses every machine until it is set again or removed.
+        "malformed": *read == coord_core::LockRead::Malformed,
         "node_ids": allowed,
-        "allow_one_until": lock.as_ref().and_then(|l| l.allow_one_until),
-        "max_machines": lock.as_ref().and_then(|l| l.max_machines),
-        "refused": lock.map(|l| l.refused).unwrap_or_default(),
+        "allow_one_until": lock.and_then(|l| l.allow_one_until),
+        "max_machines": lock.and_then(|l| l.max_machines),
+        "refused": lock.map(|l| l.refused.clone()).unwrap_or_default(),
     })
 }
 
@@ -703,7 +723,10 @@ pub async fn get_owner_lock(
         Ok(t) => t,
         Err(r) => return r,
     };
-    Json(owner_lock_view(&state, tenant_id, &owner).await).into_response()
+    match owner_lock_view(&state, tenant_id, &owner).await {
+        Ok(v) => Json(v).into_response(),
+        Err(r) => r,
+    }
 }
 
 /// PUT /api/tenants/{id}/owner-locks/{owner} — lock the owner to the machines
@@ -741,23 +764,33 @@ pub async fn set_owner_lock(
             return bad_request("max_machines must be at least the number of kept devices and at most 64");
         }
     }
-    let previous = state.store.get_owner_lock(tenant_id, &owner).await;
-    let lock = coord_core::OwnerLock {
-        machines,
-        allow_one_until: None,
-        refused: previous.map(|l| l.refused).unwrap_or_default(),
-        max_machines: body.max_machines,
+    let max_machines = body.max_machines;
+    // One atomic step: the refused history kept is the one stored now, not a
+    // copy read earlier that a concurrent registration may have extended.
+    let written = state
+        .store
+        .update_owner_lock(tenant_id, &owner, move |read| {
+            let refused = read.lock().map(|l| l.refused.clone()).unwrap_or_default();
+            let lock = coord_core::OwnerLock { machines, allow_one_until: None, refused, max_machines };
+            (coord_core::LockWrite::Set(lock.clone()), lock)
+        })
+        .await;
+    let lock = match written {
+        Ok(l) => l,
+        Err(e) => return lock_store_error(e),
     };
-    if let Err(e) = state.store.set_owner_lock(tenant_id, &owner, Some(lock)).await {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response();
-    }
     let mut removed = 0;
-    for n in owned.iter().filter(|n| !body.node_ids.contains(&n.node_id.as_i64())) {
-        if state.store.delete_node(n.node_id).await.is_ok() {
-            removed += 1;
+    // Remove every node of the owner whose machine is not in the lock — listed
+    // again now, so a machine that registered meanwhile is not left behind.
+    for n in state.store.list_tenant_nodes(tenant_id).await.iter().filter(|n| {
+        n.owner.as_deref() == Some(owner.as_str()) && !lock.allows(&hex::encode(&n.machine_key))
+    }) {
+        match state.store.delete_node(n.node_id).await {
+            Ok(_) => removed += 1,
+            Err(e) => tracing::error!(error = %e, node_id = n.node_id.as_i64(), "could not remove a device outside the machine lock"),
         }
     }
-    let mut view = owner_lock_view(&state, tenant_id, &owner).await;
+    let mut view = owner_lock_json(&state, tenant_id, &owner, &coord_core::LockRead::Locked(lock)).await;
     view["removed_nodes"] = serde_json::json!(removed);
     Json(view).into_response()
 }
@@ -776,17 +809,32 @@ pub async fn allow_one_machine(
     if body.seconds < 1 || body.seconds > coord_core::lock::MAX_ALLOW_WINDOW_SECS {
         return bad_request("seconds must be 1 to 1800".to_string());
     }
-    let Some(mut lock) = state.store.get_owner_lock(tenant_id, &owner).await else {
-        return not_found("this owner has no machine lock");
-    };
-    if lock.is_full() {
-        return (StatusCode::CONFLICT, Json(serde_json::json!({ "error": "the lock is at its device limit", "code": "lock_full" }))).into_response();
+    enum Opened {
+        Yes(coord_core::OwnerLock),
+        NoLock,
+        Malformed,
+        Full,
     }
-    lock.allow_one_until = Some(chrono::Utc::now() + chrono::Duration::seconds(body.seconds));
-    if let Err(e) = state.store.set_owner_lock(tenant_id, &owner, Some(lock)).await {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response();
+    let until = chrono::Utc::now() + chrono::Duration::seconds(body.seconds);
+    let result = state
+        .store
+        .update_owner_lock(tenant_id, &owner, move |read| match read {
+            coord_core::LockRead::Unlocked => (coord_core::LockWrite::Keep, Opened::NoLock),
+            coord_core::LockRead::Malformed => (coord_core::LockWrite::Keep, Opened::Malformed),
+            coord_core::LockRead::Locked(lock) if lock.is_full() => (coord_core::LockWrite::Keep, Opened::Full),
+            coord_core::LockRead::Locked(mut lock) => {
+                lock.allow_one_until = Some(until);
+                (coord_core::LockWrite::Set(lock.clone()), Opened::Yes(lock))
+            }
+        })
+        .await;
+    match result {
+        Ok(Opened::Yes(lock)) => Json(owner_lock_json(&state, tenant_id, &owner, &coord_core::LockRead::Locked(lock)).await).into_response(),
+        Ok(Opened::NoLock) => not_found("this owner has no machine lock"),
+        Ok(Opened::Malformed) => (StatusCode::CONFLICT, Json(serde_json::json!({ "error": "the stored machine lock cannot be read; set it again", "code": "lock_malformed" }))).into_response(),
+        Ok(Opened::Full) => (StatusCode::CONFLICT, Json(serde_json::json!({ "error": "the lock is at its device limit", "code": "lock_full" }))).into_response(),
+        Err(e) => lock_store_error(e),
     }
-    Json(owner_lock_view(&state, tenant_id, &owner).await).into_response()
 }
 
 /// DELETE /api/tenants/{id}/owner-locks/{owner}
@@ -799,7 +847,7 @@ pub async fn delete_owner_lock(
         Err(r) => return r,
     };
     if let Err(e) = state.store.set_owner_lock(tenant_id, &owner, None).await {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({ "error": e.to_string() }))).into_response();
+        return lock_store_error(e);
     }
     Json(serde_json::json!({ "locked": false })).into_response()
 }
@@ -822,6 +870,9 @@ pub async fn get_device_auth(
             "os": p.os,
             "fingerprint": crate::device_auth::fingerprint(&p.machine_key),
             "pending": p.decision.is_none(),
+            // Where and when the sign-in was started (ADR-0032 approval page)
+            "requester_ip": p.requester_ip,
+            "requested_at": p.requested_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
             // Set when this machine is already registered (to refuse moving it between tailnets)
             "registered_tenant_id": match state.store.get_node_by_machine_key(&p.machine_key).await {
                 Some(n) => state.store.get_node_tenant(n).await.map(|t| t.to_string()),

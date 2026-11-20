@@ -35,6 +35,7 @@ import {
   DEVICE_LOCKED_ERROR,
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
+import { stepUpForSession } from "../auth/step-up.js";
 import { removeMemberAccessState } from "../access/devices.js";
 import { syncTenantAccess } from "../access/sync.js";
 import { logger } from "../logger.js";
@@ -143,6 +144,7 @@ devicesRouter.get(
 devicesRouter.post(
   "/api/tenants/:tenantId/devices/auth-key",
   requireAuth,
+  stepUpForSession,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const result = await getTenantForUser(tenantId, authUserId(req));

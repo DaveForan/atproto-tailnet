@@ -420,30 +420,34 @@ boardsRouter.patch("/api/tenants/:tenantId/boards/posts/:postId", requireAuth, a
     (updates.nodeId !== undefined && updates.nodeId !== post.nodeId) ||
     (updates.port !== undefined && updates.port !== post.port) ||
     (updates.proto !== undefined && updates.proto !== post.proto);
+  // A new public name is what members see and resolve: it needs a new approval
+  // too (connections stay; they follow the same device and port)
+  const renamed = updates.name !== undefined && updates.name !== post.name;
   if (targetChanged && post.board === "public") {
     await db.delete(serviceConnections).where(eq(serviceConnections.postId, post.id));
-    if (!result.membership.isOriginator) {
-      updates.status = "pending";
-      updates.reviewedById = null;
-      updates.reviewedAt = null;
-      updates.rejectReason = null;
-    }
   }
+  if ((targetChanged || renamed) && post.board === "public" && !result.membership.isOriginator && post.status !== "pending") {
+    updates.status = "pending";
+    updates.reviewedById = null;
+    updates.reviewedAt = null;
+    updates.rejectReason = null;
+  }
+  const backToReview = updates.status === "pending" && post.status !== "pending";
 
   try {
     const [updated] = await db.update(servicePosts).set(updates).where(eq(servicePosts.id, post.id)).returning();
     const namesChanged = updated.name !== post.name || (updated.name !== null && updated.nodeId !== post.nodeId);
-    if ((targetChanged && post.board === "public") || namesChanged) {
+    if ((targetChanged && post.board === "public") || namesChanged || backToReview) {
       await syncTenantAccess(result.tenant.id);
     }
-    if (targetChanged && post.board === "public") {
-      if (updated.status === "pending") {
-        notify(result.tenant.id, "service_approval_requested", {
-          title: "Service post changed and needs review",
-          body: `"${updated.title}" now points at port ${updated.port}.`,
-          link: "/#board",
-        });
-      }
+    if (backToReview || (targetChanged && post.board === "public" && updated.status === "pending")) {
+      notify(result.tenant.id, "service_approval_requested", {
+        title: "Service post changed and needs review",
+        body: targetChanged
+          ? `"${updated.title}" now points at port ${updated.port}.`
+          : `"${updated.title}" has a new name${updated.name ? `: ${updated.name}` : ""}.`,
+        link: "/#board",
+      });
     }
     res.json(updated);
   } catch (err) {
@@ -510,6 +514,11 @@ async function review(req: Request, res: Response, approve: boolean) {
   const post = await loadPost(result.tenant.id, param(req, "postId"));
   if (!post || post.board !== "public") {
     res.status(404).json({ error: "Post not found" });
+    return;
+  }
+  // Approval opens access to the post: not during lockdown (withdrawing is always allowed)
+  if (approve && isLockedDown(result.tenant)) {
+    res.status(403).json({ error: "Tenant is in lockdown mode" });
     return;
   }
   // Withdrawing an approval is allowed; approving needs a pending or rejected post

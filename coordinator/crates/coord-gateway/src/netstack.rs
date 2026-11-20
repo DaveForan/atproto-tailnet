@@ -30,6 +30,11 @@ const SOCKET_BUFFER: usize = 64 * 1024;
 const BACKLOG: usize = 16;
 /// Connections of one tailnet at once; more are refused.
 pub const MAX_CONNECTIONS: usize = 1024;
+/// Connections that one peer address may open to this stack at once,
+/// counting those still in their handshake. More are reset, so one device
+/// cannot use up the connections of its tailnet. Browsers open about six
+/// per name; this leaves room for many tabs and WebSockets.
+pub const MAX_CONNECTIONS_PER_PEER: usize = 64;
 const CHUNK: usize = 16 * 1024;
 /// Arriving packets handled between two refills of the backlog.
 const INGRESS_BATCH: usize = 8;
@@ -128,7 +133,7 @@ impl Device for Queue {
     }
 
     fn transmit(&mut self, _now: SmolInstant) -> Option<Tx<'_>> {
-        (self.tx.len() < 1024).then(|| Tx(&mut self.tx))
+        (self.tx.len() < 1024).then_some(Tx(&mut self.tx))
     }
 
     fn capabilities(&self) -> DeviceCapabilities {
@@ -222,7 +227,9 @@ struct Stack {
     wake: Arc<Notify>,
     listening: Vec<Listening>,
     connecting: Vec<Connecting>,
-    open: Vec<(SocketHandle, Pipe)>,
+    /// Open connections, with the peer address of those a peer opened
+    /// (`None` for connections this stack opened).
+    open: Vec<(SocketHandle, Pipe, Option<Ipv4Addr>)>,
     next_port: u16,
 }
 
@@ -355,6 +362,19 @@ impl Stack {
         moved
     }
 
+    /// Connections from `peer`: open ones, and those in their handshake
+    /// (other than the listening socket `except`).
+    fn inbound_from(&self, peer: Ipv4Addr, except: SocketHandle) -> usize {
+        let open = self.open.iter().filter(|(_, _, from)| *from == Some(peer)).count();
+        let starting = self
+            .listening
+            .iter()
+            .filter(|l| l.replaced && l.handle != except)
+            .filter(|l| matches!(self.sockets.get::<tcp::Socket>(l.handle).remote_endpoint(), Some(e) if e.addr == IpAddress::Ipv4(peer)))
+            .count();
+        open + starting
+    }
+
     fn accept_new(&mut self) -> bool {
         let mut moved = false;
         let mut i = 0;
@@ -369,6 +389,23 @@ impl Stack {
                     self.add_listener(port, accept);
                 }
                 moved = true;
+                // One peer may not hold more than its share of connections
+                let handle = self.listening[i].handle;
+                let from = match self.sockets.get::<tcp::Socket>(handle).remote_endpoint() {
+                    Some(e) => match e.addr {
+                        IpAddress::Ipv4(ip) => Some(ip),
+                        #[allow(unreachable_patterns)]
+                        _ => None,
+                    },
+                    None => None,
+                };
+                if let Some(peer) = from.filter(|p| self.inbound_from(*p, handle) >= MAX_CONNECTIONS_PER_PEER) {
+                    tracing::debug!(%peer, "too many connections from one device: reset");
+                    self.sockets.get_mut::<tcp::Socket>(handle).abort();
+                    let l = self.listening.swap_remove(i);
+                    self.sockets.remove(l.handle);
+                    continue;
+                }
             }
             if matches!(state, tcp::State::Listen | tcp::State::SynReceived) {
                 i += 1;
@@ -388,7 +425,7 @@ impl Stack {
                         let (stream, pipe) = pipe(&self.wake);
                         permit.send(Accepted { stream, peer: peer.expect("checked") });
                         let l = self.listening.swap_remove(i);
-                        self.open.push((l.handle, pipe));
+                        self.open.push((l.handle, pipe, peer.map(|p| *p.ip())));
                         moved = true;
                     }
                     // The application is busy: the connection waits its turn,
@@ -428,7 +465,7 @@ impl Stack {
                 Ok(()) => {
                     let (stream, pipe) = pipe(&self.wake);
                     match reply.map(|r| r.send(Ok(stream))) {
-                        Some(Ok(())) => self.open.push((c.handle, pipe)),
+                        Some(Ok(())) => self.open.push((c.handle, pipe, None)),
                         _ => {
                             socket.abort();
                             self.sockets.remove(c.handle);
@@ -452,7 +489,7 @@ impl Stack {
         let mut buf = [0u8; CHUNK];
         let mut i = 0;
         while i < self.open.len() {
-            let (handle, pipe) = &mut self.open[i];
+            let (handle, pipe, _) = &mut self.open[i];
             let socket = self.sockets.get_mut::<tcp::Socket>(*handle);
 
             // Peer → application
@@ -514,7 +551,7 @@ impl Stack {
             }
 
             if socket.state() == tcp::State::Closed {
-                let (handle, _) = self.open.swap_remove(i);
+                let (handle, _, _) = self.open.swap_remove(i);
                 self.sockets.remove(handle);
                 moved = true;
             } else {
@@ -601,6 +638,84 @@ mod tests {
         for (i, t) in tasks.into_iter().enumerate() {
             assert_eq!(t.await.unwrap(), i as u32);
         }
+    }
+
+    /// Stacks joined by a switch that delivers by destination address.
+    fn switch(addrs: &[Ipv4Addr]) -> Vec<NetStack> {
+        let (wire, mut wire_rx) = mpsc::channel::<Vec<u8>>(8192);
+        let stacks: Vec<NetStack> = addrs
+            .iter()
+            .map(|a| {
+                let (out, mut rx) = mpsc::channel::<Vec<u8>>(4096);
+                let wire = wire.clone();
+                tokio::spawn(async move {
+                    while let Some(p) = rx.recv().await {
+                        let _ = wire.send(p).await;
+                    }
+                });
+                NetStack::spawn(*a, out)
+            })
+            .collect();
+        let (by_addr, addrs) = (stacks.clone(), addrs.to_vec());
+        tokio::spawn(async move {
+            while let Some(p) = wire_rx.recv().await {
+                let dst = Ipv4Addr::new(p[16], p[17], p[18], p[19]);
+                if let Some(i) = addrs.iter().position(|a| *a == dst) {
+                    by_addr[i].inject(p);
+                }
+            }
+        });
+        stacks
+    }
+
+    async fn echo_once(s: &mut DuplexStream) -> bool {
+        let ok = async {
+            s.write_all(b"x").await.ok()?;
+            let mut b = [0u8; 1];
+            s.read_exact(&mut b).await.ok()
+        };
+        matches!(tokio::time::timeout(Duration::from_secs(3), ok).await, Ok(Some(_)))
+    }
+
+    #[tokio::test]
+    async fn one_device_cannot_take_all_connections_of_its_tailnet() {
+        let server = Ipv4Addr::new(100, 64, 0, 1);
+        let stacks = switch(&[server, Ipv4Addr::new(100, 64, 0, 2), Ipv4Addr::new(100, 64, 0, 3)]);
+        let (gateway, greedy, other) = (stacks[0].clone(), stacks[1].clone(), stacks[2].clone());
+        let mut incoming = gateway.listen(443).await.unwrap();
+        tokio::spawn(async move {
+            while let Some(Accepted { mut stream, .. }) = incoming.recv().await {
+                tokio::spawn(async move {
+                    let mut b = [0u8; 1];
+                    while stream.read_exact(&mut b).await.is_ok() {
+                        if stream.write_all(&b).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        let target = SocketAddrV4::new(server, 443);
+        let mut held = Vec::new();
+        for _ in 0..MAX_CONNECTIONS_PER_PEER {
+            let mut s = greedy.connect(target).await.unwrap();
+            assert!(echo_once(&mut s).await);
+            held.push(s);
+        }
+        // One more from the same device is reset (or never completes)
+        let over = match greedy.connect(target).await {
+            Ok(mut s) => echo_once(&mut s).await,
+            Err(_) => false,
+        };
+        assert!(!over, "the device is over its share");
+        // Another device of the tailnet still gets in
+        let mut s = other.connect(target).await.unwrap();
+        assert!(echo_once(&mut s).await, "other devices are not starved");
+        // A closed connection frees a place for the device again
+        drop(held.pop());
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let mut s = greedy.connect(target).await.unwrap();
+        assert!(echo_once(&mut s).await);
     }
 
     #[tokio::test]

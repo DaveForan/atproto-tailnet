@@ -7,7 +7,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-coord-core = { workspace = true }
 serde = { workspace = true }
+
+[dev-dependencies]
 serde_json = { workspace = true }
-chrono = { workspace = true }

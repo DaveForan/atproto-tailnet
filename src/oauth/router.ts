@@ -193,7 +193,9 @@ export function createOAuthRouter(opts: OAuthRouterOptions): Router {
 
       // A connection acts as the user for a long time: with the device lock
       // on, allowing one needs a fresh proof from the trusted device (ADR-0035).
-      if (stepUpMissing(req)) {
+      // A recovery-code session has no trusted device yet: it must enrol one
+      // first (it may only enrol), so it cannot allow a connection either.
+      if (stepUpMissing(req) || req.session.mustEnrollDevice) {
         res.status(403).type("html").send(
           errorPage(
             "Confirm this device first",

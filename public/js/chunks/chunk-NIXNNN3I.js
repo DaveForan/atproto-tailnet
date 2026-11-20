@@ -1,0 +1,1 @@
+import{j as e}from"./chunk-D4PDUPC6.js";import{b as t}from"./chunk-GBSRULQK.js";var n=t(e(),1);function l({error:o,onRetry:r}){return o?(0,n.jsxs)("div",{className:"load-error",role:"alert",children:[(0,n.jsx)("span",{children:o}),r&&(0,n.jsx)("button",{type:"button",className:"btn-sm",onClick:()=>{r()},children:"Retry"})]}):null}export{l as a};

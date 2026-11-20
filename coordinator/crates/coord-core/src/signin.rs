@@ -24,4 +24,9 @@ pub struct PendingSignIn {
     pub hostname: String,
     pub os: String,
     pub decision: Option<SignInDecision>,
+    /// Client address of the request that started the sign-in (behind a
+    /// trusted proxy, from X-Forwarded-For), when known.
+    pub requester_ip: Option<String>,
+    /// When the sign-in was started.
+    pub requested_at: chrono::DateTime<chrono::Utc>,
 }

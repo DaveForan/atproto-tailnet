@@ -21,6 +21,8 @@ export interface Tenant {
   roleId?: string;
   roleName?: string;
   coordinatorTenantId?: string;
+  /** The instance runs the Rust coordinator (no per-tailnet Headscale container). */
+  coordinatorMode?: boolean;
   suspended?: boolean;
   /** Primary public address label (`<address>.<BASE_DOMAIN>`). */
   address?: string;

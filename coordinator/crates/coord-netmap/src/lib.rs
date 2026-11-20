@@ -620,10 +620,38 @@ impl NetmapService {
         })
     }
 
-    pub async fn build_delta(&self, event: &PeerEvent) -> Option<MapResponse> {
+    /// Whether a node of `event_tenant` may appear in a delta sent to a
+    /// device of `viewer`: the same tenant, or a child visible to it.
+    async fn tenant_visible_to(&self, viewer: TenantId, event_tenant: TenantId) -> bool {
+        if event_tenant == viewer {
+            return true;
+        }
+        match self.store.get_tenant(event_tenant).await {
+            Some(t) => t.parent_id == Some(viewer) && t.visible_to_parent(),
+            None => false,
+        }
+    }
+
+    /// The delta a device of tenant `viewer` gets for a peer event. Event
+    /// payloads are not trusted (with several replicas they arrive over
+    /// PostgreSQL NOTIFY): the node must really belong to the event's tenant,
+    /// and that tenant must be the viewer's or a child visible to it.
+    pub async fn build_delta(&self, viewer: TenantId, event: &PeerEvent) -> Option<MapResponse> {
+        let (event_tenant, event_node) = match event {
+            PeerEvent::NodeJoined { tenant_id, node_id }
+            | PeerEvent::NodeUpdated { tenant_id, node_id }
+            | PeerEvent::NodeOffline { tenant_id, node_id } => (*tenant_id, *node_id),
+        };
+        if event_tenant.as_uuid().is_nil() || !self.tenant_visible_to(viewer, event_tenant).await {
+            return None;
+        }
         match event {
             PeerEvent::NodeJoined { node_id, .. } | PeerEvent::NodeUpdated { node_id, .. } => {
                 let detail = self.store.get_node_info(*node_id).await?;
+                if detail.tenant_id != event_tenant {
+                    tracing::warn!(node_id = node_id.as_i64(), "peer event names the wrong tenant for its node; ignored");
+                    return None;
+                }
                 let node_key = format_key_bytes(&detail.info.node_key);
                 let machine_key_str = if detail.info.machine_key.len() == 32 {
                     let mut mk = [0u8; 32];
@@ -676,11 +704,21 @@ impl NetmapService {
                     ..Default::default()
                 })
             }
-            PeerEvent::NodeOffline { node_id, .. } => Some(MapResponse {
+            PeerEvent::NodeOffline { node_id, .. } => {
+                // A node that still exists must be in the named tenant; a deleted
+                // node can only be removed (which reveals nothing).
+                if let Some(t) = self.store.get_node_tenant(event_node).await {
+                    if t != event_tenant {
+                        tracing::warn!(node_id = node_id.as_i64(), "peer event names the wrong tenant for its node; ignored");
+                        return None;
+                    }
+                }
+                Some(MapResponse {
                 peers_removed: Some(vec![node_id.as_i64()]),
                 control_time: Some(chrono::Utc::now().to_rfc3339()),
                 ..Default::default()
-            }),
+            })
+            }
         }
     }
 }

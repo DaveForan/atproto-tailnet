@@ -3,10 +3,11 @@ import { useToast } from "../components/Toast";
 import { useConfirm } from "../components/ConfirmDialog";
 import { Card } from "../components/Card";
 import { Badge } from "../components/Badge";
-import { errorMessage, errorCode } from "../lib/utils";
+import { errorMessage, errorCode, tryCopy } from "../lib/utils";
 import { THEMES, currentTheme, setTheme, type ThemeId } from "../lib/theme";
 import { deviceTrustService, type TrustState } from "../services/device-trust";
 import { deviceKeysSupported, forgetDeviceKey, suggestedDeviceName } from "../lib/device-key";
+import { LoadError } from "../components/LoadError";
 
 function ThemePicker() {
   const [theme, setCurrent] = useState<ThemeId>(currentTheme());
@@ -38,6 +39,10 @@ function ThemePicker() {
 }
 
 function RecoveryCodes({ codes, onDone }: { codes: string[]; onDone: () => void }) {
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "manual">("idle");
+  const copy = async () => {
+    setCopyStatus((await tryCopy(codes.join("\n"))) ? "copied" : "manual");
+  };
   return (
     <div className="form-stack">
       <p className="notice">
@@ -53,12 +58,16 @@ function RecoveryCodes({ codes, onDone }: { codes: string[]; onDone: () => void 
       <div className="btn-group">
         <button type="button"
           className="btn-sm btn-ghost"
-          onClick={() => { void navigator.clipboard?.writeText(codes.join("\n")); }}
+          onClick={() => { void copy(); }}
         >
-          Copy all
+          {copyStatus === "copied" ? "Copied" : "Copy all"}
         </button>
         <button type="button" className="btn-sm" onClick={onDone}>I saved them</button>
       </div>
+      <span className="text-dim text-xs" role="status" aria-live="polite">
+        {copyStatus === "copied" && "Recovery codes copied to clipboard."}
+        {copyStatus === "manual" && "Couldn't access the clipboard. Select the codes and copy them yourself."}
+      </span>
     </div>
   );
 }
@@ -73,11 +82,13 @@ function TrustedDevices({ onChanged }: { onChanged?: () => void }) {
   const [pairing, setPairing] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
 
+  const [loadError, setLoadError] = useState<string | null>(null);
   const load = useCallback(async () => {
     try {
       setState(await deviceTrustService.state());
-    } catch {
-      setState(null);
+      setLoadError(null);
+    } catch (e) {
+      setLoadError(errorMessage(e, "Could not load your trusted devices"));
     }
   }, []);
   useEffect(() => {
@@ -103,7 +114,9 @@ function TrustedDevices({ onChanged }: { onChanged?: () => void }) {
     }
   };
 
-  if (!state) return <div className="loading" role="status">Loading…</div>;
+  if (!state) {
+    return loadError ? <LoadError error={loadError} onRetry={load} /> : <div className="loading" role="status">Loading…</div>;
+  }
   if (codes) {
     return (
       <RecoveryCodes

@@ -33,6 +33,7 @@ import {
   authUserId,
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
+import { stepUpForSession } from "../auth/step-up.js";
 import { logger } from "../logger.js";
 import { tenantLoginServerFor } from "../orchestrator/hostnames.js";
 import { ALL_PERMISSIONS, type Permission } from "./permissions.js";
@@ -388,6 +389,7 @@ securityRouter.get(
 securityRouter.post(
   "/api/tenants/:tenantId/roles",
   requireAuth,
+  stepUpForSession,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const result = await getTenantForUser(tenantId, authUserId(req));
@@ -449,6 +451,7 @@ securityRouter.post(
 securityRouter.patch(
   "/api/tenants/:tenantId/roles/:roleId",
   requireAuth,
+  stepUpForSession,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const roleId = param(req, "roleId");
@@ -541,6 +544,7 @@ securityRouter.patch(
 securityRouter.delete(
   "/api/tenants/:tenantId/roles/:roleId",
   requireAuth,
+  stepUpForSession,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const roleId = param(req, "roleId");
@@ -629,6 +633,7 @@ securityRouter.delete(
 securityRouter.put(
   "/api/tenants/:tenantId/members/:userId/role",
   requireAuth,
+  stepUpForSession,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const targetUserId = param(req, "userId");
@@ -721,6 +726,7 @@ securityRouter.put(
 securityRouter.patch(
   "/api/tenants/:tenantId/default-role",
   requireAuth,
+  stepUpForSession,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
 
@@ -882,6 +888,7 @@ securityRouter.get(
 securityRouter.post(
   "/api/tenants/:tenantId/device-approvals/:approvalId/approve",
   requireAuth,
+  stepUpForSession,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const approvalId = param(req, "approvalId");
@@ -1315,6 +1322,7 @@ securityRouter.post(
 securityRouter.delete(
   "/api/tenants/:tenantId/device-locks",
   requireAuth,
+  stepUpForSession,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
 

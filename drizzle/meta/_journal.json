@@ -253,6 +253,13 @@
       "when": 1794028816001,
       "tag": "0035_service_post_web",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1794028817001,
+      "tag": "0036_audit_device_signin",
+      "breakpoints": true
     }
   ]
 }

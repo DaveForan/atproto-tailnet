@@ -22,6 +22,7 @@ import { getControlClient, useCoordinator } from "../orchestrator/control-client
 import { CoordinatorApiClient } from "../orchestrator/coordinator-api.js";
 import { requireAuth, param, getTenantForUser, authUserId } from "./helpers.js";
 import { logAudit } from "./audit.js";
+import { stepUpForSession } from "../auth/step-up.js";
 import { checkTenantHealth } from "../orchestrator/monitor.js";
 import { logger } from "../logger.js";
 import {
@@ -183,14 +184,21 @@ apiRouter.get("/api/tenants", requireAuth, async (req, res) => {
     .from(memberships)
     .innerJoin(tenants, eq(memberships.tenantId, tenants.id))
     .leftJoin(roles, eq(memberships.roleId, roles.id))
-    .where(eq(memberships.userId, authUserId(req)))
+    .where(
+      req.agentToken
+        ? // An agent token is scoped to one tailnet: it sees only that one
+          and(eq(memberships.userId, authUserId(req)), eq(tenants.id, req.agentToken.tenantId))
+        : eq(memberships.userId, authUserId(req)),
+    )
     .orderBy(desc(tenants.createdAt))
     .limit(200);
 
   const names = await liveHostnamesByTenant(userTenants.map((t) => t.id));
   res.json(
-    userTenants.map((t) => ({
+    userTenants.map(({ coordinatorTenantId, ...t }) => ({
       ...t,
+      // Internal coordinator id: dashboard sessions only, never agent tokens
+      ...(req.agentToken ? {} : { coordinatorTenantId }),
       address: names.get(t.id)?.[0] ?? t.slug,
       coordinatorMode: useCoordinator,
     })),
@@ -500,7 +508,7 @@ export async function deleteTenantInstance(tenant: typeof tenants.$inferSelect):
   );
 }
 
-apiRouter.delete("/api/tenants/:id", requireAuth, async (req, res) => {
+apiRouter.delete("/api/tenants/:id", requireAuth, stepUpForSession, async (req, res) => {
   const tenantId = param(req, "id");
   const result = await getTenantForUser(tenantId, authUserId(req));
 

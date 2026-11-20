@@ -45,7 +45,7 @@ import {
   readCookie,
 } from "../auth/device-trust.js";
 import { config } from "../config.js";
-import { deviceProofFresh } from "../auth/step-up.js";
+import { deviceProofFresh, stepUpMissing } from "../auth/step-up.js";
 
 export const deviceTrustRouter = Router();
 
@@ -406,10 +406,16 @@ export function enforceDeviceEnrollment(req: Request, res: Response, next: NextF
 
 const stepUpFresh = deviceProofFresh;
 
-/** True when the request may change the lock: no lock yet, or a fresh device proof. */
+/**
+ * True when the request may change the lock: no lock yet, or a fresh device
+ * proof. Same freshness rule as `stepUpForSession` (`deviceProofFresh`,
+ * `STEP_UP_TTL_MS`); in addition, a session without a trusted device (a
+ * recovery-code session, or one whose device was removed) is refused while the
+ * user still has trusted devices, which needs one database lookup.
+ */
 async function mayChangeLock(req: Request, res: Response): Promise<boolean> {
   if (stepUpFresh(req)) return true;
-  if ((await trustedDeviceCount(req.session.userId!)) === 0) return true;
+  if (!stepUpMissing(req) && (await trustedDeviceCount(req.session.userId!)) === 0) return true;
   res.status(403).json({ error: "Confirm on this trusted device first", code: "step_up_required" });
   return false;
 }
@@ -563,9 +569,13 @@ deviceTrustRouter.delete("/api/trusted-devices/:id", requireSession, async (req,
     await db.delete(recoveryCodes).where(eq(recoveryCodes.userId, userId));
   }
   if (req.session.trustedDeviceId === id) {
-    delete req.session.trustedDeviceId;
     delete req.session.deviceVerifiedAt;
     clearDeviceCookie(res);
+    // While other trusted devices remain, this browser is no longer trusted:
+    // keep the (now removed) device id so every sensitive action needs a
+    // step-up that can never succeed here. Only with the lock off is the
+    // session an ordinary one again.
+    if (left === 0) delete req.session.trustedDeviceId;
   }
   res.json({ status: "removed", locked: left > 0 });
 });

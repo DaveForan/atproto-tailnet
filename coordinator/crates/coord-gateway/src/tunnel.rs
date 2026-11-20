@@ -21,7 +21,7 @@ use boringtun::noise::{Tunn, TunnResult};
 use boringtun::x25519::{PublicKey, StaticSecret};
 use bytes::Bytes;
 use coord_derp::LocalClient;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 use tracing::debug;
 
 use crate::netstack::NetStack;
@@ -33,10 +33,15 @@ const DISCO_MAGIC: &[u8; 6] = b"TS\xf0\x9f\x92\xac";
 const WG_BUFFER: usize = 2048;
 const TIMER_TICK: Duration = Duration::from_millis(250);
 /// How long an answer of the directory is used before it is asked again.
-const DIRECTORY_TTL: Duration = Duration::from_secs(30);
+/// A directory with [`Devices::changes`] also clears the cache at once when a
+/// device changes; this is the upper bound when a notice is lost (for
+/// example one from another replica).
+pub const DIRECTORY_TTL: Duration = Duration::from_secs(10);
 /// A session with no traffic for this long is forgotten.
 const IDLE_SESSION: Duration = Duration::from_secs(10 * 60);
-/// Sessions of one tailnet at once.
+/// Sessions of one tailnet at once. A session belongs to one node key, so a
+/// device has at most one: the per-device limit of connections is in the
+/// TCP/IP stack ([`crate::netstack::MAX_CONNECTIONS_PER_PEER`]).
 pub const MAX_SESSIONS: usize = 4096;
 
 /// What the gateway must know about the devices of its tailnet. The
@@ -48,6 +53,14 @@ pub trait Devices: Send + Sync + 'static {
     async fn addr_of(&self, node_key: &[u8; 32]) -> Option<Ipv4Addr>;
     /// The node key of the device with this tailnet address.
     async fn key_of(&self, addr: Ipv4Addr) -> Option<[u8; 32]>;
+    /// Woken when a device of the tailnet was removed, got another key or
+    /// address, or a new device joined. The gateway then forgets every
+    /// cached answer, so a removed device is refused and a reused address
+    /// reaches its new device at once. `None`: answers are kept for
+    /// [`DIRECTORY_TTL`].
+    fn changes(&self) -> Option<Arc<Notify>> {
+        None
+    }
 }
 
 struct Session {
@@ -100,19 +113,35 @@ impl Tailnet {
         let mut tick = tokio::time::interval(TIMER_TICK);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut buf = vec![0u8; WG_BUFFER];
+        let changes = self.devices.changes();
         loop {
+            let changed = async {
+                match &changes {
+                    Some(n) => n.notified().await,
+                    None => std::future::pending().await,
+                }
+            };
             tokio::select! {
+                _ = changed => self.forget_directory(),
                 received = self.relay.recv() => match received {
-                    Some((from, data)) => self.from_device(from, &data, &mut buf).await,
+                    Some((from, data)) => self.handle_device_packet(from, &data, &mut buf).await,
                     None => return, // another client took our key: this instance is over
                 },
                 packet = out.recv() => match packet {
-                    Some(packet) => self.to_device(&packet, &mut buf).await,
+                    Some(packet) => self.send_to_device(&packet, &mut buf).await,
                     None => return, // the stack stopped
                 },
                 _ = tick.tick() => self.timers(&mut buf),
             }
         }
+    }
+
+    /// Drop every cached answer of the directory. Sessions stay: each packet
+    /// asks the directory for its sender's address again, and a key that is
+    /// no longer a device gets nothing through.
+    fn forget_directory(&mut self) {
+        self.by_key.clear();
+        self.by_addr.clear();
     }
 
     async fn addr_of(&mut self, key: &[u8; 32]) -> Option<Ipv4Addr> {
@@ -140,7 +169,7 @@ impl Tailnet {
     }
 
     /// A packet from the relay: WireGuard from a device of this tailnet.
-    async fn from_device(&mut self, from: [u8; 32], data: &[u8], buf: &mut [u8]) {
+    async fn handle_device_packet(&mut self, from: [u8; 32], data: &[u8], buf: &mut [u8]) {
         if data.starts_with(DISCO_MAGIC) {
             return;
         }
@@ -175,7 +204,7 @@ impl Tailnet {
     }
 
     /// An IP packet from our stack: encrypt it for the device it is for.
-    async fn to_device(&mut self, packet: &[u8], buf: &mut [u8]) {
+    async fn send_to_device(&mut self, packet: &[u8], buf: &mut [u8]) {
         if packet.len() < 20 || packet[0] >> 4 != 4 {
             return;
         }
@@ -307,6 +336,73 @@ mod tests {
         let mut len = [0u8; 4];
         s.read_exact(&mut len).await.unwrap();
         assert_eq!(u32::from_be_bytes(len), 300_000);
+    }
+
+    /// A directory that can change, and says so.
+    struct Changing(std::sync::Mutex<Vec<([u8; 32], Ipv4Addr)>>, Arc<Notify>);
+
+    #[async_trait::async_trait]
+    impl Devices for Changing {
+        async fn addr_of(&self, key: &[u8; 32]) -> Option<Ipv4Addr> {
+            self.0.lock().unwrap().iter().find(|(k, _)| k == key).map(|(_, a)| *a)
+        }
+        async fn key_of(&self, addr: Ipv4Addr) -> Option<[u8; 32]> {
+            self.0.lock().unwrap().iter().find(|(_, a)| *a == addr).map(|(k, _)| *k)
+        }
+        fn changes(&self) -> Option<Arc<Notify>> {
+            Some(self.1.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_removed_device_is_refused_at_once_and_its_address_reaches_the_new_device() {
+        let relay = Arc::new(DerpServer::new([9; 32], Arc::new(AllowAll), DerpConfig::default()));
+        let (gw_secret, old_secret, new_secret) = ([11u8; 32], [22u8; 32], [44u8; 32]);
+        let changed = Arc::new(Notify::new());
+        let directory = Arc::new(Changing(
+            std::sync::Mutex::new(vec![(public_key(&gw_secret), GATEWAY), (public_key(&old_secret), DEVICE)]),
+            changed.clone(),
+        ));
+        let gateway = Tailnet::spawn(gw_secret, GATEWAY, relay.attach_local(public_key(&gw_secret), scope()), directory.clone());
+        let both = |dev: [u8; 32]| Arc::new(Fixed(vec![(public_key(&gw_secret), GATEWAY), (public_key(&dev), DEVICE)]));
+        let old = Tailnet::spawn(old_secret, DEVICE, relay.attach_local(public_key(&old_secret), scope()), both(old_secret));
+        let mut incoming = gateway.listen(443).await.unwrap();
+        tokio::spawn(async move {
+            while let Some(Accepted { mut stream, .. }) = incoming.recv().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 1];
+                    while stream.read_exact(&mut buf).await.is_ok() {
+                        if stream.write_all(&buf).await.is_err() {
+                            break;
+                        }
+                    }
+                });
+            }
+        });
+        let mut s = old.connect(SocketAddrV4::new(GATEWAY, 443)).await.unwrap();
+        s.write_all(b"a").await.unwrap();
+        let mut b = [0u8; 1];
+        s.read_exact(&mut b).await.unwrap();
+
+        // The device is removed and its address given to a new device, well
+        // within the cache's lifetime
+        *directory.0.lock().unwrap() = vec![(public_key(&gw_secret), GATEWAY), (public_key(&new_secret), DEVICE)];
+        changed.notify_one();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // The old device's packets no longer get through
+        let attempt = tokio::time::timeout(Duration::from_secs(2), old.connect(SocketAddrV4::new(GATEWAY, 443))).await;
+        assert!(attempt.is_err() || attempt.unwrap().is_err(), "a removed device must not reach the gateway");
+        // The new device at the same address does, both ways
+        let new = Tailnet::spawn(new_secret, DEVICE, relay.attach_local(public_key(&new_secret), scope()), both(new_secret));
+        // Both emulated stacks pick the same first local port, and the gateway
+        // still holds the old device's connection on it: use the next port
+        let refused = tokio::time::timeout(Duration::from_secs(5), new.connect(SocketAddrV4::new(GATEWAY, 9))).await.unwrap();
+        assert!(refused.is_err(), "the new device reaches the gateway (a closed port answers)");
+        let mut s = tokio::time::timeout(Duration::from_secs(5), new.connect(SocketAddrV4::new(GATEWAY, 443))).await.unwrap().unwrap();
+        s.write_all(b"b").await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), s.read_exact(&mut b)).await.unwrap().unwrap();
+        assert_eq!(&b, b"b");
     }
 
     #[tokio::test]

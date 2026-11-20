@@ -17,5 +17,3 @@ tokio-util = "0.7"
 bytes = { workspace = true }
 tracing = { workspace = true }
 thiserror = { workspace = true }
-hyper = { workspace = true }
-http = { workspace = true }

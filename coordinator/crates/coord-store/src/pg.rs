@@ -16,6 +16,23 @@ use crate::{generate_auth_key, generate_random_id};
 /// pg_advisory_xact_lock key serializing node registration / IPv4 allocation.
 const IPV4_ALLOC_LOCK_KEY: i64 = 0x636f_6f72_6449_5034; // "coordIP4"
 
+/// First key of the two-key advisory locks serializing machine-lock updates
+/// (the second is a hash of tenant and owner).
+const OWNER_LOCK_LOCK_CLASS: i32 = 0x6f6c_636b; // "olck"
+
+fn decode_owner_lock(tenant_id: TenantId, row: Option<Json>) -> coord_core::LockRead {
+    match row {
+        None => coord_core::LockRead::Unlocked,
+        Some(v) => match serde_json::from_value(v) {
+            Ok(l) => coord_core::LockRead::Locked(l),
+            Err(e) => {
+                tracing::error!(tenant = %tenant_id, error = %e, "malformed machine lock (treated as locked)");
+                coord_core::LockRead::Malformed
+            }
+        },
+    }
+}
+
 fn db(e: sqlx::Error) -> StorageError {
     StorageError::new(e)
 }
@@ -46,6 +63,8 @@ fn encode_remote(replica: &str, event: &RemoteEvent) -> String {
     match event {
         RemoteEvent::TenantChanged(t) => format!("{replica}|t|{}|", t.as_uuid()),
         RemoteEvent::SignInDecided(id) => format!("{replica}|d|{id}|"),
+        // Local only; never published
+        RemoteEvent::Resync => String::new(),
     }
 }
 
@@ -65,11 +84,13 @@ fn decode_event(payload: &str, own_replica: &str) -> Option<Decoded> {
     if kind == "d" {
         return Some(Decoded::Remote(RemoteEvent::SignInDecided(subject.to_string())));
     }
-    let tenant_id = TenantId::new(subject.parse().ok()?);
+    // The nil id means "every tenant" inside a process; a notification never
+    // carries it (that would rebuild every stream on every replica).
+    let tenant_id = TenantId::new(subject.parse().ok().filter(|u: &uuid::Uuid| !u.is_nil())?);
     if kind == "t" {
         return Some(Decoded::Remote(RemoteEvent::TenantChanged(tenant_id)));
     }
-    let node_id = NodeId::new(arg.parse().ok()?);
+    let node_id = NodeId::new(arg.parse().ok().filter(|n: &i64| *n > 0)?);
     Some(Decoded::Peer(match kind {
         "j" => PeerEvent::NodeJoined { tenant_id, node_id },
         "u" => PeerEvent::NodeUpdated { tenant_id, node_id },
@@ -80,54 +101,132 @@ fn decode_event(payload: &str, own_replica: &str) -> Option<Decoded> {
 
 /// Feed notifications of other replicas into this process's channels. Runs
 /// until the process ends; reconnects when the connection drops.
+///
+/// NOTIFY is not durable: whatever is published while this process has no
+/// LISTEN connection is lost. Every time the connection comes back, a
+/// `RemoteEvent::Resync` tells the process to rebuild its caches and send
+/// every live stream a full snapshot.
 async fn listen_for_events(
     pool: PgPool,
     replica: String,
     peer_tx: broadcast::Sender<PeerEvent>,
     remote_tx: broadcast::Sender<RemoteEvent>,
 ) {
+    // Set once a connection was lost: the next connection starts with a resync.
+    let mut missed = false;
     loop {
         let listener = async {
             let mut l = sqlx::postgres::PgListener::connect_with(&pool).await?;
             l.listen(EVENT_CHANNEL).await?;
             Ok::<_, sqlx::Error>(l)
         };
-        match listener.await {
-            Ok(mut l) => loop {
-                match l.recv().await {
-                    Ok(n) => match decode_event(n.payload(), &replica) {
-                        Some(Decoded::Peer(e)) => {
-                            let _ = peer_tx.send(e);
-                        }
-                        Some(Decoded::Remote(e)) => {
-                            let _ = remote_tx.send(e);
-                        }
-                        None => {}
-                    },
-                    Err(e) => {
-                        tracing::warn!(error = %e, "event listener lost its connection");
-                        break;
+        let mut l = match listener.await {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::warn!(error = %e, "event listener could not connect");
+                missed = true;
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                continue;
+            }
+        };
+        if std::mem::take(&mut missed) {
+            tracing::info!("event listener reconnected: resyncing");
+            let _ = remote_tx.send(RemoteEvent::Resync);
+        }
+        loop {
+            // `try_recv` (unlike `recv`) reports a lost connection as `Ok(None)`
+            // after re-establishing it and its LISTEN, so the gap is not silent.
+            match l.try_recv().await {
+                Ok(Some(n)) => match decode_event(n.payload(), &replica) {
+                    Some(Decoded::Peer(e)) => {
+                        let _ = peer_tx.send(e);
                     }
+                    Some(Decoded::Remote(e)) => {
+                        let _ = remote_tx.send(e);
+                    }
+                    None => {}
+                },
+                Ok(None) => {
+                    tracing::warn!("event listener lost its connection and reconnected: resyncing");
+                    let _ = remote_tx.send(RemoteEvent::Resync);
                 }
-            },
-            Err(e) => tracing::warn!(error = %e, "event listener could not connect"),
+                Err(e) => {
+                    tracing::warn!(error = %e, "event listener lost its connection");
+                    missed = true;
+                    break;
+                }
+            }
         }
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 }
 
-impl PgStore {
-    pub async fn new(pool: PgPool) -> Result<Self, StorageError> {
-        sqlx::migrate!("../../migrations")
-            .run(&pool)
-            .await
-            .map_err(StorageError::new)?;
+/// Schema migrations embedded in this binary.
+static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations");
 
+#[derive(Debug)]
+struct SchemaError(String);
+
+impl std::fmt::Display for SchemaError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for SchemaError {}
+
+impl PgStore {
+    /// Connect and apply pending migrations (control processes).
+    pub async fn new(pool: PgPool) -> Result<Self, StorageError> {
+        MIGRATOR.run(&pool).await.map_err(StorageError::new)?;
+        Ok(Self::start(pool))
+    }
+
+    /// The newest migration version this binary expects in the database.
+    pub fn required_schema_version() -> i64 {
+        MIGRATOR.iter().map(|m| m.version).max().unwrap_or(0)
+    }
+
+    /// Connect without migrating (relay processes, which may run with a
+    /// least-privilege role that cannot create anything). Fails with a clear
+    /// error when the schema is behind this binary: start a control process
+    /// (which migrates) first.
+    pub async fn new_verified(pool: PgPool) -> Result<Self, StorageError> {
+        let required = Self::required_schema_version();
+        let applied: Result<(Option<i64>, i64), sqlx::Error> =
+            sqlx::query_as("SELECT MAX(version) FILTER (WHERE success), COUNT(*) FILTER (WHERE NOT success) FROM _sqlx_migrations")
+                .fetch_one(&pool)
+                .await;
+        let (applied, failed) = match applied {
+            Ok(r) => r,
+            Err(e) => {
+                return Err(StorageError::new(SchemaError(format!(
+                    "cannot read the schema version (_sqlx_migrations): {e}; this process does not migrate \
+                     (COORD_ROLE=relay): start a control process first so it creates the schema"
+                ))));
+            }
+        };
+        if failed > 0 {
+            return Err(StorageError::new(SchemaError(format!(
+                "the database has {failed} failed migration(s); fix them with a control process first"
+            ))));
+        }
+        let applied = applied.unwrap_or(0);
+        if applied < required {
+            return Err(StorageError::new(SchemaError(format!(
+                "database schema is behind this binary (applied version {applied}, needs {required}); \
+                 this process does not migrate (COORD_ROLE=relay): start a control process first so it applies the migrations"
+            ))));
+        }
+        Ok(Self::start(pool))
+    }
+
+    fn start(pool: PgPool) -> Self {
         let (peer_tx, _) = broadcast::channel(crate::PEER_EVENT_CHANNEL_CAPACITY);
         let (remote_tx, _) = broadcast::channel(crate::PEER_EVENT_CHANNEL_CAPACITY);
         let replica = generate_random_id();
         tokio::spawn(listen_for_events(pool.clone(), replica.clone(), peer_tx.clone(), remote_tx.clone()));
-        Ok(Self { pool, peer_tx, remote_tx, replica })
+        Self { pool, peer_tx, remote_tx, replica }
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<PeerEvent> {
@@ -145,6 +244,9 @@ impl PgStore {
     }
 
     pub async fn publish(&self, event: RemoteEvent) {
+        if event == RemoteEvent::Resync {
+            return;
+        }
         self.notify(encode_remote(&self.replica, &event)).await;
     }
 
@@ -280,21 +382,21 @@ impl PgStore {
         Ok(())
     }
 
-    pub async fn get_tenant_configs(&self, tenant_id: TenantId) -> Vec<(String, serde_json::Value)> {
+    pub async fn get_tenant_configs(&self, tenant_id: TenantId) -> Result<Vec<(String, serde_json::Value)>, CoordError> {
         let rows: Vec<(String, Json)> = sqlx::query_as("SELECT kind, value FROM coord_tenant_config WHERE tenant_id = $1")
             .bind(tenant_id.as_uuid())
             .fetch_all(&self.pool)
             .await
-            .unwrap_or_default();
-        rows
+            .map_err(db)?;
+        Ok(rows)
     }
 
-    pub async fn list_tenant_configs(&self) -> Vec<(TenantId, String, serde_json::Value)> {
+    pub async fn list_tenant_configs(&self) -> Result<Vec<(TenantId, String, serde_json::Value)>, CoordError> {
         let rows: Vec<(uuid::Uuid, String, Json)> = sqlx::query_as("SELECT tenant_id, kind, value FROM coord_tenant_config")
             .fetch_all(&self.pool)
             .await
-            .unwrap_or_default();
-        rows.into_iter().map(|(t, k, v)| (TenantId::new(t), k, v)).collect()
+            .map_err(db)?;
+        Ok(rows.into_iter().map(|(t, k, v)| (TenantId::new(t), k, v)).collect())
     }
 
     pub async fn set_tenant_config(&self, tenant_id: TenantId, kind: &str, value: Option<serde_json::Value>) -> Result<(), CoordError> {
@@ -322,7 +424,7 @@ impl PgStore {
         Ok(())
     }
 
-    pub async fn sign_in_start(&self, id: &str, machine_key: &[u8; 32], hostname: &str, os: &str) -> Result<(), CoordError> {
+    pub async fn sign_in_start(&self, id: &str, machine_key: &[u8; 32], hostname: &str, os: &str, requester_ip: Option<&str>) -> Result<(), CoordError> {
         let now = crate::now_secs();
         let machine = hex::encode(machine_key);
         sqlx::query("DELETE FROM coord_sign_ins WHERE machine_key = $1 OR expires_at <= $2")
@@ -331,12 +433,14 @@ impl PgStore {
             .execute(&self.pool)
             .await
             .map_err(db)?;
-        sqlx::query("INSERT INTO coord_sign_ins (id, machine_key, hostname, os, expires_at) VALUES ($1, $2, $3, $4, $5)")
+        sqlx::query("INSERT INTO coord_sign_ins (id, machine_key, hostname, os, expires_at, requester_ip, requested_at) VALUES ($1, $2, $3, $4, $5, $6, $7)")
             .bind(id)
             .bind(&machine)
             .bind(hostname)
             .bind(os)
             .bind(now + coord_core::signin::SIGN_IN_TTL_SECS)
+            .bind(requester_ip)
+            .bind(now)
             .execute(&self.pool)
             .await
             .map_err(db)?;
@@ -353,8 +457,8 @@ impl PgStore {
     }
 
     pub async fn sign_in_get(&self, id: &str) -> Option<coord_core::PendingSignIn> {
-        let row: Option<(String, String, String, Option<String>)> = sqlx::query_as(
-            "SELECT machine_key, hostname, os, decision FROM coord_sign_ins WHERE id = $1 AND expires_at > $2"
+        let row: Option<crate::SignInRow> = sqlx::query_as(
+            &format!("SELECT {} FROM coord_sign_ins WHERE id = $1 AND expires_at > $2", crate::SIGN_IN_COLUMNS)
         )
             .bind(id)
             .bind(crate::now_secs())
@@ -447,47 +551,93 @@ impl PgStore {
     }
 
     pub async fn list_owner_locks(&self) -> Vec<(TenantId, String, coord_core::OwnerLock)> {
-        let rows: Vec<(uuid::Uuid, String, Json)> = sqlx::query_as("SELECT tenant_id, owner, lock FROM coord_owner_locks")
+        let rows: Vec<(uuid::Uuid, String, Json)> = match sqlx::query_as("SELECT tenant_id, owner, lock FROM coord_owner_locks")
             .fetch_all(&self.pool)
             .await
-            .unwrap_or_default();
-        rows.into_iter().filter_map(|(t, o, l)| Some((TenantId::new(t), o, serde_json::from_value(l).ok()?))).collect()
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!(error = %e, "could not list machine locks");
+                return vec![];
+            }
+        };
+        rows.into_iter()
+            .filter_map(|(t, o, l)| match serde_json::from_value(l) {
+                Ok(lock) => Some((TenantId::new(t), o, lock)),
+                Err(e) => {
+                    tracing::error!(tenant = %t, error = %e, "malformed machine lock skipped in listing");
+                    None
+                }
+            })
+            .collect()
     }
 
-    pub async fn get_owner_lock(&self, tenant_id: TenantId, owner: &str) -> Option<coord_core::OwnerLock> {
+    pub async fn get_owner_lock(&self, tenant_id: TenantId, owner: &str) -> Result<coord_core::LockRead, CoordError> {
         let row: Option<Json> = sqlx::query_scalar("SELECT lock FROM coord_owner_locks WHERE tenant_id = $1 AND owner = $2")
             .bind(tenant_id.as_uuid())
             .bind(owner)
             .fetch_optional(&self.pool)
             .await
-            .ok()
-            .flatten();
-        row.and_then(|v| serde_json::from_value(v).ok())
+            .map_err(db)?;
+        Ok(decode_owner_lock(tenant_id, row))
     }
 
-    pub async fn set_owner_lock(&self, tenant_id: TenantId, owner: &str, lock: Option<coord_core::OwnerLock>) -> Result<(), CoordError> {
-        if self.get_tenant(tenant_id).await.is_none() {
+    /// Serialized per (tenant, owner) by a transaction-scoped advisory lock
+    /// (so the first insert is covered too, where `FOR UPDATE` has no row).
+    pub async fn update_owner_lock<R, F>(&self, tenant_id: TenantId, owner: &str, f: F) -> Result<R, CoordError>
+    where
+        F: FnOnce(coord_core::LockRead) -> (coord_core::LockWrite, R),
+    {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1, hashtext($2))")
+            .bind(OWNER_LOCK_LOCK_CLASS)
+            .bind(format!("{}|{}", tenant_id.as_uuid(), owner))
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        let tenant: Option<uuid::Uuid> = sqlx::query_scalar("SELECT id FROM coord_tenants WHERE id = $1")
+            .bind(tenant_id.as_uuid())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db)?;
+        if tenant.is_none() {
             return Err(CoordError::TenantNotFound(tenant_id));
         }
-        match lock {
-            Some(l) => sqlx::query(
-                "INSERT INTO coord_owner_locks (tenant_id, owner, lock) VALUES ($1, $2, $3) \
-                 ON CONFLICT (tenant_id, owner) DO UPDATE SET lock = EXCLUDED.lock, updated_at = NOW()"
-            )
-                .bind(tenant_id.as_uuid())
-                .bind(owner)
-                .bind(serde_json::to_value(&l).unwrap_or_default())
-                .execute(&self.pool)
-                .await
-                .map_err(db)?,
-            None => sqlx::query("DELETE FROM coord_owner_locks WHERE tenant_id = $1 AND owner = $2")
-                .bind(tenant_id.as_uuid())
-                .bind(owner)
-                .execute(&self.pool)
-                .await
-                .map_err(db)?,
-        };
-        Ok(())
+        let row: Option<Json> = sqlx::query_scalar(
+            "SELECT lock FROM coord_owner_locks WHERE tenant_id = $1 AND owner = $2 FOR UPDATE"
+        )
+            .bind(tenant_id.as_uuid())
+            .bind(owner)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db)?;
+        let (write, out) = f(decode_owner_lock(tenant_id, row));
+        match write {
+            coord_core::LockWrite::Keep => {}
+            coord_core::LockWrite::Set(l) => {
+                let value = serde_json::to_value(&l).map_err(|e| CoordError::Protocol(e.to_string()))?;
+                sqlx::query(
+                    "INSERT INTO coord_owner_locks (tenant_id, owner, lock) VALUES ($1, $2, $3) \
+                     ON CONFLICT (tenant_id, owner) DO UPDATE SET lock = EXCLUDED.lock, updated_at = NOW()"
+                )
+                    .bind(tenant_id.as_uuid())
+                    .bind(owner)
+                    .bind(value)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db)?;
+            }
+            coord_core::LockWrite::Remove => {
+                sqlx::query("DELETE FROM coord_owner_locks WHERE tenant_id = $1 AND owner = $2")
+                    .bind(tenant_id.as_uuid())
+                    .bind(owner)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(db)?;
+            }
+        }
+        tx.commit().await.map_err(db)?;
+        Ok(out)
     }
 
     pub async fn list_tenants(&self) -> Vec<Tenant> {
@@ -635,10 +785,11 @@ impl PgStore {
         let key = generate_auth_key();
         let id = uuid::Uuid::new_v4();
         sqlx::query(
-            "INSERT INTO coord_preauth_keys (key, id, tenant_id, reusable, ephemeral, expires_at, owner, tags) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)"
+            "INSERT INTO coord_preauth_keys (key, key_prefix, id, tenant_id, reusable, ephemeral, expires_at, owner, tags) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
         )
-            .bind(&key)
+            .bind(crate::hash_preauth_key(&key))
+            .bind(coord_core::preauth_key_prefix(&key))
             .bind(id)
             .bind(tenant_id.as_uuid())
             .bind(opts.reusable)
@@ -655,7 +806,7 @@ impl PgStore {
     pub async fn list_preauth_keys(&self, tenant_id: TenantId) -> Vec<PreAuthKeyInfo> {
         type Row = (uuid::Uuid, String, Option<String>, Json, bool, bool, bool, Option<DateTime<Utc>>, DateTime<Utc>, Option<DateTime<Utc>>);
         let rows = sqlx::query_as::<_, Row>(
-            "SELECT id, key, owner, tags, reusable, ephemeral, used, expires_at, created_at, revoked_at \
+            "SELECT id, key_prefix, owner, tags, reusable, ephemeral, used, expires_at, created_at, revoked_at \
              FROM coord_preauth_keys WHERE tenant_id = $1 ORDER BY created_at, id"
         )
             .bind(tenant_id.as_uuid())
@@ -664,10 +815,10 @@ impl PgStore {
             .unwrap_or_default();
 
         rows.into_iter()
-            .map(|(id, key, owner, tags, reusable, ephemeral, used, expires_at, created_at, revoked_at)| PreAuthKeyInfo {
+            .map(|(id, prefix, owner, tags, reusable, ephemeral, used, expires_at, created_at, revoked_at)| PreAuthKeyInfo {
                 id,
                 tenant_id,
-                prefix: coord_core::preauth_key_prefix(&key),
+                prefix,
                 owner,
                 tags: from_json(tags),
                 reusable,
@@ -711,7 +862,7 @@ impl PgStore {
     /// Tenant a pre-auth key belongs to, without validating or consuming it.
     pub async fn preauth_key_tenant(&self, key: &str) -> Option<TenantId> {
         sqlx::query_scalar::<_, uuid::Uuid>("SELECT tenant_id FROM coord_preauth_keys WHERE key = $1")
-            .bind(key)
+            .bind(crate::hash_preauth_key(key))
             .fetch_optional(&self.pool)
             .await
             .ok()?
@@ -727,7 +878,7 @@ impl PgStore {
                AND (expires_at IS NULL OR expires_at > NOW()) \
              RETURNING tenant_id, owner, tags, ephemeral"
         )
-            .bind(key)
+            .bind(crate::hash_preauth_key(key))
             .fetch_optional(&self.pool)
             .await
             .ok()?;
@@ -1452,5 +1603,25 @@ mod event_tests {
         for bad in ["", "b|j", "b|j|not-a-uuid|1", "b|j|11111111-2222-4333-8444-555555555555|x", "b|z|11111111-2222-4333-8444-555555555555|1"] {
             assert_eq!(decode_event(bad, "a"), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn nil_tenant_ids_and_non_positive_node_ids_are_ignored() {
+        let nil = "00000000-0000-0000-0000-000000000000";
+        for bad in [
+            format!("b|t|{nil}|"),
+            format!("b|j|{nil}|1"),
+            format!("b|o|{nil}|1"),
+            "b|u|11111111-2222-4333-8444-555555555555|0".to_string(),
+            "b|u|11111111-2222-4333-8444-555555555555|-4".to_string(),
+        ] {
+            assert_eq!(decode_event(&bad, "a"), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn resync_is_never_published() {
+        assert_eq!(encode_remote("a", &RemoteEvent::Resync), "");
+        assert_eq!(decode_event("", "b"), None);
     }
 }

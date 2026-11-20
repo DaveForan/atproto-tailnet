@@ -361,7 +361,7 @@ async fn delta_response_on_peer_join() {
         node_id: node2_id,
     };
 
-    let delta = coord_api::__test_build_delta(&state, &mk1, &event).await;
+    let delta = coord_api::__test_build_delta(&state, tenant_id, &event).await;
     assert!(delta.is_some());
     let resp: serde_json::Value = serde_json::from_str(&delta.unwrap()).unwrap();
     let changed = resp["PeersChanged"].as_array().unwrap();
@@ -395,7 +395,7 @@ async fn delta_response_on_peer_offline() {
         node_id,
     };
 
-    let delta = coord_api::__test_build_delta(&state, &[0u8; 32], &event).await;
+    let delta = coord_api::__test_build_delta(&state, tenant_id, &event).await;
     assert!(delta.is_some());
     let resp: serde_json::Value = serde_json::from_str(&delta.unwrap()).unwrap();
     let removed = resp["PeersRemoved"].as_array().unwrap();
@@ -2370,7 +2370,7 @@ async fn route_advertisement_and_approval_reach_peers() {
     // Peer deltas carry routes too.
     let ev = coord_store::PeerEvent::NodeUpdated { tenant_id: t, node_id: coord_core::NodeId::new(router) };
     let delta: serde_json::Value =
-        serde_json::from_str(&coord_api::__test_build_delta(&state, &[72u8; 32], &ev).await.unwrap()).unwrap();
+        serde_json::from_str(&coord_api::__test_build_delta(&state, t, &ev).await.unwrap()).unwrap();
     assert_eq!(delta["PeersChanged"][0]["PrimaryRoutes"], serde_json::json!(["10.0.0.0/24"]));
 
     // Withdrawing an advertisement (map request Hostinfo) stops serving it.
@@ -3128,7 +3128,12 @@ async fn relay_admits_registered_nodes_of_live_tenants_only() {
     use coord_derp::Admission;
     let (app, state) = setup();
     let parent = create_test_tenant(&state, "relay-parent").await;
-    let child = state.store().create_tenant("relay-child".into(), Some(parent), None).await.unwrap().id;
+    let child = state
+        .store()
+        .create_tenant("relay-child".into(), Some(parent), Some(coord_core::FederationPosture::Open))
+        .await
+        .unwrap()
+        .id;
     let other = create_test_tenant(&state, "relay-other").await;
 
     let mut scopes = vec![];
@@ -3139,10 +3144,15 @@ async fn relay_admits_registered_nodes_of_live_tenants_only() {
         let adm = coord_api::derp_handler::StoreAdmission::for_state(&state);
         scopes.push(adm.admit(&[mkey.wrapping_add(1); 32]).await.expect("registered node is admitted"));
     }
-    assert!(scopes[0].can_reach(&scopes[1]), "parent and child reach each other");
+    assert!(scopes[0].can_reach(&scopes[1]), "parent and a visible child reach each other");
     assert!(!scopes[0].can_reach(&scopes[2]), "unrelated tenants do not");
 
     let adm = coord_api::derp_handler::StoreAdmission::for_state(&state);
+    // Same rule as the netmap: a Closed child has no relay to or from its parent
+    state.store().update_tenant_posture(child, coord_core::FederationPosture::Closed).await.unwrap();
+    let closed_child = adm.admit(&[202u8; 32]).await.expect("still admitted inside its own tenant");
+    assert!(!scopes[0].can_reach(&closed_child) && !closed_child.can_reach(&scopes[0]), "closed child is cut off from its parent");
+
     assert!(adm.admit(&[9u8; 32]).await.is_none(), "unknown key refused");
 
     state.store().set_tenant_suspended(other, true).await.unwrap();
@@ -3730,4 +3740,273 @@ async fn machine_lock_cap_and_refused_listing() {
     assert_eq!(recent["refused"].as_array().unwrap().len(), 1);
     let (_, later) = api_call(&app, "GET", since(chrono::Utc::now() + chrono::Duration::seconds(5)), None).await;
     assert!(later["refused"].as_array().unwrap().is_empty());
+}
+
+// ── Machine lock: fail closed, known machines (ADR-0035 §2 hardening) ──
+
+/// A coordinator on a temporary SQLite database, plus a raw pool to plant
+/// rows the store would never write.
+async fn sqlite_state() -> (axum::Router, Arc<CoordinatorState>, sqlx::SqlitePool, std::path::PathBuf) {
+    let path = std::env::temp_dir().join(format!("coord-lock-{}.db", hex::encode(rand::random::<[u8; 8]>())));
+    let pool = coord_store::create_sqlite_pool(path.to_str().unwrap()).await.unwrap();
+    let store = coord_store::SqliteStore::new(pool.clone()).await.unwrap();
+    let state = Arc::new(
+        CoordinatorState::new(coord_noise::generate_control_key())
+            .with_admin_api_key(Some(TEST_ADMIN_KEY.to_string()))
+            .with_store(coord_store::Store::Sqlite(store)),
+    );
+    (coord_api::router(state.clone()), state, pool, path)
+}
+
+fn remove_db(path: &std::path::Path) {
+    for suffix in ["", "-wal", "-shm"] {
+        let mut p = path.as_os_str().to_owned();
+        p.push(suffix);
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+/// Re-register `mkey` with its current node key and no auth key (what
+/// tailscaled does on every restart).
+async fn re_register(state: &Arc<CoordinatorState>, mkey: u8) -> serde_json::Value {
+    let body = serde_json::json!({
+        "Version": 2,
+        "NodeKey": format!("nodekey:{}", hex::encode([mkey.wrapping_add(1); 32])),
+        "Hostinfo": { "Hostname": "again", "OS": "linux" },
+    });
+    serde_json::from_str(&coord_api::__test_handle_register(state, &[mkey; 32], &body.to_string()).await.unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn machine_lock_applies_to_a_known_machine_re_registering() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "lock-known").await;
+    let k = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "owner": "alice", "reusable": true })).await;
+    let k = k["key"].as_str().unwrap();
+    register_routes(&state, 150, k, "alice-mac", None).await;
+    register_routes(&state, 152, k, "alice-old", None).await;
+    let mut old_stream = open_stream(&state, 152).await;
+
+    // A lock that leaves 152 out while its node survives (a race with the PUT,
+    // or a failed removal): the store holds only the Mac.
+    let lock = coord_core::OwnerLock { machines: vec![hex::encode([150u8; 32])], ..Default::default() };
+    state.store().set_owner_lock(t, "alice", Some(lock)).await.unwrap();
+
+    assert_eq!(re_register(&state, 150).await["MachineAuthorized"], true);
+    let refused = re_register(&state, 152).await;
+    assert_eq!(refused["MachineAuthorized"], false, "{refused}");
+    assert!(refused["Error"].as_str().unwrap().contains("current devices"));
+    let read = state.store().get_owner_lock(t, "alice").await.unwrap();
+    assert_eq!(read.lock().unwrap().refused.len(), 1, "the refusal is recorded");
+
+    // Its live stream is cut off at the next re-check
+    state.notify_tenant_changed(t);
+    let mut cut = false;
+    while let Some(f) = next_map_frame(&mut old_stream).await {
+        if f["PacketFilter"] == serde_json::json!([]) {
+            cut = true;
+        }
+    }
+    assert!(cut, "a machine outside the lock loses its stream");
+}
+
+#[tokio::test]
+async fn malformed_machine_lock_refuses_registration_and_admin_can_replace_it() {
+    let (app, state, pool, path) = sqlite_state().await;
+    let t = create_test_tenant(&state, "lock-malformed").await;
+    let k = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "owner": "alice", "reusable": true })).await;
+    let k = k["key"].as_str().unwrap();
+    sqlx::query("INSERT INTO coord_owner_locks (tenant_id, owner, lock) VALUES (?1, 'alice', 'not json')")
+        .bind(t.to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let refused = register_routes(&state, 160, k, "any", None).await;
+    assert_eq!(refused["MachineAuthorized"], false, "{refused}");
+    assert!(state.store().get_node_by_machine_key(&[160u8; 32]).await.is_none());
+
+    let (status, view) = api_call(&app, "GET", format!("/api/tenants/{t}/owner-locks/alice"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!((view["locked"].clone(), view["malformed"].clone()), (serde_json::json!(true), serde_json::json!(true)));
+    let (status, body) = api_call(&app, "POST", format!("/api/tenants/{t}/owner-locks/alice/allow-one"), Some(serde_json::json!({ "seconds": 60 }))).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "lock_malformed");
+
+    // PUT replaces the unreadable lock
+    let (status, view) = api_call(&app, "PUT", format!("/api/tenants/{t}/owner-locks/alice"), Some(serde_json::json!({ "node_ids": [] }))).await;
+    assert_eq!(status, StatusCode::OK, "{view}");
+    assert_eq!(view["malformed"], false);
+    remove_db(&path);
+}
+
+#[tokio::test]
+async fn machine_lock_store_error_refuses_registration_with_a_clean_error() {
+    let (app, state, pool, path) = sqlite_state().await;
+    let t = create_test_tenant(&state, "lock-dberr").await;
+    let k = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "owner": "alice", "reusable": true })).await;
+    let k = k["key"].as_str().unwrap();
+    register_routes(&state, 170, k, "known", None).await;
+    // The lock table cannot be read: neither new nor known machines get in
+    sqlx::query("ALTER TABLE coord_owner_locks RENAME TO coord_owner_locks_gone").execute(&pool).await.unwrap();
+
+    let refused = register_routes(&state, 172, k, "new", None).await;
+    assert_eq!(refused["MachineAuthorized"], false, "{refused}");
+    assert!(refused["Error"].as_str().unwrap().contains("could not be checked"), "{refused}");
+    assert!(state.store().get_node_by_machine_key(&[172u8; 32]).await.is_none());
+    let known = re_register(&state, 170).await;
+    assert_eq!(known["MachineAuthorized"], false, "{known}");
+
+    let (status, _) = api_call(&app, "GET", format!("/api/tenants/{t}/owner-locks/alice"), None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    remove_db(&path);
+}
+
+#[tokio::test]
+async fn a_lock_put_keeps_refusals_recorded_meanwhile_and_removes_late_machines() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "lock-put").await;
+    let k = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "owner": "alice", "reusable": true })).await;
+    let k = k["key"].as_str().unwrap();
+    register_routes(&state, 180, k, "mac", None).await;
+    let mac = member_map(&state, 180).await["Node"]["ID"].as_i64().unwrap();
+    api_call(&app, "PUT", format!("/api/tenants/{t}/owner-locks/alice"), Some(serde_json::json!({ "node_ids": [mac] }))).await;
+    register_routes(&state, 182, k, "refused-1", None).await;
+    let (status, view) = api_call(&app, "PUT", format!("/api/tenants/{t}/owner-locks/alice"), Some(serde_json::json!({ "node_ids": [mac], "max_machines": 4 }))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(view["refused"].as_array().unwrap().len(), 1, "history kept across a PUT");
+    assert_eq!(view["max_machines"], 4);
+}
+
+// ── Peer event validation (NOTIFY payloads are not trusted) ──
+
+#[tokio::test]
+async fn deltas_ignore_events_whose_tenant_does_not_match_the_node_or_viewer() {
+    let (app, state) = setup();
+    let a = create_test_tenant(&state, "delta-a").await;
+    let b = create_test_tenant(&state, "delta-b").await;
+    let ka = api_key(&app, serde_json::json!({ "tenant_id": a.to_string() })).await;
+    let kb = api_key(&app, serde_json::json!({ "tenant_id": b.to_string() })).await;
+    register_routes(&state, 190, ka["key"].as_str().unwrap(), "a-node", None).await;
+    register_routes(&state, 192, kb["key"].as_str().unwrap(), "b-node", None).await;
+    let b_node = state.store().get_node_by_machine_key(&[192u8; 32]).await.unwrap();
+
+    // Correct event, right viewer: a delta
+    let ok = coord_store::PeerEvent::NodeUpdated { tenant_id: b, node_id: b_node };
+    assert!(coord_api::__test_build_delta(&state, b, &ok).await.is_some());
+    // Same event, viewer of another tenant: nothing
+    assert!(coord_api::__test_build_delta(&state, a, &ok).await.is_none());
+    // Forged: claims tenant A for B's node
+    let forged = coord_store::PeerEvent::NodeJoined { tenant_id: a, node_id: b_node };
+    assert!(coord_api::__test_build_delta(&state, a, &forged).await.is_none(), "B's node never leaks to A");
+    let forged_off = coord_store::PeerEvent::NodeOffline { tenant_id: a, node_id: b_node };
+    assert!(coord_api::__test_build_delta(&state, a, &forged_off).await.is_none());
+    // Nil tenant id
+    let nil = coord_store::PeerEvent::NodeUpdated { tenant_id: coord_core::TenantId::new(uuid::Uuid::nil()), node_id: b_node };
+    assert!(coord_api::__test_build_delta(&state, a, &nil).await.is_none());
+    // A deleted node can still be removed
+    let gone = coord_store::PeerEvent::NodeOffline { tenant_id: a, node_id: coord_core::NodeId::new(999_999) };
+    assert!(coord_api::__test_build_delta(&state, a, &gone).await.is_some());
+}
+
+#[tokio::test]
+async fn deltas_from_a_child_need_the_child_to_be_visible() {
+    let (app, state) = setup();
+    let parent = create_test_tenant(&state, "delta-parent").await;
+    let child = state.store().create_tenant("delta-child".into(), Some(parent), Some(coord_core::FederationPosture::Open)).await.unwrap().id;
+    let kc = api_key(&app, serde_json::json!({ "tenant_id": child.to_string() })).await;
+    register_routes(&state, 196, kc["key"].as_str().unwrap(), "child-node", None).await;
+    let node = state.store().get_node_by_machine_key(&[196u8; 32]).await.unwrap();
+    let ev = coord_store::PeerEvent::NodeUpdated { tenant_id: child, node_id: node };
+    assert!(coord_api::__test_build_delta(&state, parent, &ev).await.is_some());
+    state.store().update_tenant_posture(child, coord_core::FederationPosture::Closed).await.unwrap();
+    assert!(coord_api::__test_build_delta(&state, parent, &ev).await.is_none());
+}
+
+// ── Resync safety nets (ADR-0034) ──
+
+#[tokio::test]
+async fn streams_send_a_periodic_full_snapshot_without_any_event() {
+    let key = coord_noise::generate_control_key();
+    let state = Arc::new(
+        CoordinatorState::new(key)
+            .with_admin_api_key(Some(TEST_ADMIN_KEY.to_string()))
+            .with_stream_resync_period(std::time::Duration::from_millis(150)),
+    );
+    let app = coord_api::router(state.clone());
+    let t = create_test_tenant(&state, "periodic").await;
+    let k = api_key(&app, serde_json::json!({ "tenant_id": t.to_string() })).await;
+    register_routes(&state, 140, k["key"].as_str().unwrap(), "quiet", None).await;
+    let mut stream = open_stream(&state, 140).await;
+    let f = next_map_frame(&mut stream).await.expect("stream open");
+    assert!(f["Node"].is_object(), "a full snapshot, not a keep-alive: {f}");
+    assert!(f["PacketFilter"].is_array());
+
+    // And a suspension that no event announced still cuts the stream off
+    state.store().set_tenant_suspended(t, true).await.unwrap();
+    let mut cut = false;
+    while let Some(f) = next_map_frame(&mut stream).await {
+        if f["PacketFilter"] == serde_json::json!([]) {
+            cut = true;
+        }
+    }
+    assert!(cut);
+}
+
+#[tokio::test]
+async fn resync_reloads_every_tenant_and_wakes_every_stream() {
+    let (_, state) = setup();
+    let t = create_test_tenant(&state, "resync").await;
+    let mut changes = state.__test_config_changes();
+    // Written by "another replica": in the store, not in this process's cache
+    state.store().set_tenant_config(t, "acl", Some(serde_json::json!({ "default_deny": true, "rules": [] }))).await.unwrap();
+    assert!(state.acl().get_policy(t).is_none());
+    state.resync_all().await;
+    assert!(state.acl().get_policy(t).is_some_and(|p| p.default_deny));
+    assert!(changes.try_recv().unwrap().as_uuid().is_nil(), "every stream is told to resend");
+
+    // Removed elsewhere: the cache follows
+    state.store().set_tenant_config(t, "acl", None).await.unwrap();
+    state.resync_all().await;
+    assert!(state.acl().get_policy(t).is_none());
+}
+
+#[tokio::test]
+async fn reload_swaps_in_place_and_keeps_an_unreadable_value() {
+    let (_, state) = setup();
+    let t = create_test_tenant(&state, "reload").await;
+    state.store().set_tenant_config(t, "acl", Some(serde_json::json!({ "default_deny": true, "rules": [] }))).await.unwrap();
+    state.reload_tenant_config(t).await;
+    assert!(state.acl().get_policy(t).is_some_and(|p| p.default_deny));
+    // A value this version cannot read does not clear the cached policy
+    state.store().set_tenant_config(t, "acl", Some(serde_json::json!({ "unknown": 1 }))).await.unwrap();
+    state.reload_tenant_config(t).await;
+    assert!(state.acl().get_policy(t).is_some_and(|p| p.default_deny));
+}
+
+#[tokio::test]
+async fn pending_sign_in_reports_requester_ip_and_time() {
+    let (app, state) = sign_in_state();
+    let body = serde_json::json!({
+        "Version": 2,
+        "NodeKey": format!("nodekey:{}", hex::encode([135u8; 32])),
+        "Hostinfo": { "Hostname": "phone", "OS": "iOS" }
+    });
+    let before = chrono::Utc::now() - chrono::Duration::seconds(1);
+    let out = coord_api::__test_handle_register_from(&state, &[134u8; 32], &body.to_string(), Some("203.0.113.7".parse().unwrap()))
+        .await
+        .unwrap();
+    let url = serde_json::from_str::<serde_json::Value>(&out).unwrap()["AuthURL"].as_str().unwrap().to_string();
+    let id = url.rsplit('/').next().unwrap();
+    let (status, p) = api_call(&app, "GET", format!("/api/device-auth/{id}"), None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(p["requester_ip"], "203.0.113.7");
+    let at = chrono::DateTime::parse_from_rfc3339(p["requested_at"].as_str().unwrap()).unwrap();
+    assert!(at >= before && at <= chrono::Utc::now());
+
+    // Unknown address: null, not a made-up value
+    let url = register_no_key(&state, 136, None).await["AuthURL"].as_str().unwrap().to_string();
+    let (_, p) = api_call(&app, "GET", format!("/api/device-auth/{}", url.rsplit('/').next().unwrap()), None).await;
+    assert!(p["requester_ip"].is_null());
+    assert!(p["requested_at"].is_string());
 }

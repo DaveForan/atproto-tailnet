@@ -342,3 +342,33 @@ describe("guardedGetJson (did:web fetch from untrusted hosts)", () => {
     },
   );
 });
+
+describe("guardedRequest (outbound requests to peer-chosen hosts)", () => {
+  it("refuses plain http and non-public IP literals for POST too, without connecting", async () => {
+    const { guardedRequest } = await import("../identity/resolver.js");
+    const opts = { method: "POST" as const, body: "{}", timeoutMs: 1000, maxBytes: 1024 };
+    await expect(guardedRequest("http://example.com/x", opts)).rejects.toThrow(/https/);
+    for (const url of ["https://127.0.0.1/x", "https://[::1]/x", "https://169.254.169.254/x", "https://100.64.0.1/x"]) {
+      await expect(guardedRequest(url, opts)).rejects.toThrow(/non-public/);
+    }
+  });
+
+  it("the connect-time lookup refuses a name that answers with a private address", async () => {
+    const dns = await import("node:dns");
+    const spy = vi.spyOn(dns.default, "lookup").mockImplementation(((_h: string, _o: unknown, cb: (e: null, a: unknown) => void) =>
+      cb(null, [{ address: "10.1.2.3", family: 4 }])) as never);
+    try {
+      const { guardedLookup } = await import("../identity/resolver.js");
+      const err = await new Promise<NodeJS.ErrnoException | null>((resolve) => guardedLookup("rebind.example", {}, (e) => resolve(e)));
+      expect(err?.code).toBe("EPRIVATE");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("error texts for callers are short and carry no remote content", async () => {
+    const { outboundErrorText } = await import("../identity/resolver.js");
+    expect(outboundErrorText(Object.assign(new Error("x"), { code: "EPRIVATE" }))).toBe("address not allowed");
+    expect(outboundErrorText(new Error("<html>secret internal page</html>"))).toBe("unreachable");
+  });
+});

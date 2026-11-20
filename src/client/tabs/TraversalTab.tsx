@@ -8,11 +8,12 @@ import { Card } from "../components/Card";
 import { Loading } from "../components/Loading";
 import { CodeBlock } from "../components/CodeBlock";
 import type { TraversalEvalResult } from "../lib/types";
+import { LoadError } from "../components/LoadError";
 
 export function TraversalTab() {
   const { currentTenant } = useApp();
   const { toastError } = useToast();
-  const { data: policy, loading, reload } = useTenantData<unknown>(
+  const { data: policy, loading, error, reload } = useTenantData<unknown>(
     "/traversal-policy",
     null,
   );
@@ -68,6 +69,7 @@ export function TraversalTab() {
 
   return (
     <div className="tab-content">
+      <LoadError error={error} onRetry={reload} />
       <Card title="Traversal policy">
         <form className="form-stack" onSubmit={savePolicy}>
           <div className="field">

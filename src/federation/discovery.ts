@@ -5,13 +5,14 @@
  */
 
 import { logger } from "../logger.js";
-import { getResolver, resolvesToPublicAddresses } from "../identity/resolver.js";
+import { getResolver, guardedRequest, outboundErrorText, resolvesToPublicAddresses } from "../identity/resolver.js";
 import type { FederationDescriptor } from "./protocol.js";
 import type { PublicKeyResolver } from "../credentials/verifier.js";
 import { verifyMessage } from "./auth.js";
 import { config } from "../config.js";
 
 const DISCOVERY_TIMEOUT_MS = 10_000;
+const MAX_DESCRIPTOR_BYTES = 64 * 1024;
 
 export interface PeerInfo {
   did: string;
@@ -63,21 +64,38 @@ export async function discoverPeer(
 
   let descriptor: FederationDescriptor;
   try {
-    const res = await fetch(url, {
-      signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS),
-      headers: { Accept: "application/json" },
-      redirect: "error",
-    });
-
-    if (!res.ok) {
-      return { ok: false, error: `Discovery failed: HTTP ${res.status} from ${host}` };
+    let status: number;
+    let text: string;
+    if (hostname === ownHostname()) {
+      const res = await fetch(url, {
+        signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS),
+        headers: { Accept: "application/json" },
+        redirect: "error",
+      });
+      status = res.status;
+      text = res.ok ? await res.text() : "";
+    } else {
+      // The public-address check above is repeated at connect time, so a
+      // name that re-resolves to a private address (DNS rebinding) fails here
+      const res = await guardedRequest(url, {
+        headers: { Accept: "application/json" },
+        timeoutMs: DISCOVERY_TIMEOUT_MS,
+        maxBytes: MAX_DESCRIPTOR_BYTES,
+      });
+      status = res.status;
+      text = res.text;
     }
 
-    descriptor = (await res.json()) as FederationDescriptor;
+    if (status < 200 || status >= 300) {
+      return { ok: false, error: `Discovery failed: HTTP ${status} from ${host}` };
+    }
+
+    descriptor = JSON.parse(text) as FederationDescriptor;
+    if (!descriptor || typeof descriptor !== "object") throw new Error("not an object");
   } catch (err) {
-    const msg = err instanceof Error ? err.message : "Unknown error";
     logger.warn({ host, slug, err }, "peer discovery fetch failed");
-    return { ok: false, error: `Discovery failed: ${msg}` };
+    const reason = err instanceof SyntaxError || (err as Error)?.message === "not an object" ? "invalid document" : outboundErrorText(err);
+    return { ok: false, error: `Discovery failed: ${reason}` };
   }
 
   if (!descriptor.collectiveDid || !descriptor.brokerUrl) {

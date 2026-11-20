@@ -41,10 +41,12 @@ vi.mock("../orchestrator/coordinator-api.js", () => ({
 vi.mock("../orchestrator/control-client.js", () => ({ useCoordinator: true, getControlClient: () => ({}) }));
 vi.mock("../orchestrator/coordinator-identity.js", () => ({ pushTenantIdentity: vi.fn(async () => {}) }));
 vi.mock("../routes/limits.js", () => ({ enforceDeviceLimit }));
+const { logAudit } = vi.hoisted(() => ({ logAudit: vi.fn() }));
+vi.mock("../routes/audit.js", () => ({ logAudit }));
 
 import express from "express";
 import type { Request, Response, NextFunction } from "express";
-import { deviceSignInRouter } from "../routes/device-signin.js";
+import { deviceSignInRouter, DEVICE_SIGNIN_APPROVE_LIMIT } from "../routes/device-signin.js";
 
 const ID = "0123456789abcdef0123456789abcdef";
 const T = "11111111-1111-4111-8111-111111111111";
@@ -59,7 +61,15 @@ const ctx = (t: Record<string, unknown> = {}, originator = false) => [
 const app = express();
 app.use(express.json());
 app.use((req: Request, _res: Response, next: NextFunction) => {
-  (req as unknown as { session: Record<string, unknown> }).session = req.headers["x-anon"] ? {} : { userId: "u-1", did: "did:plc:x" };
+  const user = String(req.headers["x-user"] ?? "u-1");
+  (req as unknown as { session: Record<string, unknown> }).session = req.headers["x-anon"]
+    ? {}
+    : {
+        userId: user,
+        did: "did:plc:x",
+        // A trusted-device session whose proof is old (ADR-0035 step-up)
+        ...(req.headers["x-stale-device"] ? { trustedDeviceId: "dev-1", deviceVerifiedAt: Date.now() - 60 * 60_000 } : {}),
+      };
   if (req.headers["x-agent"]) (req as unknown as { agentToken: unknown }).agentToken = { id: "a" };
   next();
 });
@@ -80,13 +90,16 @@ beforeEach(() => {
   results.length = 0;
   vi.clearAllMocks();
   enforceDeviceLimit.mockResolvedValue(true);
-  coord.getDeviceAuth.mockResolvedValue({ hostname: "phone", os: "iOS", fingerprint: "aaaa-bbbb-cccc-dddd", pending: true, registered_tenant_id: null });
+  coord.getDeviceAuth.mockResolvedValue({
+    hostname: "phone", os: "iOS", fingerprint: "aaaa-bbbb-cccc-dddd", pending: true, registered_tenant_id: null,
+    requester_ip: "203.0.113.7", requested_at: new Date(Date.now() - 30_000).toISOString(),
+  });
 });
 
 describe("device sign-in", () => {
   it("needs a dashboard session: anonymous visitors and agent tokens are refused", async () => {
     expect((await call("GET", ID, undefined, { "x-anon": "1" })).status).toBe(401);
-    expect((await call("POST", `${ID}/approve`, { tenantId: T }, { "x-agent": "1" })).status).toBe(401);
+    expect((await call("POST", `${ID}/approve`, { tenantId: T, confirm: true }, { "x-agent": "1" })).status).toBe(401);
     expect(coord.approveDeviceAuth).not.toHaveBeenCalled();
   });
 
@@ -121,7 +134,7 @@ describe("device sign-in", () => {
 
   it("approves for a member and binds the device to that member", async () => {
     results.push(ctx(), []); // tenant, no device lock
-    const r = await call("POST", `${ID}/approve`, { tenantId: T });
+    const r = await call("POST", `${ID}/approve`, { tenantId: T, confirm: true });
     expect(r.status).toBe(200);
     expect(coord.approveDeviceAuth).toHaveBeenCalledWith(ID, "c-1", "u-1");
   });
@@ -132,18 +145,18 @@ describe("device sign-in", () => {
     ["a tailnet that requires device approval", ctx({ requireDeviceApproval: true }), 403],
   ])("refuses %s", async (_label, first, status) => {
     results.push(first);
-    expect((await call("POST", `${ID}/approve`, { tenantId: T })).status).toBe(status);
+    expect((await call("POST", `${ID}/approve`, { tenantId: T, confirm: true })).status).toBe(status);
     expect(coord.approveDeviceAuth).not.toHaveBeenCalled();
   });
 
   it("the originator may add a device where approval is required for others", async () => {
     results.push(ctx({ requireDeviceApproval: true }, true), []);
-    expect((await call("POST", `${ID}/approve`, { tenantId: T })).status).toBe(200);
+    expect((await call("POST", `${ID}/approve`, { tenantId: T, confirm: true })).status).toBe(200);
   });
 
   it("refuses a device-locked member and a tailnet at its device limit", async () => {
     results.push(ctx(), [{ id: "lock" }]);
-    expect((await call("POST", `${ID}/approve`, { tenantId: T })).status).toBe(403);
+    expect((await call("POST", `${ID}/approve`, { tenantId: T, confirm: true })).status).toBe(403);
 
     enforceDeviceLimit.mockImplementation(async (...args: unknown[]) => {
       const res = args[0] as { status: (c: number) => { json: (b: unknown) => void } };
@@ -151,18 +164,71 @@ describe("device sign-in", () => {
       return false;
     });
     results.push(ctx(), []);
-    expect((await call("POST", `${ID}/approve`, { tenantId: T })).json.code).toBe("device_limit");
+    expect((await call("POST", `${ID}/approve`, { tenantId: T, confirm: true })).json.code).toBe("device_limit");
     expect(coord.approveDeviceAuth).not.toHaveBeenCalled();
   });
 
   it("a link the coordinator no longer knows is 404", async () => {
     coord.approveDeviceAuth.mockRejectedValueOnce(new Error("failed (404)"));
     results.push(ctx(), []);
-    expect((await call("POST", `${ID}/approve`, { tenantId: T })).status).toBe(404);
+    expect((await call("POST", `${ID}/approve`, { tenantId: T, confirm: true })).status).toBe(404);
   });
 
   it("refusing tells the coordinator", async () => {
     expect((await call("POST", `${ID}/deny`)).status).toBe(200);
     expect(coord.denyDeviceAuth).toHaveBeenCalledWith(ID);
+  });
+  it("shows where and when the device asked (phishing check)", async () => {
+    results.push([{ tenant: tenant(), isOriginator: true }]);
+    const r = await call("GET", ID);
+    expect(r.json.requesterIp).toBe("203.0.113.7");
+    expect(typeof r.json.requestedAt).toBe("string");
+  });
+
+  it("approval needs confirm: true from the person who started the sign-in", async () => {
+    for (const body of [{ tenantId: T }, { tenantId: T, confirm: false }, { tenantId: T, confirm: "true" }]) {
+      const r = await call("POST", `${ID}/approve`, body, { "x-user": "u-confirm" });
+      expect(r.status).toBe(400);
+      expect(r.json.code).toBe("confirm_required");
+    }
+    expect(coord.approveDeviceAuth).not.toHaveBeenCalled();
+  });
+
+  it("a sign-in older than the coordinator's expiry is refused, even if still listed", async () => {
+    coord.getDeviceAuth.mockResolvedValue({
+      hostname: "h", os: "", fingerprint: "f", pending: true, registered_tenant_id: null,
+      requester_ip: null, requested_at: new Date(Date.now() - 11 * 60_000).toISOString(),
+    });
+    expect((await call("GET", ID, undefined, { "x-user": "u-old" })).status).toBe(404);
+    results.push(ctx(), []);
+    expect((await call("POST", `${ID}/approve`, { tenantId: T, confirm: true }, { "x-user": "u-old" })).status).toBe(404);
+    expect(coord.approveDeviceAuth).not.toHaveBeenCalled();
+  });
+
+  it("a trusted-device session needs a fresh step-up to approve", async () => {
+    results.push(ctx(), []);
+    const r = await call("POST", `${ID}/approve`, { tenantId: T, confirm: true }, { "x-user": "u-step", "x-stale-device": "1" });
+    expect(r.status).toBe(403);
+    expect(r.json.code).toBe("step_up_required");
+    expect(coord.approveDeviceAuth).not.toHaveBeenCalled();
+  });
+
+  it("an approval is audited as device_signin_approved with the requester address", async () => {
+    results.push(ctx(), []);
+    expect((await call("POST", `${ID}/approve`, { tenantId: T, confirm: true }, { "x-user": "u-audit" })).status).toBe(200);
+    expect(logAudit).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "device_signin_approved", metadata: expect.objectContaining({ requesterIp: "203.0.113.7" }) }),
+    );
+  });
+
+  it("approvals are rate-limited per user", async () => {
+    const statuses: number[] = [];
+    for (let i = 0; i < DEVICE_SIGNIN_APPROVE_LIMIT + 1; i++) {
+      statuses.push((await call("POST", `${ID}/approve`, { tenantId: T }, { "x-user": "u-flood" })).status);
+    }
+    expect(statuses.slice(0, DEVICE_SIGNIN_APPROVE_LIMIT).every((st) => st === 400)).toBe(true);
+    expect(statuses.at(-1)).toBe(429);
+    // Another user is not affected
+    expect((await call("POST", `${ID}/approve`, { tenantId: T }, { "x-user": "u-other" })).status).toBe(400);
   });
 });

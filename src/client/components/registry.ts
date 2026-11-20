@@ -30,7 +30,8 @@ export const tabRegistry: TabEntry[] = [
   // Network
   { id: "status", label: "Status", group: "Network", gate: always },
   { id: "derp", label: "DERP relays", group: "Network", gate: perm("manage_acl") },
-  { id: "ipconfig", label: "IP ranges", group: "Network", gate: perm("manage_settings") },
+  // The coordinator assigns address ranges itself; the IP ranges API answers 501 there
+  { id: "ipconfig", label: "IP ranges", group: "Network", gate: (hp, _s, t) => hp("manage_settings") && !t?.coordinatorMode },
   { id: "routes", label: "Routes", group: "Network", gate: perm("manage_devices") },
   { id: "devices", label: "Devices", group: "Network", gate: always },
   { id: "members", label: "Members", group: "Network", gate: always },

@@ -1,4 +1,20 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
+// Peer URLs go through the connect-time guarded request; route it to the
+// stubbed global fetch so these tests can fake the peer.
+const { guardedRequest } = vi.hoisted(() => ({
+  guardedRequest: vi.fn(async (url: string, opts: { method?: string; headers?: Record<string, string>; body?: string }) => {
+    const r = (await fetch(url, { method: opts.method ?? "GET", headers: opts.headers, body: opts.body })) as unknown as {
+      ok: boolean; status?: number; json?: () => Promise<unknown>; text?: () => Promise<string>;
+    };
+    if (!r.ok) return { ok: false, status: r.status ?? 500, text: "" };
+    return { ok: true, status: r.status ?? 200, text: r.json ? JSON.stringify(await r.json()) : await r.text!() };
+  }),
+}));
+vi.mock("../identity/resolver.js", async (orig) => ({
+  ...(await orig<typeof import("../identity/resolver.js")>()),
+  guardedRequest,
+}));
+
 import { sendMessage, sendKeepalive, sendRevoke } from "../federation/transport.js";
 import type { KeepaliveMessage, RevokeMessage, HelloMessage } from "../federation/protocol.js";
 
@@ -66,6 +82,8 @@ describe("federation transport", () => {
 
     expect(result.ok).toBe(false);
     expect(result.error).toContain("403");
+    // The peer's body never reaches our error text
+    expect(result.error).not.toContain("Forbidden");
   });
 
   it("returns error on network failure", async () => {
@@ -86,7 +104,8 @@ describe("federation transport", () => {
     } as HelloMessage, "did:web:b.example.com");
 
     expect(result.ok).toBe(false);
-    expect(result.error).toContain("Connection refused");
+    // A short, sanitized reason only
+    expect(result.error).toBe("unreachable");
   });
 
   it("sendKeepalive returns true on success", async () => {
@@ -169,5 +188,25 @@ describe("federation transport", () => {
       timestamp: new Date().toISOString(),
     }, "did:web:b.example.com");
     expect(ok).toBe(false);
+  });
+
+  it("a peer URL goes through the connect-time guarded request, not a plain fetch", async () => {
+    const plain = vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) });
+    vi.stubGlobal("fetch", plain);
+    guardedRequest.mockClear();
+    guardedRequest.mockResolvedValueOnce({ ok: true, status: 200, text: "{}" });
+    const ok = await sendKeepalive("https://peer.example.net", { type: "KEEPALIVE", sessionId: "s", sequenceNumber: 1, timestamp: new Date().toISOString() }, "did:web:b");
+    expect(ok).toBe(true);
+    expect(guardedRequest).toHaveBeenCalledWith(
+      "https://peer.example.net/api/federation/messages/keepalive",
+      expect.objectContaining({ method: "POST", maxBytes: expect.any(Number) }),
+    );
+    expect(plain).not.toHaveBeenCalled();
+  });
+
+  it("a peer that resolves to a private address at connect time is refused with a short reason", async () => {
+    guardedRequest.mockRejectedValueOnce(Object.assign(new Error("Host resolves to a non-public address"), { code: "EPRIVATE" }));
+    const r = await sendMessage("https://rebind.example.net", { type: "KEEPALIVE", sessionId: "s", sequenceNumber: 1, timestamp: new Date().toISOString() } as never, "did:web:b");
+    expect(r).toEqual({ ok: false, error: "address not allowed" });
   });
 });

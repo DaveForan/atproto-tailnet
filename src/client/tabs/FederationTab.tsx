@@ -9,7 +9,7 @@ import { EmptyState } from "../components/EmptyState";
 import { Loading } from "../components/Loading";
 import { CodeBlock } from "../components/CodeBlock";
 import { useConfirm } from "../components/ConfirmDialog";
-import { relativeTime } from "../lib/utils";
+import { errorMessage, relativeTime } from "../lib/utils";
 import type {
   FederationLink,
   BrokerData,
@@ -17,6 +17,7 @@ import type {
   ScopePolicyConfig,
   ScopeUpdate,
 } from "../lib/types";
+import { LoadError } from "../components/LoadError";
 
 const ALL_SCOPES: FederationScope[] = ["local", "regional", "global"];
 const DEFAULT_POLICY: ScopePolicyConfig = { autoAccept: false, verification: "standard" };
@@ -33,6 +34,7 @@ export function FederationTab() {
   const [did, setDid] = useState("");
   const [broker, setBroker] = useState<BrokerData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   // Request form state
   const [targetSlug, setTargetSlug] = useState("");
@@ -85,23 +87,20 @@ export function FederationTab() {
     setBroker(data);
   }, [currentTenant?.id]);
 
-  useEffect(() => {
+  const loadAll = useCallback(async () => {
     if (!currentTenant) return;
-    const loadAll = async () => {
-      try {
-        const results = await Promise.allSettled([
-          loadLinks(), loadPosture(), loadScope(), loadDid(), loadBroker(),
-        ]);
-        const failures = results.filter((r) => r.status === "rejected");
-        if (failures.length > 0) {
-          toastError("Some federation data failed to load");
-        }
-      } finally {
-        setLoading(false);
-      }
-    };
-    loadAll();
+    try {
+      const results = await Promise.allSettled([
+        loadLinks(), loadPosture(), loadScope(), loadDid(), loadBroker(),
+      ]);
+      const failure = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
+      setLoadError(failure ? `Some federation data failed to load: ${errorMessage(failure.reason, "unknown error")}` : null);
+    } finally {
+      setLoading(false);
+    }
   }, [loadLinks, loadPosture, loadScope, loadDid, loadBroker]);
+
+  useEffect(() => { void loadAll(); }, [loadAll]);
 
   // Categorize links
   const outgoingPending = links.filter(
@@ -240,6 +239,7 @@ export function FederationTab() {
 
   return (
     <div className="tab-content">
+      <LoadError error={loadError} onRetry={loadAll} />
       {/* Request federation */}
       <Card title="Request federation">
         <form className="form-stack" onSubmit={requestFederation}>

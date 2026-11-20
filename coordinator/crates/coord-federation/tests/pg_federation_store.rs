@@ -1,6 +1,6 @@
 //! PgFederationStore integration tests — run against a real PostgreSQL instance.
 //!
-//! Skipped unless TEST_DATABASE_URL is set. To run:
+//! Skipped unless TEST_DATABASE_URL is set (a failure when env CI is set). To run:
 //!   TEST_DATABASE_URL=postgresql://atproto_tailnet:atproto_tailnet@localhost:5432/coord_test \
 //!     cargo test -p coord-federation --test pg_federation_store
 
@@ -13,11 +13,23 @@ use coord_federation::{FederationStore, PgFederationStore};
 use rand::RngCore;
 use sqlx::PgPool;
 
+/// TEST_DATABASE_URL, or `None` to skip. In CI (env `CI` set) a missing URL
+/// is a failure, so these PostgreSQL tests cannot silently skip.
+fn test_database_url() -> Option<String> {
+    match std::env::var("TEST_DATABASE_URL") {
+        Ok(url) if !url.is_empty() => Some(url),
+        _ if std::env::var_os("CI").is_some() => {
+            panic!("CI is set but TEST_DATABASE_URL is not: the PostgreSQL tests must run in CI")
+        }
+        _ => {
+            eprintln!("NOTICE: TEST_DATABASE_URL not set; PostgreSQL test skipped");
+            None
+        }
+    }
+}
+
 async fn setup() -> Option<(PgFederationStore, PgPool)> {
-    let url = match std::env::var("TEST_DATABASE_URL") {
-        Ok(u) => u,
-        Err(_) => return None,
-    };
+    let url = test_database_url()?;
     let pool = PgPool::connect(&url).await.expect("connect to test DB");
 
     sqlx::migrate!("../../migrations")

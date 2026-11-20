@@ -1,6 +1,13 @@
 /** Access rule compilation (ADR-0036): posts, connections and shares → coordinator rules. */
 import { describe, it, expect } from "vitest";
-import { compileAccess, compileDns, MAX_RULE_SOURCES, type CompileInput, type DnsInput } from "../access/compiler.js";
+import {
+  compileAccess,
+  compileDns,
+  findStaleAccess,
+  MAX_RULE_SOURCES,
+  type CompileInput,
+  type DnsInput,
+} from "../access/compiler.js";
 
 const NOW = new Date("2026-11-20T12:00:00Z");
 const base = (over: Partial<CompileInput> = {}): CompileInput => ({
@@ -157,10 +164,106 @@ describe("compileDns", () => {
     ["a pending public service", named({ board: "public", status: "pending" })],
     ["a rejected public service", named({ board: "public", status: "rejected" })],
     ["a removed private service", named({ status: "removed" })],
+    ["a withdrawn private service", named({ status: "rejected" })],
     ["a service without a name", named({ name: null })],
     ["a name equal to the tailnet label", named({ name: "harbor" })],
     ["a device that is not a control-plane id", named({ nodeId: "x" })],
   ])("%s gets no record", (_label, post) => {
     expect(compileDns(input({ posts: [post as DnsInput["posts"][number]] })).records).toEqual([]);
+  });
+});
+
+describe("device changed owner", () => {
+  // Node 10 was alice's; it registered again under carol and kept its id
+  const nodeOwners = new Map([
+    ["10", "u-carol"],
+    ["20", "u-bob"],
+    ["21", "u-carol"],
+  ]);
+  const ownedPost = post({ authorId: "u-alice" });
+  const ownedShare = share({ id: "s1", ownerId: "u-alice" });
+
+  it("a post on the moved device opens nothing", () => {
+    const out = compileAccess(base({ nodeOwners, posts: [ownedPost], connections: [{ postId: "p1", nodeId: "20", userId: "u-bob" }] }));
+    expect(out.rules).toEqual([]);
+  });
+
+  it("a share of the moved device opens nothing", () => {
+    expect(compileAccess(base({ nodeOwners, shares: [ownedShare] })).rules).toEqual([]);
+  });
+
+  it("a connection or guest device that moved is dropped; the rest stays", () => {
+    const owners = new Map([["10", "u-alice"], ["20", "u-bob"], ["21", "u-carol"]]);
+    const out = compileAccess(
+      base({
+        nodeOwners: owners,
+        posts: [ownedPost],
+        connections: [
+          { postId: "p1", nodeId: "20", userId: "u-bob" },
+          { postId: "p1", nodeId: "21", userId: "u-bob" },
+        ],
+        shares: [share({ id: "s1", ownerId: "u-alice", guestId: "u-bob", guestNodeIds: ["20", "21"] })],
+      }),
+    );
+    expect(out.rules).toEqual([
+      { src_nodes: [20], dst_node: 10, ports: [{ proto: "tcp", first: 3000, last: 3000 }] },
+      { src_nodes: [20], dst_node: 10, ports: [{ proto: "tcp", first: 22, last: 22 }] },
+    ]);
+  });
+
+  it("a device the control plane does not list is not judged", () => {
+    expect(compileAccess(base({ nodeOwners: new Map(), shares: [ownedShare] })).rules).toHaveLength(1);
+  });
+
+  it("findStaleAccess names what must be closed", () => {
+    const stale = findStaleAccess({
+      nodeOwners,
+      posts: [ownedPost, post({ id: "p2", nodeId: "20", authorId: "u-bob" }), post({ id: "p3", status: "removed", authorId: "u-alice" })],
+      connections: [
+        { postId: "p2", nodeId: "21", userId: "u-alice" },
+        { postId: "p2", nodeId: "20", userId: "u-bob" },
+      ],
+      shares: [
+        ownedShare,
+        share({ id: "s2", status: "ended", ownerId: "u-alice" }),
+        share({ id: "s3", ownerNodeId: "20", ownerId: "u-bob", guestId: "u-alice", guestNodeIds: ["21"] }),
+        share({ id: "s4", ownerNodeId: "20", ownerId: "u-bob", guestId: "u-carol", guestNodeIds: ["21", "10", "99"] }),
+      ],
+    });
+    expect(stale).toEqual({
+      postIds: ["p1"],
+      connections: [{ postId: "p2", nodeId: "21" }],
+      // s3: its only chosen guest device moved, so it ends rather than widening
+      shareIds: ["s1", "s3"],
+      guestNodes: [],
+    });
+    const partial = findStaleAccess({
+      nodeOwners,
+      posts: [],
+      connections: [],
+      shares: [share({ id: "s5", ownerNodeId: "20", ownerId: "u-bob", guestId: "u-alice", guestNodeIds: ["21", "30"] })],
+    });
+    expect(partial.guestNodes).toEqual([{ shareId: "s5", keep: ["30"] }]);
+  });
+
+  it("names on the moved device are not published", () => {
+    const dns = compileDns({
+      baseDomain: "ts.example.com",
+      tailnetLabel: "harbor",
+      upstream: [],
+      nodeOwners,
+      posts: [{ id: "p1", board: "private", status: "approved", name: "notes", nodeId: "10", authorId: "u-alice" }],
+      connections: [],
+    });
+    expect(dns.records).toEqual([]);
+  });
+});
+
+describe("expiry", () => {
+  it("a share is closed by the first compile at or after its expiry", () => {
+    const expiresAt = new Date(NOW.getTime() + 1000);
+    const s = share({ expiresAt });
+    expect(compileAccess(base({ shares: [s], now: new Date(NOW.getTime() + 999) })).rules).toHaveLength(1);
+    expect(compileAccess(base({ shares: [s], now: expiresAt })).rules).toEqual([]);
   });
 });

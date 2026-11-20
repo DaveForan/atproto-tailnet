@@ -1,6 +1,7 @@
 mod state;
 pub mod gateway;
 mod key_handler;
+pub mod client_ip;
 pub mod derp_handler;
 pub mod device_auth;
 mod noise_handler;
@@ -196,8 +197,19 @@ pub async fn __test_handle_register(
     machine_key: &[u8; 32],
     body: &str,
 ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
-    let (json, _generation) = control::handle_register(state, machine_key, body).await?;
+    let (json, _generation) = control::handle_register(state, machine_key, body, None).await?;
     Ok(json)
+}
+
+/// Like `__test_handle_register`, as if the Noise connection came from `client_ip`.
+#[doc(hidden)]
+pub async fn __test_handle_register_from(
+    state: &Arc<CoordinatorState>,
+    machine_key: &[u8; 32],
+    body: &str,
+    client_ip: Option<std::net::IpAddr>,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    Ok(control::handle_register(state, machine_key, body, client_ip).await?.0)
 }
 
 #[doc(hidden)]
@@ -212,10 +224,10 @@ pub async fn __test_handle_map(
 #[doc(hidden)]
 pub async fn __test_build_delta(
     state: &Arc<CoordinatorState>,
-    machine_key: &[u8; 32],
+    viewer: coord_core::TenantId,
     event: &coord_store::PeerEvent,
 ) -> Option<String> {
-    control::build_delta_response(state, machine_key, event).await
+    control::build_delta_response(state, viewer, event).await
 }
 
 /// Drive `/machine/map` (streaming or not) as the Noise H2 server would; the
@@ -237,7 +249,7 @@ pub async fn __test_serve_control_h2(
     io: tokio::io::DuplexStream,
     machine_key: [u8; 32],
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    noise_handler::serve_control_h2(state, io, machine_key).await
+    noise_handler::serve_control_h2(state, io, machine_key, None).await
 }
 
 pub use noise_handler::{MAX_CONCURRENT_STREAMS, MAX_CONTROL_BODY};

@@ -7,12 +7,13 @@ import { useConfirm } from "../components/ConfirmDialog";
 import { useTenantData } from "../hooks/useTenantData";
 import { useTenantMutation } from "../hooks/useMutation";
 import type { RouteData, RouteEntry } from "../lib/types";
+import { LoadError } from "../components/LoadError";
 
 const ROUTES_FALLBACK: RouteData = { exitNodes: [], subnets: [] };
 
 export function RoutesTab() {
   const { hasPerm } = useApp();
-  const { data: routes, loading, reload } = useTenantData<RouteData>(
+  const { data: routes, loading, error, reload } = useTenantData<RouteData>(
     "/routes",
     ROUTES_FALLBACK,
   );
@@ -51,6 +52,7 @@ export function RoutesTab() {
 
   return (
     <div className="tab-content">
+      <LoadError error={error} onRetry={reload} />
       <Card title="Exit nodes">
         {routes.exitNodes.length > 0 ? (
           <RouteList

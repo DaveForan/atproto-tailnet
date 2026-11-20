@@ -4,13 +4,14 @@
 //! traffic runs through WireGuard and the relay, as with real devices.
 
 use std::net::{Ipv4Addr, SocketAddrV4};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bytes::Bytes;
 use coord_derp::{AllowAll, DerpConfig, DerpServer, Scope};
 use coord_gateway::netstack::{Accepted, NetStack};
-use coord_gateway::proxy::{self, Certificate, Route, Services};
+use coord_gateway::proxy::{self, Certificate, Denied, Limits, Route, Services};
 use coord_gateway::tunnel::{public_key, Devices, Tailnet};
 use http::{Request, Response, StatusCode};
 use http_body_util::{BodyExt, Full};
@@ -41,22 +42,26 @@ impl Devices for Fixed {
     }
 }
 
-/// One service, `food-app`, on port 3000 of the app device, for the viewer only.
-struct OneService;
+/// One service, `food-app`, on port 3000 of the app device, for the viewer
+/// only while `allowed` holds; `chat` on 3001 likewise; `nameless` is visible
+/// but the gateway does not know the caller's sign-in name.
+struct OneService {
+    allowed: Arc<AtomicBool>,
+}
 
 #[async_trait::async_trait]
 impl Services for OneService {
-    async fn route(&self, server_name: &str, caller: Ipv4Addr) -> Option<Route> {
+    async fn route(&self, server_name: &str, caller: Ipv4Addr) -> Result<Route, Denied> {
         let port = match server_name {
             "food-app.ts.example.com" => 3000,
             "chat.ts.example.com" => 3001,
-            _ => return None,
+            "nameless.ts.example.com" if caller == VIEWER => return Err(Denied::UnknownUser),
+            _ => return Err(Denied::NotFound),
         };
-        (caller == VIEWER).then(|| Route {
-            target: SocketAddrV4::new(APP_DEVICE, port),
-            user: "alice.example.com".into(),
-            device: "alice-phone".into(),
-        })
+        if caller != VIEWER || !self.allowed.load(Ordering::SeqCst) {
+            return Err(Denied::NotFound);
+        }
+        Ok(Route { target: SocketAddrV4::new(APP_DEVICE, port), user: "alice.example.com".into(), device: "alice-phone".into() })
     }
 }
 
@@ -83,15 +88,24 @@ impl ServerCertVerifier for Pinned {
     }
 }
 
+/// (method, path, headers of interest, body)
+type SeenRequest = (String, String, Vec<(String, String)>, Vec<u8>);
+
 struct World {
     viewer: NetStack,
     outsider: NetStack,
     connector: TlsConnector,
+    /// The viewer's access to the services: clear it to withdraw access.
+    allowed: Arc<AtomicBool>,
     /// Requests the application received: (method, path, headers of interest, body)
-    seen: Arc<Mutex<Vec<(String, String, Vec<(String, String)>, Vec<u8>)>>>,
+    seen: Arc<Mutex<Vec<SeenRequest>>>,
 }
 
 async fn world() -> World {
+    world_with(Limits::default()).await
+}
+
+async fn world_with(limits: Limits) -> World {
     let relay = Arc::new(DerpServer::new([9; 32], Arc::new(AllowAll), DerpConfig::default()));
     let scope = || Scope { tenant: [1; 16], parent: None };
     let secrets: [[u8; 32]; 4] = [[11; 32], [22; 32], [33; 32], [44; 32]];
@@ -108,7 +122,8 @@ async fn world() -> World {
     let cert_der = made.cert.der().clone();
     let key_der = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(made.signing_key.serialize_der()));
     let certificate = Arc::new(Certificate::from_der(vec![cert_der.clone()], key_der).unwrap());
-    tokio::spawn(proxy::serve(gateway, certificate, Arc::new(OneService)));
+    let allowed = Arc::new(AtomicBool::new(true));
+    tokio::spawn(proxy::serve_with(gateway, certificate, Arc::new(OneService { allowed: allowed.clone() }), limits));
 
     // The application on the app device: answers with what it saw
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -170,7 +185,7 @@ async fn world() -> World {
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(Pinned(cert_der, provider)))
         .with_no_client_auth();
-    World { viewer, outsider, connector: TlsConnector::from(Arc::new(client)), seen }
+    World { viewer, outsider, connector: TlsConnector::from(Arc::new(client)), allowed, seen }
 }
 
 /// One HTTPS request from `from` to the gateway, with this server name.
@@ -287,4 +302,116 @@ async fn an_upgraded_connection_carries_bytes_both_ways() {
         tokio::time::timeout(Duration::from_secs(5), tls.read_exact(&mut back)).await.unwrap().unwrap();
         assert_eq!(back, message);
     }
+}
+
+#[tokio::test]
+async fn lookalike_identity_and_forwarding_headers_are_removed() {
+    let w = world().await;
+    let name = "food-app.ts.example.com";
+    let req = Request::builder()
+        .uri("/")
+        .header("host", name)
+        .header("X-Tailnet_User", "admin.example.com")
+        .header("x_tailnet_user", "root.example.com")
+        .header("x_tailnet-device", "admin-pc")
+        .header("Forwarded", "for=1.2.3.4;by=10.0.0.1;host=evil.example")
+        .header("x_forwarded_for", "1.2.3.4")
+        .header("X-Forwarded-For", "5.6.7.8")
+        .header("X-Real-IP", "1.2.3.4")
+        .body(Full::default())
+        .unwrap();
+    let (status, _, _) = request(&w, &w.viewer, name, req).await.unwrap();
+    assert_eq!(status, StatusCode::OK);
+    let seen = w.seen.lock().unwrap().clone();
+    let got = &seen[0].2;
+    let all = |k: &str| got.iter().filter(|(n, _)| n == k).map(|(_, v)| v.as_str()).collect::<Vec<_>>();
+    for (n, _) in got {
+        let normal = n.replace('_', "-");
+        if normal.starts_with("x-tailnet-") || normal.starts_with("x-forwarded-") || normal == "forwarded" {
+            assert_eq!(n, &normal, "no lookalike of a gateway header arrives: {n}");
+        }
+    }
+    assert_eq!(all("x-tailnet-user"), vec!["alice.example.com"]);
+    assert_eq!(all("x-tailnet-device"), vec!["alice-phone"]);
+    assert_eq!(all("x-forwarded-for"), vec!["100.64.0.3"]);
+    assert_eq!(all("forwarded"), vec!["for=100.64.0.3;proto=https;host=food-app.ts.example.com"]);
+    assert!(all("x-real-ip").is_empty());
+}
+
+#[tokio::test]
+async fn a_caller_whose_identity_is_unknown_is_refused_not_given_a_shared_one() {
+    let w = world().await;
+    let name = "nameless.ts.example.com";
+    let (status, headers, body) = request(&w, &w.viewer, name, get(name, "/").body(Full::default()).unwrap()).await.unwrap();
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(headers["retry-after"], "30");
+    assert!(String::from_utf8_lossy(&body).contains("does not know"));
+    assert!(w.seen.lock().unwrap().is_empty(), "the application saw nothing");
+}
+
+/// Open the echo service and switch protocols; returns the upgraded stream.
+async fn open_chat(w: &World) -> tokio_rustls::client::TlsStream<tokio::io::DuplexStream> {
+    let name = "chat.ts.example.com";
+    let tcp = w.viewer.connect(SocketAddrV4::new(GATEWAY, 443)).await.unwrap();
+    let mut tls = w.connector.connect(ServerName::try_from(name).unwrap(), tcp).await.unwrap();
+    tls.write_all(format!("GET /socket HTTP/1.1\r\nHost: {name}\r\nConnection: Upgrade\r\nUpgrade: echo\r\n\r\n").as_bytes()).await.unwrap();
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        tokio::time::timeout(Duration::from_secs(5), tls.read_exact(&mut byte)).await.unwrap().unwrap();
+        head.push(byte[0]);
+    }
+    assert!(String::from_utf8_lossy(&head).starts_with("HTTP/1.1 101"));
+    tls
+}
+
+async fn echoes(tls: &mut tokio_rustls::client::TlsStream<tokio::io::DuplexStream>) -> bool {
+    let attempt = async {
+        tls.write_all(b"ping").await.ok()?;
+        let mut back = [0u8; 4];
+        tls.read_exact(&mut back).await.ok()?;
+        Some(back == *b"ping")
+    };
+    matches!(tokio::time::timeout(Duration::from_secs(3), attempt).await, Ok(Some(true)))
+}
+
+/// True when the stream ends (or fails) within a few seconds.
+async fn closes(tls: &mut tokio_rustls::client::TlsStream<tokio::io::DuplexStream>) -> bool {
+    let mut buf = [0u8; 16];
+    matches!(tokio::time::timeout(Duration::from_secs(4), tls.read(&mut buf)).await, Ok(Ok(0)) | Ok(Err(_)))
+}
+
+#[tokio::test]
+async fn an_upgraded_connection_closes_when_the_caller_loses_access() {
+    let w = world_with(Limits { recheck_every: Duration::from_millis(200), max_lifetime: Duration::from_secs(3600) }).await;
+    let mut chat = open_chat(&w).await;
+    assert!(echoes(&mut chat).await);
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(echoes(&mut chat).await, "still open while access holds");
+    // The viewer disconnects from the post (or is removed, or the tailnet suspended)
+    w.allowed.store(false, Ordering::SeqCst);
+    assert!(closes(&mut chat).await, "the WebSocket must not outlive the access");
+}
+
+#[tokio::test]
+async fn an_upgraded_connection_ends_at_its_longest_life() {
+    let w = world_with(Limits { recheck_every: Duration::from_millis(200), max_lifetime: Duration::from_millis(800) }).await;
+    let mut chat = open_chat(&w).await;
+    assert!(echoes(&mut chat).await);
+    assert!(closes(&mut chat).await, "an upgraded connection has a longest life");
+}
+
+#[tokio::test]
+async fn a_keep_alive_connection_closes_when_the_caller_loses_access() {
+    let w = world_with(Limits { recheck_every: Duration::from_millis(200), max_lifetime: Duration::from_secs(3600) }).await;
+    let name = "food-app.ts.example.com";
+    let tcp = w.viewer.connect(SocketAddrV4::new(GATEWAY, 443)).await.unwrap();
+    let mut tls = w.connector.connect(ServerName::try_from(name).unwrap(), tcp).await.unwrap();
+    tls.write_all(format!("GET / HTTP/1.1\r\nHost: {name}\r\n\r\n").as_bytes()).await.unwrap();
+    let mut buf = vec![0u8; 1024];
+    let n = tokio::time::timeout(Duration::from_secs(5), tls.read(&mut buf)).await.unwrap().unwrap();
+    assert!(String::from_utf8_lossy(&buf[..n]).starts_with("HTTP/1.1 200"));
+    w.allowed.store(false, Ordering::SeqCst);
+    let ended = matches!(tokio::time::timeout(Duration::from_secs(4), tls.read(&mut buf)).await, Ok(Ok(0)) | Ok(Err(_)));
+    assert!(ended, "an idle keep-alive connection is closed when access ends");
 }

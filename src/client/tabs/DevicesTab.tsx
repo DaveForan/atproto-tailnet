@@ -9,12 +9,13 @@ import { useConfirm } from "../components/ConfirmDialog";
 import { MachineLockCard } from "../components/MachineLock";
 import { formatExpiry, relativeTime } from "../lib/utils";
 import type { AuthKeyInfo, DevicesData } from "../lib/types";
+import { LoadError } from "../components/LoadError";
 
 const KEYS_FALLBACK: { keys: AuthKeyInfo[] } = { keys: [] };
 
 export function DevicesTab() {
   const { hasPerm, reload, user, currentTenant } = useApp();
-  const { data: devices, loading, reload: reloadDevices } = useTenantData<DevicesData | null>("/devices", null);
+  const { data: devices, loading, error, reload: reloadDevices } = useTenantData<DevicesData | null>("/devices", null);
   const { mutate, busy } = useTenantMutation({ onError: "Failed to remove device" });
   const canManage = hasPerm("manage_devices");
   const confirm = useConfirm();
@@ -32,8 +33,11 @@ export function DevicesTab() {
 
   return (
     <div className="tab-content">
+      <LoadError error={error} onRetry={reloadDevices} />
       <Card title="Devices">
-        {!devices || devices.byUser.length === 0 ? (
+        {error && !devices ? (
+          <p className="help-text">The device list could not be loaded.</p>
+        ) : !devices || devices.byUser.length === 0 ? (
           <EmptyState>
             No devices connected. Use the Add device tab to connect your first device.
           </EmptyState>
@@ -96,7 +100,7 @@ function keyState(k: AuthKeyInfo): "revoked" | "expired" | "used" | "active" {
 
 function AuthKeysCard() {
   const { hasPerm, user } = useApp();
-  const { data, loading, reload } = useTenantData("/auth-keys", KEYS_FALLBACK);
+  const { data, loading, error, reload } = useTenantData("/auth-keys", KEYS_FALLBACK);
   const { mutate, busy } = useTenantMutation({ onError: "Failed to revoke key", reload });
   const canManage = hasPerm("manage_devices");
   const confirm = useConfirm();
@@ -119,9 +123,10 @@ function AuthKeysCard() {
           ? "All pre-auth keys issued for this tailnet. Revoke a key to stop it from registering new devices; already-connected devices are not affected."
           : "Pre-auth keys you have generated. Revoke a key you no longer need."}
       </p>
+      <LoadError error={error} onRetry={reload} />
       {loading ? (
         <Loading />
-      ) : data.keys.length === 0 ? (
+      ) : error && data.keys.length === 0 ? null : data.keys.length === 0 ? (
         <EmptyState>No auth keys issued.</EmptyState>
       ) : (
         <div className="table-wrap">

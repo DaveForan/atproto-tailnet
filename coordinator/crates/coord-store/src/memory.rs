@@ -36,7 +36,8 @@ struct StoredNode {
 #[derive(Debug)]
 struct PreAuthKey {
     id: uuid::Uuid,
-    key: String,
+    /// Non-secret start of the key; the map is keyed by the key's hash.
+    prefix: String,
     tenant_id: TenantId,
     used: bool,
     reusable: bool,
@@ -161,14 +162,14 @@ impl MemoryStore {
         self.remote_tx.subscribe()
     }
 
-    pub fn get_tenant_configs(&self, tenant_id: TenantId) -> Vec<(String, serde_json::Value)> {
+    pub fn get_tenant_configs(&self, tenant_id: TenantId) -> Result<Vec<(String, serde_json::Value)>, CoordError> {
         let cfg = self.tenant_config.lock().unwrap_or_else(|e| e.into_inner());
-        cfg.iter().filter(|((t, _), _)| *t == tenant_id).map(|((_, k), v)| (k.clone(), v.clone())).collect()
+        Ok(cfg.iter().filter(|((t, _), _)| *t == tenant_id).map(|((_, k), v)| (k.clone(), v.clone())).collect())
     }
 
-    pub fn list_tenant_configs(&self) -> Vec<(TenantId, String, serde_json::Value)> {
+    pub fn list_tenant_configs(&self) -> Result<Vec<(TenantId, String, serde_json::Value)>, CoordError> {
         let cfg = self.tenant_config.lock().unwrap_or_else(|e| e.into_inner());
-        cfg.iter().map(|((t, k), v)| (*t, k.clone(), v.clone())).collect()
+        Ok(cfg.iter().map(|((t, k), v)| (*t, k.clone(), v.clone())).collect())
     }
 
     pub fn set_tenant_config(&self, tenant_id: TenantId, kind: &str, value: Option<serde_json::Value>) -> Result<(), CoordError> {
@@ -183,7 +184,7 @@ impl MemoryStore {
         Ok(())
     }
 
-    pub fn sign_in_start(&self, id: &str, machine_key: &[u8; 32], hostname: &str, os: &str) -> Result<(), CoordError> {
+    pub fn sign_in_start(&self, id: &str, machine_key: &[u8; 32], hostname: &str, os: &str, requester_ip: Option<&str>) -> Result<(), CoordError> {
         let now = crate::now_secs();
         let mut all = self.sign_ins.lock().unwrap_or_else(|e| e.into_inner());
         all.retain(|_, (p, exp)| &p.machine_key != machine_key && *exp > now);
@@ -192,7 +193,14 @@ impl MemoryStore {
                 all.remove(&oldest);
             }
         }
-        let p = coord_core::PendingSignIn { machine_key: *machine_key, hostname: hostname.to_string(), os: os.to_string(), decision: None };
+        let p = coord_core::PendingSignIn {
+            machine_key: *machine_key,
+            hostname: hostname.to_string(),
+            os: os.to_string(),
+            decision: None,
+            requester_ip: requester_ip.map(str::to_string),
+            requested_at: chrono::DateTime::from_timestamp(now, 0).unwrap_or_default(),
+        };
         all.insert(id.to_string(), (p, now + coord_core::signin::SIGN_IN_TTL_SECS));
         Ok(())
     }
@@ -256,20 +264,38 @@ impl MemoryStore {
         locks.iter().map(|((t, o), l)| (*t, o.clone(), l.clone())).collect()
     }
 
-    pub fn get_owner_lock(&self, tenant_id: TenantId, owner: &str) -> Option<coord_core::OwnerLock> {
-        self.owner_locks.lock().unwrap_or_else(|e| e.into_inner()).get(&(tenant_id, owner.to_string())).cloned()
+    pub fn get_owner_lock(&self, tenant_id: TenantId, owner: &str) -> coord_core::LockRead {
+        match self.owner_locks.lock().unwrap_or_else(|e| e.into_inner()).get(&(tenant_id, owner.to_string())) {
+            Some(l) => coord_core::LockRead::Locked(l.clone()),
+            None => coord_core::LockRead::Unlocked,
+        }
     }
 
-    pub fn set_owner_lock(&self, tenant_id: TenantId, owner: &str, lock: Option<coord_core::OwnerLock>) -> Result<(), CoordError> {
+    /// The map's mutex is held across `f`, so updates cannot interleave.
+    pub fn update_owner_lock<R, F>(&self, tenant_id: TenantId, owner: &str, f: F) -> Result<R, CoordError>
+    where
+        F: FnOnce(coord_core::LockRead) -> (coord_core::LockWrite, R),
+    {
         if self.get_tenant(tenant_id).is_none() {
             return Err(CoordError::TenantNotFound(tenant_id));
         }
         let mut locks = self.owner_locks.lock().unwrap_or_else(|e| e.into_inner());
-        match lock {
-            Some(l) => locks.insert((tenant_id, owner.to_string()), l),
-            None => locks.remove(&(tenant_id, owner.to_string())),
+        let key = (tenant_id, owner.to_string());
+        let read = match locks.get(&key) {
+            Some(l) => coord_core::LockRead::Locked(l.clone()),
+            None => coord_core::LockRead::Unlocked,
         };
-        Ok(())
+        let (write, out) = f(read);
+        match write {
+            coord_core::LockWrite::Keep => {}
+            coord_core::LockWrite::Set(l) => {
+                locks.insert(key, l);
+            }
+            coord_core::LockWrite::Remove => {
+                locks.remove(&key);
+            }
+        }
+        Ok(out)
     }
 
     pub fn list_tenants(&self) -> Vec<Tenant> {
@@ -402,10 +428,10 @@ impl MemoryStore {
         let id = uuid::Uuid::new_v4();
         let mut keys = self.preauth_keys.lock().unwrap_or_else(|e| e.into_inner());
         keys.insert(
-            key.clone(),
+            crate::hash_preauth_key(&key),
             PreAuthKey {
                 id,
-                key: key.clone(),
+                prefix: coord_core::preauth_key_prefix(&key),
                 tenant_id,
                 used: false,
                 reusable: opts.reusable,
@@ -428,7 +454,7 @@ impl MemoryStore {
             .map(|k| PreAuthKeyInfo {
                 id: k.id,
                 tenant_id: k.tenant_id,
-                prefix: coord_core::preauth_key_prefix(&k.key),
+                prefix: k.prefix.clone(),
                 owner: k.owner.clone(),
                 tags: k.tags.clone(),
                 reusable: k.reusable,
@@ -474,12 +500,12 @@ impl MemoryStore {
     /// Tenant a pre-auth key belongs to, without validating or consuming it.
     pub fn preauth_key_tenant(&self, key: &str) -> Option<TenantId> {
         let keys = self.preauth_keys.lock().unwrap_or_else(|e| e.into_inner());
-        keys.get(key).map(|k| k.tenant_id)
+        keys.get(&crate::hash_preauth_key(key)).map(|k| k.tenant_id)
     }
 
     pub fn validate_preauth_key(&self, key: &str) -> Option<PreAuthGrant> {
         let mut keys = self.preauth_keys.lock().unwrap_or_else(|e| e.into_inner());
-        let pak = keys.get_mut(key)?;
+        let pak = keys.get_mut(&crate::hash_preauth_key(key))?;
 
         if pak.revoked_at.is_some() {
             return None;

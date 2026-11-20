@@ -415,7 +415,6 @@ dependencies = [
  "coord-proto",
  "serde",
  "serde_json",
- "tracing",
 ]
 
 [[package]]
@@ -441,6 +440,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
+ "ipnetwork",
  "rand 0.9.5",
  "rcgen",
  "reqwest",
@@ -451,7 +451,6 @@ dependencies = [
  "tokio-rustls",
  "tokio-stream",
  "tower",
- "tower-http",
  "tracing",
  "uuid",
  "zstd",
@@ -518,9 +517,7 @@ dependencies = [
  "blake2",
  "boringtun",
  "bytes",
- "coord-core",
  "coord-derp",
- "hex",
  "http",
  "http-body-util",
  "hyper",
@@ -533,7 +530,6 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tracing",
- "x25519-dalek",
 ]
 
 [[package]]
@@ -560,8 +556,6 @@ dependencies = [
  "chacha20poly1305",
  "coord-core",
  "curve25519-dalek",
- "http",
- "hyper",
  "rand 0.9.5",
  "snow",
  "thiserror",
@@ -574,8 +568,6 @@ dependencies = [
 name = "coord-proto"
 version = "0.1.0"
 dependencies = [
- "chrono",
- "coord-core",
  "serde",
  "serde_json",
 ]
@@ -598,7 +590,6 @@ dependencies = [
  "rand 0.9.5",
  "serde",
  "serde_json",
- "sqlx",
  "tokio",
  "toml",
  "tracing",
@@ -614,8 +605,8 @@ dependencies = [
  "hex",
  "rand 0.9.5",
  "serde_json",
+ "sha2",
  "sqlx",
- "thiserror",
  "tokio",
  "tracing",
  "uuid",
@@ -3150,7 +3141,6 @@ dependencies = [
  "tower",
  "tower-layer",
  "tower-service",
- "tracing",
  "url",
 ]
 

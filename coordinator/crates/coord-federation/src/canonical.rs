@@ -158,7 +158,7 @@ pub fn es_number_to_string(f: f64) -> Result<String, JcsError> {
             out.push_str(&digits[1..]);
         }
         out.push('e');
-        out.push(if n - 1 >= 0 { '+' } else { '-' });
+        out.push(if n > 0 { '+' } else { '-' });
         let _ = write!(out, "{}", (n - 1).abs());
     }
     Ok(out)
@@ -169,6 +169,8 @@ mod tests {
     use super::*;
 
     #[test]
+    // The vectors are written as published (ECMAScript / RFC 8785 examples)
+    #[allow(clippy::excessive_precision)]
     fn es_numbers() {
         let cases: &[(f64, &str)] = &[
             (1.0, "1"),

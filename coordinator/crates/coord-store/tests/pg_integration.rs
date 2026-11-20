@@ -1,6 +1,6 @@
 //! PgStore integration tests — run against a real PostgreSQL instance.
 //!
-//! Skipped unless TEST_DATABASE_URL is set. To run:
+//! Skipped unless TEST_DATABASE_URL is set (a failure when env CI is set). To run:
 //!   TEST_DATABASE_URL=postgresql://atproto_tailnet:atproto_tailnet@localhost:5432/coord_test \
 //!     cargo test -p coord-store --test pg_integration
 
@@ -9,11 +9,23 @@ use coord_store::PgStore;
 use rand::RngCore;
 use sqlx::PgPool;
 
+/// TEST_DATABASE_URL, or `None` to skip. In CI (env `CI` set) a missing URL
+/// is a failure, so these PostgreSQL tests cannot silently skip.
+fn test_database_url() -> Option<String> {
+    match std::env::var("TEST_DATABASE_URL") {
+        Ok(url) if !url.is_empty() => Some(url),
+        _ if std::env::var_os("CI").is_some() => {
+            panic!("CI is set but TEST_DATABASE_URL is not: the PostgreSQL tests must run in CI")
+        }
+        _ => {
+            eprintln!("NOTICE: TEST_DATABASE_URL not set; PostgreSQL test skipped");
+            None
+        }
+    }
+}
+
 async fn setup() -> Option<PgStore> {
-    let url = match std::env::var("TEST_DATABASE_URL") {
-        Ok(u) => u,
-        Err(_) => return None,
-    };
+    let url = test_database_url()?;
     let pool = PgPool::connect(&url).await.expect("connect to test DB");
     let store = PgStore::new(pool).await.expect("PgStore::new");
     Some(store)
@@ -490,4 +502,66 @@ async fn pg_events_reach_the_other_replica_but_not_twice_the_sender() {
         }
     }
     assert_eq!(local, 1);
+}
+
+/// A pool whose connections use `schema` as their only search path.
+async fn pool_in_schema(url: &str, schema: &str) -> PgPool {
+    let schema = schema.to_string();
+    sqlx::postgres::PgPoolOptions::new()
+        .max_connections(2)
+        .after_connect(move |conn, _| {
+            let schema = schema.clone();
+            Box::pin(async move {
+                sqlx::query(&format!("SET search_path TO {schema}")).execute(conn).await?;
+                Ok(())
+            })
+        })
+        .connect(url)
+        .await
+        .expect("connect to test DB")
+}
+
+#[tokio::test]
+async fn relay_store_verifies_the_schema_without_migrating() {
+    let Some(url) = test_database_url() else { return };
+    // A migrated database: the relay connects
+    let migrated = PgStore::new(PgPool::connect(&url).await.unwrap()).await.expect("migrate");
+    drop(migrated);
+    PgStore::new_verified(PgPool::connect(&url).await.unwrap()).await.expect("schema is current");
+
+    let admin = PgPool::connect(&url).await.unwrap();
+    let suffix = hex::encode(rand::random::<[u8; 4]>());
+
+    // Nothing there: refused, and nothing was created
+    let empty = format!("relay_empty_{suffix}");
+    sqlx::query(&format!("CREATE SCHEMA {empty}")).execute(&admin).await.unwrap();
+    let err = PgStore::new_verified(pool_in_schema(&url, &empty).await).await.expect_err("refused").to_string();
+    assert!(err.contains("start a control process first"), "{err}");
+    let tables: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = $1")
+        .bind(&empty)
+        .fetch_one(&admin)
+        .await
+        .unwrap();
+    assert_eq!(tables, 0, "a relay never creates tables");
+
+    // An older schema: refused with both versions in the message
+    let old = format!("relay_old_{suffix}");
+    sqlx::query(&format!("CREATE SCHEMA {old}")).execute(&admin).await.unwrap();
+    sqlx::query(&format!(
+        "CREATE TABLE {old}._sqlx_migrations (version BIGINT PRIMARY KEY, description TEXT NOT NULL, installed_on TIMESTAMPTZ NOT NULL DEFAULT now(), \
+         success BOOLEAN NOT NULL, checksum BYTEA NOT NULL, execution_time BIGINT NOT NULL)"
+    ))
+    .execute(&admin)
+    .await
+    .unwrap();
+    sqlx::query(&format!("INSERT INTO {old}._sqlx_migrations VALUES (1, 'initial', now(), TRUE, '\\x00', 1)"))
+        .execute(&admin)
+        .await
+        .unwrap();
+    let err = PgStore::new_verified(pool_in_schema(&url, &old).await).await.expect_err("refused").to_string();
+    assert!(err.contains("applied version 1") && err.contains(&format!("needs {}", PgStore::required_schema_version())), "{err}");
+
+    for s in [empty, old] {
+        sqlx::query(&format!("DROP SCHEMA {s} CASCADE")).execute(&admin).await.unwrap();
+    }
 }

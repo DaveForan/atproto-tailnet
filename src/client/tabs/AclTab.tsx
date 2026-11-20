@@ -8,10 +8,12 @@ import { EmptyState } from "../components/EmptyState";
 import { Loading } from "../components/Loading";
 import { useConfirm } from "../components/ConfirmDialog";
 import type { AclRule } from "../lib/types";
+import { LoadError } from "../components/LoadError";
+import { errorMessage } from "../lib/utils";
 
 export function AclTab() {
   const { currentTenant, hasPerm } = useApp();
-  const { toast, toastError } = useToast();
+  const { toast } = useToast();
   const { mutate, busy } = useTenantMutation({ onError: "Failed to save ACL policy" });
   const coordinatorMode = !!currentTenant?.coordinatorTenantId;
   const [users, setUsers] = useState<string[]>([]);
@@ -19,6 +21,7 @@ export function AclTab() {
   const [groups, setGroups] = useState<Record<string, string[]>>({});
   const [hosts, setHosts] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const confirm = useConfirm();
   const canManage = hasPerm("manage_acl");
 
@@ -39,6 +42,7 @@ export function AclTab() {
     if (!currentTenant) return;
     try {
       const data = await aclService.getAcl(currentTenant.id);
+      setLoadError(null);
       if (data) {
         setAcls(data.policy.acls ?? []);
         setGroups(data.policy.groups ?? {});
@@ -46,9 +50,7 @@ export function AclTab() {
         setUsers(data.users ?? []);
       }
     } catch (e) {
-      toastError(
-        e instanceof Error ? e.message : "Failed to load ACL policy",
-      );
+      setLoadError(errorMessage(e, "Failed to load ACL policy"));
     } finally {
       setLoading(false);
     }
@@ -178,6 +180,7 @@ export function AclTab() {
 
   return (
     <div className="tab-content">
+      <LoadError error={loadError} onRetry={loadAcl} />
       {coordinatorMode && (
         <p className="notice mb-12" role="note">
           This tailnet runs on the built-in coordinator, which supports rules between hosts,

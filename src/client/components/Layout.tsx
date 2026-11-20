@@ -7,15 +7,7 @@ import { BoardText } from "./BoardText";
 import { boardsService } from "../services/boards";
 import { NotificationBell } from "./NotificationBell";
 import { tabEnabled, tabRegistry, type TabGroup } from "./registry";
-
-function safeUrl(url?: string): string {
-  if (!url) return "";
-  try {
-    const u = new URL(url);
-    if (u.protocol === "https:" || u.protocol === "http:") return url;
-  } catch { /* ignore */ }
-  return "";
-}
+import { safeUrl } from "../lib/utils";
 
 // Sidebar open/close state shared between Header and Sidebar
 interface SidebarState {

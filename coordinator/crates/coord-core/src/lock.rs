@@ -50,6 +50,61 @@ pub enum LockOutcome {
     Refused,
 }
 
+/// What the store holds for one (tenant, owner).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LockRead {
+    /// No lock: the owner may register any machine.
+    Unlocked,
+    Locked(OwnerLock),
+    /// A row exists but cannot be decoded. Treated as locked with no machine
+    /// allowed (fail closed) until an admin sets or removes the lock.
+    Malformed,
+}
+
+impl LockRead {
+    /// The decoded lock, if there is a well-formed one.
+    pub fn lock(&self) -> Option<&OwnerLock> {
+        match self {
+            LockRead::Locked(l) => Some(l),
+            _ => None,
+        }
+    }
+
+    pub fn is_locked(&self) -> bool {
+        !matches!(self, LockRead::Unlocked)
+    }
+}
+
+/// What an atomic lock update writes back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LockWrite {
+    Keep,
+    Set(OwnerLock),
+    Remove,
+}
+
+/// The registration decision for one machine, as one atomic read-modify-write
+/// step of the store (see `Store::update_owner_lock`). `None` = no lock.
+pub fn registration_check(
+    read: LockRead,
+    machine_key_hex: &str,
+    now: DateTime<Utc>,
+    hostname: &str,
+    os: &str,
+    fingerprint: &str,
+) -> (LockWrite, Option<LockOutcome>) {
+    match read {
+        LockRead::Unlocked => (LockWrite::Keep, None),
+        // Cannot be read, so it cannot be updated either: refuse and leave it.
+        LockRead::Malformed => (LockWrite::Keep, Some(LockOutcome::Refused)),
+        LockRead::Locked(mut lock) => {
+            let outcome = lock.check(machine_key_hex, now, hostname, os, fingerprint);
+            let write = if outcome == LockOutcome::Allowed { LockWrite::Keep } else { LockWrite::Set(lock) };
+            (write, Some(outcome))
+        }
+    }
+}
+
 impl OwnerLock {
     /// The number of machines this lock can hold.
     pub fn capacity(&self) -> usize {
@@ -154,6 +209,23 @@ mod tests {
         lock.max_machines = Some(3);
         lock.allow_one_until = Some(now() + chrono::Duration::minutes(10));
         assert_eq!(lock.check("cc", now(), "third", "linux", "f"), LockOutcome::AllowedNew);
+    }
+
+    #[test]
+    fn registration_check_fails_closed_on_a_malformed_lock() {
+        assert_eq!(registration_check(LockRead::Unlocked, "aa", now(), "h", "o", "f"), (LockWrite::Keep, None));
+        assert_eq!(
+            registration_check(LockRead::Malformed, "aa", now(), "h", "o", "f"),
+            (LockWrite::Keep, Some(LockOutcome::Refused))
+        );
+        let lock = OwnerLock { machines: vec!["aa".into()], ..Default::default() };
+        assert_eq!(
+            registration_check(LockRead::Locked(lock.clone()), "aa", now(), "h", "o", "f"),
+            (LockWrite::Keep, Some(LockOutcome::Allowed))
+        );
+        let (write, outcome) = registration_check(LockRead::Locked(lock), "bb", now(), "h", "o", "f");
+        assert_eq!(outcome, Some(LockOutcome::Refused));
+        assert!(matches!(write, LockWrite::Set(l) if l.refused.len() == 1));
     }
 
     #[test]

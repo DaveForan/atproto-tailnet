@@ -330,6 +330,10 @@ export function startHealthMonitor(intervalMs = 60_000): void {
           logger.warn({ err }, "failed to notify about refused machines"),
         );
       }
+      // Every tick: an expired share must stop working within a minute.
+      await endExpiredShares().catch((err) =>
+        logger.warn({ err }, "failed to end expired device shares"),
+      );
       if (tick % 5 === 0) {
         if (useCoordinator) {
           // New members / renamed handles (coordinator only notifies clients on change)
@@ -343,9 +347,6 @@ export function startHealthMonitor(intervalMs = 60_000): void {
         );
         await sweepExpiredOAuthStates().catch((err) =>
           logger.warn({ err }, "failed to sweep expired OAuth states"),
-        );
-        await endExpiredShares().catch((err) =>
-          logger.warn({ err }, "failed to end expired device shares"),
         );
       }
     } catch (err) {

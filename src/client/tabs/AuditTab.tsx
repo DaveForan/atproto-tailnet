@@ -1,21 +1,21 @@
 import { useCallback, useEffect, useState } from "react";
 import { auditService } from "../services/audit";
 import { useApp } from "../hooks/useAppState";
-import { useToast } from "../components/Toast";
 import { Card } from "../components/Card";
 import { EmptyState } from "../components/EmptyState";
 import { Loading } from "../components/Loading";
-import { auditActionLabels, relativeTime } from "../lib/utils";
+import { auditActionLabels, errorMessage, relativeTime } from "../lib/utils";
 import type { AuditEntry } from "../lib/types";
+import { LoadError } from "../components/LoadError";
 
 const PAGE_SIZE = 50;
 
 export function AuditTab() {
   const { currentTenant } = useApp();
-  const { toastError } = useToast();
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(true);
 
@@ -36,10 +36,9 @@ export function AuditTab() {
         setEntries(items);
       }
       setHasMore(currentOffset + items.length < total);
+      setLoadError(null);
     } catch (e) {
-      toastError(
-        e instanceof Error ? e.message : "Failed to load audit log",
-      );
+      setLoadError(errorMessage(e, "Failed to load audit log"));
     } finally {
       setLoading(false);
       setLoadingMore(false);
@@ -70,6 +69,7 @@ export function AuditTab() {
 
   return (
     <div className="tab-content">
+      <LoadError error={loadError} onRetry={() => { setOffset(0); return loadEntries(0, false); }} />
       <Card title="Audit log">
         {entries.length === 0 ? (
           <EmptyState>No audit log entries.</EmptyState>
