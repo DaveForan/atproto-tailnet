@@ -1,4 +1,5 @@
-import { useApp } from "../hooks/useAppState";
+import { useSession } from "../hooks/session";
+import { networkService } from "../services/network";
 import { Card } from "../components/Card";
 import { EmptyState } from "../components/EmptyState";
 import { Loading } from "../components/Loading";
@@ -12,9 +13,9 @@ import { LoadError } from "../components/LoadError";
 const ROUTES_FALLBACK: RouteData = { exitNodes: [], subnets: [] };
 
 export function RoutesTab() {
-  const { hasPerm } = useApp();
+  const { hasPerm } = useSession();
   const { data: routes, loading, error, reload } = useTenantData<RouteData>(
-    "/routes",
+    (tid) => networkService.getRoutes(tid),
     ROUTES_FALLBACK,
   );
   const { mutate, busy } = useTenantMutation({
@@ -28,8 +29,7 @@ export function RoutesTab() {
   const handleToggle = async (routeId: string, currentlyEnabled: boolean) => {
     const action = currentlyEnabled ? "disable" : "enable";
     await mutate(
-      `/routes/${routeId}/${action}`,
-      { method: "POST" },
+      (tid) => networkService.setRouteEnabled(tid, routeId, !currentlyEnabled),
       { successMsg: `Route ${action}d` },
     );
   };
@@ -42,8 +42,7 @@ export function RoutesTab() {
       danger: true,
     }))) return;
     await mutate(
-      `/routes/${routeId}`,
-      { method: "DELETE" },
+      (tid) => networkService.deleteRoute(tid, routeId),
       { successMsg: "Route deleted" },
     );
   };

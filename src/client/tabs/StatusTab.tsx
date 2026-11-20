@@ -3,7 +3,8 @@ import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
 import { Loading } from "../components/Loading";
 import { TailnetAddressCard } from "../components/TailnetAddress";
-import { useTenantParallel } from "../hooks/useTenantData";
+import { useTenantParallel, type TenantLoaders } from "../hooks/useTenantData";
+import { deviceService } from "../services/devices";
 import type { DevicesData, HealthData } from "../lib/types";
 import { LoadError } from "../components/LoadError";
 
@@ -12,15 +13,15 @@ interface StatusData {
   health: HealthData | null;
 }
 
-const STATUS_SPECS = [
-  { path: "/devices", key: "devices" },
-  { path: "/health", key: "health" },
-];
+const STATUS_LOADERS: TenantLoaders<StatusData> = {
+  devices: (tid) => deviceService.getDevices(tid),
+  health: (tid) => deviceService.getHealth(tid),
+};
 const STATUS_FALLBACK: StatusData = { devices: null, health: null };
 
 export function StatusTab() {
   const { data, loading, error, reload } = useTenantParallel<StatusData>(
-    STATUS_SPECS,
+    STATUS_LOADERS,
     STATUS_FALLBACK,
   );
   const { devices, health } = data;

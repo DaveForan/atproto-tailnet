@@ -10,8 +10,6 @@ const json = (method: string, body?: unknown): RequestInit => ({
 export const operatorService = {
   overview: () => api<OperatorOverview>("/api/operator/overview"),
 
-  getSettings: () => api<OperatorSettings>("/api/operator/settings"),
-
   updateSettings: (patch: Partial<OperatorSettings>) =>
     api<OperatorSettings>("/api/operator/settings", json("PUT", patch)),
 

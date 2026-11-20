@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import { useApp } from "../hooks/useAppState";
+import { useTenant } from "../hooks/session";
 import { useToast } from "../components/Toast";
 import { useConfirm } from "../components/ConfirmDialog";
 import { Card } from "../components/Card";
 import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
-import { errorMessage } from "../lib/utils";
 import { boardsService, type MyDevice } from "../services/boards";
 import {
   sharingService,
@@ -26,8 +25,8 @@ const EXPIRY_CHOICES: Array<{ label: string; hours: number | null }> = [
 const who = (p: Person) => (p.handle ? `@${p.handle}` : "a member");
 
 function NewShareForm({ friends, devices, onCreated }: { friends: Person[]; devices: MyDevice[]; onCreated: () => void }) {
-  const { currentTenant } = useApp();
-  const { toast, toastError } = useToast();
+  const { currentTenant } = useTenant();
+  const { toast, toastFailure } = useToast();
   const [kind, setKind] = useState<"offer" | "request">("offer");
   const [friendId, setFriendId] = useState(friends[0]?.userId ?? "");
   const [theirDevices, setTheirDevices] = useState<Array<{ id: string; name: string }>>([]);
@@ -78,7 +77,7 @@ function NewShareForm({ friends, devices, onCreated }: { friends: Person[]; devi
       setPortsText("");
       onCreated();
     } catch (e) {
-      toastError(errorMessage(e, "Could not send it"));
+      toastFailure(e, "Could not send it");
     } finally {
       setBusy(false);
     }
@@ -147,8 +146,8 @@ function NewShareForm({ friends, devices, onCreated }: { friends: Person[]; devi
 }
 
 function ShareRow({ share, onChanged }: { share: Share; onChanged: () => void }) {
-  const { currentTenant } = useApp();
-  const { toast, toastError } = useToast();
+  const { currentTenant } = useTenant();
+  const { toast, toastFailure } = useToast();
   const tid = currentTenant?.id;
   const act = async (fn: () => Promise<unknown>, done: string) => {
     try {
@@ -156,7 +155,7 @@ function ShareRow({ share, onChanged }: { share: Share; onChanged: () => void })
       toast(done);
       onChanged();
     } catch (e) {
-      toastError(errorMessage(e, "That did not work"));
+      toastFailure(e, "That did not work");
     }
   };
   if (!tid) return null;
@@ -198,8 +197,8 @@ function ShareRow({ share, onChanged }: { share: Share; onChanged: () => void })
 }
 
 export function SharingTab() {
-  const { currentTenant } = useApp();
-  const { toast, toastError } = useToast();
+  const { currentTenant } = useTenant();
+  const { toast, toastFailure } = useToast();
   const confirm = useConfirm();
   const [friends, setFriends] = useState<FriendsData | null>(null);
   const [shares, setShares] = useState<Share[]>([]);
@@ -250,7 +249,7 @@ export function SharingTab() {
       toast(done);
       await load();
     } catch (e) {
-      toastError(errorMessage(e, "That did not work"));
+      toastFailure(e, "That did not work");
     }
   };
   const known = new Set([...friends.friends, ...friends.incoming, ...friends.outgoing, ...friends.blocked].map((p) => p.userId));

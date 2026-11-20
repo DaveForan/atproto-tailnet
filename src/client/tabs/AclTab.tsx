@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { aclService } from "../services/acl";
-import { useApp } from "../hooks/useAppState";
+import { useSession } from "../hooks/session";
 import { useToast } from "../components/Toast";
 import { useTenantMutation } from "../hooks/useMutation";
 import { Card } from "../components/Card";
@@ -12,7 +12,7 @@ import { LoadError } from "../components/LoadError";
 import { errorMessage } from "../lib/utils";
 
 export function AclTab() {
-  const { currentTenant, hasPerm } = useApp();
+  const { currentTenant, hasPerm } = useSession();
   const { toast } = useToast();
   const { mutate, busy } = useTenantMutation({ onError: "Failed to save ACL policy" });
   const coordinatorMode = !!currentTenant?.coordinatorTenantId;
@@ -128,10 +128,10 @@ export function AclTab() {
   };
 
   const handleSave = async () => {
-    await mutate("/acl", {
-      method: "PUT",
-      body: JSON.stringify(coordinatorMode ? { acls, hosts } : { acls, groups, hosts }),
-    }, { successMsg: "ACL policy saved" });
+    await mutate(
+      (tid) => aclService.setAcl(tid, { acls, groups, hosts }, coordinatorMode),
+      { successMsg: "ACL policy saved" },
+    );
   };
 
   const handleReset = async () => {

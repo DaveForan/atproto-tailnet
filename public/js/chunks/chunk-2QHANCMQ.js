@@ -1,1 +1,0 @@
-import{f as e}from"./chunk-GBSRULQK.js";var s={get:()=>e("/api/instance"),publicTenant:n=>e(`/api/tenants/by-slug/${encodeURIComponent(n)}/public`),myJoinRequests:n=>e(`/api/tenants/${n}/join-requests/mine`),requestToJoin:(n,t)=>e(`/api/tenants/${n}/join-requests`,{method:"POST",body:JSON.stringify({message:t.trim()||void 0})})};export{s as a};

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useApp } from "../hooks/useAppState";
+import { useSession } from "../hooks/session";
 import { useTenantData } from "../hooks/useTenantData";
 import { useTenantMutation } from "../hooks/useMutation";
 import { useToast } from "../components/Toast";
@@ -10,17 +10,20 @@ import { EmptyState } from "../components/EmptyState";
 import { Loading } from "../components/Loading";
 import { useConfirm } from "../components/ConfirmDialog";
 import { invitationService } from "../services/invitations";
-import { errorMessage, relativeTime, tryCopy } from "../lib/utils";
+import { relativeTime, tryCopy } from "../lib/utils";
 import type { SentInvitation } from "../lib/types";
 import { LoadError } from "../components/LoadError";
 
 export function InviteTab() {
-  const { hasPerm, currentTenant } = useApp();
-  const { toast, toastError } = useToast();
-  const { data: invitations, loading, error, reload } = useTenantData<SentInvitation[]>("/invitations", []);
+  const { hasPerm } = useSession();
+  const { toast } = useToast();
+  const { data: invitations, loading, error, reload } = useTenantData<SentInvitation[]>(
+    (tid) => invitationService.getSent(tid),
+    [],
+  );
   const { mutate: revokeMutate, busy: revoking } = useTenantMutation();
+  const { mutate: sendMutate, busy: sending } = useTenantMutation({ onError: "Failed to create invitation" });
   const [invitee, setInvitee] = useState("");
-  const [sending, setSending] = useState(false);
   const [created, setCreated] = useState<SentInvitation | null>(null);
   const [shownLink, setShownLink] = useState<string | null>(null);
   const confirm = useConfirm();
@@ -29,27 +32,22 @@ export function InviteTab() {
 
   const handleSend = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!currentTenant || !invitee.trim() || sending) return;
-    setSending(true);
-    try {
-      const inv = await invitationService.send(currentTenant.id, invitee);
-      setCreated(inv);
-      setInvitee("");
-      toast("Invitation created");
-      await reload();
-    } catch (err) {
-      toastError(errorMessage(err, "Failed to create invitation"));
-    } finally {
-      setSending(false);
-    }
+    if (!invitee.trim()) return;
+    await sendMutate(
+      async (tid) => {
+        const inv = await invitationService.send(tid, invitee);
+        setCreated(inv);
+        setInvitee("");
+      },
+      { successMsg: "Invitation created", reload },
+    );
   };
 
   const handleRevoke = async (invitationId: string) => {
     if (!(await confirm({ title: "Revoke this invitation?", message: "The link will stop working.", confirmLabel: "Revoke", danger: true }))) return;
     if (created?.id === invitationId) setCreated(null);
     await revokeMutate(
-      `/invitations/${invitationId}`,
-      { method: "DELETE" },
+      (tid) => invitationService.revoke(tid, invitationId),
       { successMsg: "Invitation revoked", reload },
     );
   };

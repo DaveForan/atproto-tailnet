@@ -1,8 +1,6 @@
 import { useCallback, useRef, useState } from "react";
-import { tenantApi } from "../services/api";
-import { useApp } from "./useAppState";
+import { useTenant } from "./session";
 import { useToast } from "../components/Toast";
-import { errorMessage } from "../lib/utils";
 
 interface MutationOptions {
   onSuccess?: string;
@@ -15,31 +13,34 @@ interface MutateCallOptions {
   reload?: () => Promise<void>;
 }
 
+/** A service call for the current tenant. */
+export type TenantAction = (tenantId: string) => Promise<unknown>;
+
 interface MutationResult {
-  mutate: (path: string, opts?: RequestInit, callOpts?: MutateCallOptions) => Promise<boolean>;
+  mutate: (action: TenantAction, callOpts?: MutateCallOptions) => Promise<boolean>;
   busy: boolean;
 }
 
 export function useTenantMutation(options?: MutationOptions): MutationResult {
-  const { currentTenant } = useApp();
-  const { toast, toastError } = useToast();
+  const { currentTenant } = useTenant();
+  const { toast, toastFailure } = useToast();
   const [busy, setBusy] = useState(false);
   const inFlightRef = useRef(false);
 
   const mutate = useCallback(
-    async (path: string, opts?: RequestInit, callOpts?: MutateCallOptions): Promise<boolean> => {
+    async (action: TenantAction, callOpts?: MutateCallOptions): Promise<boolean> => {
       if (!currentTenant || inFlightRef.current) return false;
       inFlightRef.current = true;
       setBusy(true);
       try {
-        await tenantApi(currentTenant.id, path, opts);
+        await action(currentTenant.id);
         const msg = callOpts?.successMsg ?? options?.onSuccess;
         if (msg) toast(msg);
         const reloadFn = callOpts?.reload ?? options?.reload;
         if (reloadFn) await reloadFn();
         return true;
       } catch (e) {
-        toastError(errorMessage(e, options?.onError ?? "Operation failed"));
+        toastFailure(e, options?.onError ?? "Operation failed");
         return false;
       } finally {
         inFlightRef.current = false;

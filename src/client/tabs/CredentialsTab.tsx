@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { credentialsService } from "../services/credentials";
-import { useApp } from "../hooks/useAppState";
+import { useTenant } from "../hooks/session";
 import { useToast } from "../components/Toast";
 import { Card } from "../components/Card";
 import { CodeBlock } from "../components/CodeBlock";
@@ -11,7 +11,7 @@ function CodeResult({ value, label }: { value: string | null; label: string }) {
 }
 
 export function CredentialsTab() {
-  const { currentTenant } = useApp();
+  const { currentTenant } = useTenant();
   const { toast, toastError } = useToast();
 
   // Track which action is in-flight (null = idle)

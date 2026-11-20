@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { useApp } from "../hooks/useAppState";
+import { useSession } from "../hooks/session";
 import { useTenantMutation } from "../hooks/useMutation";
 import { Card } from "../components/Card";
 import { Badge } from "../components/Badge";
@@ -12,7 +12,7 @@ import type { Member } from "../lib/types";
 import { LoadError } from "../components/LoadError";
 
 export function MembersTab() {
-  const { currentTenant, hasPerm, roles, reload } = useApp();
+  const { currentTenant, hasPerm, roles, reload } = useSession();
   const [members, setMembers] = useState<Member[]>([]);
   const [lockInfo, setLockInfo] = useState<Map<string, boolean>>(new Map());
   const [loading, setLoading] = useState(true);
@@ -58,16 +58,14 @@ export function MembersTab() {
 
   const handleRoleChange = async (memberId: string, roleId: string) => {
     await mutate(
-      `/members/${memberId}/role`,
-      { method: "PUT", body: JSON.stringify({ roleId }) },
+      (tid) => deviceService.setMemberRole(tid, memberId, roleId),
       { successMsg: "Role updated", reload: reloadAfterMutate },
     );
   };
 
   const handleToggleLock = async (memberId: string, currentlyLocked: boolean) => {
     await mutate(
-      "/device-locks",
-      { method: currentlyLocked ? "DELETE" : "POST", body: JSON.stringify({ userId: memberId }) },
+      (tid) => (currentlyLocked ? deviceService.unlockDevice(tid, memberId) : deviceService.lockDevice(tid, memberId)),
       { successMsg: currentlyLocked ? "Devices unlocked" : "Devices locked", reload: () => loadMembers(false) },
     );
   };
@@ -80,8 +78,7 @@ export function MembersTab() {
       danger: true,
     }))) return;
     await mutate(
-      `/members/${memberId}`,
-      { method: "DELETE" },
+      (tid) => deviceService.removeMember(tid, memberId),
       { successMsg: "Member removed, devices deleted and keys revoked", reload: reloadAfterMutate },
     );
   };

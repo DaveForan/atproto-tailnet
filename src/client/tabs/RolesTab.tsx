@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { useApp } from "../hooks/useAppState";
+import { useSession } from "../hooks/session";
+import { rolesService } from "../services/roles";
 import { useTenantMutation } from "../hooks/useMutation";
 import { Card } from "../components/Card";
 import { EmptyState } from "../components/EmptyState";
@@ -7,7 +8,7 @@ import { Badge } from "../components/Badge";
 import { useConfirm } from "../components/ConfirmDialog";
 
 export function RolesTab() {
-  const { currentTenant, roles, allPerms, reloadRoles, hasPerm } = useApp();
+  const { currentTenant, roles, allPerms, reloadRoles, hasPerm } = useSession();
   const { mutate, busy } = useTenantMutation({
     onError: "Role operation failed",
     reload: reloadRoles,
@@ -32,8 +33,7 @@ export function RolesTab() {
       ? role.permissions.filter((p) => p !== perm)
       : [...role.permissions, perm];
     await mutate(
-      `/roles/${roleId}`,
-      { method: "PATCH", body: JSON.stringify({ permissions }) },
+      (tid) => rolesService.updateRole(tid, roleId, permissions),
       { successMsg: "Role updated" },
     );
   };
@@ -42,8 +42,7 @@ export function RolesTab() {
     e.preventDefault();
     if (!currentTenant || !newRoleName.trim()) return;
     const ok = await mutate(
-      "/roles",
-      { method: "POST", body: JSON.stringify({ name: newRoleName.trim(), permissions: [] }) },
+      (tid) => rolesService.createRole(tid, newRoleName.trim(), []),
       { successMsg: "Role created" },
     );
     if (ok) setNewRoleName("");
@@ -53,8 +52,7 @@ export function RolesTab() {
     if (!currentTenant) return;
     if (!(await confirm({ title: `Delete role "${roleName}"?`, message: "This cannot be undone.", confirmLabel: "Delete role", danger: true }))) return;
     await mutate(
-      `/roles/${roleId}`,
-      { method: "DELETE" },
+      (tid) => rolesService.deleteRole(tid, roleId),
       { successMsg: "Role deleted" },
     );
   };
@@ -63,8 +61,7 @@ export function RolesTab() {
     e.preventDefault();
     if (!currentTenant || !defaultRoleId) return;
     await mutate(
-      "/default-role",
-      { method: "PATCH", body: JSON.stringify({ roleId: defaultRoleId }) },
+      (tid) => rolesService.setDefaultRole(tid, defaultRoleId),
       { successMsg: "Default role updated" },
     );
   };

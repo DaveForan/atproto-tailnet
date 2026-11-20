@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { agentsService } from "../services/agents";
-import { useApp } from "../hooks/useAppState";
+import { useSession } from "../hooks/session";
 import { useToast } from "../components/Toast";
 import { useTenantData } from "../hooks/useTenantData";
 import { useTenantMutation } from "../hooks/useMutation";
@@ -15,9 +15,9 @@ import type { AgentToken } from "../lib/types";
 import { LoadError } from "../components/LoadError";
 
 export function AgentsTab() {
-  const { currentTenant, allPerms, hasPerm } = useApp();
+  const { currentTenant, allPerms, hasPerm } = useSession();
   const { toast, toastError } = useToast();
-  const { data: tokens, loading, error, reload } = useTenantData<AgentToken[]>("/agent-tokens", []);
+  const { data: tokens, loading, error, reload } = useTenantData<AgentToken[]>((tid) => agentsService.getAgentTokens(tid), []);
   const { mutate, busy } = useTenantMutation();
 
   const [name, setName] = useState("");
@@ -62,8 +62,7 @@ export function AgentsTab() {
   const handleRevoke = async (tokenId: string) => {
     if (!(await confirm({ title: "Revoke this agent token?", message: "This cannot be undone.", confirmLabel: "Revoke token", danger: true }))) return;
     await mutate(
-      `/agent-tokens/${tokenId}`,
-      { method: "DELETE" },
+      (tid) => agentsService.revokeAgentToken(tid, tokenId),
       { successMsg: "Token revoked", reload },
     );
   };

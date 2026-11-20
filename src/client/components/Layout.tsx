@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import { useApp } from "../hooks/useAppState";
+import { useSession } from "../hooks/session";
+import { useTabRoute } from "../hooks/useTabRoute";
 import { securityService } from "../services/security";
 import { useToast } from "./Toast";
 import { Badge } from "./Badge";
@@ -34,7 +35,7 @@ export function SidebarProvider({ children }: { children: ReactNode }) {
 }
 
 export function Header({ minimal = false }: { minimal?: boolean }) {
-  const { user } = useApp();
+  const { user } = useSession();
   const { toggleSidebar, sidebarOpen } = useContext(SidebarCtx);
   if (!user) return null;
   const avatar = safeUrl(user.avatarUrl);
@@ -74,7 +75,8 @@ export function Header({ minimal = false }: { minimal?: boolean }) {
 }
 
 export function Sidebar() {
-  const { currentTenant, tenants, selectTenant, tab, setTab, hasPerm, settings, user } = useApp();
+  const { currentTenant, tenants, selectTenant, hasPerm, settings, user } = useSession();
+  const { tab, setTab } = useTabRoute();
   const { sidebarOpen, closeSidebar } = useContext(SidebarCtx);
   const t = currentTenant;
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -203,7 +205,7 @@ function buildVisibleGroups(
 }
 
 export function LockdownBanner() {
-  const { settings, hasPerm, currentTenant, reloadSettings } = useApp();
+  const { settings, hasPerm, currentTenant, reloadSettings } = useSession();
   const { toast, toastError } = useToast();
   const [busy, setBusy] = useState(false);
   if (!settings?.lockdownMode) return null;
@@ -283,7 +285,7 @@ export function LoginPage({ redirect, purpose }: { redirect?: string; purpose?: 
 }
 
 export function StatsSummary() {
-  const { stats } = useApp();
+  const { stats } = useSession();
   if (!stats) return null;
   return (
     <div className="stats-row" role="group" aria-label="Tailnet summary">

@@ -64,8 +64,6 @@ export const sharingService = {
   acceptShare: (tid: string, id: string, body: { ports?: PortSpec[]; guestNodeIds?: string[] } = {}) =>
     tenantApi<{ status: string }>(tid, `/shares/${id}/accept`, json("POST", body)),
   endShare: (tid: string, id: string) => tenantApi(tid, `/shares/${id}`, json("DELETE")),
-  stopDeviceSharing: (tid: string, nodeId: string) =>
-    tenantApi<{ sharesEnded: number }>(tid, `/my-devices/${nodeId}/shares`, json("DELETE")),
 };
 
 /** "tcp 22, tcp 8000-8010, ping" */

@@ -11,7 +11,7 @@ export class ApiError extends Error {
   }
 }
 
-export function setCsrfToken(token: string) {
+function setCsrfToken(token: string) {
   csrfToken = token;
 }
 
@@ -32,7 +32,7 @@ export function onSessionExpired(listener: SessionListener): () => void {
   return () => sessionListeners.delete(listener);
 }
 
-export function isSessionExpired(e: unknown): boolean {
+function isSessionExpired(e: unknown): boolean {
   return e instanceof ApiError && e.status === 401;
 }
 

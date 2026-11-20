@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { useTenantData } from "../hooks/useTenantData";
 import { useTenantMutation } from "../hooks/useMutation";
-import { useApp } from "../hooks/useAppState";
+import { useSession } from "../hooks/session";
+import { usageService } from "../services/usage";
 import { Card } from "../components/Card";
 import { Loading } from "../components/Loading";
 import { relativeTime } from "../lib/utils";
@@ -25,9 +26,9 @@ function clampCap(v: string): number {
 }
 
 export function UsageTab() {
-  const { isOriginator } = useApp();
+  const { isOriginator } = useSession();
   const { data: usage, loading, error, reload } = useTenantData<UsageData>(
-    "/usage",
+    (tid) => usageService.getUsage(tid),
     USAGE_FALLBACK,
   );
   const { mutate, busy } = useTenantMutation({
@@ -45,10 +46,7 @@ export function UsageTab() {
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    await mutate("/limits", {
-      method: "PUT",
-      body: JSON.stringify({ maxDevices, maxMembers }),
-    });
+    await mutate((tid) => usageService.setLimits(tid, maxDevices, maxMembers));
   };
 
   if (loading) return <Loading />;

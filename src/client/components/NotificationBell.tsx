@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
-import { useApp } from "../hooks/useAppState";
+import { useTenant } from "../hooks/session";
+import { useTabRoute } from "../hooks/useTabRoute";
 import { useToast } from "./Toast";
 import { tabRegistry } from "./registry";
 import { notificationService } from "../services/notifications";
-import { errorMessage, relativeTime } from "../lib/utils";
+import { relativeTime } from "../lib/utils";
 import type { AppNotification, TabId } from "../lib/types";
 
 const POLL_MS = 30_000;
@@ -29,8 +30,9 @@ function targetTab(n: AppNotification): TabId | null {
 }
 
 export function NotificationBell() {
-  const { currentTenant, setTab } = useApp();
-  const { toastError } = useToast();
+  const { currentTenant } = useTenant();
+  const { setTab } = useTabRoute();
+  const { toastFailure } = useToast();
   const tid = currentTenant?.id;
   const [unread, setUnread] = useState(0);
   const [open, setOpen] = useState(false);
@@ -87,11 +89,11 @@ export function NotificationBell() {
         setUnread(res.unreadCount);
       }
     } catch (e) {
-      toastError(errorMessage(e, "Failed to load notifications"));
+      toastFailure(e, "Failed to load notifications");
     } finally {
       setLoadingList(false);
     }
-  }, [toastError]);
+  }, [toastFailure]);
 
   const close = useCallback((restoreFocus: boolean) => {
     setOpen(false);
@@ -130,7 +132,7 @@ export function NotificationBell() {
       setItems((prev) => prev.map((n) => (n.readAt ? n : { ...n, readAt: now })));
       setUnread(res?.unreadCount ?? 0);
     } catch (e) {
-      toastError(errorMessage(e, "Failed to mark notifications read"));
+      toastFailure(e, "Failed to mark notifications read");
     }
   };
 

@@ -1,23 +1,13 @@
 import { StrictMode, useCallback, useEffect, useState } from "react";
-import { errorMessage } from "./lib/utils";
 import { createRoot } from "react-dom/client";
-import { api, apiOrNull, fetchCsrfToken } from "./services/api";
+import { fetchCsrfToken } from "./services/api";
+import { instanceService } from "./services/instance";
+import { sessionService } from "./services/session";
 import { ToastProvider, useToast } from "./components/Toast";
 import { Badge } from "./components/Badge";
 import { applyTheme } from "./lib/theme";
 
 applyTheme();
-
-interface JoinTenant {
-  id: string;
-  name: string;
-  joinOpen: boolean;
-}
-
-interface JoinRequest {
-  status: "pending" | "approved" | "rejected";
-  requestedAt: string;
-}
 
 type JoinState =
   | { kind: "loading" }
@@ -36,24 +26,22 @@ function JoinApp() {
   const [state, setState] = useState<JoinState>({ kind: "loading" });
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const { toast, toastError } = useToast();
+  const { toast, toastFailure } = useToast();
 
   const init = useCallback(async () => {
     try {
-      const tenant = await api<JoinTenant>(
-        `/api/tenants/by-slug/${encodeURIComponent(slug)}/public`,
-      ).catch(() => null);
+      const tenant = await instanceService.publicTenant(slug).catch(() => null);
       if (!tenant) {
         setState({ kind: "not-found" });
         return;
       }
 
-      const me = await apiOrNull<{ id: string }>("/api/me");
+      const me = await sessionService.me();
       const loggedIn = !!me?.id;
 
       if (loggedIn) {
         // GET /api/tenants/:id is 200 for members, 404 otherwise
-        const existing = await api<{ id: string }>(`/api/tenants/${tenant.id}`).catch(() => null);
+        const existing = await sessionService.tenant(tenant.id).catch(() => null);
         if (existing?.id) {
           setState({ kind: "already-member", name: tenant.name });
           return;
@@ -72,9 +60,7 @@ function JoinApp() {
 
       await fetchCsrfToken();
 
-      const mine = await api<JoinRequest[]>(
-        `/api/tenants/${tenant.id}/join-requests/mine`,
-      );
+      const mine = await instanceService.myJoinRequests(tenant.id);
 
       if (mine && mine.length > 0) {
         const latest = mine.reduce((a, b) =>
@@ -110,14 +96,11 @@ function JoinApp() {
     if (submitting) return;
     setSubmitting(true);
     try {
-      await api(`/api/tenants/${tenantId}/join-requests`, {
-        method: "POST",
-        body: JSON.stringify({ message: message.trim() || undefined }),
-      });
+      await instanceService.requestToJoin(tenantId, message);
       toast("Request submitted");
       await init();
     } catch (e) {
-      toastError(errorMessage(e, "Failed to submit request"));
+      toastFailure(e, "Failed to submit request");
     } finally {
       setSubmitting(false);
     }

@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { Card } from "../components/Card";
 import { Loading } from "../components/Loading";
 import { useTenantData } from "../hooks/useTenantData";
-import { useApp } from "../hooks/useAppState";
+import { useTenant } from "../hooks/session";
+import { networkService } from "../services/network";
 import { useTenantMutation } from "../hooks/useMutation";
 import type { IpConfig } from "../lib/types";
 import { LoadError } from "../components/LoadError";
@@ -14,7 +15,7 @@ const IP_FALLBACK: IpConfig = {
 };
 
 export function IpConfigTab() {
-  const { currentTenant } = useApp();
+  const { currentTenant } = useTenant();
   // Reached only by an old link: the tab is hidden in coordinator mode
   if (currentTenant?.coordinatorMode) {
     return (
@@ -30,7 +31,7 @@ export function IpConfigTab() {
 
 function IpConfigForm() {
   const { data: ipConfig, loading, error, reload } = useTenantData<IpConfig>(
-    "/ip-config",
+    (tid) => networkService.getIpConfig(tid),
     IP_FALLBACK,
   );
   const { mutate, busy } = useTenantMutation({
@@ -56,10 +57,7 @@ function IpConfigForm() {
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
-    await mutate("/ip-config", {
-      method: "PUT",
-      body: JSON.stringify({ ipv4Prefix, ipv6Prefix, ipAllocation }),
-    });
+    await mutate((tid) => networkService.setIpConfig(tid, { ipv4Prefix, ipv6Prefix, ipAllocation }));
   };
 
   if (loading) return <Loading />;

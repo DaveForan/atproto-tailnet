@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useTenantData } from "../hooks/useTenantData";
 import { useTenantMutation } from "../hooks/useMutation";
 import { networkService } from "../services/network";
-import { useApp } from "../hooks/useAppState";
+import { useTenant } from "../hooks/session";
 import { useToast } from "../components/Toast";
 import { Card } from "../components/Card";
 import { Loading } from "../components/Loading";
@@ -11,10 +11,10 @@ import type { TraversalEvalResult } from "../lib/types";
 import { LoadError } from "../components/LoadError";
 
 export function TraversalTab() {
-  const { currentTenant } = useApp();
+  const { currentTenant } = useTenant();
   const { toastError } = useToast();
   const { data: policy, loading, error, reload } = useTenantData<unknown>(
-    "/traversal-policy",
+    (tid) => networkService.getTraversalPolicy(tid),
     null,
   );
   const { mutate, busy: saveBusy } = useTenantMutation({ reload });
@@ -39,8 +39,7 @@ export function TraversalTab() {
       return;
     }
     await mutate(
-      "/traversal-policy",
-      { method: "PUT", body: JSON.stringify(parsed) },
+      (tid) => networkService.setTraversalPolicy(tid, parsed),
       { successMsg: "Traversal policy saved" },
     );
   };

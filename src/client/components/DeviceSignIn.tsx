@@ -1,22 +1,13 @@
 import { useEffect, useState } from "react";
 import { Card } from "./Card";
 import { Loading } from "./Loading";
-import { api } from "../services/api";
+import { deviceAuthService, type PendingDeviceSignIn } from "../services/device-auth";
 import { errorMessage, relativeTime } from "../lib/utils";
-
-interface Pending {
-  device: { hostname: string; os: string; fingerprint: string };
-  /** When the device asked to sign in (ISO time), if the server knows. */
-  requestedAt?: string | null;
-  /** The address the device's request came from, if the server knows. */
-  requesterIp?: string | null;
-  tailnets: Array<{ id: string; name: string; blocked: string | null }>;
-}
 
 type State =
   | { kind: "loading" }
   | { kind: "gone" }
-  | { kind: "ready"; data: Pending }
+  | { kind: "ready"; data: PendingDeviceSignIn }
   | { kind: "done"; tailnet: string }
   | { kind: "denied" };
 
@@ -33,7 +24,8 @@ export function DeviceSignInPage({ id, onDone }: { id: string; onDone: () => voi
 
   useEffect(() => {
     let stale = false;
-    api<Pending>(`/api/device-auth/${id}`)
+    deviceAuthService
+      .get(id)
       .then((data) => {
         if (stale) return;
         if (!data) return setState({ kind: "gone" });
@@ -51,13 +43,10 @@ export function DeviceSignInPage({ id, onDone }: { id: string; onDone: () => voi
     setError(null);
     try {
       if (approve) {
-        const r = await api<{ tailnet: string }>(`/api/device-auth/${id}/approve`, {
-          method: "POST",
-          body: JSON.stringify({ tenantId, confirm: true }),
-        });
+        const r = await deviceAuthService.approve(id, tenantId);
         setState({ kind: "done", tailnet: r?.tailnet ?? "your tailnet" });
       } else {
-        await api(`/api/device-auth/${id}/deny`, { method: "POST", body: "{}" });
+        await deviceAuthService.deny(id);
         setState({ kind: "denied" });
       }
     } catch (e) {
@@ -153,7 +142,7 @@ export function DeviceSignInPage({ id, onDone }: { id: string; onDone: () => voi
 }
 
 /** "Requested 2m ago from 203.0.113.7", with whatever parts are known. */
-function requestedLine(p: Pending): string {
+function requestedLine(p: PendingDeviceSignIn): string {
   const when = p.requestedAt && !Number.isNaN(Date.parse(p.requestedAt)) ? relativeTime(p.requestedAt) : null;
   if (when && p.requesterIp) return `Requested ${when} from ${p.requesterIp}`;
   if (when) return `Requested ${when}`;

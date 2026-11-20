@@ -1,5 +1,6 @@
 import { useState } from "react";
-import { useApp } from "../hooks/useAppState";
+import { useSession } from "../hooks/session";
+import { useTabRoute } from "../hooks/useTabRoute";
 import { useToast } from "../components/Toast";
 import { Card } from "../components/Card";
 import { CodeBlock } from "../components/CodeBlock";
@@ -18,10 +19,11 @@ interface IssuedKey {
 }
 
 export function ConnectTab() {
-  const { currentTenant, setTab, hasPerm } = useApp();
+  const { currentTenant, hasPerm } = useSession();
+  const { setTab } = useTabRoute();
   const canManageDevices = hasPerm("manage_devices");
   const expiryOptions = canManageDevices ? EXPIRY_OPTIONS : MEMBER_EXPIRY_OPTIONS;
-  const { toast, toastError } = useToast();
+  const { toast, toastFailure } = useToast();
   const [issued, setIssued] = useState<IssuedKey | null>(null);
   const [pending, setPending] = useState(false);
   const [limitError, setLimitError] = useState<string | null>(null);
@@ -55,7 +57,7 @@ export function ConnectTab() {
       toast("Auth key generated");
     } catch (e) {
       if (errorCode(e) === "device_limit") setLimitError(errorMessage(e, ""));
-      else toastError(errorMessage(e, "Failed to generate auth key"));
+      else toastFailure(e, "Failed to generate auth key");
     } finally {
       setGenerating(false);
     }

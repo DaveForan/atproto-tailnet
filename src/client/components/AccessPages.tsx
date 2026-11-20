@@ -1,5 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useState } from "react";
-import { useApp } from "../hooks/useAppState";
+import { useSession } from "../hooks/session";
+import { useTabRoute } from "../hooks/useTabRoute";
 import { useToast } from "./Toast";
 import { Card } from "./Card";
 import { Badge } from "./Badge";
@@ -21,7 +22,8 @@ function SignOutButton({ className = "btn-ghost" }: { className?: string }) {
 }
 
 export function NoAccessPage() {
-  const { user, invitations, reload, tab, setTab } = useApp();
+  const { user, invitations, reload } = useSession();
+  const { tab, setTab } = useTabRoute();
   if (!user) return null;
 
   if (user.isOperator && tab === "instance") {
@@ -70,8 +72,8 @@ type JoinState =
   | { kind: "approved"; name: string };
 
 function JoinDefaultTailnet({ hasInvitations }: { hasInvitations: boolean }) {
-  const { reload } = useApp();
-  const { toast, toastError } = useToast();
+  const { reload } = useSession();
+  const { toast, toastFailure } = useToast();
   const [state, setState] = useState<JoinState>({ kind: "loading" });
   const [message, setMessage] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -115,7 +117,7 @@ function JoinDefaultTailnet({ hasInvitations }: { hasInvitations: boolean }) {
       setMessage("");
       await load();
     } catch (e) {
-      toastError(errorMessage(e, "Failed to submit request"));
+      toastFailure(e, "Failed to submit request");
     } finally {
       setSubmitting(false);
     }
@@ -204,8 +206,8 @@ const STATUS_TEXT: Record<string, string> = {
 };
 
 export function InvitePage({ id, onDone }: { id: string; onDone: (slug?: string) => void }) {
-  const { user } = useApp();
-  const { toast, toastError } = useToast();
+  const { user } = useSession();
+  const { toast, toastFailure } = useToast();
   const [state, setState] = useState<InviteState>({ kind: "loading" });
   const [busy, setBusy] = useState(false);
 
@@ -233,7 +235,7 @@ export function InvitePage({ id, onDone }: { id: string; onDone: (slug?: string)
       toast(accept ? "Invitation accepted" : "Invitation declined");
       onDone(accept ? slug : undefined);
     } catch (e) {
-      toastError(errorMessage(e, accept ? "Failed to accept invitation" : "Failed to decline invitation"));
+      toastFailure(e, accept ? "Failed to accept invitation" : "Failed to decline invitation");
       setBusy(false);
     }
   };
@@ -302,7 +304,7 @@ export function InvitePage({ id, onDone }: { id: string; onDone: (slug?: string)
 }
 
 export function SuspendedPage() {
-  const { currentTenant, tenants, selectTenant } = useApp();
+  const { currentTenant, tenants, selectTenant } = useSession();
   if (!currentTenant) return null;
   const others = tenants.filter((t) => t.id !== currentTenant.id);
 

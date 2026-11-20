@@ -1,4 +1,5 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { errorMessage } from "../lib/utils";
 
 interface ToastItem {
   id: number;
@@ -9,6 +10,8 @@ interface ToastItem {
 interface ToastCtx {
   toast: (message: string) => void;
   toastError: (message: string) => void;
+  /** Error toast for a caught error: its message, or `fallback`. */
+  toastFailure: (e: unknown, fallback: string) => void;
 }
 
 const Ctx = createContext<ToastCtx>(null!);
@@ -59,9 +62,11 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
   const toast = useCallback((msg: string) => add(msg, "info"), [add]);
   const toastError = useCallback((msg: string) => add(msg, "error"), [add]);
+  const toastFailure = useCallback((e: unknown, fallback: string) => add(errorMessage(e, fallback), "error"), [add]);
+  const value = useMemo(() => ({ toast, toastError, toastFailure }), [toast, toastError, toastFailure]);
 
   return (
-    <Ctx.Provider value={{ toast, toastError }}>
+    <Ctx.Provider value={value}>
       {children}
       <div className="sr-only" role="status" aria-live="polite" aria-atomic="true">{politeText}</div>
       <div className="sr-only" role="alert" aria-live="assertive" aria-atomic="true">{assertiveText}</div>

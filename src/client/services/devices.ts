@@ -7,11 +7,31 @@ import type {
   AuthKeyResponse,
   AuthKeyOptions,
   AuthKeyInfo,
+  Stats,
 } from "../lib/types";
 
 export const deviceService = {
   getDevices: (tid: string) =>
     tenantApi<DevicesData>(tid, "/devices"),
+
+  /**
+   * Device and member counts for the header. Fetches the whole device list
+   * because there is no count endpoint yet.
+   */
+  getStats: async (tid: string): Promise<Stats | null> => {
+    const devices = await deviceService.getDevices(tid);
+    if (!devices) return null;
+    const byUser = devices.byUser || [];
+    let total = 0;
+    let online = 0;
+    for (const group of byUser) {
+      for (const d of group.devices) {
+        total++;
+        if (d.online) online++;
+      }
+    }
+    return { totalDevices: total, onlineDevices: online, totalMembers: byUser.length };
+  },
 
   getHealth: (tid: string) =>
     tenantApi<HealthData>(tid, "/health"),

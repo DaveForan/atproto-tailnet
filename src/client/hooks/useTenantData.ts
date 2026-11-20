@@ -1,6 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { tenantApi } from "../services/api";
-import { useApp } from "./useAppState";
+import { useCallback, useEffect, useRef, useState, type DependencyList } from "react";
+import { useTenant } from "./session";
 import { errorMessage } from "../lib/utils";
 
 export interface TenantDataResult<T> {
@@ -11,16 +10,22 @@ export interface TenantDataResult<T> {
   reload: () => Promise<void>;
 }
 
+/** Loads a service call for the current tenant; reloads when the tenant or `deps` change. */
+export type TenantLoader<T> = (tenantId: string) => Promise<T | null>;
+
 export function useTenantData<T>(
-  path: string,
+  loader: TenantLoader<T>,
   fallback: T,
+  deps: DependencyList = [],
 ): TenantDataResult<T> {
-  const { currentTenant } = useApp();
+  const { currentTenant } = useTenant();
   const [data, setData] = useState<T>(fallback);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const tenantIdRef = useRef(currentTenant?.id);
   tenantIdRef.current = currentTenant?.id;
+  const loaderRef = useRef(loader);
+  loaderRef.current = loader;
   const seqRef = useRef(0);
 
   const load = useCallback(async () => {
@@ -30,7 +35,7 @@ export function useTenantData<T>(
     const isCurrent = () => seq === seqRef.current && tid === tenantIdRef.current;
     setLoading(true);
     try {
-      const result = await tenantApi<T>(tid, path);
+      const result = await loaderRef.current(tid);
       if (!isCurrent()) return;
       if (result !== null) setData(result);
       setError(null);
@@ -39,28 +44,29 @@ export function useTenantData<T>(
     } finally {
       if (isCurrent()) setLoading(false);
     }
-  }, [currentTenant?.id, path]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentTenant?.id, ...deps]);
 
   useEffect(() => { void load(); }, [load]);
 
   return { data, loading, error, reload: load };
 }
 
-interface ParallelSpec {
-  path: string;
-  key: string;
-}
+export type TenantLoaders<T> = { [K in keyof T]: TenantLoader<T[K]> };
 
+/** Loads several service calls at once; one failure does not hide the parts that loaded. */
 export function useTenantParallel<T extends object>(
-  specs: ParallelSpec[],
+  loaders: TenantLoaders<T>,
   fallback: T,
 ): TenantDataResult<T> {
-  const { currentTenant } = useApp();
+  const { currentTenant } = useTenant();
   const [data, setData] = useState<T>(fallback);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const tenantIdRef = useRef(currentTenant?.id);
   tenantIdRef.current = currentTenant?.id;
+  const loadersRef = useRef(loaders);
+  loadersRef.current = loaders;
   const seqRef = useRef(0);
 
   const load = useCallback(async () => {
@@ -70,23 +76,22 @@ export function useTenantParallel<T extends object>(
     const isCurrent = () => seq === seqRef.current && tid === tenantIdRef.current;
     setLoading(true);
     try {
-      // Every part is loaded; one failure does not hide the parts that loaded
-      const results = await Promise.allSettled(
-        specs.map((s) => tenantApi(tid, s.path)),
-      );
+      const keys = Object.keys(loadersRef.current) as Array<keyof T>;
+      const results = await Promise.allSettled(keys.map((k) => loadersRef.current[k](tid)));
       if (!isCurrent()) return;
-      const merged = { ...fallback } as Record<string, unknown>;
+      const merged = { ...fallback };
       let failure: unknown = null;
-      specs.forEach((s, i) => {
+      keys.forEach((k, i) => {
         const r = results[i];
         if (r.status === "rejected") failure ??= r.reason;
-        else if (r.value !== null) merged[s.key] = r.value;
+        else if (r.value !== null) merged[k] = r.value;
       });
-      setData(merged as T);
+      setData(merged);
       setError(failure ? errorMessage(failure, "Could not load this page") : null);
     } finally {
       if (isCurrent()) setLoading(false);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentTenant?.id]);
 
   useEffect(() => { void load(); }, [load]);

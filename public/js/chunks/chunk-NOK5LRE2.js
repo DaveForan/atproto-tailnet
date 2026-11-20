@@ -1,1 +1,0 @@
-import{j as i}from"./chunk-D4PDUPC6.js";import{b as a}from"./chunk-GBSRULQK.js";var n=a(i(),1);function d({label:o="Loading\u2026"}){return(0,n.jsx)("div",{className:"loading",role:"status",children:o})}export{d as a};

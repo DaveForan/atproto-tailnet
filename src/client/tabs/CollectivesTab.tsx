@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { collectivesService } from "../services/collectives";
-import { useApp } from "../hooks/useAppState";
+import { useSession } from "../hooks/session";
 import { useToast } from "../components/Toast";
 import { useTenantMutation } from "../hooks/useMutation";
 import { Card } from "../components/Card";
@@ -13,8 +13,8 @@ import type { Ancestor, SubCollective, ComplianceData } from "../lib/types";
 import { LoadError } from "../components/LoadError";
 
 export function CollectivesTab() {
-  const { currentTenant, hasPerm, user } = useApp();
-  const { toast, toastError } = useToast();
+  const { currentTenant, hasPerm, user } = useSession();
+  const { toast, toastFailure } = useToast();
   const { mutate, busy } = useTenantMutation();
   const confirm = useConfirm();
 
@@ -65,7 +65,7 @@ export function CollectivesTab() {
       const code = errorCode(err);
       if (code === "single_tailnet") setSingleTailnet(true);
       if (code === "cannot_create_tailnet") setCannotCreate(true);
-      toastError(errorMessage(err, "Failed to create sub-collective"));
+      toastFailure(err, "Failed to create sub-collective");
     } finally {
       setCreating(false);
     }
@@ -74,8 +74,7 @@ export function CollectivesTab() {
   const ejectCollective = async (id: string, name: string) => {
     if (!(await confirm({ title: `Eject ${name}?`, message: "This sub-collective is removed from this tailnet. This cannot be undone.", confirmLabel: "Eject", danger: true }))) return;
     await mutate(
-      `/collectives/${id}/eject`,
-      { method: "POST" },
+      (tid) => collectivesService.eject(tid, id),
       { successMsg: "Sub-collective ejected", reload: loadData },
     );
   };

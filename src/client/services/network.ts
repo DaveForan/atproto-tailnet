@@ -1,5 +1,5 @@
 import { tenantApi } from "./api";
-import type { IpConfig, DerpConfig } from "../lib/types";
+import type { IpConfig, DerpConfig, RouteData } from "../lib/types";
 
 export const networkService = {
   // IP Configuration
@@ -21,6 +21,16 @@ export const networkService = {
       method: "PUT",
       body: JSON.stringify(config),
     }),
+
+  // Exit nodes and subnet routes
+  getRoutes: (tid: string) =>
+    tenantApi<RouteData>(tid, "/routes"),
+
+  setRouteEnabled: (tid: string, routeId: string, enabled: boolean) =>
+    tenantApi(tid, `/routes/${routeId}/${enabled ? "enable" : "disable"}`, { method: "POST" }),
+
+  deleteRoute: (tid: string, routeId: string) =>
+    tenantApi(tid, `/routes/${routeId}`, { method: "DELETE" }),
 
   // Traversal
   getTraversalPolicy: (tid: string) =>

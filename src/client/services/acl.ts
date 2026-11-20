@@ -5,9 +5,10 @@ export const aclService = {
   getAcl: (tid: string) =>
     tenantApi<AclGetResponse>(tid, "/acl"),
 
-  setAcl: (tid: string, policy: AclData) =>
+  /** The coordinator has no groups: they are left out of its policy. */
+  setAcl: (tid: string, { acls, groups, hosts }: Pick<AclData, "acls" | "groups" | "hosts">, coordinatorMode: boolean) =>
     tenantApi(tid, "/acl", {
       method: "PUT",
-      body: JSON.stringify(policy),
+      body: JSON.stringify(coordinatorMode ? { acls, hosts } : { acls, groups, hosts }),
     }),
 };

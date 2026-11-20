@@ -1,5 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
-import { useApp } from "./hooks/useAppState";
+import { useSession } from "./hooks/session";
+import { useTabRoute } from "./hooks/useTabRoute";
+import { useWizard } from "./hooks/useWizard";
 import { Header, LockdownBanner, LoginPage, Sidebar, SidebarProvider, StatsSummary } from "./components/Layout";
 import { PendingInvitations } from "./components/PendingInvitations";
 import { Loading } from "./components/Loading";
@@ -100,7 +102,8 @@ export function App() {
 }
 
 function AppContent() {
-  const { user, loading, error, currentTenant, showWizard, reload, reloadAndSelect } = useApp();
+  const { user, loading, error, currentTenant, reload, reloadAndSelect } = useSession();
+  const { showWizard } = useWizard();
   const [path, setPath] = useState(window.location.pathname);
   const inviteId = INVITE_PATH.exec(path)?.[1] ?? null;
   const deviceId = DEVICE_PATH.exec(path)?.[1] ?? null;
@@ -192,7 +195,8 @@ function AppContent() {
 }
 
 function Dashboard() {
-  const { tab, invitations, currentTenant, reload, setTab } = useApp();
+  const { invitations, currentTenant, reload } = useSession();
+  const { tab, setTab } = useTabRoute();
   const TabComponent = tabComponents[tab] ?? StatusTab;
 
   return (
@@ -221,7 +225,8 @@ function Dashboard() {
 }
 
 function SetupWizard({ tenant }: { tenant: Tenant }) {
-  const { wizardStep, setWizardStep, dismissWizard, reload } = useApp();
+  const { reload } = useSession();
+  const { wizardStep, setWizardStep, dismissWizard } = useWizard();
   const [address, setAddress] = useState<HostnamesData | null>(null);
 
   useEffect(() => {

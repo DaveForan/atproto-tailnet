@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useState } from "react";
 import { networkService } from "../services/network";
-import { useApp } from "../hooks/useAppState";
+import { useTenant } from "../hooks/session";
 import { useToast } from "../components/Toast";
 import { useTenantMutation } from "../hooks/useMutation";
 import { Card } from "../components/Card";
@@ -13,7 +13,7 @@ import { LoadError } from "../components/LoadError";
 import { errorMessage } from "../lib/utils";
 
 export function DerpTab() {
-  const { currentTenant } = useApp();
+  const { currentTenant } = useTenant();
   const { toast } = useToast();
   const { mutate, busy } = useTenantMutation();
   const [config, setConfig] = useState<DerpConfig>({
@@ -73,8 +73,7 @@ export function DerpTab() {
 
   const save = async () => {
     await mutate(
-      "/derp",
-      { method: "PUT", body: JSON.stringify(config) },
+      (tid) => networkService.setDerp(tid, config),
       { successMsg: "DERP configuration saved", reload: load },
     );
   };

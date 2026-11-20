@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import { useApp } from "../hooks/useAppState";
+import { useSession } from "../hooks/session";
 import { useToast } from "./Toast";
 import { useConfirm } from "./ConfirmDialog";
 import { Card } from "./Card";
 import { Badge } from "./Badge";
 import { hostnamesService } from "../services/hostnames";
-import { errorMessage } from "../lib/utils";
 import type { HostnamesData } from "../lib/types";
 
 const LABEL_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
@@ -41,7 +40,7 @@ export function AddressForm({
   onSaved: (primary: string) => void;
   secondary?: React.ReactNode;
 }) {
-  const { toast, toastError } = useToast();
+  const { toast, toastFailure } = useToast();
   const [value, setValue] = useState(initial);
   const [busy, setBusy] = useState(false);
   const problem = addressProblem(value);
@@ -54,7 +53,7 @@ export function AddressForm({
       toast(`Address set to ${value}.${baseDomain}`);
       onSaved(r?.primary ?? value);
     } catch (e) {
-      toastError(errorMessage(e, "Failed to change the address"));
+      toastFailure(e, "Failed to change the address");
     } finally {
       setBusy(false);
     }
@@ -101,8 +100,8 @@ export function AddressForm({
 
 /** Settings card: current address, aliases, change/retire (originator only). */
 export function TailnetAddressCard() {
-  const { currentTenant, reload } = useApp();
-  const { toast, toastError } = useToast();
+  const { currentTenant, reload } = useSession();
+  const { toast, toastFailure } = useToast();
   const confirm = useConfirm();
   const [data, setData] = useState<HostnamesData | null>(null);
   const [editing, setEditing] = useState(false);
@@ -139,7 +138,7 @@ export function TailnetAddressCard() {
       toast(`${name} retired`);
       await load();
     } catch (e) {
-      toastError(errorMessage(e, "Failed to retire the alias"));
+      toastFailure(e, "Failed to retire the alias");
     }
   };
 

@@ -12,16 +12,20 @@ export const federationService = {
   getLinks: (tid: string) =>
     tenantApi<{ links: FederationLink[] }>(tid, "/federation"),
 
-  requestLink: (tid: string, body: { targetSlug: string; message?: string; cidrs?: string[] }) =>
+  requestLink: (tid: string, targetSlug: string, message: string, cidrs: string[]) =>
     tenantApi(tid, "/federation", {
       method: "POST",
-      body: JSON.stringify(body),
+      body: JSON.stringify({
+        targetSlug: targetSlug.trim(),
+        message: message || undefined,
+        cidrs: cidrs.length > 0 ? cidrs : undefined,
+      }),
     }),
 
-  acceptLink: (tid: string, linkId: string, cidrs?: string[]) =>
+  acceptLink: (tid: string, linkId: string, cidrs: string[]) =>
     tenantApi(tid, `/federation/${linkId}/accept`, {
       method: "POST",
-      body: JSON.stringify({ cidrs }),
+      body: JSON.stringify({ cidrs: cidrs.length > 0 ? cidrs : undefined }),
     }),
 
   rejectLink: (tid: string, linkId: string) =>

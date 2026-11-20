@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { errorMessage } from "../lib/utils";
 import { invitationService } from "../services/invitations";
 import { useToast } from "./Toast";
 import type { Invitation } from "../lib/types";
@@ -11,7 +10,7 @@ export function PendingInvitations({
   invitations: Invitation[];
   onAction: () => void;
 }) {
-  const { toast, toastError } = useToast();
+  const { toast, toastFailure } = useToast();
   const [busy, setBusy] = useState(false);
 
   if (!invitations || invitations.length === 0) return null;
@@ -25,7 +24,7 @@ export function PendingInvitations({
       toast(accept ? "Invitation accepted" : "Invitation declined");
       onAction();
     } catch (e) {
-      toastError(errorMessage(e, accept ? "Failed to accept invitation" : "Failed to decline invitation"));
+      toastFailure(e, accept ? "Failed to accept invitation" : "Failed to decline invitation");
     } finally {
       setBusy(false);
     }

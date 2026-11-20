@@ -1,0 +1,1 @@
+import{f as t,g as i}from"./chunk-OJJDWQS4.js";var s={me:()=>i("/api/me"),tenants:()=>t("/api/tenants").then(n=>n??[]),invitations:()=>t("/api/invitations").then(n=>n??[]),permissions:()=>t("/api/permissions").then(n=>n??[]),tenant:n=>t(`/api/tenants/${n}`)};export{s as a};

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { auditService } from "../services/audit";
-import { useApp } from "../hooks/useAppState";
+import { useTenant } from "../hooks/session";
 import { Card } from "../components/Card";
 import { EmptyState } from "../components/EmptyState";
 import { Loading } from "../components/Loading";
@@ -11,7 +11,7 @@ import { LoadError } from "../components/LoadError";
 const PAGE_SIZE = 50;
 
 export function AuditTab() {
-  const { currentTenant } = useApp();
+  const { currentTenant } = useTenant();
   const [entries, setEntries] = useState<AuditEntry[]>([]);
   const [offset, setOffset] = useState(0);
   const [loading, setLoading] = useState(true);

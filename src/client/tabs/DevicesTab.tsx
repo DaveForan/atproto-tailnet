@@ -1,4 +1,5 @@
-import { useApp } from "../hooks/useAppState";
+import { useSession } from "../hooks/session";
+import { deviceService } from "../services/devices";
 import { useTenantData } from "../hooks/useTenantData";
 import { useTenantMutation } from "../hooks/useMutation";
 import { Card } from "../components/Card";
@@ -14,8 +15,11 @@ import { LoadError } from "../components/LoadError";
 const KEYS_FALLBACK: { keys: AuthKeyInfo[] } = { keys: [] };
 
 export function DevicesTab() {
-  const { hasPerm, reload, user, currentTenant } = useApp();
-  const { data: devices, loading, error, reload: reloadDevices } = useTenantData<DevicesData | null>("/devices", null);
+  const { hasPerm, reload, user, currentTenant } = useSession();
+  const { data: devices, loading, error, reload: reloadDevices } = useTenantData<DevicesData | null>(
+    (tid) => deviceService.getDevices(tid),
+    null,
+  );
   const { mutate, busy } = useTenantMutation({ onError: "Failed to remove device" });
   const canManage = hasPerm("manage_devices");
   const confirm = useConfirm();
@@ -23,8 +27,7 @@ export function DevicesTab() {
   const handleRemove = async (deviceId: string, deviceName: string) => {
     if (!(await confirm({ title: `Remove device "${deviceName}"?`, message: "This cannot be undone.", confirmLabel: "Remove device", danger: true }))) return;
     await mutate(
-      `/devices/${deviceId}`,
-      { method: "DELETE" },
+      (tid) => deviceService.removeDevice(tid, deviceId),
       { successMsg: "Device removed", reload: async () => { await reloadDevices(); reload(); } },
     );
   };
@@ -99,8 +102,8 @@ function keyState(k: AuthKeyInfo): "revoked" | "expired" | "used" | "active" {
 }
 
 function AuthKeysCard() {
-  const { hasPerm, user } = useApp();
-  const { data, loading, error, reload } = useTenantData("/auth-keys", KEYS_FALLBACK);
+  const { hasPerm, user } = useSession();
+  const { data, loading, error, reload } = useTenantData((tid) => deviceService.listAuthKeys(tid), KEYS_FALLBACK);
   const { mutate, busy } = useTenantMutation({ onError: "Failed to revoke key", reload });
   const canManage = hasPerm("manage_devices");
   const confirm = useConfirm();
@@ -113,7 +116,7 @@ function AuthKeysCard() {
       confirmLabel: "Revoke key",
       danger: true,
     }))) return;
-    await mutate(`/auth-keys/${k.id}`, { method: "DELETE" }, { successMsg: "Auth key revoked" });
+    await mutate((tid) => deviceService.revokeAuthKey(tid, k.id), { successMsg: "Auth key revoked" });
   };
 
   return (

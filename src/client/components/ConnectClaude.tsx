@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { mcpService } from "../services/mcp";
-import { useApp } from "../hooks/useAppState";
+import { useSession } from "../hooks/session";
 import { useToast } from "./Toast";
 import { Card } from "./Card";
 import { CopyField } from "./CopyField";
@@ -8,12 +8,12 @@ import { EmptyState } from "./EmptyState";
 import { Loading } from "./Loading";
 import { Badge } from "./Badge";
 import { useConfirm } from "./ConfirmDialog";
-import { errorMessage, relativeTime } from "../lib/utils";
+import { relativeTime } from "../lib/utils";
 import type { McpConnection } from "../lib/types";
 
 export function ConnectClaude() {
-  const { user } = useApp();
-  const { toast, toastError } = useToast();
+  const { user } = useSession();
+  const { toast, toastFailure } = useToast();
   const [connections, setConnections] = useState<McpConnection[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -24,11 +24,11 @@ export function ConnectClaude() {
     try {
       setConnections(await mcpService.connections());
     } catch (e) {
-      toastError(errorMessage(e, "Failed to load connected apps"));
+      toastFailure(e, "Failed to load connected apps");
     } finally {
       setLoading(false);
     }
-  }, [toastError]);
+  }, [toastFailure]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -40,7 +40,7 @@ export function ConnectClaude() {
       toast(`${c.clientName} disconnected`);
       await load();
     } catch (e) {
-      toastError(errorMessage(e, "Failed to revoke connection"));
+      toastFailure(e, "Failed to revoke connection");
     } finally {
       setBusy(false);
     }
