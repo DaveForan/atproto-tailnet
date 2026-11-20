@@ -176,13 +176,12 @@ pub async fn set_auto_approvers(
     }
     state.auto_approvers.set_tenant(tenant_id, policy.clone());
 
-    let mut changed = false;
     for node in state.store.list_nodes_for_tenant(tenant_id).await {
-        changed |= crate::control::apply_auto_approvers(&state, node.id).await;
+        crate::control::apply_auto_approvers(&state, node.id).await;
     }
-    if changed {
-        state.notify_tenant_changed(tenant_id);
-    }
+    // Always notify: other replicas cache the policy and must reload it even
+    // when no node's approved routes changed here.
+    state.notify_tenant_changed(tenant_id);
     Json(policy).into_response()
 }
 
