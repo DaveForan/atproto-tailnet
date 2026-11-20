@@ -4,8 +4,9 @@ import type { InstanceInfo, MyJoinRequest, PublicTenant } from "../lib/types";
 export const instanceService = {
   get: () => api<InstanceInfo>("/api/instance"),
 
-  publicTenant: (slug: string) =>
-    api<PublicTenant>(`/api/tenants/by-slug/${encodeURIComponent(slug)}/public`),
+  /** Looks a tailnet up by its public address (primary or live alias). */
+  publicTenant: (address: string) =>
+    api<PublicTenant>(`/api/tenants/by-slug/${encodeURIComponent(address)}/public`),
 
   myJoinRequests: (tid: string) =>
     api<MyJoinRequest[]>(`/api/tenants/${tid}/join-requests/mine`),

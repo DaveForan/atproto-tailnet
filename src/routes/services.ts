@@ -28,11 +28,11 @@ import {
   isDeviceLocked,
   DEVICE_LOCKED_ERROR,
   toHsUsername,
-  tenantLoginServer,
   authUserId,
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
 import { logger } from "../logger.js";
+import { tenantLoginServerFor } from "../orchestrator/hostnames.js";
 import { notify } from "../notifications/service.js";
 import { enforceDeviceLimit } from "./limits.js";
 import { issueMemberKey } from "./access.js";
@@ -173,7 +173,7 @@ servicesRouter.post(
         hsUsername,
         kind: "service_device",
       });
-      const loginServer = tenantLoginServer(result.tenant.slug);
+      const loginServer = await tenantLoginServerFor(result.tenant);
       const command = `tailscale up --login-server ${loginServer} --authkey ${authKey.key}`;
 
       const [created] = await db
@@ -276,7 +276,7 @@ servicesRouter.post(
         hsUsername,
         kind: "service_device",
       });
-      const loginServer = tenantLoginServer(result.tenant.slug);
+      const loginServer = await tenantLoginServerFor(result.tenant);
       const command = `tailscale up --login-server ${loginServer} --authkey ${authKey.key}`;
 
       await db

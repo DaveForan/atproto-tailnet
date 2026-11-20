@@ -928,3 +928,30 @@ export const mcpOauthTokens = pgTable(
   },
   (t) => [index("mcp_oauth_tokens_grant_idx").on(t.grantId)],
 );
+
+/**
+ * Public addresses (`<slug>.<BASE_DOMAIN>`) a tailnet answers to. `tenants.slug`
+ * stays the permanent internal id (coordinator tenant slug, collective DID);
+ * these rows are what Caddy routes and what new devices are told to use.
+ * Exactly one live row per tenant is primary; older names stay as aliases so
+ * enrolled devices keep working. A retired row is no longer routed and its
+ * name stays reserved for a quarantine period before anyone may take it.
+ */
+export const tenantHostnames = pgTable(
+  "tenant_hostnames",
+  {
+    slug: text("slug").primaryKey(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    isPrimary: boolean("is_primary").notNull().default(false),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    retiredAt: timestamp("retired_at"),
+  },
+  (t) => [
+    index("tenant_hostnames_tenant_idx").on(t.tenantId),
+    uniqueIndex("tenant_hostnames_one_primary_idx")
+      .on(t.tenantId)
+      .where(sql`${t.isPrimary} AND ${t.retiredAt} IS NULL`),
+  ],
+);

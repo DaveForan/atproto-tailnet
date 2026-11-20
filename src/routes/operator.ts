@@ -37,6 +37,7 @@ import { logAudit } from "./audit.js";
 import { deleteTenantInstance } from "./api.js";
 import { ACCOUNT_DID_RE, normalizeAccountDid, resolveDidToHandle, resolveHandleToDid } from "./invitations.js";
 import { logger } from "../logger.js";
+import { primaryHostname } from "../orchestrator/hostnames.js";
 
 /** Router for /api/operator/* (all routes behind requireOperator). */
 export const operatorRouter = Router();
@@ -59,7 +60,7 @@ instanceRouter.get("/api/instance", async (_req, res) => {
   const settings = await getInstanceSettings();
   let defaultTailnet: {
     id: string;
-    slug: string;
+    address: string;
     name: string;
     acceptsJoinRequests: boolean;
   } | null = null;
@@ -79,7 +80,8 @@ instanceRouter.get("/api/instance", async (_req, res) => {
     if (t && t.status !== "deleted" && !t.suspended) {
       defaultTailnet = {
         id: t.id,
-        slug: t.slug,
+        // Public address only — the internal slug is never exposed publicly
+        address: await primaryHostname(t.id, t.slug),
         name: t.name,
         acceptsJoinRequests: t.allowJoinRequests && !t.lockdownMode,
       };

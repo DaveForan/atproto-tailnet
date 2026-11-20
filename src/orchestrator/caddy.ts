@@ -27,6 +27,7 @@ import {
   tenantContainerName,
 } from "./headscale.js";
 import { useCoordinator } from "./control-client.js";
+import { liveHostnamesByTenant } from "./hostnames.js";
 
 /** Name of the Caddy HTTP server tenant routes live in — set in the Caddyfile. */
 export const CADDY_SERVER = "tailnet_proxy";
@@ -56,8 +57,11 @@ export interface CaddyRoute {
 }
 
 export interface RoutableTenant {
+  /** Internal id — the coordinator's tenant slug and the Headscale container name. */
   slug: string;
   port: number;
+  /** Live public names (primary first). Defaults to `[slug]`. */
+  hostnames?: string[];
 }
 
 export interface CaddyResponse {
@@ -149,6 +153,12 @@ export function tenantUpstream(
 // by Tailscale clients (the monitor probes the coordinator directly).
 export const COORDINATOR_PUBLIC_PATHS = ["/key", "/ts2021"];
 
+/** Every live public name of a tenant, as hosts under the base domain. */
+function hostsFor(t: RoutableTenant, baseDomain: string): string[] {
+  const names = t.hostnames && t.hostnames.length > 0 ? t.hostnames : [t.slug];
+  return names.map((n) => `${n}.${baseDomain}`);
+}
+
 export function buildTenantRouter(
   routable: RoutableTenant[],
   opts: { baseDomain?: string; network?: string; coordinator?: boolean } = {},
@@ -170,8 +180,8 @@ export function buildTenantRouter(
             // only the paths Tailscale clients need are exposed publicly.
             match: [
               coordinator
-                ? { host: [`${t.slug}.${baseDomain}`], path: COORDINATOR_PUBLIC_PATHS }
-                : { host: [`${t.slug}.${baseDomain}`] },
+                ? { host: hostsFor(t, baseDomain), path: COORDINATOR_PUBLIC_PATHS }
+                : { host: hostsFor(t, baseDomain) },
             ],
             handle: [
               {
@@ -251,8 +261,9 @@ async function listRoutableTenants(): Promise<
   const whereClause = useCoordinator
     ? ne(tenants.status, "deleted")
     : and(ne(tenants.status, "deleted"), isNotNull(tenants.containerId));
-  return db
+  const rows = await db
     .select({
+      id: tenants.id,
       slug: tenants.slug,
       port: tenants.port,
       containerId: tenants.containerId,
@@ -260,6 +271,13 @@ async function listRoutableTenants(): Promise<
     .from(tenants)
     .where(whereClause)
     .orderBy(tenants.slug);
+  const names = await liveHostnamesByTenant(rows.map((r) => r.id));
+  return rows.map((r) => ({
+    slug: r.slug,
+    port: r.port,
+    containerId: r.containerId,
+    hostnames: names.get(r.id) ?? [r.slug],
+  }));
 }
 
 // Syncs are serialized: two overlapping read-compare-write cycles could

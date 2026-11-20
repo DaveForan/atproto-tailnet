@@ -26,6 +26,12 @@ import {
 } from "./permissions.js";
 import { logger } from "../logger.js";
 import { canCreateTailnet, claimDefaultTailnet, withTailnetCreationLock } from "../operator/policy.js";
+import {
+  generateAvailableFriendlyName,
+  generateInternalSlug,
+  hostnameAvailableFor,
+  registerInitialHostname,
+} from "../orchestrator/hostnames.js";
 
 /** Static page for a disabled account's sign-in attempt (no scripts — CSP-safe). */
 const ACCOUNT_DISABLED_HTML = `<!DOCTYPE html>
@@ -94,37 +100,15 @@ export function loginNonceMatches(expected: string | undefined, actual: string |
  */
 export const authRouter = Router();
 
-/** Max length of a DNS label — slugs become `<slug>.<BASE_DOMAIN>`. */
-const MAX_SLUG_LENGTH = 63;
-
-/** Truncates to `max` chars and strips trailing hyphens (valid DNS label). */
-function fitLabel(base: string, max: number): string {
-  return base.slice(0, max).replace(/-+$/, "");
-}
-
-async function generateUniqueSlug(handle: string): Promise<string> {
-  const base =
-    fitLabel(
-      handle
-        .replace(/[^a-z0-9]+/gi, "-")
-        .replace(/^-|-$/g, "")
-        .toLowerCase(),
-      MAX_SLUG_LENGTH,
-    ) || "tailnet";
-  const [existing] = await db
-    .select({ slug: tenants.slug })
-    .from(tenants)
-    .where(eq(tenants.slug, base));
-  if (!existing) return base;
-  for (let i = 2; i <= 100; i++) {
-    const suffix = `-${i}`;
-    // Shorten the base so base + suffix still fits in one DNS label
-    const candidate = `${fitLabel(base, MAX_SLUG_LENGTH - suffix.length)}${suffix}`;
-    const [check] = await db
-      .select({ slug: tenants.slug })
-      .from(tenants)
-      .where(eq(tenants.slug, candidate));
-    if (!check) return candidate;
+/**
+ * Opaque internal id for a new tailnet. Never derived from the handle: the id
+ * is the coordinator's tenant slug and is part of the collective DID, so a
+ * handle-based id would reveal who runs which tailnet.
+ */
+async function generateUniqueSlug(): Promise<string> {
+  for (let i = 0; i < 20; i++) {
+    const candidate = generateInternalSlug();
+    if (await hostnameAvailableFor(candidate, "")) return candidate;
   }
   throw new Error("Could not generate unique slug");
 }
@@ -149,7 +133,7 @@ export async function provisionTenant(
   let port = 0;
   for (let attempt = 0; attempt < 3; attempt++) {
     // Re-derive both unique values on every attempt (either can race)
-    slug = await generateUniqueSlug(handle);
+    slug = await generateUniqueSlug();
     // Coordinator-mode tenants have no Headscale container, so they get a
     // synthetic placeholder instead of consuming a real port from the range.
     port = await allocateTenantPort(!useCoordinator);
@@ -175,6 +159,9 @@ export async function provisionTenant(
     }
   }
   if (!tenant) throw new Error("Failed to create tenant after retries");
+  // Public address: a random friendly name the originator is asked to change
+  // in the setup wizard. The internal slug is never routed publicly.
+  await registerInitialHostname(tenant.id, await generateAvailableFriendlyName());
 
   // Create system roles
   const [originatorRole] = await db

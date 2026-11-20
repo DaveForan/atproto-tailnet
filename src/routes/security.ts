@@ -30,11 +30,11 @@ import {
   isDeviceLocked,
   isLockedDown,
   toHsUsername,
-  tenantLoginServer,
   authUserId,
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
 import { logger } from "../logger.js";
+import { tenantLoginServerFor } from "../orchestrator/hostnames.js";
 import { ALL_PERMISSIONS, type Permission } from "./permissions.js";
 import { config } from "../config.js";
 import { validateWebhookUrl } from "../notifications/webhook.js";
@@ -944,7 +944,7 @@ securityRouter.post(
         userId: approval.requesterId,
         hsUsername: approval.hsUsername,
       });
-      const loginServer = tenantLoginServer(result.tenant.slug);
+      const loginServer = await tenantLoginServerFor(result.tenant);
       const command = `tailscale up --login-server ${loginServer} --authkey ${authKey.key}`;
 
       await db

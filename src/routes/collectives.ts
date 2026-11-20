@@ -22,6 +22,7 @@ import { logger } from "../logger.js";
 import { allocateTenantPort } from "../orchestrator/ports.js";
 import { useCoordinator } from "../orchestrator/control-client.js";
 import { provisionTenantInstance } from "./auth.js";
+import { hostnameAvailableFor, registerInitialHostname, validateHostname } from "../orchestrator/hostnames.js";
 import { MAX_LIMIT, checkChildLimit } from "./limits.js";
 import {
   canCreateTailnet,
@@ -219,6 +220,16 @@ collectivesRouter.post(
       res.status(409).json({ error: "Slug already in use" });
       return;
     }
+    // The slug is also the sub-tailnet's first public address
+    const checked = validateHostname(slug);
+    if (!checked.ok) {
+      res.status(400).json({ error: checked.error === "reserved" ? "That address is reserved" : "Invalid address" });
+      return;
+    }
+    if (!(await hostnameAvailableFor(slug, ""))) {
+      res.status(409).json({ error: "Slug already in use" });
+      return;
+    }
 
     const childPath = tenant.path ? `${tenant.path}.${slug}` : slug;
     const childDepth = tenant.depth + 1;
@@ -257,6 +268,7 @@ collectivesRouter.post(
         }
       }
       if (!child) throw new Error("Failed to insert sub-collective");
+      await registerInitialHostname(child.id, child.slug);
 
       const [originatorRole] = await db
         .insert(roles)

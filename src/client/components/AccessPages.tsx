@@ -84,7 +84,7 @@ function JoinDefaultTailnet({ hasInvitations }: { hasInvitations: boolean }) {
         setState({ kind: "invite-only" });
         return;
       }
-      const tenant = await instanceService.publicTenant(def.slug).catch(() => null);
+      const tenant = await instanceService.publicTenant(def.address).catch(() => null);
       if (!tenant || !tenant.joinOpen) {
         setState({ kind: "invite-only" });
         return;

@@ -20,6 +20,22 @@ export interface Tenant {
   roleName?: string;
   coordinatorTenantId?: string;
   suspended?: boolean;
+  /** Primary public address label (`<address>.<BASE_DOMAIN>`). */
+  address?: string;
+}
+
+export interface TailnetHostname {
+  name: string;
+  primary: boolean;
+  createdAt: string;
+  retiredAt: string | null;
+}
+
+export interface HostnamesData {
+  baseDomain: string;
+  primary: string;
+  hostnames: TailnetHostname[];
+  canManage: boolean;
 }
 
 export interface Role {
@@ -75,12 +91,14 @@ export interface InvitationDetail {
 
 export interface InstanceInfo {
   name?: string;
-  defaultTailnet: { slug: string; name: string; acceptsJoinRequests: boolean } | null;
+  /** `address` is the public name (never the internal slug). */
+  defaultTailnet: { id: string; address: string; name: string; acceptsJoinRequests: boolean } | null;
   inviteOnly: boolean;
 }
 
 export interface PublicTenant {
   id: string;
+  address: string;
   name: string;
   joinOpen: boolean;
 }

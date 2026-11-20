@@ -20,10 +20,17 @@ import { syncTenantRoutes } from "../orchestrator/caddy.js";
 import { releaseTenantPort } from "../orchestrator/ports.js";
 import { getControlClient, useCoordinator } from "../orchestrator/control-client.js";
 import { CoordinatorApiClient } from "../orchestrator/coordinator-api.js";
-import { requireAuth, param, getTenantForUser, tenantLoginServer, authUserId } from "./helpers.js";
+import { requireAuth, param, getTenantForUser, authUserId } from "./helpers.js";
 import { logAudit } from "./audit.js";
 import { checkTenantHealth } from "../orchestrator/monitor.js";
 import { logger } from "../logger.js";
+import {
+  liveHostnamesByTenant,
+  primaryHostname,
+  tenantIdForHostname,
+  tenantIdForPublicLink,
+  tenantLoginServerFor,
+} from "../orchestrator/hostnames.js";
 import { notify } from "../notifications/service.js";
 import {
   canCreateTailnet,
@@ -179,8 +186,13 @@ apiRouter.get("/api/tenants", requireAuth, async (req, res) => {
     .orderBy(desc(tenants.createdAt))
     .limit(200);
 
+  const names = await liveHostnamesByTenant(userTenants.map((t) => t.id));
   res.json(
-    userTenants.map((t) => ({ ...t, coordinatorMode: useCoordinator })),
+    userTenants.map((t) => ({
+      ...t,
+      address: names.get(t.id)?.[0] ?? t.slug,
+      coordinatorMode: useCoordinator,
+    })),
   );
 });
 
@@ -201,7 +213,8 @@ apiRouter.get("/api/tenants/:id", requireAuth, async (req, res) => {
     roleName: result.role?.name ?? null,
     roleId: result.membership.roleId,
     defaultRoleId: result.tenant.defaultRoleId,
-    loginServer: tenantLoginServer(result.tenant.slug),
+    address: await primaryHostname(result.tenant.id, result.tenant.slug),
+    loginServer: await tenantLoginServerFor(result.tenant),
     coordinatorTenantId: result.tenant.coordinatorTenantId ?? null,
     coordinatorMode: useCoordinator,
   });
@@ -214,7 +227,7 @@ apiRouter.get("/api/tenants/:id", requireAuth, async (req, res) => {
  * exist.
  */
 apiRouter.get("/api/tenants/by-slug/:slug/public", async (req, res) => {
-  const slug = param(req, "slug");
+  const tenantId = await tenantIdForPublicLink(param(req, "slug"));
 
   const [tenant] = await db
     .select({
@@ -227,7 +240,7 @@ apiRouter.get("/api/tenants/by-slug/:slug/public", async (req, res) => {
       suspended: tenants.suspended,
     })
     .from(tenants)
-    .where(eq(tenants.slug, slug));
+    .where(eq(tenants.id, tenantId ?? "00000000-0000-0000-0000-000000000000"));
 
   if (
     !tenant ||
@@ -242,7 +255,7 @@ apiRouter.get("/api/tenants/by-slug/:slug/public", async (req, res) => {
 
   res.json({
     id: tenant.id,
-    slug: tenant.slug,
+    address: await primaryHostname(tenant.id, tenant.slug),
     name: tenant.name,
     joinOpen: true,
   });
@@ -261,10 +274,13 @@ export const JOIN_NOTIFY_DEDUPE_MS = 24 * 60 * 60 * 1000;
  * or suspended ones.
  */
 export async function tlsCertAllowedForSlug(slug: string): Promise<boolean> {
+  // Live public names only (primary or alias) — never retired or internal-only names
+  const tenantId = await tenantIdForHostname(slug);
+  if (!tenantId) return false;
   const [tenant] = await db
     .select({ id: tenants.id })
     .from(tenants)
-    .where(and(eq(tenants.slug, slug), ne(tenants.status, "deleted"), eq(tenants.suspended, false)))
+    .where(and(eq(tenants.id, tenantId), ne(tenants.status, "deleted"), eq(tenants.suspended, false)))
     .limit(1);
   return Boolean(tenant);
 }

@@ -74,7 +74,8 @@ export function BoardTab() {
 
   if (loading) return <div className="loading">Loading...</div>;
 
-  const slug = currentTenant?.slug;
+  // Public address (the internal slug never resolves publicly)
+  const slug = currentTenant?.address ?? currentTenant?.slug;
 
   return (
     <div className="tab-content">

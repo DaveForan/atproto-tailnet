@@ -1,9 +1,11 @@
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { useApp } from "./hooks/useAppState";
 import { Header, LockdownBanner, LoginPage, Sidebar, SidebarProvider, StatsSummary } from "./components/Layout";
 import { PendingInvitations } from "./components/PendingInvitations";
 import { InvitePage, NoAccessPage, SuspendedPage } from "./components/AccessPages";
 import type { TabId, Tenant } from "./lib/types";
+import { AddressForm } from "./components/TailnetAddress";
+import { hostnamesService } from "./services/hostnames";
 
 const StatusTab = lazy(() => import("./tabs/StatusTab").then((m) => ({ default: m.StatusTab })));
 const DevicesTab = lazy(() => import("./tabs/DevicesTab").then((m) => ({ default: m.DevicesTab })));
@@ -142,13 +144,47 @@ function Dashboard() {
 }
 
 function SetupWizard({ tenant }: { tenant: Tenant }) {
-  const { wizardStep, setWizardStep, dismissWizard } = useApp();
+  const { wizardStep, setWizardStep, dismissWizard, reload } = useApp();
+  const [address, setAddress] = useState<{ primary: string; baseDomain: string } | null>(null);
+
+  useEffect(() => {
+    hostnamesService
+      .list(tenant.id)
+      .then((d) => d && setAddress({ primary: d.primary, baseDomain: d.baseDomain }))
+      .catch(() => setAddress(null));
+  }, [tenant.id]);
+
+  const loginServer = address ? `https://${address.primary}.${address.baseDomain}` : "https://<your-tailnet-address>";
 
   return (
     <div className="wizard-overlay">
       <div className="wizard-card">
         <h2>Welcome to {tenant.name}</h2>
-        {wizardStep === 1 && (
+        {wizardStep === 1 && tenant.isOriginator && address && (
+          <div>
+            <p>
+              Your tailnet is ready. First, choose its address — every device you add will
+              connect to it. You can change it later; old addresses keep working as aliases.
+            </p>
+            <AddressForm
+              tenantId={tenant.id}
+              initial={address.primary}
+              baseDomain={address.baseDomain}
+              submitLabel="Use this address"
+              onSaved={(primary) => {
+                setAddress({ ...address, primary });
+                void reload();
+                setWizardStep(2);
+              }}
+              secondary={
+                <button type="button" className="btn-ghost" onClick={() => setWizardStep(2)}>
+                  Keep {address.primary}
+                </button>
+              }
+            />
+          </div>
+        )}
+        {wizardStep === 1 && !(tenant.isOriginator && address) && (
           <div>
             <p>Your tailnet is ready. Let&apos;s connect your first device.</p>
             <div className="wizard-actions">
@@ -174,7 +210,7 @@ function SetupWizard({ tenant }: { tenant: Tenant }) {
           <div>
             <p>Run this command with your auth key:</p>
             <code className="code-block">
-              tailscale up --login-server https://{tenant.slug}.ts.localhost --authkey YOUR_KEY
+              tailscale up --login-server {loginServer} --authkey YOUR_KEY
             </code>
             <div className="wizard-actions">
               <button onClick={dismissWizard}>Go to Dashboard</button>

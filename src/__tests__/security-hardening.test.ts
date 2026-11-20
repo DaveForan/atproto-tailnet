@@ -322,17 +322,19 @@ describe("join requests", () => {
 // ── 3. Public slug lookup ──
 describe("GET /api/tenants/by-slug/:slug/public", () => {
   it("is 404 unless the tailnet accepts join requests", async () => {
-    results.push([tenantRow({ allowJoinRequests: false })]);
+    // Each lookup resolves the public name first (tenant_hostnames), then loads the tenant
+    const byName = [{ tenantId: TENANT }];
+    results.push(byName, [tenantRow({ allowJoinRequests: false })]);
     expect((await call("GET", "/api/tenants/by-slug/acme/public")).status).toBe(404);
-    results.push([tenantRow({ suspended: true })]);
+    results.push(byName, [tenantRow({ suspended: true })]);
     expect((await call("GET", "/api/tenants/by-slug/acme/public")).status).toBe(404);
-    results.push([tenantRow({ lockdownMode: true })]);
+    results.push(byName, [tenantRow({ lockdownMode: true })]);
     expect((await call("GET", "/api/tenants/by-slug/acme/public")).status).toBe(404);
 
-    results.push([tenantRow()]);
-    const r = await call("GET", "/api/tenants/by-slug/acme/public");
+    results.push(byName, [tenantRow()], [{ slug: "acme-public" }]);
+    const r = await call("GET", "/api/tenants/by-slug/acme-public/public");
     expect(r.status).toBe(200);
-    expect(r.json).toEqual({ id: TENANT, slug: "acme", name: "Acme", joinOpen: true });
+    expect(r.json).toEqual({ id: TENANT, address: "acme-public", name: "Acme", joinOpen: true });
   });
 });
 
@@ -442,7 +444,7 @@ describe("public board and DID endpoints", () => {
     results.push([]);
     expect((await call("GET", "/api/tenants/by-slug/acme/board")).status).toBe(404);
 
-    results.push([{ ...tenantRow(), boardEnabled: true, maxBoardPostsDisplayed: 10 }]);
+    results.push([{ tenantId: TENANT }], [{ ...tenantRow(), boardEnabled: true, maxBoardPostsDisplayed: 10 }]);
     expect((await call("GET", "/board/acme")).status).toBe(200);
   });
 
@@ -463,13 +465,17 @@ describe("public board and DID endpoints", () => {
 // ── 8. TLS ask check ──
 describe("tlsCertAllowedForSlug", () => {
   it("only live tenants get certificates", async () => {
+    // Not a live public name → refused without looking at tenants
     results.push([]);
+    expect(await tlsCertAllowedForSlug("retired-name")).toBe(false);
+
+    results.push([{ tenantId: TENANT }], []);
     expect(await tlsCertAllowedForSlug("gone")).toBe(false);
     const sql = lastWhereSql("tenants");
     expect(sql).toContain('"tenants"."status" <> $');
     expect(sql).toContain('"tenants"."suspended" = $');
 
-    results.push([{ id: TENANT }]);
+    results.push([{ tenantId: TENANT }], [{ id: TENANT }]);
     expect(await tlsCertAllowedForSlug("acme")).toBe(true);
   });
 });

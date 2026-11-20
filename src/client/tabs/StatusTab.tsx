@@ -1,6 +1,7 @@
 import { Card } from "../components/Card";
 import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
+import { TailnetAddressCard } from "../components/TailnetAddress";
 import { useTenantParallel } from "../hooks/useTenantData";
 import type { DevicesData, HealthData } from "../lib/types";
 
@@ -57,6 +58,8 @@ export function StatusTab() {
           </div>
         </div>
       </Card>
+
+      <TailnetAddressCard />
 
       <Card title="Devices by User">
         {devices && devices.byUser.length > 0 ? (

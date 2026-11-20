@@ -29,13 +29,13 @@ import {
   hasPermission,
   isLockedDown,
   toHsUsername,
-  tenantLoginServer,
   authUserId,
   isDeviceLocked,
   DEVICE_LOCKED_ERROR,
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
 import { logger } from "../logger.js";
+import { tenantLoginServerFor } from "../orchestrator/hostnames.js";
 import { notify } from "../notifications/service.js";
 import { enforceDeviceLimit } from "./limits.js";
 import {
@@ -243,7 +243,7 @@ devicesRouter.post(
         reusable: parsedBody.data.reusable,
         expiresInHours: parsedBody.data.expiresInHours,
       });
-      const loginServer = tenantLoginServer(result.tenant.slug);
+      const loginServer = await tenantLoginServerFor(result.tenant);
 
       logAudit({
         tenantId,

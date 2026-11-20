@@ -26,6 +26,7 @@ import {
   authUserId,
 } from "./helpers.js";
 import { logAudit } from "./audit.js";
+import { tenantIdForPublicLink } from "../orchestrator/hostnames.js";
 
 /**
  * Router for board post CRUD, public board JSON API, and the
@@ -247,7 +248,13 @@ export async function findPublicBoardTenant(slug: string) {
       maxBoardPostsDisplayed: tenants.maxBoardPostsDisplayed,
     })
     .from(tenants)
-    .where(and(eq(tenants.slug, slug), ne(tenants.status, "deleted"), eq(tenants.suspended, false)));
+    .where(
+      and(
+        eq(tenants.id, (await tenantIdForPublicLink(slug)) ?? "00000000-0000-0000-0000-000000000000"),
+        ne(tenants.status, "deleted"),
+        eq(tenants.suspended, false),
+      ),
+    );
 
   if (!tenant || tenant.lockdownMode || !tenant.boardEnabled) return null;
   return tenant;

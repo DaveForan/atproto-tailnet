@@ -27,7 +27,8 @@ import { db, pool } from "./db/index.js";
 import { tenants } from "./db/schema.js";
 import { and, eq, ne } from "drizzle-orm";
 import { authRouter } from "./routes/auth.js";
-import { apiRouter } from "./routes/api.js";
+import { apiRouter, tlsCertAllowedForSlug } from "./routes/api.js";
+import { hostnamesRouter } from "./routes/hostnames.js";
 import { invitationsRouter } from "./routes/invitations.js";
 import { devicesRouter } from "./routes/devices.js";
 import { securityRouter } from "./routes/security.js";
@@ -76,16 +77,7 @@ app.get("/internal/tls-check", async (req: Request, res: Response) => {
     return;
   }
   try {
-    const [tenant] = await db
-      .select({ slug: tenants.slug })
-      .from(tenants)
-      .where(and(eq(tenants.slug, slug), ne(tenants.status, "deleted"), eq(tenants.suspended, false)))
-      .limit(1);
-    if (tenant) {
-      res.status(200).end();
-    } else {
-      res.status(403).end();
-    }
+    res.status((await tlsCertAllowedForSlug(slug)) ? 200 : 403).end();
   } catch {
     res.status(403).end();
   }
@@ -259,6 +251,7 @@ app.use(federationRouter);
 app.use(collectivesRouter);
 app.use(traversalRouter);
 app.use(credentialsRouter);
+app.use(hostnamesRouter);
 
 app.listen(config.port, () => {
   logger.info({ port: config.port, url: config.publicUrl }, "atproto-tailnet running");
