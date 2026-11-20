@@ -23,6 +23,7 @@ import { sweepExpiredOAuthStates } from "../auth/atproto.js";
 import { logAudit } from "../routes/audit.js";
 import { endExpiredShares, syncTenantAccess } from "../access/sync.js";
 import { logger } from "../logger.js";
+import { isLeader } from "./leader.js";
 
 /** Boot id of the coordinator process whose in-memory state is in sync (null = not synced). */
 let syncedBootId: string | null = null;
@@ -307,6 +308,8 @@ export function startHealthMonitor(intervalMs = 60_000): void {
   let tick = 0;
   let sweeping = false;
   setInterval(async () => {
+    // With several replicas, only the leader does the sweep (ADR-0034)
+    if (!isLeader()) return;
     // Never start a sweep while the previous one is still running
     if (sweeping) {
       logger.warn("previous health sweep still running — skipping tick");

@@ -56,7 +56,7 @@ vi.mock("../db/index.js", () => ({
     update: (t: unknown) => chain("update", tableName(t)),
     delete: (t: unknown) => chain("delete", tableName(t)),
   },
-  pool: {},
+  pool: { connect: async () => ({ query: async () => ({ rows: [] }), release: () => {} }) },
 }));
 
 const { removeMemberCascade, revokeMemberAccess, oauthCallback } = vi.hoisted(() => ({

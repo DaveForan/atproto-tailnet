@@ -203,6 +203,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 });
 
 import path from "node:path";
+import { startLeaderElection } from "./orchestrator/leader.js";
 app.use(express.static(path.join(import.meta.dirname, "..", "public")));
 app.use(dashboardRouter);
 // Remote MCP server + its OAuth endpoints (own rate limits; before the
@@ -266,6 +267,8 @@ app.use(hostnamesRouter);
 
 app.listen(config.port, () => {
   logger.info({ port: config.port, url: config.publicUrl }, "atproto-tailnet running");
+  // One replica does the background work; the others take over if it stops
+  void startLeaderElection();
   startHealthMonitor();
   if (config.federationEnabled) startBroker();
   startAbuseSweep();

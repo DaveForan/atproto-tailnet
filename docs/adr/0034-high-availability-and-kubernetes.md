@@ -1,6 +1,6 @@
 # ADR-0034: High availability, replicas, and Kubernetes
 
-**Status:** Proposed
+**Status:** In Progress
 **Date:** 2026-11-20
 **Priority:** P1
 **Depends On:** ADR-0023 (Rust mesh coordinator), ADR-0026 (shared control URL), ADR-0027 (DERP relay)
@@ -121,3 +121,26 @@ stays a supported deployment with one replica of each component.
 - Two TS service replicas: the monitor runs one time per interval.
 - `kubectl apply -k deploy/kubernetes/overlays/example` gives a working
   instance on a test cluster. Docker Compose continues to work.
+
+## Implementation notes
+
+Built (stage A, item 3):
+
+- `db/locks.ts`: `withAdvisoryLock` and `LeaderLock` on PostgreSQL session
+  advisory locks.
+- Tailnet creation holds an advisory lock across all replicas.
+- The monitor (health checks, hibernation, Caddy sync, identity sync, sweeps)
+  and the federation broker run only on the replica that holds the leader
+  lock. Another replica takes the lock in 10 seconds or less when the leader
+  stops.
+
+Difference from the decision: the MCP loopback secret stays random for each
+process. An MCP tool calls the API of its own process, so replicas do not
+share the secret.
+
+Not yet built: coordinator configuration in the database for ACL policy, DERP
+regions, auto-approvers and identity (access rules, DNS and machine locks are
+in the database already); the LISTEN/NOTIFY event bus; shared rate limits;
+pending device sign-ins in the store; stage B and stage C.
+
+Not yet done: a test with two replicas and a real PostgreSQL.

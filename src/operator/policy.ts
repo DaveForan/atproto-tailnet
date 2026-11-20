@@ -6,9 +6,10 @@
  */
 
 import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
-import { db } from "../db/index.js";
+import { db, pool } from "../db/index.js";
 import { instanceSettings, memberships, tailnetCreators, tenants } from "../db/schema.js";
 import { config } from "../config.js";
+import { withAdvisoryLock, LOCK_TAILNET_CREATION } from "../db/locks.js";
 
 /** Operator-managed instance settings. */
 export interface InstanceSettings {
@@ -100,11 +101,13 @@ let creationQueue: Promise<unknown> = Promise.resolve();
 
 /**
  * Serializes check-then-create for tailnets so single-tailnet mode can't be
- * raced by concurrent sign-ins. Sufficient for the single app process this
- * service runs as; the tenant row is inserted before fn resolves.
+ * raced by concurrent sign-ins. Two layers: a queue in this process (so one
+ * process holds one lock connection at most) and a PostgreSQL advisory lock
+ * across all replicas (ADR-0034). The tenant row is inserted before fn resolves.
  */
 export function withTailnetCreationLock<T>(fn: () => Promise<T>): Promise<T> {
-  const run = creationQueue.then(fn, fn);
+  const locked = () => withAdvisoryLock(pool, LOCK_TAILNET_CREATION, fn);
+  const run = creationQueue.then(locked, locked);
   creationQueue = run.catch(() => undefined);
   return run;
 }

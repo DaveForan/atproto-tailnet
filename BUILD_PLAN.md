@@ -379,7 +379,8 @@ Order matters: each stage gives value alone and unblocks the next.
 - [ ] Verify in real browsers
 
 ### 6.11 High availability and Kubernetes (ADR-0034)
-- [ ] Stage A: coordinator config in the database; LISTEN/NOTIFY event bus; advisory-lock leader for TS loops; shared MCP secret
+- [x] Stage A (TS service): advisory lock for tailnet creation; leader lock for the monitor and the broker
+- [ ] Stage A (coordinator): ACL, DERP, auto-approvers and identity in the database; LISTEN/NOTIFY event bus; pending sign-ins in the store
 - [ ] Stage B: coordinator roles (control / relay / all); one DERP region per relay; real home relay per device; relay discovery table
 - [ ] Stage C: `deploy/kubernetes/` Kustomize manifests, cert-manager TLS, STUN UDP services, Secrets for keys, probes and disruption budgets; docs
 - [ ] Verify: replica loss during a ping between two devices

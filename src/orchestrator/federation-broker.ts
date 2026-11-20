@@ -69,6 +69,7 @@ import type {
   ChallengeMessage,
   EstablishedMessage,
 } from "../federation/protocol.js";
+import { isLeader } from "./leader.js";
 
 const BROKER_TICK_MS = 30_000;
 const KEEPALIVE_STALE_MS = 90_000;
@@ -106,6 +107,8 @@ export function stopBroker(): void {
 }
 
 async function brokerTick(): Promise<void> {
+  // With several replicas, only the leader runs the broker loop (ADR-0034)
+  if (!isLeader()) return;
   if (tickRunning) return;
   tickRunning = true;
   try {
