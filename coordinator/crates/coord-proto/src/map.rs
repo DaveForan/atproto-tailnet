@@ -166,6 +166,19 @@ pub struct DnsConfig {
     pub domains: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routes: Option<std::collections::HashMap<String, Vec<DnsResolver>>>,
+    /// Turns on resolution of device names from the netmap (MagicDNS).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proxied: Option<bool>,
+    /// Extra name -> address records answered by the client's resolver.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub extra_records: Option<Vec<DnsExtraRecord>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct DnsExtraRecord {
+    pub name: String,
+    pub value: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

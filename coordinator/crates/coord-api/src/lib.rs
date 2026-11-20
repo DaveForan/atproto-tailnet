@@ -85,6 +85,7 @@ pub fn router(state: Arc<CoordinatorState>) -> Router {
             get(admin::get_auto_approvers).put(admin::set_auto_approvers),
         )
         .route("/tenants/{id}/derp", get(admin::get_tenant_derp).put(admin::set_tenant_derp))
+        .route("/tenants/{id}/dns", get(admin::get_tenant_dns).put(admin::set_tenant_dns))
         .route(
             "/tenants/{id}/access",
             get(admin::get_tenant_access).put(admin::set_tenant_access),

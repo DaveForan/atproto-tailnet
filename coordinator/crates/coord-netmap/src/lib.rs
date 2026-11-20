@@ -8,7 +8,7 @@ use std::sync::RwLock;
 use coord_core::keys::{format_machine_key, format_node_key};
 use coord_core::routes::Cidr;
 use coord_core::{MachineKey, TenantId};
-use coord_proto::map::{DerpMap, DerpRegion, DnsConfig, FilterRule, MapNode, MapResponse, NetPortRange, PortRange, UserProfile};
+use coord_proto::map::{DerpMap, DerpRegion, DnsConfig, DnsExtraRecord, DnsResolver, FilterRule, MapNode, MapResponse, NetPortRange, PortRange, UserProfile};
 use coord_store::{PeerEvent, Store};
 
 #[derive(Debug, Clone)]
@@ -252,6 +252,62 @@ impl IdentityRegistry {
     }
 }
 
+/// Suffix of device names without a tenant DNS configuration.
+pub const LEGACY_DEVICE_SUFFIX: &str = "mesh.local";
+
+/// Fully-qualified name of a device: `<label>.<tailnet>.<base_domain>.` when
+/// the tenant has DNS configured, else `<label>.mesh.local.`.
+pub fn device_fqdn(label: &str, dns: &coord_core::TenantDns) -> String {
+    match dns.device_suffix() {
+        Some(suffix) => format!("{label}.{suffix}."),
+        None => format!("{label}.{LEGACY_DEVICE_SUFFIX}."),
+    }
+}
+
+/// The DNS configuration one device receives (ADR-0028).
+///
+/// - A split-DNS route for the base domain, only when upstream resolvers are
+///   set: a route without resolvers makes the client answer NXDOMAIN for
+///   every name under the domain that has no record.
+/// - The service records this device may see, pointing at devices it can see.
+/// - A search domain and MagicDNS for device names.
+pub fn dns_view(
+    self_id: i64,
+    self_owner: Option<&str>,
+    self_ip: &str,
+    visible_peers: &[coord_core::PeerInfo],
+    dns: &coord_core::TenantDns,
+) -> DnsConfig {
+    let Some(base) = dns.base_domain.as_deref() else {
+        return DnsConfig { resolvers: Some(vec![]), domains: Some(vec![]), routes: None, proxied: None, extra_records: None };
+    };
+    let address_of = |node: i64| -> Option<String> {
+        if node == self_id {
+            return Some(self_ip.to_string());
+        }
+        let peer = visible_peers.iter().find(|p| p.node_id.as_i64() == node)?;
+        Some(peer.addresses.first()?.split('/').next()?.to_string())
+    };
+    let records: Vec<DnsExtraRecord> = dns
+        .records
+        .iter()
+        .filter(|r| r.visible_to(self_id, self_owner))
+        .filter_map(|r| Some(DnsExtraRecord { name: format!("{}.{base}", r.name), value: address_of(r.node)? }))
+        .collect();
+    let routes = (!dns.upstream.is_empty()).then(|| {
+        let resolvers = dns.upstream.iter().map(|addr| DnsResolver { addr: addr.clone() }).collect();
+        std::collections::HashMap::from([(base.to_string(), resolvers)])
+    });
+    let suffix = dns.device_suffix();
+    DnsConfig {
+        resolvers: Some(vec![]),
+        domains: Some(suffix.iter().cloned().collect()),
+        routes,
+        proxied: suffix.is_some().then_some(true),
+        extra_records: (!records.is_empty()).then_some(records),
+    }
+}
+
 /// What one device sees and accepts in a `member`-mode tenant (ADR-0036).
 pub struct MemberView<'a> {
     /// Peers the device can reach or that can reach it.
@@ -380,6 +436,7 @@ impl NetmapService {
 
         let node_key_str = format_key_bytes(&detail.info.node_key);
 
+        let dns = self.store.get_tenant_dns(tenant_id).await;
         let access = self.store.get_tenant_access(tenant_id).await;
         let member_mode = access.mode == coord_core::AccessMode::Member;
         let children = self.store.get_child_tenants(tenant_id).await;
@@ -401,7 +458,7 @@ impl NetmapService {
         let home_region = derp_map.regions.keys().min().copied().unwrap_or(1);
         let peer_nodes: Vec<MapNode> = peers
             .iter()
-            .map(|p| peer_info_to_map_node(p, home_region))
+            .map(|p| peer_info_to_map_node(p, home_region, &dns))
             .collect();
         let self_owner = detail.attrs.owner.as_deref();
         let user_profiles = self.profiles_for(
@@ -413,7 +470,7 @@ impl NetmapService {
         let self_node = MapNode {
             id: node_id.as_i64(),
             stable_id: detail.stable_id,
-            name: format!("{}.mesh.local.", node_label(&detail.info.hostname, node_id.as_i64())),
+            name: device_fqdn(&node_label(&detail.info.hostname, node_id.as_i64()), &dns),
             user: user_id_for(self_owner),
             key: node_key_str,
             machine: format_machine_key(&MachineKey(*machine_key)),
@@ -441,11 +498,7 @@ impl NetmapService {
             peers_changed: None,
             peers_removed: None,
             derp_map: Some(derp_map),
-            dns_config: Some(DnsConfig {
-                resolvers: Some(vec![]),
-                domains: Some(vec![]),
-                routes: None,
-            }),
+            dns_config: Some(dns_view(node_id.as_i64(), self_owner, &ipv4.to_string(), &peers, &dns)),
             // Member mode: per-device filter (an empty list blocks everything).
             // Otherwise the tenant's ACL policy, or allow-all.
             packet_filter: Some(member_filter.unwrap_or_else(|| {
@@ -488,7 +541,10 @@ impl NetmapService {
                 let peer = MapNode {
                     id: node_id.as_i64(),
                     stable_id: format!("peer-{}", node_id.as_i64()),
-                    name: format!("{}.mesh.local.", node_label(&detail.info.hostname, node_id.as_i64())),
+                    name: device_fqdn(
+                        &node_label(&detail.info.hostname, node_id.as_i64()),
+                        &self.store.get_tenant_dns(detail.tenant_id).await,
+                    ),
                     user: user_id_for(detail.attrs.owner.as_deref()),
                     key: node_key,
                     machine: machine_key_str,
@@ -556,7 +612,7 @@ fn format_key_bytes(key: &[u8]) -> String {
     }
 }
 
-fn peer_info_to_map_node(p: &coord_core::PeerInfo, home_region: i32) -> MapNode {
+fn peer_info_to_map_node(p: &coord_core::PeerInfo, home_region: i32, dns: &coord_core::TenantDns) -> MapNode {
     let peer_key = format_key_bytes(&p.node_key);
     let machine_key_str = if p.machine_key.len() == 32 {
         format_machine_key(&MachineKey(p.machine_key.clone().try_into().unwrap()))
@@ -569,7 +625,7 @@ fn peer_info_to_map_node(p: &coord_core::PeerInfo, home_region: i32) -> MapNode 
     MapNode {
         id: p.node_id.as_i64(),
         stable_id: format!("peer-{}", p.node_id.as_i64()),
-        name: format!("{}.mesh.local.", node_label(&p.hostname, p.node_id.as_i64())),
+        name: device_fqdn(&node_label(&p.hostname, p.node_id.as_i64()), dns),
         user: user_id_for(p.owner.as_deref()),
         key: peer_key,
         machine: machine_key_str,

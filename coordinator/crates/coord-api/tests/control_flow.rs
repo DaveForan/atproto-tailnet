@@ -3257,3 +3257,100 @@ async fn member_mode_stream_removes_peers_when_access_ends() {
     assert_eq!(update["PeersRemoved"], serde_json::json!([alice_id]));
     assert_eq!(update["PacketFilter"], serde_json::json!([]));
 }
+
+// ── Tenant DNS: device names and service records (ADR-0028) ──
+
+#[tokio::test]
+async fn dns_gives_devices_names_and_shows_each_device_only_its_records() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "dns-names").await;
+    let alice = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "owner": "alice", "reusable": true })).await;
+    let bob = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "owner": "bob" })).await;
+    register_routes(&state, 150, alice["key"].as_str().unwrap(), "alice-laptop", None).await;
+    register_routes(&state, 152, alice["key"].as_str().unwrap(), "alice-server", None).await;
+    register_routes(&state, 160, bob["key"].as_str().unwrap(), "bob-phone", None).await;
+    let server = member_map(&state, 152).await;
+    let server_id = server["Node"]["ID"].as_i64().unwrap();
+    let server_ip = server["Node"]["Addresses"][0].as_str().unwrap().split('/').next().unwrap().to_string();
+
+    // Without DNS: legacy names, empty config
+    let m = member_map(&state, 150).await;
+    assert_eq!(m["Node"]["Name"], "alice-laptop.mesh.local.");
+    assert!(m["DNSConfig"].get("Routes").is_none());
+
+    let (status, json) = api_call(
+        &app,
+        "PUT",
+        format!("/api/tenants/{t}/dns"),
+        Some(serde_json::json!({
+            "base_domain": "ts.example.com",
+            "tailnet_label": "harbor",
+            "upstream": ["1.1.1.1"],
+            "records": [{ "name": "notes", "node": server_id, "owner": "alice" }]
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{json}");
+
+    // alice's laptop: device names under the tailnet, the private record, split DNS with an upstream
+    let m = member_map(&state, 150).await;
+    assert_eq!(m["Node"]["Name"], "alice-laptop.harbor.ts.example.com.");
+    let dns = &m["DNSConfig"];
+    assert_eq!(dns["Proxied"], true);
+    assert_eq!(dns["Domains"], serde_json::json!(["harbor.ts.example.com"]));
+    assert_eq!(dns["Routes"]["ts.example.com"], serde_json::json!([{ "Addr": "1.1.1.1" }]));
+    assert_eq!(dns["ExtraRecords"], serde_json::json!([{ "Name": "notes.ts.example.com", "Value": server_ip }]));
+    assert!(peer_names(&m).contains(&"alice-server".to_string()));
+
+    // bob's phone does not get alice's private record
+    let m = member_map(&state, 160).await;
+    assert!(m["DNSConfig"].get("ExtraRecords").is_none());
+
+    // The route is never sent without resolvers (it would black-hole the whole domain)
+    api_call(
+        &app,
+        "PUT",
+        format!("/api/tenants/{t}/dns"),
+        Some(serde_json::json!({ "base_domain": "ts.example.com", "tailnet_label": "harbor" })),
+    )
+    .await;
+    let m = member_map(&state, 150).await;
+    assert!(m["DNSConfig"].get("Routes").is_none());
+
+    // Bad input is refused
+    for bad in [
+        serde_json::json!({ "base_domain": "ts.example.com", "upstream": ["not-an-ip"] }),
+        serde_json::json!({ "base_domain": "ts.example.com", "records": [{ "name": "a.b", "node": 1 }] }),
+        serde_json::json!({ "tailnet_label": "harbor" }),
+    ] {
+        let (status, _) = api_call(&app, "PUT", format!("/api/tenants/{t}/dns"), Some(bad)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+}
+
+#[tokio::test]
+async fn dns_record_is_hidden_when_its_device_is_not_visible() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "dns-hidden").await;
+    let alice = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "owner": "alice" })).await;
+    let bob = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "owner": "bob" })).await;
+    register_routes(&state, 170, alice["key"].as_str().unwrap(), "alice-box", None).await;
+    register_routes(&state, 180, bob["key"].as_str().unwrap(), "bob-box", None).await;
+    let alice_id = member_map(&state, 170).await["Node"]["ID"].as_i64().unwrap();
+    let bob_id = member_map(&state, 180).await["Node"]["ID"].as_i64().unwrap();
+
+    api_call(&app, "PUT", format!("/api/tenants/{t}/access"), Some(serde_json::json!({ "mode": "member" }))).await;
+    // A record names bob's device as a viewer, but no access rule lets bob see alice's device
+    api_call(
+        &app,
+        "PUT",
+        format!("/api/tenants/{t}/dns"),
+        Some(serde_json::json!({
+            "base_domain": "ts.example.com",
+            "records": [{ "name": "app", "node": alice_id, "nodes": [bob_id] }]
+        })),
+    )
+    .await;
+    let m = member_map(&state, 180).await;
+    assert!(m["DNSConfig"].get("ExtraRecords").is_none(), "no address is revealed for a device that is not visible");
+}
