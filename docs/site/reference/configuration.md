@@ -16,6 +16,7 @@ All configuration comes from environment variables. A Zod schema in `src/config.
 | `PUBLIC_URL` | Yes (production) | `http://localhost:3000` | Public URL of the dashboard, for example `https://tailnets.example.com`. For local development use `http://127.0.0.1:3000`, because AT Proto OAuth redirects loopback clients to the IP address |
 | `BASE_DOMAIN` | No | `ts.localhost` | Wildcard domain for tailnet addresses (`<address>.<BASE_DOMAIN>`), used in join and board links and by legacy login servers |
 | `CONTROL_DOMAIN` | No | *(none)* | Coordinator mode: hostname of the one login server that all tailnets use, for example `control.yourdomain.com`. It needs a DNS A record. It must not be `BASE_DOMAIN` or a name under it |
+| `TAILNET_DNS_UPSTREAM` | No | *(none)* | Coordinator mode: IP addresses (comma-separated) of the resolvers that devices use for names under `BASE_DOMAIN` that have no record. Empty: devices use their own resolvers |
 | `DERP_DOMAIN` | No | *(none)* | Docker stack: public hostname of the built-in DERP relay (sets `COORD_DERP_HOSTNAME`). It needs a DNS A record and open UDP port 3478 |
 | `TENANT_PUBLIC_PORT` | No | *(from URL)* | Port in the device connection URLs. Set to `8180` for local dev with Caddy. Leave it unset in production |
 | `TRUST_PROXY` | Behind a proxy | `0` | Number of reverse-proxy hops to trust for `X-Forwarded-*` (0 to 5). Set `1` behind Caddy. Without it, the browser does not send the secure session cookie and sign-in fails. All rate limits also see one client. The Docker Compose files set `1` |

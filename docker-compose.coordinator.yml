@@ -68,6 +68,7 @@ services:
       BASE_DOMAIN: ${BASE_DOMAIN:-ts.localhost}
       # Shared control URL host for all tailnets (ADR-0026); not under BASE_DOMAIN
       CONTROL_DOMAIN: ${CONTROL_DOMAIN:-}
+      TAILNET_DNS_UPSTREAM: ${TAILNET_DNS_UPSTREAM:-}
       # Caddy admin lives on the private caddy_admin network (app only)
       CADDY_ADMIN_URL: http://10.250.250.2:2019
       LOG_LEVEL: ${LOG_LEVEL:-info}

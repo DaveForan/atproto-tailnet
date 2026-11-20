@@ -106,3 +106,62 @@ export function compileAccess(input: CompileInput): CoordinatorAccess {
 
   return { mode: "member", rules };
 }
+
+// ── DNS (ADR-0028) ──────────────────────────────────────────────────────
+
+export interface CoordinatorDnsRecord {
+  name: string;
+  node: number;
+  owner?: string;
+  nodes?: number[];
+}
+
+export interface CoordinatorDns {
+  base_domain: string | null;
+  tailnet_label: string | null;
+  upstream: string[];
+  records: CoordinatorDnsRecord[];
+}
+
+export interface DnsInput {
+  baseDomain: string;
+  tailnetLabel: string;
+  upstream: string[];
+  posts: Array<{ id: string; board: string; status: string; name: string | null; nodeId: string; authorId: string }>;
+  connections: Array<{ postId: string; nodeId: string }>;
+}
+
+/**
+ * Compile the names of a tailnet's services.
+ *
+ * - A private-board service resolves only on its author's devices.
+ * - An approved public service resolves on its author's devices and on the
+ *   devices connected to it.
+ * - A name equal to the tailnet's own label is skipped: it would shadow the
+ *   namespace of device names.
+ */
+export function compileDns(input: DnsInput): CoordinatorDns {
+  const records: CoordinatorDnsRecord[] = [];
+  for (const post of input.posts) {
+    if (!post.name || post.name === input.tailnetLabel) continue;
+    const node = nodeNumber(post.nodeId);
+    if (node === null) continue;
+    if (post.board === "private" && post.status !== "removed") {
+      records.push({ name: post.name, node, owner: post.authorId });
+    } else if (post.board === "public" && post.status === "approved") {
+      const nodes = [
+        ...new Set(
+          input.connections
+            .filter((c) => c.postId === post.id)
+            .map((c) => nodeNumber(c.nodeId))
+            .filter((n): n is number => n !== null),
+        ),
+      ]
+        .sort((a, b) => a - b)
+        .slice(0, MAX_RULE_SOURCES);
+      records.push({ name: post.name, node, owner: post.authorId, ...(nodes.length ? { nodes } : {}) });
+    }
+  }
+  records.sort((a, b) => a.name.localeCompare(b.name) || a.node - b.node);
+  return { base_domain: input.baseDomain, tailnet_label: input.tailnetLabel, upstream: input.upstream, records };
+}

@@ -323,9 +323,9 @@ Order matters: each stage gives value alone and unblocks the next.
 - [ ] Verify on iOS and Android
 
 ### 6.4 Coordinator DNS (ADR-0028)
-- [ ] Per-tenant DNS registry + `PUT /api/tenants/{id}/dns`, pushed and replayed by the TS service
-- [ ] Split-DNS route for `BASE_DOMAIN` with upstream resolvers (never empty); extra records
-- [ ] Device names `<device>.<tailnet-name>.<BASE_DOMAIN>` and search domain
+- [x] Per-tenant DNS registry + `PUT /api/tenants/{id}/dns`, pushed and replayed by the TS service
+- [x] Extra records per device; split-DNS route for `BASE_DOMAIN` only with upstream resolvers (never empty)
+- [x] Device names `<device>.<tailnet-name>.<BASE_DOMAIN>` and search domain
 - [ ] Verify device names on Mac and phone; verify the control URL still resolves
 
 ### 6.5 Gateway node (ADR-0029)
@@ -360,7 +360,8 @@ Order matters: each stage gives value alone and unblocks the next.
 - [x] Dashboard: Boards and Friends & Sharing screens; controller board on the landing page
 - [x] Migrations 0030 and 0031 dry-run against a copy of the live database
 - [ ] Missing interface parts: choose guest devices on accept, narrow ports on accept, per-device "who can reach this"
-- [ ] Private DNS names (needs 6.4); enroll a new device inside the add-service form
+- [x] Private DNS names for services (through 6.4)
+- [ ] Enroll a new device inside the add-service form
 - [ ] Verify with two members and two real devices
 
 ### 6.10 Device-bound access (ADR-0035)

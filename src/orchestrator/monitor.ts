@@ -21,7 +21,7 @@ import { pushTenantIdentity, syncAllTenantIdentities } from "./coordinator-ident
 import { sweepExpiredJtis } from "../credentials/service-auth.js";
 import { sweepExpiredOAuthStates } from "../auth/atproto.js";
 import { logAudit } from "../routes/audit.js";
-import { endExpiredShares } from "../access/sync.js";
+import { endExpiredShares, syncTenantAccess } from "../access/sync.js";
 import { logger } from "../logger.js";
 
 /** Boot id of the coordinator process whose in-memory state is in sync (null = not synced). */
@@ -164,6 +164,9 @@ export async function resyncCoordinatorState(): Promise<boolean> {
       }
 
       await pushTenantIdentity(t.id, t.coordinatorTenantId!);
+      // Access rules and names are stored by the coordinator; this covers a
+      // first start after an upgrade and a change that failed to push
+      if (!(await syncTenantAccess(t.id))) allOk = false;
 
       const regions = (t.customDerpRegions ?? []) as DerpRegion[];
       const isDefault = regions.length === 0 && t.usePublicDerp;

@@ -23,6 +23,12 @@ const configSchema = z.object({
    * coordinator mode (ADR-0026). Must NOT be under baseDomain: the
    * coordinator's split DNS for baseDomain could stop it resolving on devices.
    */
+  /**
+   * Resolvers that tailnet devices use for names under baseDomain that have
+   * no record (ADR-0028), as IP addresses. Empty (default): devices use their
+   * own resolvers through the client's built-in forwarder.
+   */
+  tailnetDnsUpstream: z.array(z.string().ip()).max(4).default([]),
   controlDomain: z
     .string()
     .regex(/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/i, "CONTROL_DOMAIN must be a hostname")
@@ -93,6 +99,7 @@ export const config = configSchema.parse({
   sessionSecret: process.env.SESSION_SECRET,
   baseDomain: process.env.BASE_DOMAIN,
   controlDomain: process.env.CONTROL_DOMAIN || undefined,
+  tailnetDnsUpstream: (process.env.TAILNET_DNS_UPSTREAM ?? "").split(",").map((s) => s.trim()).filter(Boolean),
   caddyAdminUrl: process.env.CADDY_ADMIN_URL,
   tenantPublicPort: process.env.TENANT_PUBLIC_PORT || undefined,
   coordinatorUrl: process.env.COORDINATOR_URL || undefined,

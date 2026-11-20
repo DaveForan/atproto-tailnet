@@ -1,6 +1,6 @@
 # ADR-0028: Coordinator DNS — extra records and split DNS
 
-**Status:** Proposed
+**Status:** In Progress
 **Date:** 2026-11-19
 **Priority:** P1
 **Depends On:** ADR-0023 (Rust mesh coordinator), ADR-0026 (tailnet addresses)
@@ -80,3 +80,20 @@ names. Input validation is the same as for the identity registry.
 - The control URL resolves on all devices after the change.
 - Rust tests cover netmap DNS output. A test confirms that the route for
   `BASE_DOMAIN` is never empty.
+
+## Implementation notes
+
+Built: the stored per-tenant configuration and its admin API, device names
+under the tailnet name with MagicDNS and a search domain, service records sent
+only to the devices that may see them, and the compilation of names in the TS
+service.
+
+Difference from the decision: the route for `BASE_DOMAIN` is optional. With
+`TAILNET_DNS_UPSTREAM` empty (the default), the coordinator sends no route. The
+client then answers the records itself and forwards other names to the
+resolvers of the device. No third-party resolver is necessary. With upstream
+resolvers set, the coordinator sends the split-DNS route. It never sends an
+empty route.
+
+Not yet done: a check on real devices (macOS, iOS, Android, Linux) that device
+names and service names resolve and that other names still resolve.

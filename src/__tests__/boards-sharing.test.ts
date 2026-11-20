@@ -130,9 +130,16 @@ describe("service posts", () => {
   it("a private post needs a name and no approval", async () => {
     results.push(ctx());
     expect((await call("POST", "/boards/posts", { ...body, board: "private" })).status).toBe(400);
-    results.push(ctx(), [], [post({ board: "private" })]);
+    results.push(ctx(), [], [], [post({ board: "private", name: "notes" })]); // name is not a tailnet address; no posts yet
     await call("POST", "/boards/posts", { ...body, board: "private", name: "notes" });
     expect(insertOf("service_posts")).toMatchObject({ status: "approved", name: "notes", board: "private" });
+  });
+
+  it("refuses a service name that is a live tailnet address", async () => {
+    results.push(ctx(), [{ tenantId: "other" }]);
+    const r = await call("POST", "/boards/posts", { ...body, board: "private", name: "harbor" });
+    expect(r.status).toBe(409);
+    expect(insertOf("service_posts")).toBeUndefined();
   });
 
   it("refuses a device that is not the author's", async () => {

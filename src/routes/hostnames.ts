@@ -12,6 +12,7 @@ import { requireAuth, param, getTenantForUser, authUserId } from "./helpers.js";
 import { logAudit } from "./audit.js";
 import { logger } from "../logger.js";
 import { syncTenantRoutes } from "../orchestrator/caddy.js";
+import { syncTenantAccess } from "../access/sync.js";
 import {
   listHostnames,
   retireHostname,
@@ -57,8 +58,10 @@ hostnamesRouter.get("/api/tenants/:tenantId/hostnames", requireAuth, async (req,
   });
 });
 
-async function resyncRoutes(): Promise<void> {
+async function resyncRoutes(tenantId: string): Promise<void> {
   await syncTenantRoutes().catch((err) => logger.error({ err }, "failed to sync Caddy routes after address change"));
+  // Device names live under the tailnet's primary name
+  await syncTenantAccess(tenantId);
 }
 
 hostnamesRouter.put("/api/tenants/:tenantId/hostnames/primary", requireAuth, async (req, res) => {
@@ -77,7 +80,7 @@ hostnamesRouter.put("/api/tenants/:tenantId/hostnames/primary", requireAuth, asy
     res.status(e.status).json({ error: e.message, code: outcome.error });
     return;
   }
-  await resyncRoutes();
+  await resyncRoutes(result.tenant.id);
   logAudit({
     tenantId: result.tenant.id,
     actorUserId: authUserId(req),
@@ -104,7 +107,7 @@ hostnamesRouter.delete("/api/tenants/:tenantId/hostnames/:name", requireAuth, as
     res.status(404).json({ error: "Not an active alias of this tailnet (the primary address cannot be retired)" });
     return;
   }
-  await resyncRoutes();
+  await resyncRoutes(result.tenant.id);
   logAudit({
     tenantId: result.tenant.id,
     actorUserId: authUserId(req),

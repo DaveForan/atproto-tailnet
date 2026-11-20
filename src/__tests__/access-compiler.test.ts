@@ -1,6 +1,6 @@
 /** Access rule compilation (ADR-0036): posts, connections and shares → coordinator rules. */
 import { describe, it, expect } from "vitest";
-import { compileAccess, MAX_RULE_SOURCES, type CompileInput } from "../access/compiler.js";
+import { compileAccess, compileDns, MAX_RULE_SOURCES, type CompileInput, type DnsInput } from "../access/compiler.js";
 
 const NOW = new Date("2026-11-20T12:00:00Z");
 const base = (over: Partial<CompileInput> = {}): CompileInput => ({
@@ -106,5 +106,47 @@ describe("compileAccess", () => {
   it("a device never needs a rule to reach itself", () => {
     const out = compileAccess(base({ posts: [post()], connections: [{ postId: "p1", nodeId: "10" }] }));
     expect(out.rules).toEqual([]);
+  });
+});
+
+describe("compileDns", () => {
+  const input = (over: Partial<DnsInput> = {}): DnsInput => ({
+    baseDomain: "ts.example.com",
+    tailnetLabel: "harbor",
+    upstream: [],
+    posts: [],
+    connections: [],
+    ...over,
+  });
+  const named = (over: Record<string, unknown> = {}) => ({
+    id: "p1", board: "private", status: "approved", name: "notes", nodeId: "10", authorId: "u-alice", ...over,
+  });
+
+  it("carries the base domain, tailnet label and upstream resolvers", () => {
+    expect(compileDns(input({ upstream: ["1.1.1.1"] }))).toEqual({
+      base_domain: "ts.example.com", tailnet_label: "harbor", upstream: ["1.1.1.1"], records: [],
+    });
+  });
+
+  it("a private service resolves only on its author's devices", () => {
+    expect(compileDns(input({ posts: [named()] })).records).toEqual([{ name: "notes", node: 10, owner: "u-alice" }]);
+  });
+
+  it("an approved public service also resolves on connected devices", () => {
+    const out = compileDns(
+      input({ posts: [named({ board: "public" })], connections: [{ postId: "p1", nodeId: "21" }, { postId: "p1", nodeId: "20" }] }),
+    );
+    expect(out.records).toEqual([{ name: "notes", node: 10, owner: "u-alice", nodes: [20, 21] }]);
+  });
+
+  it.each([
+    ["a pending public service", named({ board: "public", status: "pending" })],
+    ["a rejected public service", named({ board: "public", status: "rejected" })],
+    ["a removed private service", named({ status: "removed" })],
+    ["a service without a name", named({ name: null })],
+    ["a name equal to the tailnet label", named({ name: "harbor" })],
+    ["a device that is not a control-plane id", named({ nodeId: "x" })],
+  ])("%s gets no record", (_label, post) => {
+    expect(compileDns(input({ posts: [post as DnsInput["posts"][number]] })).records).toEqual([]);
   });
 });

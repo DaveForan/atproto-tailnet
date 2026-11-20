@@ -11,7 +11,8 @@ import { tenants, servicePosts, serviceConnections, deviceShares } from "../db/s
 import { config } from "../config.js";
 import { CoordinatorApiClient } from "../orchestrator/coordinator-api.js";
 import { logger } from "../logger.js";
-import { compileAccess, type AccessMode, type CoordinatorAccess } from "./compiler.js";
+import { compileAccess, compileDns, type AccessMode, type CoordinatorAccess, type CoordinatorDns } from "./compiler.js";
+import { primaryHostname } from "../orchestrator/hostnames.js";
 
 /** Compile the current access rules of a tailnet from the database. */
 export async function loadTenantAccess(tenantId: string, mode: AccessMode): Promise<CoordinatorAccess> {
@@ -25,15 +26,32 @@ export async function loadTenantAccess(tenantId: string, mode: AccessMode): Prom
   return compileAccess({ mode, posts, connections, shares });
 }
 
+/** Compile the current device and service names of a tailnet from the database. */
+export async function loadTenantDns(tenant: { id: string; slug: string }): Promise<CoordinatorDns> {
+  const posts = await db.select().from(servicePosts).where(eq(servicePosts.tenantId, tenant.id));
+  const named = posts.filter((p) => p.name && p.status !== "removed");
+  const publicIds = named.filter((p) => p.board === "public" && p.status === "approved").map((p) => p.id);
+  const connections = publicIds.length
+    ? await db.select().from(serviceConnections).where(inArray(serviceConnections.postId, publicIds))
+    : [];
+  return compileDns({
+    baseDomain: config.baseDomain,
+    tailnetLabel: await primaryHostname(tenant.id, tenant.slug),
+    upstream: config.tailnetDnsUpstream,
+    posts: named,
+    connections,
+  });
+}
+
 /**
- * Push a tailnet's access rules to the coordinator. Returns false when the
+ * Push a tailnet's access rules and names to the coordinator. Returns false when the
  * push failed (the caller's change is saved; the monitor retries). No-op
  * outside coordinator mode, where per-device rules cannot be enforced.
  */
 export async function syncTenantAccess(tenantId: string): Promise<boolean> {
   if (!config.coordinatorUrl) return true;
   const [tenant] = await db
-    .select({ coordinatorTenantId: tenants.coordinatorTenantId, accessMode: tenants.accessMode, slug: tenants.slug })
+    .select({ id: tenants.id, coordinatorTenantId: tenants.coordinatorTenantId, accessMode: tenants.accessMode, slug: tenants.slug })
     .from(tenants)
     .where(eq(tenants.id, tenantId));
   if (!tenant?.coordinatorTenantId) return true;
@@ -42,9 +60,10 @@ export async function syncTenantAccess(tenantId: string): Promise<boolean> {
     const access = await loadTenantAccess(tenantId, mode);
     const client = new CoordinatorApiClient(config.coordinatorUrl, tenant.coordinatorTenantId, config.coordinatorApiKey);
     await client.setAccess(access);
+    await client.setDns(await loadTenantDns(tenant));
     return true;
   } catch (err) {
-    logger.error({ tenantSlug: tenant.slug, err }, "failed to push access rules to the coordinator");
+    logger.error({ tenantSlug: tenant.slug, err }, "failed to push access rules and names to the coordinator");
     return false;
   }
 }

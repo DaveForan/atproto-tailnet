@@ -68,6 +68,11 @@ function serviceName(raw: string | undefined, required: boolean): { name: string
   return { name: v.name };
 }
 
+/** Service names share the namespace of tailnet addresses (ADR-0026). */
+async function nameIsTailnetAddress(name: string | null): Promise<boolean> {
+  return name !== null && (await tenantIdForPublicLink(name)) !== null;
+}
+
 function isUniqueViolation(err: unknown): boolean {
   return (err as { code?: string } | null)?.code === "23505";
 }
@@ -240,6 +245,11 @@ boardsRouter.post("/api/tenants/:tenantId/boards/posts", requireAuth, async (req
     return;
   }
 
+  if (await nameIsTailnetAddress(named.name)) {
+    res.status(409).json({ error: "That service name is already in use" });
+    return;
+  }
+
   // A post is always on a device of its author
   const devices = await listUserDevices(result.tenant, userId).catch(() => null);
   if (!devices) {
@@ -300,6 +310,7 @@ boardsRouter.post("/api/tenants/:tenantId/boards/posts", requireAuth, async (req
         });
       }
     }
+    if (post.name) await syncTenantAccess(result.tenant.id);
     res.status(201).json(post);
   } catch (err) {
     if (isUniqueViolation(err)) {
@@ -341,6 +352,10 @@ boardsRouter.patch("/api/tenants/:tenantId/boards/posts/:postId", requireAuth, a
       res.status(400).json({ error: named.error });
       return;
     }
+    if (await nameIsTailnetAddress(named.name)) {
+      res.status(409).json({ error: "That service name is already in use" });
+      return;
+    }
     updates.name = named.name;
   }
   if (data.nodeId !== undefined && data.nodeId !== post.nodeId) {
@@ -372,8 +387,11 @@ boardsRouter.patch("/api/tenants/:tenantId/boards/posts/:postId", requireAuth, a
 
   try {
     const [updated] = await db.update(servicePosts).set(updates).where(eq(servicePosts.id, post.id)).returning();
-    if (targetChanged && post.board === "public") {
+    const namesChanged = updated.name !== post.name || (updated.name !== null && updated.nodeId !== post.nodeId);
+    if ((targetChanged && post.board === "public") || namesChanged) {
       await syncTenantAccess(result.tenant.id);
+    }
+    if (targetChanged && post.board === "public") {
       if (updated.status === "pending") {
         notify(result.tenant.id, "service_approval_requested", {
           title: "Service post changed and needs review",
@@ -410,8 +428,8 @@ boardsRouter.delete("/api/tenants/:tenantId/boards/posts/:postId", requireAuth, 
   }
   await db.delete(serviceConnections).where(eq(serviceConnections.postId, post.id));
   await db.update(servicePosts).set({ status: "removed", updatedAt: new Date() }).where(eq(servicePosts.id, post.id));
+  if (post.board === "public" || post.name) await syncTenantAccess(result.tenant.id);
   if (post.board === "public") {
-    await syncTenantAccess(result.tenant.id);
     logAudit({
       tenantId: result.tenant.id,
       actorUserId: userId,
@@ -469,7 +487,8 @@ async function review(req: Request, res: Response, approve: boolean) {
     })
     .where(eq(servicePosts.id, post.id))
     .returning();
-  if (!approve) await syncTenantAccess(result.tenant.id);
+  // Approval makes a named service resolvable; rejection closes access
+  if (!approve || post.name) await syncTenantAccess(result.tenant.id);
   logAudit({
     tenantId: result.tenant.id,
     actorUserId: userId,
