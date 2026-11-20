@@ -3,7 +3,8 @@
 # ---------------------------------------------------------------------------
 
 # ---- build stage ---------------------------------------------------------
-FROM rust:1.89-alpine AS build
+# smoltcp (the gateway's TCP/IP stack) needs Rust 1.91 or newer
+FROM rust:1.94-alpine AS build
 
 RUN apk add --no-cache musl-dev pkgconfig openssl-dev openssl-libs-static
 
@@ -18,6 +19,8 @@ COPY crates/coord-netmap/Cargo.toml crates/coord-netmap/Cargo.toml
 COPY crates/coord-acl/Cargo.toml crates/coord-acl/Cargo.toml
 COPY crates/coord-store/Cargo.toml crates/coord-store/Cargo.toml
 COPY crates/coord-api/Cargo.toml crates/coord-api/Cargo.toml
+COPY crates/coord-derp/Cargo.toml crates/coord-derp/Cargo.toml
+COPY crates/coord-gateway/Cargo.toml crates/coord-gateway/Cargo.toml
 COPY crates/coord-federation/Cargo.toml crates/coord-federation/Cargo.toml
 COPY crates/coord-server/Cargo.toml crates/coord-server/Cargo.toml
 
