@@ -19,6 +19,12 @@ When an operator designates you as a tailnet creator, you can create your tailne
 - If you are not a member of a tailnet, sign out and sign in again. The service then creates your tailnet.
 - Use the API (`POST /api/tenants/mine`) or the MCP tool `create_tailnet`.
 
+### What sign-in can access
+
+Sign-in asks your AT Protocol server for one thing: proof of who you are (the `atproto` scope). The service cannot read or write your posts, follows, messages or settings. The service revokes the sign-in token as soon as it knows your account, and it keeps no token for your account. Your handle, display name and avatar come from public sources.
+
+Your session in the dashboard is a cookie of this service. It stays valid for 7 days.
+
 ## Dashboard overview
 
 The dashboard is a React 19 single-page application. It is served at the root URL of your instance. Your permissions control which tabs you see.
@@ -134,11 +140,23 @@ Assign roles to members in the **Members** tab. The effective permissions of a m
 Members generate **pre-authentication keys** in the **Add Device** tab. A key authorizes a Tailscale client to join the network:
 
 ```bash
-tailscale up --login-server=https://<slug>.ts.yourdomain.com \
+tailscale up --login-server=https://control.yourdomain.com \
              --authkey=tskey-auth-XXXXX
 ```
 
+The **Add Device** tab shows the exact command. In coordinator mode with `CONTROL_DOMAIN` set, all tailnets use one login server. The key selects the tailnet. Without `CONTROL_DOMAIN`, and in legacy Headscale mode, each tailnet has its own login server at `https://<tailnet-address>.<BASE_DOMAIN>`.
+
 The device belongs to the member who made the key.
+
+### Tailnet address
+
+Each tailnet has a public address, for example `quiet-harbor-4821.ts.yourdomain.com`. Join links and board links use it. A new tailnet gets a random address. The address never contains your handle.
+
+The originator can change the address in the **Status** tab (**Tailnet address**):
+
+- The old address stays active as an alias. Devices and links that use it continue to work.
+- A tailnet can have a maximum of 5 active addresses.
+- You can retire an alias. Devices that still use a retired address lose their connection. A retired address stays reserved for 30 days.
 
 ### Auth keys
 
@@ -280,10 +298,10 @@ When you change IP ranges, you must restart the control plane. You must also reg
 
 ### DERP relays
 
-DERP relays provide encrypted relay connectivity when direct peer-to-peer connections fail (for example, behind restrictive NATs). By default, the network uses the public Tailscale relays. In the DERP Relays tab you can do these tasks:
+DERP relays provide encrypted relay connectivity when direct peer-to-peer connections fail (for example, behind restrictive NATs). In coordinator mode, the default is the built-in relay of the instance (see the [coordinator guide](coordinator#derp-map)). No traffic goes through Tailscale relays. In the DERP Relays tab you can do these tasks:
 
 - Add custom relay regions (IDs 900-999)
-- Enable or disable public Tailscale relays
+- Enable or disable the default relays (the built-in relay in coordinator mode; the public Tailscale relays in legacy Headscale mode)
 - Toggle the embedded DERP server (legacy Headscale mode only)
 
 The settings apply to your tailnet only. In coordinator mode, connected devices get the new relay map at once.

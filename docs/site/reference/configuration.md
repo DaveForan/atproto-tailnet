@@ -14,7 +14,9 @@ All configuration comes from environment variables. A Zod schema in `src/config.
 | `SESSION_SECRET` | Yes | `dev-secret-change-me` | Session signing key. See [Secret strength rules](#secret-strength-rules) |
 | `PORT` | No | `3000` | HTTP listen port for the TypeScript service |
 | `PUBLIC_URL` | Yes (production) | `http://localhost:3000` | Public URL of the dashboard, for example `https://tailnets.example.com`. For local development use `http://127.0.0.1:3000`, because AT Proto OAuth redirects loopback clients to the IP address |
-| `BASE_DOMAIN` | No | `ts.localhost` | Wildcard domain for tenant subdomains. Tenant URLs are `<slug>.<BASE_DOMAIN>` |
+| `BASE_DOMAIN` | No | `ts.localhost` | Wildcard domain for tailnet addresses (`<address>.<BASE_DOMAIN>`), used in join and board links and by legacy login servers |
+| `CONTROL_DOMAIN` | No | *(none)* | Coordinator mode: hostname of the one login server that all tailnets use, for example `control.yourdomain.com`. It needs a DNS A record. It must not be `BASE_DOMAIN` or a name under it |
+| `DERP_DOMAIN` | No | *(none)* | Docker stack: public hostname of the built-in DERP relay (sets `COORD_DERP_HOSTNAME`). It needs a DNS A record and open UDP port 3478 |
 | `TENANT_PUBLIC_PORT` | No | *(from URL)* | Port in the device connection URLs. Set to `8180` for local dev with Caddy. Leave it unset in production |
 | `TRUST_PROXY` | Behind a proxy | `0` | Number of reverse-proxy hops to trust for `X-Forwarded-*` (0 to 5). Set `1` behind Caddy. Without it, the browser does not send the secure session cookie and sign-in fails. All rate limits also see one client. The Docker Compose files set `1` |
 | `LOG_LEVEL` | No | `info` | Pino log level: `debug`, `info`, `warn`, `error` |
@@ -165,7 +167,10 @@ store_backend = "sqlite"      # "sqlite", "postgres", or "memory"
 | `COORD_ADMIN_KEY` | *(none)* | Admin API bearer token. When unset, the admin API is disabled and returns 503. A weak key stops the start (see [Secret strength rules](#secret-strength-rules)) |
 | `COORD_CONTROL_KEY_PATH` | *(none)* | File for the Noise control key. The coordinator creates it at first start (32 bytes, hex). Without it, the coordinator uses a new key at each start and all clients must connect again. The Docker stack sets `/var/lib/coordinator/control.key` on the `coord_data` volume. Back it up |
 | `COORD_SQLITE_PATH` | `coordinator.db` | SQLite database file path (used when backend = `sqlite`) |
-| `COORD_DERP_MAP` | *(none)* | Path to JSON DERP map file (overrides TOML `derp_map_file`). This is the default map. Each tenant can override it from the dashboard |
+| `COORD_DERP_HOSTNAME` | *(none)* | Public hostname of the built-in DERP relay. When set, the relay is region 1 of the default map and the STUN server starts |
+| `COORD_STUN_LISTEN` | `0.0.0.0:3478` | UDP address of the STUN server. `off` disables it |
+| `COORD_DERP_KEY_PATH` | `derp.key` next to the control key | File for the relay key. The coordinator creates it at first start |
+| `COORD_DERP_MAP` | *(none)* | Path to JSON DERP map file (overrides TOML `derp_map_file`). It replaces the default map. Each tenant can override it from the dashboard |
 | `COORD_FEDERATION_ENABLED` | `false` | Set `true` or `1` to serve the Rust federation endpoints and the broker. Keep it off. The TypeScript service is the authoritative federation endpoint |
 | `DATABASE_URL` | *(none)* | PostgreSQL URL (required when backend = `postgres`) |
 | `RUST_LOG` | `info` | Rust log filter (e.g., `coordinator=debug,coord_api=trace`) |

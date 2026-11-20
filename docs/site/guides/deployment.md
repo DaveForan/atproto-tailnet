@@ -153,6 +153,10 @@ For all providers, you need two DNS records that point to your server:
 |------|------|-------|
 | A | `tailnets.yourdomain.com` (or your `APP_DOMAIN`) | Server IP |
 | A | `*.ts.yourdomain.com` (or `*.<BASE_DOMAIN>`) | Server IP |
+| A | `control.yourdomain.com` (your `CONTROL_DOMAIN`) | Server IP |
+| A | `derp.yourdomain.com` (your `DERP_DOMAIN`) | Server IP |
+
+Set `CONTROL_DOMAIN` and `DERP_DOMAIN` in `.env` to these hostnames. Open UDP port 3478 (STUN) in your firewall, together with TCP 80 and 443. Without `DERP_DOMAIN`, devices that cannot connect directly cannot reach each other.
 
 The AGENT.md file of each provider contains the exact CLI commands to create these records.
 

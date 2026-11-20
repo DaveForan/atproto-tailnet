@@ -180,7 +180,10 @@ The coordinator reads its configuration from a TOML file and from environment va
 | Rust federation endpoints | --- | `COORD_FEDERATION_ENABLED` | `false` |
 | SQLite path | `sqlite_path` | `COORD_SQLITE_PATH` | `coordinator.db` |
 | PostgreSQL URL | `database_url` | `DATABASE_URL` | *(required when backend = postgres)* |
-| DERP map file | `derp_map_file` | `COORD_DERP_MAP` | *(built-in Tailscale DERP)* |
+| Built-in DERP relay host | `derp_hostname` | `COORD_DERP_HOSTNAME` | *(none --- no relay region)* |
+| STUN listen address | `stun_listen` | `COORD_STUN_LISTEN` | `0.0.0.0:3478` (`off` disables) |
+| DERP relay key file | --- | `COORD_DERP_KEY_PATH` | `derp.key` next to the control key |
+| DERP map file | `derp_map_file` | `COORD_DERP_MAP` | *(none)* |
 
 ### Storage backends
 
@@ -217,7 +220,12 @@ An instance operator can suspend a tailnet in the **Instance** tab. The service 
 
 ### DERP map
 
-DERP (Designated Encrypted Relay for Packets) relays give fallback connectivity when direct peer-to-peer connections fail. By default, the coordinator uses the public DERP infrastructure of Tailscale (region 1, `derp1.tailscale.com`).
+DERP (Designated Encrypted Relay for Packets) relays give fallback connectivity when direct peer-to-peer connections fail. The coordinator contains its own DERP relay and a STUN server. It does not use the relays of Tailscale.
+
+- Set `COORD_DERP_HOSTNAME` (in the Docker stack: `DERP_DOMAIN`) to the public hostname of the relay, for example `derp.yourdomain.com`. The built-in relay then becomes region 1 of the default map. The hostname needs a DNS A record. Caddy sends `/derp` to the coordinator.
+- Open UDP port 3478 for STUN. Devices use STUN to find a direct path, so that less traffic uses the relay.
+- The relay serves only devices that are registered with this coordinator. It relays packets only between devices of one tailnet, or of a tailnet and its sub-tailnets. A removed device, or a device of a suspended tailnet, loses the relay in about one minute.
+- If you set no relay hostname and no map file, the default map is empty and the coordinator logs a warning. Devices that cannot connect directly then cannot reach each other.
 
 DERP configuration applies to one tenant at a time. There is no global DERP endpoint.
 
