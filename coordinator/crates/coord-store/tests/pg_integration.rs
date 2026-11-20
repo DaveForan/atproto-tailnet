@@ -466,17 +466,23 @@ async fn pg_events_reach_the_other_replica_but_not_twice_the_sender() {
     let mut a_remote = a.subscribe_remote();
 
     // The listeners connect in the background: publish until replica B hears it
+    // Each listener also emits a local Resync when it (re)connects; skip those.
     let mut heard = false;
-    for _ in 0..50 {
+    'publish: for _ in 0..50 {
         a.publish(RemoteEvent::TenantChanged(tenant.id)).await;
-        if let Ok(Ok(e)) = tokio::time::timeout(Duration::from_millis(100), b_remote.recv()).await {
+        while let Ok(Ok(e)) = tokio::time::timeout(Duration::from_millis(100), b_remote.recv()).await {
+            if e == RemoteEvent::Resync {
+                continue;
+            }
             assert_eq!(e, RemoteEvent::TenantChanged(tenant.id));
             heard = true;
-            break;
+            break 'publish;
         }
     }
     assert!(heard, "replica B never received the tenant-changed event");
-    assert!(a_remote.try_recv().is_err(), "a replica does not receive its own remote events");
+    while let Ok(e) = a_remote.try_recv() {
+        assert_eq!(e, RemoteEvent::Resync, "a replica does not receive its own remote events");
+    }
 
     // A node that registers at replica A appears as an event at replica B
     let mut mkey = [0u8; 32];

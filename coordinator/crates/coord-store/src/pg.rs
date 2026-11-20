@@ -112,8 +112,9 @@ async fn listen_for_events(
     peer_tx: broadcast::Sender<PeerEvent>,
     remote_tx: broadcast::Sender<RemoteEvent>,
 ) {
-    // Set once a connection was lost: the next connection starts with a resync.
-    let mut missed = false;
+    // The next connection starts with a resync. True at start too: whatever
+    // was published between loading the caches and the first LISTEN is lost.
+    let mut missed = true;
     loop {
         let listener = async {
             let mut l = sqlx::postgres::PgListener::connect_with(&pool).await?;
@@ -130,7 +131,7 @@ async fn listen_for_events(
             }
         };
         if std::mem::take(&mut missed) {
-            tracing::info!("event listener reconnected: resyncing");
+            tracing::info!("event listener connected: resyncing");
             let _ = remote_tx.send(RemoteEvent::Resync);
         }
         loop {
