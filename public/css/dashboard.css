@@ -1160,3 +1160,6 @@ img, svg { max-width: 100%; }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+.device-warning { display: block; margin-top: 8px; font-size: 14px; }
+.device-warning button { margin-top: 6px; }

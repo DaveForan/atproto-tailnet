@@ -1,10 +1,14 @@
 import { api } from "./api";
-import { ensureDeviceKey, setDeviceId, signChallenge } from "../lib/device-key";
+import { deviceTraits, ensureDeviceKey, setDeviceId, signChallenge } from "../lib/device-key";
 
 export interface TrustedDevice {
   id: string;
   name: string;
   userAgent: string | null;
+  profile: { os: string | null; browser: string | null } | null;
+  /** Set when a sign-in with this device's key came from a browser that looked different. */
+  warning: string | null;
+  warningAt: string | null;
   createdAt: string;
   lastUsedAt: string | null;
 }
@@ -37,7 +41,7 @@ export const deviceTrustService = {
     const signature = await signChallenge(key, await challenge());
     const r = await api<{ id: string; recoveryCodes?: string[] }>(
       "/api/trusted-devices",
-      post({ name, publicKeyJwk: key.publicJwk, signature }),
+      post({ name, publicKeyJwk: key.publicJwk, signature, profile: deviceTraits() }),
     );
     if (!r) throw new Error("Not signed in");
     await setDeviceId(r.id);
@@ -53,15 +57,16 @@ export const deviceTrustService = {
   remove: (id: string) => api<{ locked: boolean }>(`/api/trusted-devices/${id}`, { method: "DELETE" }),
   setLimit: (max: number) => api("/api/trusted-devices/limit", { method: "PUT", body: JSON.stringify({ max }) }),
   approve: (id: string, code: string) => api(`/api/trusted-devices/requests/${id}/approve`, post({ code })),
+  dismissWarning: (id: string) => api(`/api/trusted-devices/${id}/dismiss-warning`, post()),
   deny: (id: string) => api(`/api/trusted-devices/requests/${id}/deny`, post()),
   newRecoveryCodes: () => api<{ recoveryCodes: string[] }>("/api/trusted-devices/recovery-codes", post()),
 
   // ── Pending sign-in ──
   pending: () => api<{ handle: string | null; challenge: string }>("/api/device-trust/pending"),
   verify: (deviceId: string, signature: string) =>
-    api<{ redirect: string }>("/api/device-trust/pending/verify", post({ deviceId, signature })),
+    api<{ redirect: string }>("/api/device-trust/pending/verify", post({ deviceId, signature, profile: deviceTraits() })),
   recover: (code: string) => api<{ redirect: string }>("/api/device-trust/pending/recover", post({ code })),
   requestTrust: (name: string, publicKeyJwk: unknown) =>
-    api<{ id: string; code: string; expiresAt: string }>("/api/device-trust/pending/request", post({ name, publicKeyJwk })),
+    api<{ id: string; code: string; expiresAt: string }>("/api/device-trust/pending/request", post({ name, publicKeyJwk, profile: deviceTraits() })),
   requestStatus: () => api<{ status: "pending" | "approved" | "denied" | "expired"; deviceId: string | null }>("/api/device-trust/pending/request"),
 };

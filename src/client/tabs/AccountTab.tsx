@@ -204,9 +204,24 @@ function TrustedDevices({ onChanged }: { onChanged?: () => void }) {
                 {d.id === state.currentDeviceId && <> <Badge variant="running">this device</Badge></>}
                 <br />
                 <span className="text-dim text-sm">
+                  {d.profile?.browser && d.profile.os ? `${d.profile.browser} on ${d.profile.os} · ` : ""}
                   Added {new Date(d.createdAt).toLocaleDateString()}
                   {d.lastUsedAt ? ` · last sign-in ${new Date(d.lastUsedAt).toLocaleString()}` : ""}
                 </span>
+                {d.warning && (
+                  <span className="notice device-warning" role="alert">
+                    <strong>This device signed in from a browser that looks different.</strong> Changed: {d.warning}
+                    {d.warningAt ? ` (${new Date(d.warningAt).toLocaleString()})` : ""}. If this was not you, remove the
+                    device: its key may have been copied.{" "}
+                    <button
+                      className="btn-sm btn-ghost"
+                      disabled={busy}
+                      onClick={() => { void guarded(() => deviceTrustService.dismissWarning(d.id), "Warning cleared"); }}
+                    >
+                      This was me
+                    </button>
+                  </span>
+                )}
               </span>
               <button
                 className="btn-sm btn-ghost"

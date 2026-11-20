@@ -100,3 +100,61 @@ describe("cleanDeviceName", () => {
     expect(cleanDeviceName(7)).toBeNull();
   });
 });
+
+import {
+  deviceCookieName,
+  newDeviceCookieToken,
+  hashDeviceCookie,
+  readCookie,
+  deviceCookieMatches,
+  deviceProfile,
+  profileChanges,
+} from "../auth/device-trust.js";
+
+describe("device cookie", () => {
+  it("is host-only over HTTPS", () => {
+    expect(deviceCookieName(true)).toBe("__Host-tailnet-device");
+    expect(deviceCookieName(false)).toBe("tailnet-device");
+  });
+  it("matches only the token whose hash is stored", () => {
+    const token = newDeviceCookieToken();
+    const hash = hashDeviceCookie(token);
+    expect(deviceCookieMatches(hash, token)).toBe(true);
+    expect(deviceCookieMatches(hash, newDeviceCookieToken())).toBe(false);
+    expect(deviceCookieMatches(hash, null)).toBe(false);
+    expect(deviceCookieMatches(null, token)).toBe(false);
+    expect(deviceCookieMatches(hash, "x".repeat(500))).toBe(false);
+  });
+  it("reads one cookie out of a header", () => {
+    const h = "a=1; __Host-tailnet-device=tok-123; other=x=y";
+    expect(readCookie(h, "__Host-tailnet-device")).toBe("tok-123");
+    expect(readCookie(h, "other")).toBe("x=y");
+    expect(readCookie(h, "missing")).toBeNull();
+    expect(readCookie(undefined, "a")).toBeNull();
+    expect(readCookie("tailnet-device-evil=1", "tailnet-device")).toBeNull();
+  });
+});
+
+describe("device profile", () => {
+  const MAC_SAFARI = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15";
+  const WIN_CHROME = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+  it("keeps coarse traits and no versions", () => {
+    expect(deviceProfile(MAC_SAFARI, { touch: false, cores: 10, timezone: "America/New_York", evil: "<script>" })).toEqual({
+      os: "macOS", browser: "Safari", touch: "false", cores: "10", timezone: "America/New_York",
+    });
+    expect(deviceProfile(WIN_CHROME, null)).toEqual({ os: "Windows", browser: "Chrome" });
+  });
+  it("a browser update on the same machine is not a change", () => {
+    const before = deviceProfile(MAC_SAFARI, { touch: false, cores: 10 });
+    const after = deviceProfile(MAC_SAFARI.replace("Version/18.0", "Version/19.2"), { touch: false, cores: 10, timezone: "Europe/Paris" });
+    expect(profileChanges(before, after)).toEqual([]);
+  });
+  it("another system, browser or hardware is reported", () => {
+    const before = deviceProfile(MAC_SAFARI, { touch: false, cores: 10 });
+    const after = deviceProfile(WIN_CHROME, { touch: false, cores: 4 });
+    expect(profileChanges(before, after)).toEqual(["system: macOS → Windows", "browser: Safari → Chrome", "processor count: 10 → 4"]);
+  });
+  it("no stored profile means nothing to compare", () => {
+    expect(profileChanges(null, deviceProfile(WIN_CHROME, {}))).toEqual([]);
+  });
+});

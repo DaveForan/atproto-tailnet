@@ -1147,6 +1147,16 @@ export const trustedDevices = pgTable(
     publicKeyJwk: jsonb("public_key_jwk").notNull().$type<{ kty: string; crv: string; x: string; y: string }>(),
     /** Browser and system at enrolment, shown to the user (information only). */
     userAgent: text("user_agent"),
+    /**
+     * SHA-256 of the device cookie: a random token in an HttpOnly cookie that
+     * page scripts cannot read. A proof needs the key and the cookie.
+     */
+    cookieHash: text("cookie_hash"),
+    /** Traits of the browser at enrolment; a sign-in that looks different raises a warning. */
+    profile: jsonb("profile").$type<Record<string, string>>(),
+    /** Set when a sign-in with this key came from a browser that looked different. */
+    profileWarning: text("profile_warning"),
+    profileWarningAt: timestamp("profile_warning_at"),
     createdAt: timestamp("created_at").defaultNow().notNull(),
     lastUsedAt: timestamp("last_used_at"),
   },
@@ -1182,6 +1192,8 @@ export const deviceTrustRequests = pgTable(
     name: text("name").notNull(),
     publicKeyJwk: jsonb("public_key_jwk").notNull().$type<{ kty: string; crv: string; x: string; y: string }>(),
     userAgent: text("user_agent"),
+    cookieHash: text("cookie_hash"),
+    profile: jsonb("profile").$type<Record<string, string>>(),
     /** Shown on the new device and typed on the trusted one. */
     code: text("code").notNull(),
     status: text("status").notNull().$type<"pending" | "approved" | "denied">().default("pending"),

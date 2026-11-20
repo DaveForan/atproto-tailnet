@@ -112,3 +112,23 @@ export function suggestedDeviceName(ua: string = navigator.userAgent): string {
           : "Browser";
   return `${browser} on ${os}`;
 }
+
+/**
+ * Coarse traits of this browser, sent with a device proof. The service only
+ * uses them to warn when a trusted key appears on a machine that looks
+ * different; they never decide access.
+ */
+export function deviceTraits(): Record<string, string | number | boolean> {
+  const traits: Record<string, string | number | boolean> = {
+    touch: navigator.maxTouchPoints > 0,
+    cores: navigator.hardwareConcurrency || 0,
+    language: navigator.language,
+    screen: `${screen.width}x${screen.height}`,
+  };
+  try {
+    traits.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  } catch {
+    // not available: left out
+  }
+  return traits;
+}

@@ -232,6 +232,13 @@
       "when": 1794028813001,
       "tag": "0032_device_trust",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1794028814001,
+      "tag": "0033_device_cookie_profile",
+      "breakpoints": true
     }
   ]
 }

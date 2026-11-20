@@ -117,3 +117,107 @@ export function cleanDeviceName(input: unknown): string | null {
   const name = input.replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 60);
   return name.length > 0 ? name : null;
 }
+
+// ── Device cookie ───────────────────────────────────────────────────────
+
+/** Lifetime of the device cookie (browsers cap cookies at about 400 days). */
+export const DEVICE_COOKIE_MAX_AGE_MS = 400 * 24 * 60 * 60 * 1000;
+
+/** `__Host-` over HTTPS: only this exact host can set or receive it. */
+export function deviceCookieName(secure: boolean): string {
+  return secure ? "__Host-tailnet-device" : "tailnet-device";
+}
+
+export function newDeviceCookieToken(): string {
+  return randomBytes(32).toString("base64url");
+}
+
+export function hashDeviceCookie(token: string): string {
+  return createHash("sha256").update(token).digest("hex");
+}
+
+/** Value of one cookie from a `Cookie` header, or null. */
+export function readCookie(header: string | undefined, name: string): string | null {
+  if (!header) return null;
+  for (const part of header.split(";")) {
+    const eq = part.indexOf("=");
+    if (eq > 0 && part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim() || null;
+  }
+  return null;
+}
+
+/** True when `token` is the device cookie whose hash is stored. */
+export function deviceCookieMatches(storedHash: string | null, token: string | null): boolean {
+  if (!storedHash || !token || token.length > 128) return false;
+  const a = Buffer.from(storedHash);
+  const b = Buffer.from(hashDeviceCookie(token));
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+// ── Device profile ──────────────────────────────────────────────────────
+
+export type DeviceProfile = Record<string, string>;
+
+/**
+ * Coarse traits of a browser: system, browser family, and whether it is a
+ * touch device. Versions are left out on purpose, because they change with
+ * every update. The profile never decides access: it only lets the service
+ * warn the user when a trusted key appears on a machine that looks different.
+ */
+export function deviceProfile(userAgent: string | undefined, extra: unknown): DeviceProfile {
+  const ua = userAgent ?? "";
+  const os = /iPhone|iPad|iPod/.test(ua)
+    ? "iOS"
+    : /Android/.test(ua)
+      ? "Android"
+      : /Mac OS X|Macintosh/.test(ua)
+        ? "macOS"
+        : /Windows/.test(ua)
+          ? "Windows"
+          : /CrOS/.test(ua)
+            ? "ChromeOS"
+            : /Linux/.test(ua)
+              ? "Linux"
+              : "unknown";
+  const browser = /Edg\//.test(ua)
+    ? "Edge"
+    : /Firefox\//.test(ua)
+      ? "Firefox"
+      : /Chrome\//.test(ua)
+        ? "Chrome"
+        : /Safari\//.test(ua)
+          ? "Safari"
+          : "unknown";
+  const profile: DeviceProfile = { os, browser };
+  const e = (extra ?? {}) as Record<string, unknown>;
+  const clip = (v: unknown) => (typeof v === "string" || typeof v === "number" || typeof v === "boolean" ? String(v).slice(0, 64) : null);
+  for (const key of ["touch", "cores", "timezone", "language", "screen"]) {
+    const v = clip(e[key]);
+    if (v !== null) profile[key] = v;
+  }
+  return profile;
+}
+
+/** Traits whose change means "probably another machine". */
+const IDENTITY_TRAITS: Array<[string, string]> = [
+  ["os", "system"],
+  ["browser", "browser"],
+  ["touch", "touch screen"],
+  ["cores", "processor count"],
+];
+
+/**
+ * Human-readable differences between the profile at enrolment and now, for
+ * the traits that do not change on one machine. Empty when it looks the same
+ * or when there is no profile to compare with.
+ */
+export function profileChanges(enrolled: DeviceProfile | null | undefined, now: DeviceProfile): string[] {
+  if (!enrolled) return [];
+  const out: string[] = [];
+  for (const [key, label] of IDENTITY_TRAITS) {
+    const before = enrolled[key];
+    const after = now[key];
+    if (before !== undefined && after !== undefined && before !== after) out.push(`${label}: ${before} → ${after}`);
+  }
+  return out;
+}

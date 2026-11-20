@@ -35,7 +35,16 @@ import {
   newChallenge,
   parseDevicePublicKey,
   verifyDeviceSignature,
+  DEVICE_COOKIE_MAX_AGE_MS,
+  deviceCookieName,
+  deviceCookieMatches,
+  deviceProfile,
+  hashDeviceCookie,
+  newDeviceCookieToken,
+  profileChanges,
+  readCookie,
 } from "../auth/device-trust.js";
+import { config } from "../config.js";
 
 export const deviceTrustRouter = Router();
 
@@ -107,6 +116,67 @@ async function alertUser(userId: string, title: string, body: string): Promise<v
   if (m) notifyUser(m.tenantId, userId, "device_trust", { title, body, link: "/#account" });
 }
 
+// ── Device cookie and profile ───────────────────────────────────────────
+
+const secureCookies = (): boolean => config.publicUrl.startsWith("https");
+
+/**
+ * Give this browser a new device cookie and return the hash to store. The
+ * cookie is HttpOnly (page scripts cannot read it) and SameSite=Strict (it is
+ * only ever needed by same-origin requests of the dashboard).
+ */
+function setDeviceCookie(res: Response): string {
+  const token = newDeviceCookieToken();
+  res.cookie(deviceCookieName(secureCookies()), token, {
+    httpOnly: true,
+    secure: secureCookies(),
+    sameSite: "strict",
+    path: "/",
+    maxAge: DEVICE_COOKIE_MAX_AGE_MS,
+  });
+  return hashDeviceCookie(token);
+}
+
+function clearDeviceCookie(res: Response): void {
+  res.clearCookie(deviceCookieName(secureCookies()), { httpOnly: true, secure: secureCookies(), sameSite: "strict", path: "/" });
+}
+
+/** True when the browser sent the device cookie that belongs to this trusted device. */
+function hasDeviceCookie(req: Request, device: { cookieHash: string | null }): boolean {
+  return deviceCookieMatches(device.cookieHash, readCookie(req.headers.cookie, deviceCookieName(secureCookies())));
+}
+
+function requestProfile(req: Request) {
+  return deviceProfile(String(req.headers["user-agent"] ?? ""), (req.body ?? {}).profile);
+}
+
+/**
+ * Compare the browser with the profile stored at enrolment. A difference
+ * never refuses the sign-in (the key and the cookie decide); it is recorded
+ * and the user is told, once, until they dismiss it.
+ */
+async function noteProfile(
+  req: Request,
+  device: { id: string; userId: string; name: string; profile: Record<string, string> | null; profileWarning: string | null },
+): Promise<void> {
+  const now = requestProfile(req);
+  if (!device.profile) {
+    await db.update(trustedDevices).set({ profile: now }).where(eq(trustedDevices.id, device.id));
+    return;
+  }
+  const changes = profileChanges(device.profile, now);
+  if (changes.length === 0 || device.profileWarning) return;
+  await db
+    .update(trustedDevices)
+    .set({ profileWarning: changes.join("; "), profileWarningAt: new Date() })
+    .where(eq(trustedDevices.id, device.id));
+  void alertUser(
+    device.userId,
+    `"${device.name}" signed in from a browser that looks different`,
+    `Changed: ${changes.join("; ")}. If this was not you, remove that device now: its key may have been copied.`,
+  );
+}
+
 function issueChallenge(req: Request): string {
   const value = newChallenge();
   req.session.deviceChallenge = { value, issuedAt: Date.now() };
@@ -157,13 +227,20 @@ deviceTrustRouter.post("/api/device-trust/pending/verify", async (req, res) => {
           .from(trustedDevices)
           .where(and(eq(trustedDevices.id, deviceId), eq(trustedDevices.userId, pending.userId)))
       : [];
-  if (!challenge || !device || !verifyDeviceSignature(device.publicKeyJwk, challenge, signature)) {
+  // Two proofs: the signature of the device key, and the device cookie
+  if (
+    !challenge ||
+    !device ||
+    !verifyDeviceSignature(device.publicKeyJwk, challenge, signature) ||
+    !hasDeviceCookie(req, device)
+  ) {
     req.session.proofAttempts = (req.session.proofAttempts ?? 0) + 1;
     res.status(403).json({ error: "This device could not be verified", code: "device_not_trusted" });
     return;
   }
   const redirect = req.session.postLoginRedirect || "/";
   await db.update(trustedDevices).set({ lastUsedAt: new Date() }).where(eq(trustedDevices.id, device.id));
+  await noteProfile(req, device);
   await establishSession(req, { userId: pending.userId, did: pending.did, trustedDeviceId: device.id });
   res.json({ status: "signed_in", redirect });
 });
@@ -228,6 +305,8 @@ deviceTrustRouter.post("/api/device-trust/pending/request", async (req, res) => 
       name,
       publicKeyJwk: jwk,
       userAgent: String(req.headers["user-agent"] ?? "").slice(0, 300) || null,
+      cookieHash: setDeviceCookie(res),
+      profile: requestProfile(req),
       code,
       expiresAt: new Date(Date.now() + TRUST_REQUEST_TTL_MS),
     })
@@ -325,6 +404,9 @@ deviceTrustRouter.get("/api/trusted-devices", requireSession, async (req, res) =
       id: d.id,
       name: d.name,
       userAgent: d.userAgent,
+      profile: d.profile ? { os: d.profile.os ?? null, browser: d.profile.browser ?? null } : null,
+      warning: d.profileWarning,
+      warningAt: d.profileWarningAt,
       createdAt: d.createdAt,
       lastUsedAt: d.lastUsedAt,
     })),
@@ -368,6 +450,8 @@ deviceTrustRouter.post("/api/trusted-devices", requireSession, async (req, res) 
       name,
       publicKeyJwk: jwk,
       userAgent: String(req.headers["user-agent"] ?? "").slice(0, 300) || null,
+      cookieHash: setDeviceCookie(res),
+      profile: requestProfile(req),
       lastUsedAt: new Date(),
     })
     .returning();
@@ -397,7 +481,12 @@ deviceTrustRouter.post("/api/trusted-devices/step-up", requireSession, async (re
         .from(trustedDevices)
         .where(and(eq(trustedDevices.id, deviceId), eq(trustedDevices.userId, req.session.userId!)))
     : [];
-  if (!challenge || !device || !verifyDeviceSignature(device.publicKeyJwk, challenge, (req.body ?? {}).signature)) {
+  if (
+    !challenge ||
+    !device ||
+    !verifyDeviceSignature(device.publicKeyJwk, challenge, (req.body ?? {}).signature) ||
+    !hasDeviceCookie(req, device)
+  ) {
     res.status(403).json({ error: "This device could not be verified", code: "device_not_trusted" });
     return;
   }
@@ -426,8 +515,27 @@ deviceTrustRouter.delete("/api/trusted-devices/:id", requireSession, async (req,
   if (req.session.trustedDeviceId === id) {
     delete req.session.trustedDeviceId;
     delete req.session.deviceVerifiedAt;
+    clearDeviceCookie(res);
   }
   res.json({ status: "removed", locked: left > 0 });
+});
+
+/**
+ * "This was me": clear a profile warning. The profile is learned again at the
+ * next sign-in of that device.
+ */
+deviceTrustRouter.post("/api/trusted-devices/:id/dismiss-warning", requireSession, async (req, res) => {
+  if (!(await mayChangeLock(req, res))) return;
+  const done = await db
+    .update(trustedDevices)
+    .set({ profileWarning: null, profileWarningAt: null, profile: null })
+    .where(and(eq(trustedDevices.id, param(req, "id")), eq(trustedDevices.userId, req.session.userId!)))
+    .returning({ id: trustedDevices.id });
+  if (done.length === 0) {
+    res.status(404).json({ error: "Device not found" });
+    return;
+  }
+  res.json({ status: "dismissed" });
 });
 
 deviceTrustRouter.put("/api/trusted-devices/limit", requireSession, async (req, res) => {
@@ -479,6 +587,8 @@ deviceTrustRouter.post("/api/trusted-devices/requests/:id/approve", requireSessi
     name: request.name,
     publicKeyJwk: request.publicKeyJwk,
     userAgent: request.userAgent,
+    cookieHash: request.cookieHash,
+    profile: request.profile,
   });
   await db.update(deviceTrustRequests).set({ status: "approved" }).where(eq(deviceTrustRequests.id, request.id));
   res.json({ status: "approved", deviceId: request.id });

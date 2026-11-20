@@ -51,6 +51,23 @@ vi.mock("../notifications/service.js", () => ({ notifyUser: vi.fn() }));
 import express from "express";
 import type { Request, Response, NextFunction } from "express";
 import { deviceTrustRouter, enforceDeviceEnrollment } from "../routes/device-trust.js";
+import { hashDeviceCookie } from "../auth/device-trust.js";
+
+const MAC_SAFARI = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15";
+const WIN_CHROME = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
+const COOKIE = "tailnet-device";
+const TOKEN = "device-cookie-token";
+/** A trusted-device row whose device cookie is TOKEN. */
+const row = (jwk: unknown, extra: Record<string, unknown> = {}) => ({
+  id: DEV,
+  userId: "u-1",
+  name: "Mac",
+  publicKeyJwk: jwk,
+  cookieHash: hashDeviceCookie(TOKEN),
+  profile: null,
+  profileWarning: null,
+  ...extra,
+});
 
 function device() {
   const { publicKey, privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
@@ -92,12 +109,25 @@ app.get("/api/tenants/x/devices", (_req, res) => res.json({ ok: true }));
 const server = app.listen(0);
 afterAll(() => server.close());
 
+// The browser's cookies: `cookieJar` is sent, and Set-Cookie replies update it
+let cookieJar: Record<string, string> = {};
+let userAgent = MAC_SAFARI;
 async function call(method: string, path: string, body?: unknown) {
   const r = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}${path}`, {
     method,
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      "user-agent": userAgent,
+      cookie: Object.entries(cookieJar).map(([k, v]) => `${k}=${v}`).join("; "),
+    },
     body: body ? JSON.stringify(body) : undefined,
   });
+  for (const c of r.headers.getSetCookie()) {
+    const [pair] = c.split(";");
+    const eq = pair.indexOf("=");
+    if (pair.slice(eq + 1)) cookieJar[pair.slice(0, eq)] = pair.slice(eq + 1);
+    else delete cookieJar[pair.slice(0, eq)];
+  }
   return { status: r.status, json: (await r.json().catch(() => ({}))) as Record<string, any> };
 }
 
@@ -106,6 +136,8 @@ beforeEach(() => {
   results.length = 0;
   writes.length = 0;
   session = {};
+  cookieJar = { [COOKIE]: TOKEN };
+  userAgent = MAC_SAFARI;
   destroyed = false;
   vi.clearAllMocks();
 });
@@ -122,7 +154,7 @@ describe("pending sign-in", () => {
     session = { pendingUserId: "u-1", pendingDid: "did:plc:x", postLoginRedirect: "/invite/abc" };
     results.push([{ handle: "dave.test" }]);
     const { json } = await call("GET", "/api/device-trust/pending");
-    results.push([{ id: DEV, userId: "u-1", publicKeyJwk: d.jwk }]);
+    results.push([row(d.jwk)]);
     const r = await call("POST", "/api/device-trust/pending/verify", { deviceId: DEV, signature: d.signIt(json.challenge) });
     expect(r.status).toBe(200);
     expect(r.json.redirect).toBe("/invite/abc");
@@ -138,13 +170,13 @@ describe("pending sign-in", () => {
     const { json } = await call("GET", "/api/device-trust/pending");
 
     // The attacker signs with their own key
-    results.push([{ id: DEV, userId: "u-1", publicKeyJwk: trusted.jwk }]);
+    results.push([row(trusted.jwk)]);
     const bad = await call("POST", "/api/device-trust/pending/verify", { deviceId: DEV, signature: attacker.signIt(json.challenge) });
     expect(bad.status).toBe(403);
     expect(session.userId).toBeUndefined();
 
     // The challenge was consumed: even the right key cannot reuse it
-    results.push([{ id: DEV, userId: "u-1", publicKeyJwk: trusted.jwk }]);
+    results.push([row(trusted.jwk)]);
     const replay = await call("POST", "/api/device-trust/pending/verify", { deviceId: DEV, signature: trusted.signIt(json.challenge) });
     expect(replay.status).toBe(403);
 
@@ -250,7 +282,7 @@ describe("managing trusted devices", () => {
     const thief = device();
     session = signedIn({ trustedDeviceId: DEV });
     const { json } = await call("POST", "/api/trusted-devices/challenge");
-    results.push([{ id: DEV, userId: "u-1", publicKeyJwk: trusted.jwk }]);
+    results.push([row(trusted.jwk)]);
     expect((await call("POST", "/api/trusted-devices/step-up", { signature: thief.signIt(json.challenge) })).status).toBe(403);
     expect(session.deviceVerifiedAt).toBeUndefined();
   });
@@ -259,7 +291,7 @@ describe("managing trusted devices", () => {
     const d = device();
     session = signedIn({ trustedDeviceId: DEV });
     const { json } = await call("POST", "/api/trusted-devices/challenge");
-    results.push([{ id: DEV, userId: "u-1", publicKeyJwk: d.jwk }]);
+    results.push([row(d.jwk)]);
     expect((await call("POST", "/api/trusted-devices/step-up", { signature: d.signIt(json.challenge) })).status).toBe(200);
 
     results.push([{ id: DEV }], []); // delete returning; none left
@@ -302,5 +334,121 @@ describe("managing trusted devices", () => {
   it("new recovery codes need a fresh proof", async () => {
     session = signedIn({ trustedDeviceId: DEV });
     expect((await call("POST", "/api/trusted-devices/recovery-codes")).json.code).toBe("step_up_required");
+  });
+});
+
+describe("device cookie and profile", () => {
+  const pendingChallenge = async () => {
+    session = { pendingUserId: "u-1", pendingDid: "did:plc:x" };
+    results.push([{ handle: "h" }]);
+    return (await call("GET", "/api/device-trust/pending")).json.challenge as string;
+  };
+
+  it("a copied key without the device cookie cannot sign in", async () => {
+    const d = device();
+    const challenge = await pendingChallenge();
+    cookieJar = {}; // the attacker has the key store but not the cookies
+    results.push([row(d.jwk)]);
+    const r = await call("POST", "/api/device-trust/pending/verify", { deviceId: DEV, signature: d.signIt(challenge) });
+    expect(r.json.code).toBe("device_not_trusted");
+    expect(session.userId).toBeUndefined();
+  });
+
+  it("the cookie of another device, or a device with no cookie on record, is refused", async () => {
+    const d = device();
+    let challenge = await pendingChallenge();
+    cookieJar = { [COOKIE]: "some-other-token" };
+    results.push([row(d.jwk)]);
+    expect((await call("POST", "/api/device-trust/pending/verify", { deviceId: DEV, signature: d.signIt(challenge) })).status).toBe(403);
+
+    challenge = await pendingChallenge();
+    cookieJar = { [COOKIE]: TOKEN };
+    results.push([row(d.jwk, { cookieHash: null })]);
+    expect((await call("POST", "/api/device-trust/pending/verify", { deviceId: DEV, signature: d.signIt(challenge) })).status).toBe(403);
+  });
+
+  it("step-up needs the device cookie too", async () => {
+    const d = device();
+    session = { userId: "u-1", did: "did:plc:x", trustedDeviceId: DEV };
+    const { json } = await call("POST", "/api/trusted-devices/challenge");
+    cookieJar = {};
+    results.push([row(d.jwk)]);
+    expect((await call("POST", "/api/trusted-devices/step-up", { signature: d.signIt(json.challenge) })).status).toBe(403);
+    expect(session.deviceVerifiedAt).toBeUndefined();
+  });
+
+  it("enrolment sets an HttpOnly cookie and stores only its hash, with the profile", async () => {
+    const d = device();
+    cookieJar = {};
+    session = { userId: "u-1", did: "did:plc:x" };
+    const { json } = await call("POST", "/api/trusted-devices/challenge");
+    results.push([], [{ max: 3 }], [{ id: DEV, name: "Mac" }]);
+    await call("POST", "/api/trusted-devices", { name: "Mac", publicKeyJwk: d.jwk, signature: d.signIt(json.challenge), profile: { cores: 10, touch: false } });
+    const stored = writes.find((w) => w.op === "insert" && w.table === "trusted_devices")!.arg as Record<string, any>;
+    expect(cookieJar[COOKIE]).toBeTruthy();
+    expect(stored.cookieHash).toBe(hashDeviceCookie(cookieJar[COOKIE]));
+    expect(JSON.stringify(stored)).not.toContain(cookieJar[COOKIE]);
+    expect(stored.profile).toEqual({ os: "macOS", browser: "Safari", cores: "10", touch: "false" });
+  });
+
+  it("a new device gets its cookie when it asks, and approval carries it over", async () => {
+    cookieJar = {};
+    session = { pendingUserId: "u-1", pendingDid: "did:plc:x" };
+    results.push([], [{ id: "req-1", expiresAt: new Date() }]);
+    await call("POST", "/api/device-trust/pending/request", { name: "Phone", publicKeyJwk: device().jwk });
+    const asked = writes.find((w) => w.op === "insert" && w.table === "device_trust_requests")!.arg as Record<string, any>;
+    expect(asked.cookieHash).toBe(hashDeviceCookie(cookieJar[COOKIE]));
+
+    writes.length = 0;
+    session = { userId: "u-1", did: "did:plc:x", trustedDeviceId: DEV, deviceVerifiedAt: Date.now() };
+    const request = { id: "req-1", userId: "u-1", name: "Phone", publicKeyJwk: asked.publicKeyJwk, code: "ABCDEF", status: "pending", expiresAt: new Date(Date.now() + 60_000), cookieHash: asked.cookieHash, profile: asked.profile };
+    results.push([request], [{ max: 3 }], [{ id: DEV }]);
+    await call("POST", "/api/trusted-devices/requests/req-1/approve", { code: "ABCDEF" });
+    expect((writes.find((w) => w.op === "insert" && w.table === "trusted_devices")!.arg as Record<string, any>).cookieHash).toBe(asked.cookieHash);
+  });
+
+  it("the first sign-in stores the profile; the same machine later raises nothing", async () => {
+    const d = device();
+    let challenge = await pendingChallenge();
+    results.push([row(d.jwk)]);
+    await call("POST", "/api/device-trust/pending/verify", { deviceId: DEV, signature: d.signIt(challenge), profile: { cores: 10 } });
+    const learned = writes.filter((w) => w.op === "update" && w.table === "trusted_devices").map((w) => w.arg as Record<string, any>);
+    expect(learned.some((a) => a.profile?.os === "macOS")).toBe(true);
+
+    writes.length = 0;
+    challenge = await pendingChallenge();
+    userAgent = MAC_SAFARI.replace("Version/18.0", "Version/19.1"); // a browser update
+    results.push([row(d.jwk, { profile: { os: "macOS", browser: "Safari", cores: "10" } })]);
+    const r = await call("POST", "/api/device-trust/pending/verify", { deviceId: DEV, signature: d.signIt(challenge), profile: { cores: 10 } });
+    expect(r.status).toBe(200);
+    expect(writes.some((w) => (w.arg as Record<string, any>)?.profileWarning)).toBe(false);
+  });
+
+  it("a trusted key on a machine that looks different still signs in, and a warning is recorded once", async () => {
+    const d = device();
+    const enrolled = { os: "macOS", browser: "Safari", cores: "10" };
+    let challenge = await pendingChallenge();
+    userAgent = WIN_CHROME;
+    results.push([row(d.jwk, { profile: enrolled })]);
+    const r = await call("POST", "/api/device-trust/pending/verify", { deviceId: DEV, signature: d.signIt(challenge), profile: { cores: 4 } });
+    expect(r.status).toBe(200);
+    const warned = writes.find((w) => (w.arg as Record<string, any>)?.profileWarning)!.arg as Record<string, any>;
+    expect(warned.profileWarning).toBe("system: macOS → Windows; browser: Safari → Chrome; processor count: 10 → 4");
+
+    writes.length = 0;
+    challenge = await pendingChallenge();
+    results.push([row(d.jwk, { profile: enrolled, profileWarning: warned.profileWarning })]);
+    await call("POST", "/api/device-trust/pending/verify", { deviceId: DEV, signature: d.signIt(challenge) });
+    expect(writes.some((w) => (w.arg as Record<string, any>)?.profileWarning)).toBe(false);
+  });
+
+  it("clearing a warning needs a fresh proof, then forgets the profile", async () => {
+    session = { userId: "u-1", did: "did:plc:x", trustedDeviceId: DEV, deviceVerifiedAt: Date.now() - 10 * 60_000 };
+    results.push([{ id: DEV }]);
+    expect((await call("POST", `/api/trusted-devices/${DEV}/dismiss-warning`)).json.code).toBe("step_up_required");
+    session.deviceVerifiedAt = Date.now();
+    results.push([{ id: DEV }]);
+    expect((await call("POST", `/api/trusted-devices/${DEV}/dismiss-warning`)).status).toBe(200);
+    expect(writes.find((w) => w.op === "update" && w.table === "trusted_devices")!.arg).toEqual({ profileWarning: null, profileWarningAt: null, profile: null });
   });
 });
