@@ -1,6 +1,6 @@
 # ADR-0020: Federation relay data plane
 
-**Status:** In Progress
+**Status:** Deferred: works in Headscale mode only; ADR-0033 replaces it in coordinator mode (tabled 2026-11-20)
 **Date:** 2026-11-04
 **Priority:** P0
 **Depends On:** ADR-0006 (IP ranges), ADR-0010 (federation control plane), ADR-0016 (federation transport), ADR-0019 (cross-instance links)

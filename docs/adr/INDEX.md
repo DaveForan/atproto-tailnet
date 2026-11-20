@@ -4,6 +4,8 @@ Track ADRs like stories on a board. Each ADR moves through these lifecycle state
 
 **Proposed** → **Accepted** → **In Progress** → **Implemented** → **Superseded** / **Deprecated**
 
+Any state can move to **Deferred** (still on the roadmap; work is paused).
+
 ## Board
 
 ### Implemented
@@ -27,8 +29,6 @@ Track ADRs like stories on a board. Each ADR moves through these lifecycle state
 | 0016 | Federation transport and broker integration | 2026-11-04 | — | 0010, 0014 |
 | 0017 | DID resolution and identity verification | 2026-11-04 | — | 0003, 0012 |
 | 0018 | Dashboard completeness and correctness | 2026-11-04 | — | 0016, 0017 |
-| 0019 | Cross-instance federation links | 2026-11-04 | — | 0014, 0016, 0017 |
-| 0020 | Federation relay data plane | 2026-11-04 | — | 0006, 0010, 0016, 0019 |
 | 0021 | Holder binding for AT Proto accounts | 2026-11-04 | — | 0003, 0012, 0017 |
 
 ### In Progress
@@ -58,8 +58,17 @@ Track ADRs like stories on a board. Each ADR moves through these lifecycle state
 | 0029 | Bespoke gateway node (`coord-gateway`) | 2026-11-19 | — | 0023, 0027 |
 | 0030 | Named tailnet services | 2026-11-19 | — | 0026, 0028, 0029 |
 | 0031 | Public service exposure | 2026-11-19 | — | 0030 |
-| 0033 | Federation data plane on the gateway, and services as AT Proto records | 2026-11-19 | 0020 (coordinator mode) | 0029, 0030 |
 | 0034 | High availability, replicas, and Kubernetes | 2026-11-20 | — | 0023, 0026, 0027 |
+
+### Deferred
+
+Federation is tabled (2026-11-20). ADR-0033 records what exists, the code kept on purpose, the gaps, and when to resume.
+
+| ID | Title | Date | Supersedes | Depends On |
+|----|-------|------|------------|------------|
+| 0019 | Cross-instance federation links | 2026-11-04 | — | 0014, 0016, 0017 |
+| 0020 | Federation relay data plane | 2026-11-04 | — | 0006, 0010, 0016, 0019 |
+| 0033 | Federation data plane on the gateway, and services as AT Proto records | 2026-11-19 | 0020 (coordinator mode) | 0029, 0030 |
 
 ### Superseded
 
@@ -74,6 +83,7 @@ Track ADRs like stories on a board. Each ADR moves through these lifecycle state
 ## Lifecycle rules
 
 - **Proposed**: The draft is complete. The team can discuss it.
+- **Deferred**: The work stays on the roadmap but is paused. The ADR says what exists and what resumes it. Code kept for it is not dead code.
 - **Accepted**: The team made the decision. The ADR is ready for implementation.
 - **In Progress**: Development is in progress.
 - **Implemented**: The code is in production and the feature is complete.

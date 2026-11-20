@@ -1,6 +1,6 @@
 # ADR-0033: Federation data plane on the gateway, and services as AT Proto records
 
-**Status:** Proposed
+**Status:** Deferred (on the roadmap; tabled 2026-11-20)
 **Date:** 2026-11-19
 **Priority:** P2
 **Depends On:** ADR-0029 (gateway node), ADR-0030 (named tailnet services)
@@ -60,3 +60,61 @@ the parent through the gateway, under the same rules.
 - Whether private services should write records at all.
 - Gateway-to-gateway transport between instances: WireGuard between gateways,
   or CFP-authenticated tunnels over HTTPS.
+
+## Status: deferred (2026-11-20)
+
+Federation stays on the roadmap. Work is paused so that single-instance
+tailnets can ship first. The instance turns federation off by default:
+`FEDERATION_ENABLED=false` in the service and `COORD_FEDERATION_ENABLED` unset
+in the coordinator. The dashboard hides the Federation and Traversal tabs.
+
+### What exists
+
+| Area | State |
+|---|---|
+| Link lifecycle (request, accept, reject, revoke) | Done in the TS service. Same-instance links write the database. Cross-instance links send signed LINK_* messages through an outbox with retry and backoff. |
+| Message signing | Done. TS and Rust sign RFC 8785 (JCS) payloads. Shared test vectors prove that both sides produce the same bytes. |
+| CFP handshake | Done in the TS service (HELLO, CHALLENGE, COMMIT). Type-bound challenge responses. Sender and signature checks on every message. |
+| CIDR agreement and import filter | Done. `filterImportedPrefixes` imports only prefixes inside agreed CIDRs. |
+| Route install | Done for both modes: Headscale `autoApprovers`, coordinator auto-approvers for `tag:federation-relay`. |
+| Data plane (traffic between collectives) | **Missing.** This ADR (gateway as relay) is not built. ADR-0020 container relays work only in Headscale mode. |
+| Rust CFP endpoints and broker | Behind `COORD_FEDERATION_ENABLED`. The outbound handshake builds its first message but does not send it (`coord-federation/src/broker.rs`, `initiate_outbound_handshake`). |
+| Tests between two live instances | **Not done.** |
+
+### Code kept on purpose
+
+These modules have no production caller today. They are scaffolding for this
+work. Do not delete them as dead code. Wire them in or replace them when work
+resumes:
+
+- TS: `src/federation/session.ts`, `src/federation/route-engine.ts`,
+  `src/federation/scoping.ts` (one schema in use).
+- Rust: `coord-federation/src/session.rs`, `scoping.rs`, `transport.rs`,
+  `route_engine.rs` (only `prefix_within_scope` in use).
+
+### Known gaps to close before federation is turned on
+
+- Data plane: build Decision §1 (gateway relay, same instance first, then
+  between instances). Settle the open question on gateway-to-gateway transport.
+- Multi-replica: the TS handshake state (`pendingHandshakes` in
+  `src/routes/federation-messages.ts`) and the replay guards (TS and Rust) are
+  per process. Move them to PostgreSQL before more than one replica serves
+  federation.
+- Rust broker: send the outbound handshake, or remove the Rust CFP path and keep
+  the TS service as the only federation endpoint. Choose one.
+- Traversal policy (ADR-0011): stored and simulated, never enforced. Enforce it
+  at the gateway (Decision §1).
+- Wire format: the JCS change is a flag-day change. Instances that run older
+  code cannot verify messages from newer instances. Add a protocol version to
+  CFP messages before the first two independent instances federate.
+- Test plan: two instances, real Tailscale clients on both sides, traffic in
+  agreed CIDRs only, revoke stops traffic at once.
+
+### When to resume
+
+Resume when single-instance tailnets run in production, and one of these is
+true:
+
+- A second collective needs to reach the services of a first one.
+- Services as AT Proto records (Decision §3) are needed for discovery.
+
