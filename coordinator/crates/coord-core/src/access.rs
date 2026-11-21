@@ -1,6 +1,8 @@
 //! Per-tenant device access (ADR-0036): which devices may reach which.
-//! `Open` mode uses the tenant's ACL policy, or allow-all without one.
 //! `Member` mode allows same-owner devices plus the rules, and shows only those peers.
+//! `Open` mode adds the tenant's ACL policy (allow-all without one), but only between the devices of
+//! owners who chose it (`open_owners`) and devices without an owner. Every other device stays as in `Member` mode:
+//! nobody but the owner can open a device to the tailnet.
 
 use serde::{Deserialize, Serialize};
 
@@ -8,6 +10,7 @@ use serde::{Deserialize, Serialize};
 pub const MAX_ACCESS_RULES: usize = 5000;
 pub const MAX_RULE_PORTS: usize = 64;
 pub const MAX_RULE_SOURCES: usize = 256;
+pub const MAX_OPEN_OWNERS: usize = 10_000;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -79,13 +82,24 @@ pub struct TenantAccess {
     pub mode: AccessMode,
     #[serde(default)]
     pub rules: Vec<AccessRule>,
+    /// Owners who put their own devices under the tenant's open policy. Used in `Open` mode only.
+    #[serde(default)]
+    pub open_owners: Vec<String>,
 }
 
 impl TenantAccess {
+    /// True when a device of `owner` follows the open policy: the mode is `Open`, and the owner chose it or there is no owner.
+    pub fn is_open_for(&self, owner: Option<&str>) -> bool {
+        self.mode == AccessMode::Open && owner.is_none_or(|o| self.open_owners.iter().any(|x| x == o))
+    }
+
     /// Checks size limits and port ranges.
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.rules.len() > MAX_ACCESS_RULES {
             return Err("too many access rules");
+        }
+        if self.open_owners.len() > MAX_OPEN_OWNERS || self.open_owners.iter().any(|o| o.is_empty() || o.len() > 128) {
+            return Err("open_owners: too many, or an owner is empty or too long");
         }
         for r in &self.rules {
             if r.ports.is_empty() || r.ports.len() > MAX_RULE_PORTS {
@@ -136,16 +150,16 @@ mod tests {
 
     #[test]
     fn validation() {
-        let ok = TenantAccess { mode: AccessMode::Member, rules: vec![rule(Some("a"), vec![])] };
+        let ok = TenantAccess { mode: AccessMode::Member, rules: vec![rule(Some("a"), vec![])], ..Default::default() };
         assert!(ok.validate().is_ok());
-        let no_src = TenantAccess { mode: AccessMode::Member, rules: vec![rule(None, vec![])] };
+        let no_src = TenantAccess { mode: AccessMode::Member, rules: vec![rule(None, vec![])], ..Default::default() };
         assert!(no_src.validate().is_err());
         let mut bad_range = rule(Some("a"), vec![]);
         bad_range.ports[0].first = 30;
-        assert!(TenantAccess { mode: AccessMode::Member, rules: vec![bad_range] }.validate().is_err());
+        assert!(TenantAccess { mode: AccessMode::Member, rules: vec![bad_range], ..Default::default() }.validate().is_err());
         let mut no_ports = rule(Some("a"), vec![]);
         no_ports.ports.clear();
-        assert!(TenantAccess { mode: AccessMode::Member, rules: vec![no_ports] }.validate().is_err());
+        assert!(TenantAccess { mode: AccessMode::Member, rules: vec![no_ports], ..Default::default() }.validate().is_err());
     }
 
     #[test]

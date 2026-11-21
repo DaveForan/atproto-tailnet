@@ -596,12 +596,13 @@ async fn tenant_access_round_trip_and_default() {
                 dst_node: 7,
                 ports: vec![AccessPort { proto: AccessProto::Tcp, first: 3000, last: 3000 }],
             }],
+            open_owners: vec!["bob".into()],
         };
         s.set_tenant_access(t, access.clone()).await.unwrap();
         assert_eq!(s.get_tenant_access(t).await, access, "{}", b.name);
 
         // Replaced, not merged
-        s.set_tenant_access(t, TenantAccess { mode: AccessMode::Member, rules: vec![] }).await.unwrap();
+        s.set_tenant_access(t, TenantAccess { mode: AccessMode::Member, ..Default::default() }).await.unwrap();
         assert!(s.get_tenant_access(t).await.rules.is_empty(), "{}", b.name);
 
         let missing = TenantId::new(uuid::Uuid::new_v4());

@@ -740,6 +740,8 @@ async fn an_acl_policy_does_not_block_the_gateway_from_a_published_port() {
     let t = tenant.to_string();
     let app_dev = register(&app, &state, &t, "alice", 41, "alice-server").await;
     let viewer = register(&app, &state, &t, "bob", 42, "bob-laptop").await;
+    // Alice put her devices under the tenant's policy. Bob did not.
+    call(&app, "PUT", format!("/api/tenants/{t}/access"), Some(serde_json::json!({ "mode": "open", "open_owners": ["alice"] }))).await;
     // The policy opens SSH between devices and nothing else
     let policy = serde_json::json!({ "tenant_id": t, "policy": { "default_deny": false, "rules": [{ "src": "*", "dst": "*", "ports": [{ "Single": 22 }] }] } });
     let (status, body) = call(&app, "POST", "/api/acl".into(), Some(policy)).await;
@@ -765,8 +767,8 @@ async fn an_acl_policy_does_not_block_the_gateway_from_a_published_port() {
     assert_eq!(ports_of(&app_map), vec![("*".to_string(), 22), (gateway_addr.clone(), 8080)], "the policy, plus the gateway on the published port");
     let service_rule = &app_map["PacketFilter"][1];
     assert_eq!(service_rule["IPProto"], serde_json::json!([6]), "TCP only: {service_rule}");
-    // The viewer's own filter does not change: the gateway never calls a viewer
-    assert_eq!(ports_of(&netmap(&state, &viewer).await), vec![("*".to_string(), 22)]);
+    // The viewer did not choose the policy and nothing calls a viewer: it accepts nothing
+    assert_eq!(ports_of(&netmap(&state, &viewer).await), vec![]);
 
     // Data path under the policy
     let gateway_ip: Ipv4Addr = gateway_addr.split('/').next().unwrap().parse().unwrap();

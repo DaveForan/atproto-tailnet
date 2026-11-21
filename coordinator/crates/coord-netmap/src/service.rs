@@ -7,10 +7,10 @@ use coord_core::keys::{format_machine_key, format_node_key};
 use coord_core::{MachineKey, TenantId};
 use coord_core::clock;
 use coord_proto::map::{DerpMap, FilterRule, MapNode, MapResponse, UserProfile};
-use coord_store::{PeerEvent, Store};
+use coord_store::Store;
 
 use crate::{
-    device_fqdn, dns_view, gateway_filter, member_view, service_rules, user_id_for, DerpRegistry, GatewayRegistry, IdentityRegistry,
+    device_fqdn, dns_view, member_view, service_rules, user_id_for, DerpRegistry, GatewayRegistry, IdentityRegistry,
 };
 
 pub struct NetmapService {
@@ -83,35 +83,40 @@ impl NetmapService {
 
         let dns = self.store.get_tenant_dns(tenant_id).await;
         let access = self.store.get_tenant_access(tenant_id).await;
-        let member_mode = access.mode == coord_core::AccessMode::Member;
+        // Security: only the owner puts a device under the tenant's open policy (ADR-0036).
+        // Every other device keeps the member view, whatever the tenant's mode is.
+        let self_open = access.is_open_for(detail.attrs.owner.as_deref());
         let children = self.store.get_child_tenants(tenant_id).await;
-        // Member mode is tenant-scoped: child tenants' devices never show through it.
-        let all_peers = if children.is_empty() || member_mode {
+        // The member view is tenant-scoped: child tenants' devices never show through it.
+        let all_peers = if children.is_empty() || !self_open {
             self.store.get_peers(tenant_id, node_id).await
         } else {
             self.store.get_peers_with_children(tenant_id, node_id).await
         };
         let gateway = self.gateways.get(tenant_id);
-        let member = member_mode.then(|| {
-            // HTTPS services open only two paths: viewers to the gateway, and the gateway to the published port.
-            let mut rules = access.rules.clone();
-            if let Some(gw) = gateway {
-                let everyone: Vec<i64> = all_peers.iter().map(|p| p.node_id.as_i64()).chain([node_id.as_i64()]).filter(|id| *id != gw).collect();
-                rules.extend(service_rules(&dns, gw, &everyone));
-            }
-            member_view(node_id.as_i64(), detail.attrs.owner.as_deref(), &ipv4.to_string(), &all_peers, &rules)
-        });
-        // Open mode: the gateway must reach each published port, also under a narrow ACL policy.
-        let open_service_filter = match (gateway, member_mode) {
-            (Some(gw), false) => {
-                let gateway_ips: Vec<String> = all_peers.iter().filter(|p| p.node_id.as_i64() == gw).flat_map(|p| p.addresses.clone()).collect();
-                gateway_filter(&dns, gw, &gateway_ips, node_id.as_i64(), &ipv4.to_string())
-            }
-            _ => Vec::new(),
-        };
-        let (peers, member_filter): (Vec<coord_core::PeerInfo>, Option<Vec<FilterRule>>) = match member {
-            Some(view) => (view.peers.into_iter().cloned().collect(), Some(view.filter)),
-            None => (all_peers, None),
+        // HTTPS services open only two paths: viewers to the gateway, and the gateway to the published port.
+        // These rules hold in both modes, so an ACL policy cannot block a published service.
+        let mut rules = access.rules.clone();
+        if let Some(gw) = gateway {
+            let everyone: Vec<i64> = all_peers.iter().map(|p| p.node_id.as_i64()).chain([node_id.as_i64()]).filter(|id| *id != gw).collect();
+            rules.extend(service_rules(&dns, gw, &everyone));
+        }
+        let view = member_view(node_id.as_i64(), detail.attrs.owner.as_deref(), &ipv4.to_string(), &all_peers, &rules);
+        let (peers, packet_filter): (Vec<coord_core::PeerInfo>, Vec<FilterRule>) = if self_open {
+            // An open device sees the other open devices, and the devices that the rules link it to.
+            let linked: std::collections::HashSet<i64> = view.peers.iter().map(|p| p.node_id.as_i64()).collect();
+            let peers = all_peers
+                .iter()
+                .filter(|p| access.is_open_for(p.owner.as_deref()) || linked.contains(&p.node_id.as_i64()))
+                .cloned()
+                .collect();
+            // The tenant's ACL policy, or allow-all. Then what the rules open.
+            let mut filter = self.acl.filter_rules_for_node(tenant_id, node_id, &ipv4.to_string());
+            filter.extend(view.filter);
+            (peers, filter)
+        } else {
+            // An empty list blocks everything.
+            (view.peers.into_iter().cloned().collect(), view.filter)
         };
         let derp_map = self.derp.map_for(tenant_id);
         let default_region = derp_map.regions.keys().min().copied().unwrap_or(1);
@@ -165,13 +170,7 @@ impl NetmapService {
             peers_removed: None,
             derp_map: Some(derp_map),
             dns_config: Some(dns_view(node_id.as_i64(), self_owner, &ipv4.to_string(), &peers, &dns, gateway, self.gateways.service_domain())),
-            // Member mode: per-device filter, where an empty list blocks everything.
-            // Otherwise: the tenant's ACL policy, or allow-all.
-            packet_filter: Some(member_filter.unwrap_or_else(|| {
-                let mut filter = self.acl.filter_rules_for_node(tenant_id, node_id, &ipv4.to_string());
-                filter.extend(open_service_filter);
-                filter
-            })),
+            packet_filter: Some(packet_filter),
             domain: Some(domain),
             user_profiles: Some(user_profiles),
             keep_alive: None,
@@ -179,103 +178,6 @@ impl NetmapService {
         })
     }
 
-    /// Whether a node of `event_tenant` may appear in a delta to `viewer`: same tenant or visible child.
-    async fn tenant_visible_to(&self, viewer: TenantId, event_tenant: TenantId) -> bool {
-        if event_tenant == viewer {
-            return true;
-        }
-        match self.store.get_tenant(event_tenant).await {
-            Some(t) => t.parent_id == Some(viewer) && t.visible_to_parent(),
-            None => false,
-        }
-    }
-
-    /// The delta a device of tenant `viewer` gets for a peer event.
-    /// # Security
-    /// NOTIFY payloads are untrusted. The node must belong to the event tenant, and the viewer must see it.
-    pub async fn build_delta(&self, viewer: TenantId, event: &PeerEvent) -> Option<MapResponse> {
-        let (event_tenant, event_node) = match event {
-            PeerEvent::NodeJoined { tenant_id, node_id }
-            | PeerEvent::NodeUpdated { tenant_id, node_id }
-            | PeerEvent::NodeOffline { tenant_id, node_id } => (*tenant_id, *node_id),
-        };
-        if !self.tenant_visible_to(viewer, event_tenant).await {
-            return None;
-        }
-        match event {
-            PeerEvent::NodeJoined { node_id, .. } | PeerEvent::NodeUpdated { node_id, .. } => {
-                let detail = self.store.get_node_info(*node_id).await?;
-                if detail.tenant_id != event_tenant {
-                    tracing::warn!(node_id = node_id.as_i64(), "peer event names the wrong tenant for its node; ignored");
-                    return None;
-                }
-                let node_key = format_key_bytes(&detail.info.node_key);
-                let machine_key_str = if detail.info.machine_key.len() == 32 {
-                    let mut mk = [0u8; 32];
-                    mk.copy_from_slice(&detail.info.machine_key);
-                    format_machine_key(&MachineKey(mk))
-                } else {
-                    String::new()
-                };
-
-                let derp_map = self.derp.map_for(detail.tenant_id);
-                let default_region = derp_map.regions.keys().min().copied().unwrap_or(1);
-                let reported = self.store.home_relays(&[*node_id]).await.get(node_id).copied();
-                let home_region = home_region_for(reported, &derp_map, default_region);
-                let (addresses, allowed_ips, primary_routes) = coord_core::node_route_sets(
-                    &detail.ipv4.to_string(),
-                    &detail.attrs.advertised_routes,
-                    &detail.attrs.approved_routes,
-                );
-                let peer = MapNode {
-                    id: node_id.as_i64(),
-                    stable_id: format!("peer-{}", node_id.as_i64()),
-                    name: device_fqdn(
-                        &node_label(&detail.info.hostname, node_id.as_i64()),
-                        &self.store.get_tenant_dns(detail.tenant_id).await,
-                    ),
-                    user: user_id_for(detail.attrs.owner.as_deref()),
-                    key: node_key,
-                    machine: machine_key_str,
-                    disco_key: detail.info.disco_key.clone(),
-                    addresses,
-                    allowed_ips,
-                    primary_routes,
-                    endpoints: detail.info.endpoints.clone(),
-                    derp: Some(format!("127.3.3.40:{}", home_region)),
-                    home_derp: Some(home_region),
-                    hostinfo: minimal_hostinfo(&node_label(&detail.info.hostname, node_id.as_i64())),
-                    online: Some(detail.online),
-                    last_seen: None,
-                    machine_authorized: Some(true),
-                    key_expiry: None,
-                };
-
-                Some(MapResponse {
-                    peers_changed: Some(vec![peer]),
-                    // Clients need the profile of a newly seen peer's owner.
-                    user_profiles: Some(vec![self
-                        .identity
-                        .profile(detail.tenant_id, detail.attrs.owner.as_deref())]),
-                    control_time: Some(clock::to_rfc3339(clock::now())),
-                    ..Default::default()
-                })
-            }
-            PeerEvent::NodeOffline { node_id, .. } => {
-                // A live node must be in the named tenant. Removing a deleted node reveals nothing.
-                if let Some(t) = self.store.get_node_tenant(event_node).await
-                    && t != event_tenant {
-                        tracing::warn!(node_id = node_id.as_i64(), "peer event names the wrong tenant for its node; ignored");
-                        return None;
-                    }
-                Some(MapResponse {
-                peers_removed: Some(vec![node_id.as_i64()]),
-                control_time: Some(clock::to_rfc3339(clock::now())),
-                ..Default::default()
-            })
-            }
-        }
-    }
 }
 
 /// Re-sanitise at render time as defence in depth, for admin renames and old rows.

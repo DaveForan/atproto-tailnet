@@ -331,83 +331,6 @@ async fn tenant_isolation_in_map() {
 }
 
 #[tokio::test]
-async fn delta_response_on_peer_join() {
-    let (_, state) = setup();
-    let tenant_id = create_test_tenant(&state, "delta-join").await;
-    let auth_key = state.store().create_preauth_key(tenant_id, true).await.unwrap();
-
-    let mk1 = [70u8; 32];
-    let mk2 = [80u8; 32];
-
-    let reg1 = serde_json::json!({
-        "Version": 2,
-        "NodeKey": format!("nodekey:{}", hex::encode([71u8; 32])),
-        "Auth": { "AuthKey": &auth_key },
-        "Hostinfo": { "Hostname": "delta-node-a", "OS": "linux" }
-    });
-    coord_api::__test_handle_register(&state, &mk1, &reg1.to_string())
-        .await
-        .unwrap();
-
-    let reg2 = serde_json::json!({
-        "Version": 2,
-        "NodeKey": format!("nodekey:{}", hex::encode([81u8; 32])),
-        "Auth": { "AuthKey": &auth_key },
-        "Hostinfo": { "Hostname": "delta-node-b", "OS": "linux" }
-    });
-    coord_api::__test_handle_register(&state, &mk2, &reg2.to_string())
-        .await
-        .unwrap();
-
-    let node2_id = state.store().get_node_by_machine_key(&mk2).await.unwrap();
-    let event = coord_store::PeerEvent::NodeJoined {
-        tenant_id,
-        node_id: node2_id,
-    };
-
-    let delta = coord_api::__test_build_delta(&state, tenant_id, &event).await;
-    assert!(delta.is_some());
-    let resp: serde_json::Value = serde_json::from_str(&delta.unwrap()).unwrap();
-    let changed = resp["PeersChanged"].as_array().unwrap();
-    assert_eq!(changed.len(), 1);
-    assert!(changed[0]["Addresses"].as_array().unwrap()[0]
-        .as_str()
-        .unwrap()
-        .starts_with("100.64."));
-}
-
-#[tokio::test]
-async fn delta_response_on_peer_offline() {
-    let (_, state) = setup();
-    let tenant_id = create_test_tenant(&state, "delta-offline").await;
-    let auth_key = state.store().create_preauth_key(tenant_id, true).await.unwrap();
-
-    let mk1 = [90u8; 32];
-    let reg1 = serde_json::json!({
-        "Version": 2,
-        "NodeKey": format!("nodekey:{}", hex::encode([91u8; 32])),
-        "Auth": { "AuthKey": &auth_key },
-        "Hostinfo": { "Hostname": "offline-test", "OS": "linux" }
-    });
-    coord_api::__test_handle_register(&state, &mk1, &reg1.to_string())
-        .await
-        .unwrap();
-
-    let node_id = state.store().get_node_by_machine_key(&mk1).await.unwrap();
-    let event = coord_store::PeerEvent::NodeOffline {
-        tenant_id,
-        node_id,
-    };
-
-    let delta = coord_api::__test_build_delta(&state, tenant_id, &event).await;
-    assert!(delta.is_some());
-    let resp: serde_json::Value = serde_json::from_str(&delta.unwrap()).unwrap();
-    let removed = resp["PeersRemoved"].as_array().unwrap();
-    assert_eq!(removed.len(), 1);
-    assert_eq!(removed[0].as_i64().unwrap(), node_id.as_i64());
-}
-
-#[tokio::test]
 async fn map_with_endpoints() {
     let (_, state) = setup();
     let tenant_id = create_test_tenant(&state, "map-endpoints").await;
@@ -2243,6 +2166,8 @@ async fn owner_and_tags_propagate_from_key_to_node() {
 async fn delete_nodes_by_owner_ends_their_streams() {
     let (app, state) = setup();
     let t = create_test_tenant(&state, "owner-del").await;
+    // Both owners chose the tenant's open policy, so their devices see each other
+    api_call(&app, "PUT", format!("/api/tenants/{t}/access"), Some(serde_json::json!({ "mode": "open", "open_owners": ["bob", "carol"] }))).await;
     let bob = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "owner": "bob", "reusable": true })).await;
     let carol = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "owner": "carol" })).await;
     register_routes(&state, 60, bob["key"].as_str().unwrap(), "bob-1", None).await;
@@ -2331,12 +2256,6 @@ async fn route_advertisement_and_approval_reach_peers() {
         }
     }
     assert!(saw, "approval must push a snapshot to the router's own stream");
-
-    // Peer deltas carry routes too.
-    let ev = coord_store::PeerEvent::NodeUpdated { tenant_id: t, node_id: coord_core::NodeId::new(router) };
-    let delta: serde_json::Value =
-        serde_json::from_str(&coord_api::__test_build_delta(&state, t, &ev).await.unwrap()).unwrap();
-    assert_eq!(delta["PeersChanged"][0]["PrimaryRoutes"], serde_json::json!(["10.0.0.0/24"]));
 
     // Withdrawing an advertisement (map request Hostinfo) stops serving it.
     map_of(&state, 70, Some(serde_json::json!({ "Hostname": "router", "RoutableIPs": ["0.0.0.0/0"] }))).await;
@@ -3002,6 +2921,7 @@ async fn suspension_tells_clients_to_drop_peers_before_cutting_the_stream() {
 async fn identity_names_register_response_and_netmap() {
     let (app, state) = setup();
     let t = create_test_tenant(&state, "identity").await;
+    api_call(&app, "PUT", format!("/api/tenants/{t}/access"), Some(serde_json::json!({ "mode": "open", "open_owners": ["u-alice", "u-bob"] }))).await;
 
     // No identity yet: legacy placeholders.
     let k0 = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "owner": "u-alice" })).await;
@@ -3190,7 +3110,26 @@ async fn member_mode_isolates_members_and_rules_open_single_ports() {
     register_routes(&state, 112, alice["key"].as_str().unwrap(), "alice-server", None).await;
     register_routes(&state, 120, bob["key"].as_str().unwrap(), "bob-phone", None).await;
 
-    // Open mode (default): everyone sees everyone, allow-all filter
+    // Open mode (default), nobody chose it: each member's devices stay closed to the others.
+    // The tenant's mode alone opens no device (ADR-0036).
+    let m = member_map(&state, 120).await;
+    assert!(peer_names(&m).is_empty(), "open mode does not show alice's devices to bob");
+    assert_eq!(m["PacketFilter"], serde_json::json!([]));
+    assert_eq!(peer_names(&member_map(&state, 110).await), vec!["alice-server"], "own devices only");
+
+    // Bob alone chooses the open policy: still nothing between them, because alice did not
+    let open_for = |owners: serde_json::Value| serde_json::json!({ "mode": "open", "open_owners": owners });
+    api_call(&app, "PUT", format!("/api/tenants/{t}/access"), Some(open_for(serde_json::json!(["bob"])))).await;
+    let m = member_map(&state, 120).await;
+    assert!(peer_names(&m).is_empty(), "alice's devices are not shown to an open device");
+    assert_eq!(m["PacketFilter"][0]["SrcIPs"][0], "*", "bob's own device follows the policy");
+    let m = member_map(&state, 110).await;
+    assert_eq!(peer_names(&m), vec!["alice-server"], "alice does not see bob either");
+    assert_eq!(m["PacketFilter"].as_array().unwrap().len(), 1, "alice accepts her own devices only: {}", m["PacketFilter"]);
+    assert_ne!(m["PacketFilter"][0]["SrcIPs"][0], "*");
+
+    // Both choose it: they see each other, allow-all filter
+    api_call(&app, "PUT", format!("/api/tenants/{t}/access"), Some(open_for(serde_json::json!(["alice", "bob"])))).await;
     let m = member_map(&state, 120).await;
     assert_eq!(peer_names(&m), vec!["alice-laptop", "alice-server"]);
     assert_eq!(m["PacketFilter"][0]["SrcIPs"][0], "*");
@@ -3882,49 +3821,6 @@ async fn a_lock_put_keeps_refusals_recorded_meanwhile_and_removes_late_machines(
     assert_eq!(view["max_machines"], 4);
 }
 
-
-#[tokio::test]
-async fn deltas_ignore_events_whose_tenant_does_not_match_the_node_or_viewer() {
-    let (app, state) = setup();
-    let a = create_test_tenant(&state, "delta-a").await;
-    let b = create_test_tenant(&state, "delta-b").await;
-    let ka = api_key(&app, serde_json::json!({ "tenant_id": a.to_string() })).await;
-    let kb = api_key(&app, serde_json::json!({ "tenant_id": b.to_string() })).await;
-    register_routes(&state, 190, ka["key"].as_str().unwrap(), "a-node", None).await;
-    register_routes(&state, 192, kb["key"].as_str().unwrap(), "b-node", None).await;
-    let b_node = state.store().get_node_by_machine_key(&[192u8; 32]).await.unwrap();
-
-    // Correct event, right viewer: a delta
-    let ok = coord_store::PeerEvent::NodeUpdated { tenant_id: b, node_id: b_node };
-    assert!(coord_api::__test_build_delta(&state, b, &ok).await.is_some());
-    // Same event, viewer of another tenant: nothing
-    assert!(coord_api::__test_build_delta(&state, a, &ok).await.is_none());
-    // Forged: claims tenant A for B's node
-    let forged = coord_store::PeerEvent::NodeJoined { tenant_id: a, node_id: b_node };
-    assert!(coord_api::__test_build_delta(&state, a, &forged).await.is_none(), "B's node never leaks to A");
-    let forged_off = coord_store::PeerEvent::NodeOffline { tenant_id: a, node_id: b_node };
-    assert!(coord_api::__test_build_delta(&state, a, &forged_off).await.is_none());
-    // Nil tenant id
-    let nil = coord_store::PeerEvent::NodeUpdated { tenant_id: coord_core::TenantId::new(uuid::Uuid::nil()), node_id: b_node };
-    assert!(coord_api::__test_build_delta(&state, a, &nil).await.is_none());
-    // A deleted node can still be removed
-    let gone = coord_store::PeerEvent::NodeOffline { tenant_id: a, node_id: coord_core::NodeId::new(999_999) };
-    assert!(coord_api::__test_build_delta(&state, a, &gone).await.is_some());
-}
-
-#[tokio::test]
-async fn deltas_from_a_child_need_the_child_to_be_visible() {
-    let (app, state) = setup();
-    let parent = create_test_tenant(&state, "delta-parent").await;
-    let child = state.store().create_tenant("delta-child".into(), Some(parent), Some(coord_core::FederationPosture::Open)).await.unwrap().id;
-    let kc = api_key(&app, serde_json::json!({ "tenant_id": child.to_string() })).await;
-    register_routes(&state, 196, kc["key"].as_str().unwrap(), "child-node", None).await;
-    let node = state.store().get_node_by_machine_key(&[196u8; 32]).await.unwrap();
-    let ev = coord_store::PeerEvent::NodeUpdated { tenant_id: child, node_id: node };
-    assert!(coord_api::__test_build_delta(&state, parent, &ev).await.is_some());
-    state.store().update_tenant_posture(child, coord_core::FederationPosture::Closed).await.unwrap();
-    assert!(coord_api::__test_build_delta(&state, parent, &ev).await.is_none());
-}
 
 
 #[tokio::test]

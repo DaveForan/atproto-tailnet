@@ -246,16 +246,6 @@ pub async fn __test_handle_map(
     control::handle_map(state, machine_key, body).await
 }
 
-#[cfg(feature = "test-hooks")]
-#[doc(hidden)]
-pub async fn __test_build_delta(
-    state: &Arc<CoordinatorState>,
-    viewer: coord_core::TenantId,
-    event: &coord_store::PeerEvent,
-) -> Option<String> {
-    control::build_delta_response(state, viewer, event).await
-}
-
 /// Drives `/machine/map` as the Noise H2 server does. The body yields length-prefixed zstd frames.
 #[cfg(feature = "test-hooks")]
 #[doc(hidden)]

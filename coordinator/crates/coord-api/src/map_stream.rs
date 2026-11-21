@@ -142,14 +142,9 @@ impl MapStream {
         if event_node == self.node_id {
             return self.state.store.get_node_tenant(self.node_id).await == Some(self.tenant_id);
         }
-        // Member mode (ADR-0036): each device sees different peers, so a tenant-wide delta would leak.
-        if self.state.store.get_tenant_access(self.tenant_id).await.mode == coord_core::AccessMode::Member {
-            return self.send_update().await;
-        }
-        match control::build_delta_response(&self.state, self.tenant_id, event).await {
-            Some(json) => self.send_json(&json).await,
-            None => true,
-        }
+        // Security: each device sees different peers in both access modes (ADR-0036).
+        // A tenant-wide delta would show a device to peers that may not see it. So each device gets its own map.
+        self.send_update().await
     }
 
     async fn run(

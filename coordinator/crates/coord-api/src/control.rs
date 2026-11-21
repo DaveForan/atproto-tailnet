@@ -4,7 +4,6 @@ use tracing::{info, warn};
 use coord_core::{sanitize, NodeId, NodeInfo, NodeRegistration, TenantId};
 use coord_proto::register::{RegisterRequest, RegisterResponse, User, Login};
 use coord_proto::map::MapRequest;
-use coord_store::PeerEvent;
 
 use crate::state::CoordinatorState;
 
@@ -382,17 +381,6 @@ pub fn peer_ids_in(map_json: &str) -> Vec<i64> {
         .ok()
         .and_then(|v| v.get("Peers").and_then(|p| p.as_array()).map(|a| a.iter().filter_map(|n| n.get("ID")?.as_i64()).collect()))
         .unwrap_or_default()
-}
-
-/// The delta for a device of tenant `viewer` (`None` when the event is not
-/// for it or does not check out against the store).
-pub async fn build_delta_response(
-    state: &Arc<CoordinatorState>,
-    viewer: TenantId,
-    event: &PeerEvent,
-) -> Option<String> {
-    let resp = state.netmap.build_delta(viewer, event).await?;
-    serde_json::to_string(&resp).ok()
 }
 
 /// Normalised advertised routes from a client's Hostinfo, or `None` without Hostinfo (keep stored routes).
