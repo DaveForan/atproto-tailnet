@@ -20,6 +20,9 @@ const IPV4_ALLOC_LOCK_KEY: i64 = 0x636f_6f72_6449_5034; // "coordIP4"
 /// (the second is a hash of tenant and owner).
 const OWNER_LOCK_LOCK_CLASS: i32 = 0x6f6c_636b; // "olck"
 
+/// pg_advisory_xact_lock key serializing tenant parent changes.
+const HIERARCHY_LOCK_KEY: i64 = 0x636f_6f72_6448_4952; // "coordHIR"
+
 /// pg_advisory_xact_lock key serializing the start of device sign-ins.
 const SIGN_IN_LOCK_KEY: i64 = 0x636f_6f72_6453_474e; // "coordSGN"
 
@@ -487,7 +490,8 @@ impl PgStore {
 
     pub async fn sign_in_get(&self, id: &str) -> Option<coord_core::PendingSignIn> {
         let row: Option<crate::SignInRow> = sqlx::query_as(
-            &format!("SELECT {} FROM coord_sign_ins WHERE id = $1 AND expires_at > $2", crate::SIGN_IN_COLUMNS)
+            // Only a constant column list is formatted in.
+            sqlx::AssertSqlSafe(format!("SELECT {} FROM coord_sign_ins WHERE id = $1 AND expires_at > $2", crate::SIGN_IN_COLUMNS))
         )
             .bind(id)
             .bind(crate::now_secs())
@@ -783,6 +787,49 @@ impl PgStore {
         }
     }
 
+    /// Set or clear the parent of a tenant. Returns the tenant and its previous parent.
+    pub async fn set_tenant_parent(
+        &self,
+        tenant_id: TenantId,
+        parent_id: Option<TenantId>,
+    ) -> Result<(Tenant, Option<TenantId>), CoordError> {
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(HIERARCHY_LOCK_KEY)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        let current = sqlx::query_as::<_, TenantRow>("SELECT id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix, created_at, suspended FROM coord_tenants WHERE id = $1")
+            .bind(tenant_id.as_uuid())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db)?
+            .map(tenant_from_row)
+            .ok_or(CoordError::TenantNotFound(tenant_id))?;
+        if let Some(pid) = parent_id {
+            let parent = sqlx::query_as::<_, TenantRow>("SELECT id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix, created_at, suspended FROM coord_tenants WHERE id = $1")
+                .bind(pid.as_uuid())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(db)?
+                .map(tenant_from_row);
+            let has_children: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM coord_tenants WHERE parent_id = $1)")
+                .bind(tenant_id.as_uuid())
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(db)?;
+            crate::check_new_parent(tenant_id, pid, parent.as_ref(), has_children)?;
+        }
+        let row = sqlx::query_as::<_, TenantRow>("UPDATE coord_tenants SET parent_id = $1 WHERE id = $2 RETURNING id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix, created_at, suspended")
+            .bind(parent_id.map(|p| *p.as_uuid()))
+            .bind(tenant_id.as_uuid())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?;
+        tx.commit().await.map_err(db)?;
+        Ok((tenant_from_row(row), current.parent_id))
+    }
+
     pub async fn set_tenant_suspended(
         &self,
         tenant_id: TenantId,
@@ -965,6 +1012,7 @@ impl PgStore {
                 ));
             }
             let new_gen = old_generation + 1;
+            let hostname = tenant_unique_hostname(&mut tx, tenant_id.as_uuid(), id, &info.hostname, &reg).await?;
             // A new identity (owner/tags) must not inherit approvals granted to the old one.
             let identity_changed = old_owner != reg.owner || from_json(old_tags) != reg.tags;
             sqlx::query(
@@ -976,7 +1024,7 @@ impl PgStore {
             )
                 .bind(&info.node_key)
                 .bind(&info.disco_key)
-                .bind(&info.hostname)
+                .bind(&hostname)
                 .bind(&info.os)
                 .bind(&endpoints_json)
                 .bind(new_gen)
@@ -1014,6 +1062,7 @@ impl PgStore {
             .map_err(db)?;
         let new_ipv4 = crate::lowest_free_ipv4(used.iter().filter_map(|s| s.parse::<Ipv4Addr>().ok()))?;
         let new_ip_str = new_ipv4.to_string();
+        let hostname = tenant_unique_hostname(&mut tx, tenant_id.as_uuid(), -1, &info.hostname, &reg).await?;
 
         let row = sqlx::query_as::<_, (i64, i64)>(
             "INSERT INTO coord_nodes (tenant_id, machine_key, node_key, disco_key, stable_id, ipv4, hostname, os, endpoints, session_generation, \
@@ -1027,7 +1076,7 @@ impl PgStore {
             .bind(&info.disco_key)
             .bind(generate_random_id())
             .bind(&new_ip_str)
-            .bind(&info.hostname)
+            .bind(&hostname)
             .bind(&info.os)
             .bind(&endpoints_json)
             .bind(&reg.owner)
@@ -1308,23 +1357,34 @@ impl PgStore {
     }
 
     pub async fn rename_node(&self, node_id: NodeId, new_name: String) -> Result<(), CoordError> {
-        let result = sqlx::query_as::<_, (uuid::Uuid,)>(
-            "UPDATE coord_nodes SET hostname = $1 WHERE id = $2 RETURNING tenant_id"
-        )
-            .bind(&new_name)
-            .bind(node_id.as_i64())
-            .fetch_optional(&self.pool)
+        // The registration lock makes the uniqueness check and the update atomic.
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(IPV4_ALLOC_LOCK_KEY)
+            .execute(&mut *tx)
             .await
             .map_err(db)?;
-        match result {
-            Some((uuid,)) => {
-                self.emit(PeerEvent::NodeUpdated {
-                    tenant_id: TenantId::new(uuid), node_id,
-                }).await;
-                Ok(())
-            }
-            None => Err(CoordError::Protocol("node not found".into())),
-        }
+        let Some((tenant_uuid, owner, tags)) = sqlx::query_as::<_, (uuid::Uuid, Option<String>, Json)>(
+            "SELECT tenant_id, owner, tags FROM coord_nodes WHERE id = $1"
+        )
+            .bind(node_id.as_i64())
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db)?
+        else {
+            return Err(CoordError::Protocol("node not found".into()));
+        };
+        let reg = NodeRegistration { owner, tags: from_json(tags), ..Default::default() };
+        let name = tenant_unique_hostname(&mut tx, &tenant_uuid, node_id.as_i64(), &new_name, &reg).await?;
+        sqlx::query("UPDATE coord_nodes SET hostname = $1 WHERE id = $2")
+            .bind(&name)
+            .bind(node_id.as_i64())
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
+        tx.commit().await.map_err(db)?;
+        self.emit(PeerEvent::NodeUpdated { tenant_id: TenantId::new(tenant_uuid), node_id }).await;
+        Ok(())
     }
 
     pub async fn set_node_online(&self, node_id: NodeId, online: bool) -> Result<(), CoordError> {
@@ -1386,7 +1446,7 @@ impl PgStore {
         let sql = format!(
             "UPDATE coord_nodes SET {column} = $1 WHERE id = $2 AND {column} IS DISTINCT FROM $1 RETURNING tenant_id"
         );
-        let changed: Option<uuid::Uuid> = sqlx::query_scalar(&sql)
+        let changed: Option<uuid::Uuid> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
             .bind(to_json(&routes))
             .bind(node_id.as_i64())
             .fetch_optional(&self.pool)
@@ -1525,6 +1585,25 @@ type SummaryRow = (i64, uuid::Uuid, String, String, bool, String, Option<String>
 
 fn to_json(v: &[String]) -> Json {
     serde_json::to_value(v).unwrap_or_else(|_| Json::Array(vec![]))
+}
+
+/// [`crate::unique_hostname`] against the other nodes of `tenant` (all but node `except`).
+/// Call it while holding the registration lock.
+async fn tenant_unique_hostname(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant: &uuid::Uuid,
+    except: i64,
+    desired: &str,
+    reg: &NodeRegistration,
+) -> Result<String, CoordError> {
+    let others: Vec<(i64, String)> = sqlx::query_as("SELECT id, hostname FROM coord_nodes WHERE tenant_id = $1 AND id <> $2")
+        .bind(tenant)
+        .bind(except)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(db)?;
+    let is_gateway = coord_core::is_gateway_identity(reg.owner.as_deref(), &reg.tags);
+    Ok(crate::unique_hostname(desired, is_gateway, others.iter().map(|(id, h)| (*id, h.as_str()))))
 }
 
 fn from_json(v: Json) -> Vec<String> {

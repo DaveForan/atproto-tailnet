@@ -103,12 +103,11 @@ fn write_number(out: &mut String, n: &serde_json::Number) -> Result<(), JcsError
             let _ = write!(out, "{u}");
             return Ok(());
         }
-    } else if let Some(i) = n.as_i64() {
-        if i.unsigned_abs() <= MAX_SAFE_INTEGER {
+    } else if let Some(i) = n.as_i64()
+        && i.unsigned_abs() <= MAX_SAFE_INTEGER {
             let _ = write!(out, "{i}");
             return Ok(());
         }
-    }
     let f = n
         .as_f64()
         .ok_or_else(|| JcsError("number not representable as f64".into()))?;

@@ -93,11 +93,10 @@ async fn main() -> anyhow::Result<()> {
         Some(dir.join("derp.key").to_string_lossy().into_owned())
     });
     // A control-only process has no relay, and its key folder may be read-only
-    if role.serves_relay() {
-        if let Some(secret) = load_or_create_secret(relay_key_path, "DERP relay key")? {
+    if role.serves_relay()
+        && let Some(secret) = load_or_create_secret(relay_key_path, "DERP relay key")? {
             coordinator = coordinator.with_relay_secret(secret);
         }
-    }
 
     let derp_hostname = std::env::var("COORD_DERP_HOSTNAME")
         .ok()
@@ -290,6 +289,14 @@ async fn main() -> anyhow::Result<()> {
     }
     coordinator = coordinator.with_trusted_proxies(trusted_proxies);
 
+    // Noise connections are open to anyone before authentication, so both caps bound unauthenticated load.
+    let max_noise = env_count("COORD_MAX_NOISE_CONNS", coord_api::DEFAULT_MAX_NOISE_CONNECTIONS)?;
+    let max_noise_per_ip = env_count("COORD_MAX_NOISE_CONNS_PER_IP", coord_api::DEFAULT_MAX_NOISE_CONNECTIONS_PER_IP)?;
+    tracing::info!(max_noise, max_noise_per_ip, "noise connection limits");
+    coordinator = coordinator
+        .with_max_noise_connections(max_noise)
+        .with_max_noise_connections_per_ip(max_noise_per_ip);
+
     let state = Arc::new(coordinator.build());
     // Per-tenant configuration lives in the store; other replicas report changes (ADR-0034)
     if role.serves_control() {
@@ -319,7 +326,7 @@ async fn main() -> anyhow::Result<()> {
                     Err(e) => {
                         warned += 1;
                         // Every ~10 minutes, so a missing certificate stays visible in the logs.
-                        if warned % 60 == 0 {
+                        if warned.is_multiple_of(60) {
                             tracing::error!(error = %e, cert = %cert, key = %key, "gateway certificate still not usable: named HTTPS services are off");
                         }
                     }
@@ -381,6 +388,21 @@ const MIN_ADMIN_KEY_LEN: usize = 32;
 
 /// Refuse to start with a guessable admin key. Unset keeps the admin API
 /// disabled (503); set-but-weak is a hard error rather than a silent downgrade.
+/// A positive count from env `name`, or `default` when unset or empty.
+fn env_count(name: &str, default: usize) -> anyhow::Result<usize> {
+    parse_count(name, std::env::var(name).ok().as_deref(), default)
+}
+
+fn parse_count(name: &str, value: Option<&str>, default: usize) -> anyhow::Result<usize> {
+    match value.map(str::trim).filter(|v| !v.is_empty()) {
+        None => Ok(default),
+        Some(v) => match v.parse::<usize>() {
+            Ok(n) if n > 0 => Ok(n),
+            _ => Err(anyhow::anyhow!("{name} must be a positive integer, got {v:?}")),
+        },
+    }
+}
+
 fn validate_admin_key(key: Option<String>) -> anyhow::Result<Option<String>> {
     let Some(key) = key else { return Ok(None) };
     let lower = key.to_ascii_lowercase();
@@ -470,5 +492,15 @@ mod tests {
         let err = validate_admin_key(Some(placeholder)).unwrap_err().to_string();
         assert!(err.contains("placeholder"), "{err}");
         assert!(validate_admin_key(Some(format!("{}ChangeMe", "x".repeat(40)))).is_err());
+    }
+
+    #[test]
+    fn counts_from_env_need_a_positive_integer() {
+        assert_eq!(parse_count("X", None, 7).unwrap(), 7);
+        assert_eq!(parse_count("X", Some(" "), 7).unwrap(), 7);
+        assert_eq!(parse_count("X", Some("64"), 7).unwrap(), 64);
+        assert!(parse_count("X", Some("0"), 7).is_err());
+        assert!(parse_count("X", Some("-1"), 7).is_err());
+        assert!(parse_count("X", Some("lots"), 7).is_err());
     }
 }

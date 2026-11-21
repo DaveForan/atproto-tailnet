@@ -65,7 +65,8 @@ fi
 
 echo "==> Setting up environment"
 if [ ! -f .env ]; then
-  cp .env.coordinator.example .env
+  # .env holds generated secrets: readable by root only
+  install -m 600 .env.coordinator.example .env
 
   # Pre-generate secrets
   SESSION_SECRET=$(openssl rand -hex 32)
@@ -109,6 +110,9 @@ if [ ! -f .env ]; then
   echo ""
   exit 0
 fi
+
+# An editor may have re-saved .env with a wider mode
+chmod 600 .env
 
 echo "==> Creating backup directory"
 mkdir -p /opt/backups

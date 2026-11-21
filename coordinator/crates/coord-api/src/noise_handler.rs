@@ -5,7 +5,7 @@ use axum::response::IntoResponse;
 use bytes::Bytes;
 use http_body_util::Full;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use tokio::io::AsyncWriteExt;
 use tracing::{error, info, warn};
 
@@ -68,8 +68,30 @@ pub async fn ts2021_handler(
         }
     };
 
-    // Instance-wide connection cap, taken before any crypto work. Held for the
-    // lifetime of the Noise session.
+    // Behind Caddy: X-Forwarded-For, believed only from a trusted proxy.
+    let peer = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|c| c.0.ip());
+    let client_ip = state.trusted_proxies.client_ip(peer, req.headers());
+
+    // Both caps are taken before any crypto work and held for the lifetime of the Noise session.
+    let ip_permit = match client_ip {
+        Some(ip) => match state.noise_per_ip.try_acquire(ip) {
+            Some(p) => Some(p),
+            None => {
+                if let Some(suppressed) = state.noise_refused_log.check(client_ip) {
+                    warn!(client_ip = %ip, suppressed, "per-address noise connection limit reached; refusing ts2021 upgrade");
+                }
+                return Response::builder()
+                    .status(StatusCode::TOO_MANY_REQUESTS)
+                    .header("Retry-After", "30")
+                    .body(Body::from("too many control connections from this address"))
+                    .unwrap();
+            }
+        },
+        None => None,
+    };
     let permit = match state.noise_conns.clone().try_acquire_owned() {
         Ok(p) => p,
         Err(_) => {
@@ -114,18 +136,10 @@ pub async fn ts2021_handler(
         "noise handshake complete"
     );
 
-    // Where the connection came from (behind Caddy: X-Forwarded-For, but only
-    // from a trusted proxy). Shown on the device sign-in approval page.
-    let peer = req
-        .extensions()
-        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
-        .map(|c| c.0.ip());
-    let client_ip = state.trusted_proxies.client_ip(peer, req.headers());
-
     let on_upgrade = hyper::upgrade::on(req);
 
     tokio::spawn(async move {
-        let _permit = permit;
+        let _permits = (permit, ip_permit);
         match on_upgrade.await {
             Ok(upgraded) => {
                 if let Err(e) = run_noise_session(state, upgraded, split_keys, response_msg, machine_key, client_ip).await {
@@ -182,42 +196,67 @@ where
     // Session generation is set during /machine/register inside the H2 service.
     // Shared via atomic so the disconnect handler can read it.
     let session_gen = Arc::new(AtomicU64::new(0));
+    // Any machine key completes the handshake. A session must prove a real
+    // device (registration, sign-in, or a known machine's map poll) before the deadline.
+    let authed = Arc::new(AtomicBool::new(false));
+    let deadline = state.noise_auth_deadline;
 
     let state_for_disconnect = state.clone();
     let state_for_service = state;
     let session_gen_for_service = session_gen.clone();
+    let authed_for_service = authed.clone();
     let service = hyper::service::service_fn(move |req: Request<hyper::body::Incoming>| {
         let state = state_for_service.clone();
         let mk = machine_key;
         let sg = session_gen_for_service.clone();
+        let authed = authed_for_service.clone();
         async move {
-            handle_control_request(state, mk, client_ip, sg, req).await
+            handle_control_request(state, mk, client_ip, sg, authed, req).await
         }
     });
 
     // keep_alive_* need a timer; without one hyper panics on the first
     // connection ("You must supply a timer").
-    let result = hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+    let conn = hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
         .timer(hyper_util::rt::TokioTimer::new())
         .keep_alive_interval(Some(std::time::Duration::from_secs(30)))
         .keep_alive_timeout(std::time::Duration::from_secs(90))
         .max_concurrent_streams(MAX_CONCURRENT_STREAMS)
         .max_header_list_size(MAX_HEADER_LIST_SIZE)
-        .serve_connection(h2_io, service)
-        .await;
+        .serve_connection(h2_io, service);
+    tokio::pin!(conn);
+    let result = tokio::select! {
+        r = &mut conn => r,
+        () = unauthenticated_after(deadline, &authed) => {
+            info!(
+                machine_key_prefix = &hex::encode(machine_key)[..16],
+                client_ip = ?client_ip,
+                "closing noise session that did not authenticate in time"
+            );
+            // Dropping the connection closes the stream.
+            Ok(())
+        }
+    };
 
     let sess_gen = session_gen.load(Ordering::Acquire);
-    if sess_gen > 0 {
-        if let Some(node_id) = state_for_disconnect.store.get_node_by_machine_key(&machine_key).await {
+    if sess_gen > 0
+        && let Some(node_id) = state_for_disconnect.store.get_node_by_machine_key(&machine_key).await {
             info!(node = %node_id, generation = sess_gen, "noise session ended, marking node offline");
             if let Err(e) = state_for_disconnect.store.set_node_offline_if_current(node_id, sess_gen).await {
                 warn!(error = %e, node = %node_id, "set_node_offline_if_current failed");
             }
         }
-    }
 
     result?;
     Ok(())
+}
+
+/// Completes after `deadline` unless the session authenticated by then.
+async fn unauthenticated_after(deadline: std::time::Duration, authed: &AtomicBool) {
+    tokio::time::sleep(deadline).await;
+    if authed.load(Ordering::Acquire) {
+        std::future::pending::<()>().await;
+    }
 }
 
 pub(crate) type BoxBody = http_body_util::combinators::BoxBody<Bytes, std::io::Error>;
@@ -241,6 +280,7 @@ async fn handle_control_request(
     machine_key: [u8; 32],
     client_ip: Option<std::net::IpAddr>,
     session_gen: Arc<AtomicU64>,
+    authed: Arc<AtomicBool>,
     req: Request<hyper::body::Incoming>,
 ) -> Result<Response<BoxBody>, std::io::Error> {
     let path = req.uri().path().to_string();
@@ -273,8 +313,13 @@ async fn handle_control_request(
     };
 
     match path.as_str() {
-        "/machine/register" => Ok(handle_register_request(state, machine_key, client_ip, session_gen, &body_str).await),
-        "/machine/map" => Ok(handle_map_request(state, machine_key, &body_str).await),
+        "/machine/register" => Ok(handle_register_request(state, machine_key, client_ip, session_gen, &authed, &body_str).await),
+        "/machine/map" => {
+            if !authed.load(Ordering::Acquire) && state.store.get_node_by_machine_key(&machine_key).await.is_some() {
+                authed.store(true, Ordering::Release);
+            }
+            Ok(handle_map_request(state, machine_key, &body_str).await)
+        }
         _ => Ok(json_error(StatusCode::NOT_FOUND, "not found")),
     }
 }
@@ -284,12 +329,16 @@ async fn handle_register_request(
     machine_key: [u8; 32],
     client_ip: Option<std::net::IpAddr>,
     session_gen: Arc<AtomicU64>,
+    authed: &AtomicBool,
     body: &str,
 ) -> Response<BoxBody> {
     match control::handle_register(&state, &machine_key, body, client_ip).await {
         Ok((response_body, generation)) => {
             if let Some(g) = generation {
                 session_gen.store(g, Ordering::Release);
+            }
+            if generation.is_some() || grants_session(&response_body) {
+                authed.store(true, Ordering::Release);
             }
             Response::builder()
                 .status(StatusCode::OK)
@@ -302,6 +351,13 @@ async fn handle_register_request(
             json_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
         }
     }
+}
+
+/// True for a register response that authorizes the machine or starts an
+/// interactive sign-in (the device then long-polls for the user's decision).
+fn grants_session(response_body: &str) -> bool {
+    serde_json::from_str::<coord_proto::register::RegisterResponse>(response_body)
+        .is_ok_and(|r| r.machine_authorized || !r.auth_url.is_empty())
 }
 
 pub(crate) fn frame_map_response(json_bytes: &[u8]) -> Result<Vec<u8>, std::io::Error> {
@@ -331,11 +387,10 @@ pub(crate) async fn handle_map_request(
     let Some(node_id) = state.store.get_node_by_machine_key(&machine_key).await else {
         return json_error(StatusCode::UNAUTHORIZED, "node not registered");
     };
-    if let Some(tenant_id) = state.store.get_node_tenant(node_id).await {
-        if state.store.is_tenant_suspended(tenant_id).await {
+    if let Some(tenant_id) = state.store.get_node_tenant(node_id).await
+        && state.store.is_tenant_suspended(tenant_id).await {
             return json_error(StatusCode::FORBIDDEN, control::TENANT_SUSPENDED_MSG);
         }
-    }
 
     let is_streaming = req.stream.unwrap_or(false);
 

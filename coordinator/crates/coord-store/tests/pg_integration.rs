@@ -416,11 +416,10 @@ async fn pg_peer_event_on_register() {
     // same database): find the event of this tenant.
     let mut joined = None;
     while let Ok(event) = rx.try_recv() {
-        if let coord_store::PeerEvent::NodeJoined { tenant_id, node_id: nid } = event {
-            if tenant_id == tenant.id {
+        if let coord_store::PeerEvent::NodeJoined { tenant_id, node_id: nid } = event
+            && tenant_id == tenant.id {
                 joined = Some(nid);
             }
-        }
     }
     assert_eq!(joined, Some(node_id));
 }
@@ -518,7 +517,7 @@ async fn pool_in_schema(url: &str, schema: &str) -> PgPool {
         .after_connect(move |conn, _| {
             let schema = schema.clone();
             Box::pin(async move {
-                sqlx::query(&format!("SET search_path TO {schema}")).execute(conn).await?;
+                sqlx::query(sqlx::AssertSqlSafe(format!("SET search_path TO {schema}"))).execute(conn).await?;
                 Ok(())
             })
         })
@@ -540,7 +539,7 @@ async fn relay_store_verifies_the_schema_without_migrating() {
 
     // Nothing there: refused, and nothing was created
     let empty = format!("relay_empty_{suffix}");
-    sqlx::query(&format!("CREATE SCHEMA {empty}")).execute(&admin).await.unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {empty}"))).execute(&admin).await.unwrap();
     let err = PgStore::new_verified(pool_in_schema(&url, &empty).await).await.expect_err("refused").to_string();
     assert!(err.contains("start a control process first"), "{err}");
     let tables: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = $1")
@@ -552,15 +551,15 @@ async fn relay_store_verifies_the_schema_without_migrating() {
 
     // An older schema: refused with both versions in the message
     let old = format!("relay_old_{suffix}");
-    sqlx::query(&format!("CREATE SCHEMA {old}")).execute(&admin).await.unwrap();
-    sqlx::query(&format!(
+    sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {old}"))).execute(&admin).await.unwrap();
+    sqlx::query(sqlx::AssertSqlSafe(format!(
         "CREATE TABLE {old}._sqlx_migrations (version BIGINT PRIMARY KEY, description TEXT NOT NULL, installed_on TIMESTAMPTZ NOT NULL DEFAULT now(), \
          success BOOLEAN NOT NULL, checksum BYTEA NOT NULL, execution_time BIGINT NOT NULL)"
-    ))
+    )))
     .execute(&admin)
     .await
     .unwrap();
-    sqlx::query(&format!("INSERT INTO {old}._sqlx_migrations VALUES (1, 'initial', now(), TRUE, '\\x00', 1)"))
+    sqlx::query(sqlx::AssertSqlSafe(format!("INSERT INTO {old}._sqlx_migrations VALUES (1, 'initial', now(), TRUE, '\\x00', 1)")))
         .execute(&admin)
         .await
         .unwrap();
@@ -568,6 +567,6 @@ async fn relay_store_verifies_the_schema_without_migrating() {
     assert!(err.contains("applied version 1") && err.contains(&format!("needs {}", PgStore::required_schema_version())), "{err}");
 
     for s in [empty, old] {
-        sqlx::query(&format!("DROP SCHEMA {s} CASCADE")).execute(&admin).await.unwrap();
+        sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {s} CASCADE"))).execute(&admin).await.unwrap();
     }
 }

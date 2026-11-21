@@ -69,7 +69,8 @@ mkdir -p /opt/backups
 
 echo "==> Setting up environment"
 if [ ! -f .env ]; then
-  cp .env.coordinator.example .env
+  # .env holds generated secrets: readable by root only
+  install -m 600 .env.coordinator.example .env
 
   # Pre-fill Hetzner-specific TLS settings
   sed -i 's/^TLS_STRATEGY=.*/TLS_STRATEGY=hetzner/' .env
@@ -106,6 +107,9 @@ if [ ! -f .env ]; then
   echo "  cd $APP_DIR && docker compose -f $COMPOSE_FILE up -d"
   exit 0
 fi
+
+# An editor may have re-saved .env with a wider mode
+chmod 600 .env
 
 echo "==> Pulling images"
 docker compose -f "$COMPOSE_FILE" pull

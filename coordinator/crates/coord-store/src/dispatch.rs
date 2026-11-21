@@ -81,6 +81,22 @@ impl Store {
         }
     }
 
+    /// Set or clear the parent of a tenant. Returns the tenant and its previous parent.
+    ///
+    /// # Errors
+    /// `TenantNotFound` for a missing tenant or parent; `Protocol` for itself, a descendant or a second level.
+    pub async fn set_tenant_parent(
+        &self,
+        tenant_id: TenantId,
+        parent_id: Option<TenantId>,
+    ) -> Result<(Tenant, Option<TenantId>), CoordError> {
+        match self {
+            Store::Memory(m) => m.set_tenant_parent(tenant_id, parent_id),
+            Store::Pg(p) => p.set_tenant_parent(tenant_id, parent_id).await,
+            Store::Sqlite(s) => s.set_tenant_parent(tenant_id, parent_id).await,
+        }
+    }
+
     pub async fn set_tenant_suspended(
         &self,
         tenant_id: TenantId,

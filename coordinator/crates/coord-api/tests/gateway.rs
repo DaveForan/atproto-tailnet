@@ -312,3 +312,39 @@ async fn gateway_can_be_enabled_after_startup() {
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["gateway"], true, "health reports the gateway once enabled");
 }
+
+#[tokio::test]
+async fn the_gateway_relay_scope_follows_posture_suspension_and_parent() {
+    let (app, state) = setup();
+    let parent = state.store().create_tenant("gw-parent".into(), None, None).await.unwrap().id;
+    let child = state.store().create_tenant("gw-child".into(), Some(parent), None).await.unwrap().id;
+    let c = child.to_string();
+    let dev = register(&app, &state, &c, "alice", 31, "alice-server").await;
+    let dns = serde_json::json!({
+        "base_domain": BASE,
+        "records": [{ "name": "wiki", "node": dev.id, "owner": "alice", "nodes": [], "port": 8080 }]
+    });
+    let (status, body) = call(&app, "PUT", format!("/api/tenants/{c}/dns"), Some(dns)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(state.gateways().unwrap().running_count(), 1);
+    let (_, nodes) = call(&app, "GET", format!("/api/tenants/{c}/nodes"), None).await;
+    let gw_id = nodes["nodes"].as_array().unwrap().iter().find(|n| n["hostname"] == "gateway").unwrap()["id"].as_i64().unwrap();
+    let gw_key: [u8; 32] = state.store().get_node_info(coord_core::NodeId::new(gw_id)).await.unwrap().info.node_key.try_into().unwrap();
+    let link = || state.relay().scope_of(&gw_key).expect("gateway attached").parent;
+    let p = Some(*parent.as_uuid().as_bytes());
+
+    assert_eq!(link(), None, "a Closed child has no parent link, also for its gateway");
+
+    let (status, _) = call(&app, "PUT", format!("/api/tenants/{c}/posture"), Some(serde_json::json!({ "posture": "open" }))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(link(), p, "opening the child links its gateway at once");
+
+    call(&app, "PUT", format!("/api/tenants/{parent}/suspended"), Some(serde_json::json!({ "suspended": true }))).await;
+    assert_eq!(link(), None, "a suspended parent loses the link");
+    call(&app, "PUT", format!("/api/tenants/{parent}/suspended"), Some(serde_json::json!({ "suspended": false }))).await;
+    assert_eq!(link(), p);
+
+    let (status, _) = call(&app, "PUT", format!("/api/tenants/{c}/parent"), Some(serde_json::json!({ "parent_id": null }))).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(link(), None, "a detached child has no parent");
+}

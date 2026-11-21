@@ -336,6 +336,16 @@ pub struct NodeRegistration {
     pub advertised_routes: Option<Vec<String>>,
 }
 
+/// Tag of the coordinator's own gateway node (ADR-0029). Auth keys cannot carry it.
+pub const GATEWAY_TAG: &str = "tag:gateway";
+/// Device name of the gateway node. No other node of a tenant gets this name.
+pub const GATEWAY_HOSTNAME: &str = "gateway";
+
+/// True when `owner` and `tags` identify the coordinator's gateway node.
+pub fn is_gateway_identity(owner: Option<&str>, tags: &[String]) -> bool {
+    owner.is_none() && tags.iter().any(|t| t == GATEWAY_TAG)
+}
+
 // ── Pre-auth keys ──
 
 #[derive(Debug, Clone, Default)]

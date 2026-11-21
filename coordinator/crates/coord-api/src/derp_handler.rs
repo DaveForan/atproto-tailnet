@@ -7,7 +7,7 @@ use axum::body::Body;
 use axum::extract::State;
 use axum::http::{HeaderMap, Request, StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use coord_derp::{Admission, Scope};
+use coord_derp::{Admission, DerpError, Scope};
 use coord_store::Store;
 use tracing::{debug, warn};
 
@@ -66,16 +66,25 @@ pub async fn derp_handler(State(state): State<Arc<CoordinatorState>>, req: Reque
         return (StatusCode::UPGRADE_REQUIRED, "DERP requires connection upgrade").into_response();
     }
 
+    let peer = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+        .map(|c| c.0.ip());
+    let client_ip = state.trusted_proxies.client_ip(peer, req.headers());
     let relay = state.relay.clone();
     let public_key = hex::encode(relay.public_key());
     let on_upgrade = hyper::upgrade::on(req);
     tokio::spawn(async move {
         match on_upgrade.await {
-            Ok(upgraded) => {
-                if let Err(e) = relay.serve_conn(hyper_util::rt::TokioIo::new(upgraded)).await {
-                    debug!(error = %e, "derp connection ended");
+            Ok(upgraded) => match relay.serve_conn(hyper_util::rt::TokioIo::new(upgraded)).await {
+                Err(DerpError::NotAdmitted) => {
+                    if let Some(suppressed) = state.relay_refused_log.check(client_ip) {
+                        warn!(client_ip = ?client_ip, suppressed, "derp client refused: node not admitted");
+                    }
                 }
-            }
+                Err(e) => debug!(error = %e, "derp connection ended"),
+                Ok(()) => {}
+            },
             Err(e) => warn!(error = %e, "derp upgrade failed"),
         }
     });

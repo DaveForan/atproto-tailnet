@@ -66,6 +66,19 @@ pub struct MemoryStore {
     peer_tx: broadcast::Sender<PeerEvent>,
 }
 
+/// (id, hostname) of the nodes of `tenant` other than `except`.
+fn tenant_names(
+    nodes: &HashMap<NodeId, StoredNode>,
+    tenant: TenantId,
+    except: NodeId,
+) -> Vec<(i64, &str)> {
+    nodes
+        .values()
+        .filter(|n| n.tenant_id == tenant && n.id != except)
+        .map(|n| (n.id.as_i64(), n.info.hostname.as_str()))
+        .collect()
+}
+
 impl MemoryStore {
     pub fn new() -> Self {
         let (peer_tx, _) = broadcast::channel(crate::PEER_EVENT_CHANNEL_CAPACITY);
@@ -403,6 +416,25 @@ impl MemoryStore {
         }
     }
 
+    /// Set or clear the parent of a tenant. Returns the tenant and its previous parent.
+    pub fn set_tenant_parent(
+        &self,
+        tenant_id: TenantId,
+        parent_id: Option<TenantId>,
+    ) -> Result<(Tenant, Option<TenantId>), CoordError> {
+        let mut tenants = self.tenants.lock().unwrap_or_else(|e| e.into_inner());
+        if !tenants.contains_key(&tenant_id) {
+            return Err(CoordError::TenantNotFound(tenant_id));
+        }
+        if let Some(pid) = parent_id {
+            let has_children = tenants.values().any(|t| t.parent_id == Some(tenant_id));
+            crate::check_new_parent(tenant_id, pid, tenants.get(&pid), has_children)?;
+        }
+        let t = tenants.get_mut(&tenant_id).ok_or(CoordError::TenantNotFound(tenant_id))?;
+        let old = std::mem::replace(&mut t.parent_id, parent_id);
+        Ok((t.clone(), old))
+    }
+
     pub fn set_tenant_suspended(
         &self,
         tenant_id: TenantId,
@@ -523,11 +555,10 @@ impl MemoryStore {
         if pak.used && !pak.reusable {
             return None;
         }
-        if let Some(expires) = pak.expires_at {
-            if chrono::Utc::now() >= expires {
+        if let Some(expires) = pak.expires_at
+            && chrono::Utc::now() >= expires {
                 return None;
             }
-        }
 
         pak.used = true;
         Some(PreAuthGrant {
@@ -557,12 +588,19 @@ impl MemoryStore {
         let mut machine_index = self.machine_key_index.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(&existing_id) = machine_index.get(&machine_key) {
             let mut nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(node) = nodes.get_mut(&existing_id) {
+            if let Some(node) = nodes.get(&existing_id) {
                 if node.tenant_id != tenant_id {
                     return Err(CoordError::Protocol(
                         "machine key already registered to a different tenant".into(),
                     ));
                 }
+                let mut info = info;
+                info.hostname = crate::unique_hostname(
+                    &info.hostname,
+                    coord_core::is_gateway_identity(reg.owner.as_deref(), &reg.tags),
+                    tenant_names(&nodes, tenant_id, existing_id),
+                );
+                let Some(node) = nodes.get_mut(&existing_id) else { unreachable!("checked above") };
                 node.info = info;
                 node.online = true;
                 node.last_seen = chrono::Utc::now();
@@ -604,6 +642,12 @@ impl MemoryStore {
         };
 
         let stable_id = generate_random_id();
+        let mut info = info;
+        info.hostname = crate::unique_hostname(
+            &info.hostname,
+            coord_core::is_gateway_identity(reg.owner.as_deref(), &reg.tags),
+            tenant_names(&nodes, tenant_id, node_id),
+        );
 
         let stored = StoredNode {
             id: node_id,
@@ -811,10 +855,14 @@ impl MemoryStore {
 
     pub fn rename_node(&self, node_id: NodeId, new_name: String) -> Result<(), CoordError> {
         let mut nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner());
-        let node = nodes.get_mut(&node_id)
+        let node = nodes.get(&node_id)
             .ok_or(CoordError::Protocol("node not found".into()))?;
-        node.info.hostname = new_name;
         let tid = node.tenant_id;
+        let is_gateway = coord_core::is_gateway_identity(node.attrs.owner.as_deref(), &node.attrs.tags);
+        let name = crate::unique_hostname(&new_name, is_gateway, tenant_names(&nodes, tid, node_id));
+        if let Some(node) = nodes.get_mut(&node_id) {
+            node.info.hostname = name;
+        }
         drop(nodes);
         let _ = self.peer_tx.send(PeerEvent::NodeUpdated { tenant_id: tid, node_id });
         Ok(())

@@ -22,8 +22,7 @@ use tracing::{error, info, warn};
 
 use crate::state::{CoordinatorState, CONFIG_GATEWAY};
 
-pub const GATEWAY_TAG: &str = "tag:gateway";
-pub const GATEWAY_HOSTNAME: &str = "gateway";
+pub use coord_core::{GATEWAY_HOSTNAME, GATEWAY_TAG};
 
 /// What the coordinator needs to run gateways.
 pub struct Gateways {
@@ -183,7 +182,7 @@ impl CoordinatorState {
     }
 
     async fn start_gateway(self: &Arc<Self>, gateways: &Arc<Gateways>, tenant: TenantId) -> Result<(), String> {
-        let tenant_row = self.store.get_tenant(tenant).await.ok_or("tenant not found")?;
+        self.store.get_tenant(tenant).await.ok_or("tenant not found")?;
         let tenant_bytes = *tenant.as_uuid().as_bytes();
         let node_secret = coord_gateway::derive_key(&gateways.secret, &tenant_bytes, "node");
         let node_key = public_key(&node_secret);
@@ -218,7 +217,10 @@ impl CoordinatorState {
             .map_err(|e| format!("cannot record the gateway node: {e}"))?;
         self.caches.gateways.set(tenant, node_id.as_i64());
 
-        let scope = Scope { tenant: tenant_bytes, parent: tenant_row.parent_id.map(|p| *p.as_uuid().as_bytes()) };
+        // The same rule as for devices: no parent link while the tenant is Closed or either side is suspended.
+        let scope = crate::derp_handler::relay_scope(&self.store, tenant)
+            .await
+            .unwrap_or(Scope { tenant: tenant_bytes, parent: None });
         let relay = self.relay.attach_local(node_key, scope);
         let changed = Arc::new(Notify::new());
         watch_devices(self.store.subscribe(), tenant, changed.clone());
@@ -248,6 +250,16 @@ impl CoordinatorState {
         for tenant in self.store.list_tenants().await {
             self.sync_gateway(tenant.id).await;
         }
+    }
+}
+
+impl CoordinatorState {
+    /// Re-check now the relay reach of the devices and the gateway of `tenant`
+    /// and of its children, after a posture, suspension or parent change.
+    pub async fn refresh_relay_scopes(&self, tenant: TenantId) {
+        let mut tenants = vec![*tenant.as_uuid().as_bytes()];
+        tenants.extend(self.store.get_child_tenants(tenant).await.iter().map(|c| *c.id.as_uuid().as_bytes()));
+        self.relay.rescope(Some(&tenants)).await;
     }
 }
 

@@ -186,7 +186,7 @@ impl FederationStore for SqliteFederationStore {
         let sql = format!(
             "SELECT {LINK_COLS} FROM coord_federation_links WHERE status = 'active'"
         );
-        let rows = sqlx::query_as::<_, LinkTuple>(&sql)
+        let rows = sqlx::query_as::<_, LinkTuple>(sqlx::AssertSqlSafe(sql))
             .fetch_all(&self.pool)
             .await.map_err(db)?;
 
@@ -197,7 +197,7 @@ impl FederationStore for SqliteFederationStore {
         let sql = format!(
             "SELECT {LINK_COLS} FROM coord_federation_links WHERE id = ?1"
         );
-        let row = sqlx::query_as::<_, LinkTuple>(&sql)
+        let row = sqlx::query_as::<_, LinkTuple>(sqlx::AssertSqlSafe(sql))
             .bind(id.as_uuid().to_string())
             .fetch_optional(&self.pool)
             .await.map_err(db)?;
@@ -214,7 +214,7 @@ impl FederationStore for SqliteFederationStore {
             "SELECT {LINK_COLS} FROM coord_federation_links \
              WHERE local_tenant_id = ?1 AND peer_did = ?2 AND status = 'active'"
         );
-        let row = sqlx::query_as::<_, LinkTuple>(&sql)
+        let row = sqlx::query_as::<_, LinkTuple>(sqlx::AssertSqlSafe(sql))
             .bind(tenant_id.as_uuid().to_string())
             .bind(peer_did)
             .fetch_optional(&self.pool)
@@ -233,7 +233,7 @@ impl FederationStore for SqliteFederationStore {
              WHERE local_tenant_id = ?1 AND peer_did = ?2 \
                    AND status = 'pending' AND direction = 'outgoing'"
         );
-        let row = sqlx::query_as::<_, LinkTuple>(&sql)
+        let row = sqlx::query_as::<_, LinkTuple>(sqlx::AssertSqlSafe(sql))
             .bind(tenant_id.as_uuid().to_string())
             .bind(peer_did)
             .fetch_optional(&self.pool)
@@ -249,7 +249,7 @@ impl FederationStore for SqliteFederationStore {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14) \
              RETURNING {LINK_COLS}"
         );
-        let row = sqlx::query_as::<_, LinkTuple>(&sql)
+        let row = sqlx::query_as::<_, LinkTuple>(sqlx::AssertSqlSafe(sql))
             .bind(link.id.as_uuid().to_string())
             .bind(link.local_tenant_id.as_uuid().to_string())
             .bind(&link.peer_did)
@@ -317,7 +317,7 @@ impl FederationStore for SqliteFederationStore {
         let sql = format!(
             "SELECT {SESSION_COLS} FROM coord_broker_sessions"
         );
-        let rows = sqlx::query_as::<_, SessionTuple>(&sql)
+        let rows = sqlx::query_as::<_, SessionTuple>(sqlx::AssertSqlSafe(sql))
             .fetch_all(&self.pool)
             .await.map_err(db)?;
 
@@ -331,7 +331,7 @@ impl FederationStore for SqliteFederationStore {
         let sql = format!(
             "SELECT {SESSION_COLS} FROM coord_broker_sessions WHERE federation_link_id = ?1"
         );
-        let rows = sqlx::query_as::<_, SessionTuple>(&sql)
+        let rows = sqlx::query_as::<_, SessionTuple>(sqlx::AssertSqlSafe(sql))
             .bind(link_id.as_uuid().to_string())
             .fetch_all(&self.pool)
             .await.map_err(db)?;
@@ -348,7 +348,7 @@ impl FederationStore for SqliteFederationStore {
             "SELECT {SESSION_COLS} FROM coord_broker_sessions \
              WHERE cfp_session_id = ?1 AND local_tenant_id = ?2"
         );
-        let row = sqlx::query_as::<_, SessionTuple>(&sql)
+        let row = sqlx::query_as::<_, SessionTuple>(sqlx::AssertSqlSafe(sql))
             .bind(cfp_session_id)
             .bind(tenant_id.as_uuid().to_string())
             .fetch_optional(&self.pool)
@@ -368,7 +368,7 @@ impl FederationStore for SqliteFederationStore {
              ON CONFLICT (federation_link_id, local_tenant_id) DO NOTHING \
              RETURNING {SESSION_COLS}"
         );
-        let row = sqlx::query_as::<_, SessionTuple>(&sql)
+        let row = sqlx::query_as::<_, SessionTuple>(sqlx::AssertSqlSafe(sql))
             .bind(session.id.as_uuid().to_string())
             .bind(session.federation_link_id.as_uuid().to_string())
             .bind(session.local_tenant_id.as_uuid().to_string())
@@ -477,7 +477,7 @@ impl FederationStore for SqliteFederationStore {
         let sql = format!(
             "SELECT {DID_COLS} FROM coord_collective_dids WHERE tenant_id = ?1"
         );
-        let row = sqlx::query_as::<_, DidTuple>(&sql)
+        let row = sqlx::query_as::<_, DidTuple>(sqlx::AssertSqlSafe(sql))
             .bind(tenant_id.as_uuid().to_string())
             .fetch_optional(&self.pool)
             .await.map_err(db)?;

@@ -37,7 +37,7 @@ impl RateLimiter {
     /// Returns `false` if the request should be rejected.
     pub fn check(&mut self, key: &str) -> bool {
         self.check_count += 1;
-        if self.check_count % 128 == 0 {
+        if self.check_count.is_multiple_of(128) {
             self.sweep();
         }
 

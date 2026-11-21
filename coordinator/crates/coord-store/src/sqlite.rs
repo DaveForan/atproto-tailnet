@@ -315,7 +315,8 @@ impl SqliteStore {
 
     pub async fn sign_in_get(&self, id: &str) -> Option<coord_core::PendingSignIn> {
         let row: Option<crate::SignInRow> = sqlx::query_as(
-            &format!("SELECT {} FROM coord_sign_ins WHERE id = ?1 AND expires_at > ?2", crate::SIGN_IN_COLUMNS)
+            // Only a constant column list is formatted in.
+            sqlx::AssertSqlSafe(format!("SELECT {} FROM coord_sign_ins WHERE id = ?1 AND expires_at > ?2", crate::SIGN_IN_COLUMNS))
         )
             .bind(id)
             .bind(crate::now_secs())
@@ -401,9 +402,9 @@ impl SqliteStore {
     pub async fn home_relays(&self, node_ids: &[NodeId]) -> std::collections::HashMap<NodeId, i32> {
         // Node ids are integers, so the list can be written into the statement
         let list = node_ids.iter().map(|n| n.as_i64().to_string()).collect::<Vec<_>>().join(",");
-        let rows: Vec<(i64, i32)> = sqlx::query_as(&format!(
+        let rows: Vec<(i64, i32)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
             "SELECT id, home_derp FROM coord_nodes WHERE id IN ({list}) AND home_derp IS NOT NULL"
-        ))
+        )))
             .fetch_all(&self.pool)
             .await
             .unwrap_or_default();
@@ -600,6 +601,47 @@ impl SqliteStore {
             .ok_or(CoordError::TenantNotFound(tenant_id))
     }
 
+    /// Set or clear the parent of a tenant. Returns the tenant and its previous parent.
+    pub async fn set_tenant_parent(
+        &self,
+        tenant_id: TenantId,
+        parent_id: Option<TenantId>,
+    ) -> Result<(Tenant, Option<TenantId>), CoordError> {
+        // BEGIN IMMEDIATE serializes parent changes, so two of them cannot build a cycle together.
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await.map_err(db)?;
+        let tid_str = tenant_id.as_uuid().to_string();
+        let current = sqlx::query_as::<_, TenantRow>("SELECT id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix, created_at, suspended FROM coord_tenants WHERE id = ?1")
+            .bind(&tid_str)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db)?
+            .and_then(tenant_from_row)
+            .ok_or(CoordError::TenantNotFound(tenant_id))?;
+        if let Some(pid) = parent_id {
+            let parent = sqlx::query_as::<_, TenantRow>("SELECT id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix, created_at, suspended FROM coord_tenants WHERE id = ?1")
+                .bind(pid.as_uuid().to_string())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(db)?
+                .and_then(tenant_from_row);
+            let has_children: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM coord_tenants WHERE parent_id = ?1)")
+                .bind(&tid_str)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(db)?;
+            crate::check_new_parent(tenant_id, pid, parent.as_ref(), has_children)?;
+        }
+        let row = sqlx::query_as::<_, TenantRow>("UPDATE coord_tenants SET parent_id = ?1 WHERE id = ?2 RETURNING id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix, created_at, suspended")
+            .bind(parent_id.map(|p| p.as_uuid().to_string()))
+            .bind(&tid_str)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?;
+        tx.commit().await.map_err(db)?;
+        let tenant = tenant_from_row(row).ok_or(CoordError::TenantNotFound(tenant_id))?;
+        Ok((tenant, current.parent_id))
+    }
+
     pub async fn set_tenant_suspended(
         &self,
         tenant_id: TenantId,
@@ -779,6 +821,7 @@ impl SqliteStore {
                 ));
             }
             let new_gen = old_generation + 1;
+            let hostname = tenant_unique_hostname(&mut tx, &tid_str, id, &info.hostname, &reg).await?;
             // A new identity (owner/tags) must not inherit approvals granted to the old one.
             let identity_changed = old_owner != reg.owner || from_json(&old_tags) != reg.tags;
             sqlx::query(
@@ -790,7 +833,7 @@ impl SqliteStore {
             )
                 .bind(&info.node_key)
                 .bind(&info.disco_key)
-                .bind(&info.hostname)
+                .bind(&hostname)
                 .bind(&info.os)
                 .bind(&endpoints_json)
                 .bind(new_gen)
@@ -828,6 +871,7 @@ impl SqliteStore {
             .map_err(db)?;
         let new_ipv4 = crate::lowest_free_ipv4(used.iter().filter_map(|s| s.parse::<Ipv4Addr>().ok()))?;
         let new_ip_str = new_ipv4.to_string();
+        let hostname = tenant_unique_hostname(&mut tx, &tid_str, -1, &info.hostname, &reg).await?;
 
         let row = sqlx::query_as::<_, (i64, i64)>(
             "INSERT INTO coord_nodes (tenant_id, machine_key, node_key, disco_key, stable_id, ipv4, hostname, os, endpoints, session_generation, \
@@ -841,7 +885,7 @@ impl SqliteStore {
             .bind(&info.disco_key)
             .bind(generate_random_id())
             .bind(&new_ip_str)
-            .bind(&info.hostname)
+            .bind(&hostname)
             .bind(&info.os)
             .bind(&endpoints_json)
             .bind(&reg.owner)
@@ -878,14 +922,13 @@ impl SqliteStore {
             .await
             .map_err(db)?;
 
-        if let Some((id, tenant_str)) = result {
-            if let Ok(uuid) = uuid::Uuid::parse_str(&tenant_str) {
+        if let Some((id, tenant_str)) = result
+            && let Ok(uuid) = uuid::Uuid::parse_str(&tenant_str) {
                 let _ = self.peer_tx.send(PeerEvent::NodeUpdated {
                     tenant_id: TenantId::new(uuid),
                     node_id: NodeId::new(id),
                 });
             }
-        }
         Ok(())
     }
 
@@ -926,14 +969,13 @@ impl SqliteStore {
                 .await
                 .map_err(db)?;
 
-            if let Some(ts) = tenant_str {
-                if let Ok(uuid) = uuid::Uuid::parse_str(&ts) {
+            if let Some(ts) = tenant_str
+                && let Ok(uuid) = uuid::Uuid::parse_str(&ts) {
                     let _ = self.peer_tx.send(PeerEvent::NodeUpdated {
                         tenant_id: TenantId::new(uuid),
                         node_id,
                     });
                 }
-            }
         }
         Ok(())
     }
@@ -1141,27 +1183,31 @@ impl SqliteStore {
     }
 
     pub async fn rename_node(&self, node_id: NodeId, new_name: String) -> Result<(), CoordError> {
-        let result = sqlx::query_as::<_, (String,)>(
-            "UPDATE coord_nodes SET hostname = ?1 WHERE id = ?2 RETURNING tenant_id"
+        // BEGIN IMMEDIATE makes the uniqueness check and the update atomic.
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await.map_err(db)?;
+        let Some((tenant_str, owner, tags)) = sqlx::query_as::<_, (String, Option<String>, String)>(
+            "SELECT tenant_id, owner, tags FROM coord_nodes WHERE id = ?1"
         )
-            .bind(&new_name)
             .bind(node_id.as_i64())
-            .fetch_optional(&self.pool)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db)?
+        else {
+            return Err(CoordError::Protocol("node not found".into()));
+        };
+        let reg = NodeRegistration { owner, tags: from_json(&tags), ..Default::default() };
+        let name = tenant_unique_hostname(&mut tx, &tenant_str, node_id.as_i64(), &new_name, &reg).await?;
+        sqlx::query("UPDATE coord_nodes SET hostname = ?1 WHERE id = ?2")
+            .bind(&name)
+            .bind(node_id.as_i64())
+            .execute(&mut *tx)
             .await
             .map_err(db)?;
-
-        match result {
-            Some((tenant_str,)) => {
-                if let Ok(uuid) = uuid::Uuid::parse_str(&tenant_str) {
-                    let _ = self.peer_tx.send(PeerEvent::NodeUpdated {
-                        tenant_id: TenantId::new(uuid),
-                        node_id,
-                    });
-                }
-                Ok(())
-            }
-            None => Err(CoordError::Protocol("node not found".into())),
+        tx.commit().await.map_err(db)?;
+        if let Ok(uuid) = uuid::Uuid::parse_str(&tenant_str) {
+            let _ = self.peer_tx.send(PeerEvent::NodeUpdated { tenant_id: TenantId::new(uuid), node_id });
         }
+        Ok(())
     }
 
     pub async fn set_node_online(&self, node_id: NodeId, online: bool) -> Result<(), CoordError> {
@@ -1174,8 +1220,8 @@ impl SqliteStore {
             .await
             .map_err(db)?;
 
-        if let Some(tenant_str) = result {
-            if let Ok(uuid) = uuid::Uuid::parse_str(&tenant_str) {
+        if let Some(tenant_str) = result
+            && let Ok(uuid) = uuid::Uuid::parse_str(&tenant_str) {
                 if online {
                     let _ = self.peer_tx.send(PeerEvent::NodeUpdated {
                         tenant_id: TenantId::new(uuid),
@@ -1188,7 +1234,6 @@ impl SqliteStore {
                     });
                 }
             }
-        }
         Ok(())
     }
 
@@ -1204,14 +1249,13 @@ impl SqliteStore {
             .await
             .map_err(db)?;
 
-        if let Some(tenant_str) = result {
-            if let Ok(uuid) = uuid::Uuid::parse_str(&tenant_str) {
+        if let Some(tenant_str) = result
+            && let Ok(uuid) = uuid::Uuid::parse_str(&tenant_str) {
                 let _ = self.peer_tx.send(PeerEvent::NodeOffline {
                     tenant_id: TenantId::new(uuid),
                     node_id,
                 });
             }
-        }
         Ok(())
     }
 
@@ -1230,7 +1274,7 @@ impl SqliteStore {
         let sql = format!(
             "UPDATE coord_nodes SET {column} = ?1 WHERE id = ?2 AND {column} != ?1 RETURNING tenant_id"
         );
-        let changed: Option<String> = sqlx::query_scalar(&sql)
+        let changed: Option<String> = sqlx::query_scalar(sqlx::AssertSqlSafe(sql))
             .bind(&json)
             .bind(node_id.as_i64())
             .fetch_optional(&self.pool)
@@ -1396,6 +1440,25 @@ type SummaryRow = (i64, String, String, String, bool, String, Option<String>, St
 
 fn to_json(v: &[String]) -> String {
     serde_json::to_string(v).unwrap_or_else(|_| "[]".into())
+}
+
+/// [`crate::unique_hostname`] against the other nodes of `tenant` (all but node `except`).
+/// Call it inside a `BEGIN IMMEDIATE` transaction.
+async fn tenant_unique_hostname(
+    tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+    tenant: &str,
+    except: i64,
+    desired: &str,
+    reg: &NodeRegistration,
+) -> Result<String, CoordError> {
+    let others: Vec<(i64, String)> = sqlx::query_as("SELECT id, hostname FROM coord_nodes WHERE tenant_id = ?1 AND id <> ?2")
+        .bind(tenant)
+        .bind(except)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(db)?;
+    let is_gateway = coord_core::is_gateway_identity(reg.owner.as_deref(), &reg.tags);
+    Ok(crate::unique_hostname(desired, is_gateway, others.iter().map(|(id, h)| (*id, h.as_str()))))
 }
 
 fn from_json(s: &str) -> Vec<String> {

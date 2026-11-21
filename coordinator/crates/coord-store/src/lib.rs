@@ -88,6 +88,68 @@ pub fn preauth_key_log_id(key: &str) -> String {
     hash_preauth_key(key)[..8].to_string()
 }
 
+/// A device name whose DNS label no other node of the tenant uses (MagicDNS names must not collide).
+///
+/// `others` are the other nodes of the tenant as (node id, hostname). A taken
+/// label gets the lowest free `-N` suffix. Only the gateway node may use
+/// [`coord_core::GATEWAY_HOSTNAME`]. A name without a usable label is kept: the
+/// netmap shows it as `node-<id>`, which is unique.
+pub(crate) fn unique_hostname<'a, I>(desired: &str, is_gateway: bool, others: I) -> String
+where
+    I: IntoIterator<Item = (i64, &'a str)>,
+{
+    use coord_core::sanitize::{dns_label, node_dns_label, MAX_DNS_LABEL_LEN};
+    let Some(label) = dns_label(desired) else { return desired.to_string() };
+    if is_gateway {
+        return desired.to_string();
+    }
+    let mut taken: std::collections::HashSet<String> =
+        others.into_iter().map(|(id, name)| node_dns_label(name, id)).collect();
+    taken.insert(coord_core::GATEWAY_HOSTNAME.to_string());
+    if !taken.contains(&label) {
+        return desired.to_string();
+    }
+    // At most taken.len() candidates are taken, so the loop ends.
+    for n in 1..=taken.len() + 1 {
+        let suffix = format!("-{n}");
+        let mut base = label.clone();
+        base.truncate(MAX_DNS_LABEL_LEN - suffix.len());
+        let candidate = format!("{}{suffix}", base.trim_end_matches('-'));
+        if !taken.contains(&candidate) {
+            return candidate;
+        }
+    }
+    unreachable!("a free suffix exists among taken.len() + 1 candidates")
+}
+
+/// Checks that `parent` may become the parent of `tenant`. The hierarchy has one level:
+/// a parent is a root tenant, and a tenant with children cannot get a parent.
+///
+/// # Errors
+/// `TenantNotFound(parent)` for a missing parent; `Protocol` for itself, a descendant or a second level.
+pub(crate) fn check_new_parent(
+    tenant: coord_core::TenantId,
+    parent: coord_core::TenantId,
+    parent_row: Option<&coord_core::Tenant>,
+    tenant_has_children: bool,
+) -> Result<(), coord_core::CoordError> {
+    use coord_core::CoordError;
+    if parent == tenant {
+        return Err(CoordError::Protocol("a tenant cannot be its own parent".into()));
+    }
+    let parent_row = parent_row.ok_or(CoordError::TenantNotFound(parent))?;
+    if parent_row.parent_id == Some(tenant) {
+        return Err(CoordError::Protocol("the parent is a descendant of the tenant".into()));
+    }
+    if parent_row.parent_id.is_some() {
+        return Err(CoordError::Protocol("multi-level hierarchy not supported: parent is itself a child".into()));
+    }
+    if tenant_has_children {
+        return Err(CoordError::Protocol("multi-level hierarchy not supported: the tenant has children".into()));
+    }
+    Ok(())
+}
+
 pub(crate) fn generate_random_id() -> String {
     use rand::RngCore;
     let mut buf = [0u8; 8];
@@ -141,6 +203,42 @@ mod ipv4_alloc_tests {
         assert!(is_reserved_ipv4(u32::from(Ipv4Addr::new(100, 100, 100, 100))));
         assert!(is_reserved_ipv4(u32::from(Ipv4Addr::new(100, 115, 93, 7))));
         assert!(!is_reserved_ipv4(u32::from(Ipv4Addr::new(100, 115, 94, 0))));
+    }
+}
+
+#[cfg(test)]
+mod hostname_tests {
+    use super::unique_hostname;
+
+    #[test]
+    fn taken_names_get_the_lowest_free_suffix() {
+        assert_eq!(unique_hostname("laptop", false, []), "laptop");
+        assert_eq!(unique_hostname("laptop", false, [(1, "Laptop")]), "laptop-1");
+        assert_eq!(unique_hostname("laptop", false, [(1, "laptop"), (2, "laptop-2")]), "laptop-1");
+        assert_eq!(unique_hostname("laptop", false, [(1, "laptop"), (2, "laptop-1")]), "laptop-2");
+        // Labels compare after sanitising: "My.Laptop" is "my-laptop" in DNS
+        assert_eq!(unique_hostname("my-laptop", false, [(1, "My.Laptop")]), "my-laptop-1");
+        // A nameless node is node-<id> in DNS
+        assert_eq!(unique_hostname("node-7", false, [(7, "")]), "node-7-1");
+        assert_eq!(unique_hostname("", false, [(1, "")]), "");
+    }
+
+    #[test]
+    fn the_gateway_name_is_reserved() {
+        assert_eq!(unique_hostname("gateway", false, []), "gateway-1");
+        assert_eq!(unique_hostname("GATEWAY", false, [(1, "gateway-1")]), "gateway-2");
+        assert_eq!(unique_hostname("gateway", true, [(1, "gateway")]), "gateway");
+    }
+
+    #[test]
+    fn suffixed_names_stay_valid_labels() {
+        let long = "a".repeat(63);
+        let name = unique_hostname(&long, false, [(1, long.as_str())]);
+        assert_eq!(name.len(), 63);
+        assert!(name.ends_with("-1"));
+        let dashy = format!("{}-b", "a".repeat(60));
+        let name = unique_hostname(&dashy, false, [(1, dashy.as_str())]);
+        assert!(!name.contains("--") && name.len() <= 63, "{name}");
     }
 }
 

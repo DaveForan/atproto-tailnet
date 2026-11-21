@@ -68,11 +68,10 @@ impl RouteTable {
             }
 
             // Best-path: only install if preference is strictly higher than existing.
-            if let Some(existing) = self.routes.get(&ann.prefix) {
-                if existing.preference >= ann.preference {
+            if let Some(existing) = self.routes.get(&ann.prefix)
+                && existing.preference >= ann.preference {
                     continue;
                 }
-            }
 
             self.routes.insert(
                 ann.prefix.clone(),

@@ -177,13 +177,11 @@ impl<S: FederationStore + ?Sized> BrokerService<S> {
             .await?
             .into_iter()
             .find(|s| s.id == session_id)
-        {
-            if session.status == BrokerSessionStatus::Degraded {
+            && session.status == BrokerSessionStatus::Degraded {
                 self.store
                     .update_session_status(session_id, BrokerSessionStatus::Established, None)
                     .await?;
             }
-        }
         Ok(())
     }
 
@@ -199,8 +197,8 @@ impl<S: FederationStore + ?Sized> BrokerService<S> {
             if session.status != BrokerSessionStatus::Established {
                 continue;
             }
-            if let Some(last_ka) = session.last_keepalive {
-                if now - last_ka > stale_threshold {
+            if let Some(last_ka) = session.last_keepalive
+                && now - last_ka > stale_threshold {
                     warn!(
                         session_id = %session.id,
                         peer_did = %session.peer_did,
@@ -214,7 +212,6 @@ impl<S: FederationStore + ?Sized> BrokerService<S> {
                         )
                         .await?;
                 }
-            }
         }
         Ok(())
     }
@@ -375,8 +372,8 @@ pub fn add_federated_routes_to_policy(
                 .or_insert_with(|| serde_json::json!({}))
         });
 
-    if let Some(routes_val) = routes {
-        if let Some(routes_obj) = routes_val.as_object_mut() {
+    if let Some(routes_val) = routes
+        && let Some(routes_obj) = routes_val.as_object_mut() {
             for cidr in cidrs {
                 let approvers = routes_obj
                     .entry(cidr)
@@ -389,7 +386,6 @@ pub fn add_federated_routes_to_policy(
                 }
             }
         }
-    }
 
     result
 }

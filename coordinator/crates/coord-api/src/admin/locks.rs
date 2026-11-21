@@ -139,11 +139,10 @@ pub async fn set_owner_lock(
         .filter(|n| body.node_ids.contains(&n.node_id.as_i64()))
         .map(|n| hex::encode(&n.machine_key))
         .collect();
-    if let Some(max) = body.max_machines {
-        if max < 1 || max as usize > coord_core::lock::MAX_LOCK_MACHINES || (max as usize) < machines.len() {
+    if let Some(max) = body.max_machines
+        && (max < 1 || max as usize > coord_core::lock::MAX_LOCK_MACHINES || (max as usize) < machines.len()) {
             return bad_request("max_machines must be at least the number of kept devices and at most 64");
         }
-    }
     let max_machines = body.max_machines;
     // One atomic step: the refused history kept is the one stored now, not a
     // copy read earlier that a concurrent registration may have extended.

@@ -4067,3 +4067,109 @@ async fn pending_sign_in_reports_requester_ip_and_time() {
     assert!(p["requester_ip"].is_null());
     assert!(p["requested_at"].is_string());
 }
+
+// ── MagicDNS names and tenant parents ──
+
+fn peer_dns_names(map: &serde_json::Value) -> Vec<String> {
+    let mut names: Vec<String> = map["Peers"].as_array().unwrap().iter().map(|p| p["Name"].as_str().unwrap().to_string()).collect();
+    names.sort();
+    names
+}
+
+#[tokio::test]
+async fn device_names_are_unique_in_magicdns() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "dns-names").await;
+    let key = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "reusable": true })).await;
+    let key = key["key"].as_str().unwrap().to_string();
+
+    assert_eq!(register_routes(&state, 150, &key, "laptop", None).await["MachineAuthorized"], true);
+    register_routes(&state, 152, &key, "Laptop", None).await;
+    register_routes(&state, 154, &key, "gateway", None).await;
+    let viewer = map_of(&state, 150, None).await;
+    assert_eq!(viewer["Node"]["Name"], "laptop.mesh.local.");
+    assert_eq!(peer_dns_names(&viewer), vec!["gateway-1.mesh.local.", "laptop-1.mesh.local."], "no device can claim a taken or reserved name");
+
+    // The holder of a name keeps it when it re-registers with a new key
+    let rekey = serde_json::json!({
+        "Version": 2,
+        "NodeKey": format!("nodekey:{}", hex::encode([77u8; 32])),
+        "Auth": { "AuthKey": &key },
+        "Hostinfo": { "Hostname": "laptop", "OS": "linux" }
+    });
+    coord_api::__test_handle_register(&state, &[150u8; 32], &rekey.to_string()).await.unwrap();
+    let second = map_of(&state, 152, None).await;
+    assert_eq!(second["Node"]["Name"], "laptop-1.mesh.local.");
+    assert!(peer_dns_names(&second).contains(&"laptop.mesh.local.".to_string()));
+
+    // A rename to a taken name gets a suffix too
+    let id = node_id_of(&state, 154).await;
+    let (status, body) = api_call(&app, "POST", format!("/api/nodes/{id}/name"), Some(serde_json::json!({ "name": "laptop" }))).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["hostname"], "laptop-2");
+
+    // Auth keys cannot carry the gateway's tag
+    let (status, body) = api_call(&app, "POST", "/api/preauth-keys".into(), Some(serde_json::json!({ "tenant_id": t.to_string(), "tags": ["tag:gateway"] }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+/// Does any frame among the next few list `node` as a peer (`present`) or as removed (`!present`)?
+async fn stream_shows_peer(body: &mut MapBody, node: i64, present: bool) -> bool {
+    let has = |v: &serde_json::Value| v.as_array().is_some_and(|a| a.iter().any(|p| p["ID"] == node || *p == node));
+    for _ in 0..8 {
+        let Some(frame) = next_map_frame(body).await else { return false };
+        if present && (has(&frame["Peers"]) || has(&frame["PeersChanged"])) {
+            return true;
+        }
+        if !present && (has(&frame["PeersRemoved"]) || (frame["Peers"].is_array() && !has(&frame["Peers"]))) {
+            return true;
+        }
+    }
+    false
+}
+
+#[tokio::test]
+async fn tenant_parent_can_be_set_and_cleared_over_the_admin_api() {
+    let (app, state) = setup();
+    let parent = create_test_tenant(&state, "adopt-parent").await;
+    let child = create_test_tenant(&state, "adopt-child").await;
+    let (status, _) = api_call(&app, "PUT", format!("/api/tenants/{child}/posture"), Some(serde_json::json!({ "posture": "open" }))).await;
+    assert_eq!(status, StatusCode::OK);
+    let pkey = api_key(&app, serde_json::json!({ "tenant_id": parent.to_string() })).await;
+    let ckey = api_key(&app, serde_json::json!({ "tenant_id": child.to_string() })).await;
+    register_routes(&state, 160, pkey["key"].as_str().unwrap(), "parent-box", None).await;
+    register_routes(&state, 162, ckey["key"].as_str().unwrap(), "child-box", None).await;
+    let child_node = node_id_of(&state, 162).await;
+    let mut parent_stream = open_stream(&state, 160).await;
+    let mut changes = state.__test_config_changes();
+
+    let put = |id: coord_core::TenantId, body: serde_json::Value| api_call(&app, "PUT", format!("/api/tenants/{id}/parent"), Some(body));
+    let ghost = coord_core::TenantId::generate();
+    assert_eq!(put(child, serde_json::json!({})).await.0, StatusCode::BAD_REQUEST, "parent_id is required");
+    assert_eq!(put(child, serde_json::json!({ "parent_id": "nope" })).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(put(child, serde_json::json!({ "parent_id": child.to_string() })).await.0, StatusCode::BAD_REQUEST, "not itself");
+    let (status, body) = put(child, serde_json::json!({ "parent_id": ghost.to_string() })).await;
+    assert_eq!((status, body["error"].as_str()), (StatusCode::NOT_FOUND, Some("parent tenant not found")));
+    let (status, body) = put(ghost, serde_json::json!({ "parent_id": null })).await;
+    assert_eq!((status, body["error"].as_str()), (StatusCode::NOT_FOUND, Some("tenant not found")));
+
+    let (status, body) = put(child, serde_json::json!({ "parent_id": parent.to_string() })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["parent_id"], parent.to_string());
+    let mut told = std::collections::HashSet::new();
+    while let Ok(change) = changes.try_recv() {
+        told.insert(format!("{change:?}"));
+    }
+    assert!(told.contains(&format!("{:?}", coord_api::ConfigChange::Tenant(child))), "{told:?}");
+    assert!(told.contains(&format!("{:?}", coord_api::ConfigChange::Tenant(parent))), "{told:?}");
+    assert!(stream_shows_peer(&mut parent_stream, child_node, true).await, "the parent's live stream gains the child's device");
+
+    // The parent cannot become a child of its own child
+    assert_eq!(put(parent, serde_json::json!({ "parent_id": child.to_string() })).await.0, StatusCode::BAD_REQUEST);
+
+    let (status, body) = put(child, serde_json::json!({ "parent_id": null })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert!(body["parent_id"].is_null());
+    assert!(stream_shows_peer(&mut parent_stream, child_node, false).await, "detaching drops the child's device");
+    assert!(state.store().get_child_tenants(parent).await.is_empty());
+}

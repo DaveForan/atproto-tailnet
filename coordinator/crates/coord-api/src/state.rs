@@ -55,10 +55,17 @@ pub struct CoordinatorState {
     pub(crate) federation_broker: Arc<BrokerService<dyn FederationStore>>,
     pub(crate) federation_callbacks: Option<Arc<dyn HandshakeCallbacks>>,
     pub(crate) federation_enabled: bool,
-    /// Caps simultaneous Noise (ts2021) connections instance-wide. Behind Caddy
-    /// every connection shares Caddy's source IP, so a per-IP cap is not possible.
+    /// Caps simultaneous Noise (ts2021) connections instance-wide.
     pub(crate) noise_conns: Arc<Semaphore>,
     pub(crate) max_noise_conns: usize,
+    /// Caps simultaneous Noise connections per client address (behind Caddy: from `trusted_proxies`).
+    pub(crate) noise_per_ip: Arc<crate::conn_limit::PerIpLimiter>,
+    /// A Noise session that has not authenticated within this time is closed.
+    pub(crate) noise_auth_deadline: std::time::Duration,
+    /// Rate limit the warnings about refused admin, relay and Noise requests.
+    pub(crate) admin_auth_log: crate::log_limit::LogLimiter,
+    pub(crate) relay_refused_log: crate::log_limit::LogLimiter,
+    pub(crate) noise_refused_log: crate::log_limit::LogLimiter,
     /// Caps request bodies buffered at once across all Noise connections
     /// (pre-auth memory bound: permits x MAX_CONTROL_BODY).
     pub(crate) noise_body_reads: Arc<Semaphore>,
@@ -73,6 +80,12 @@ pub const STREAM_RESYNC_PERIOD: std::time::Duration = std::time::Duration::from_
 
 /// Default instance-wide cap on concurrent Noise connections.
 pub const DEFAULT_MAX_NOISE_CONNECTIONS: usize = 4096;
+/// Default cap on concurrent Noise connections from one client address (a NAT can hide many devices).
+pub const DEFAULT_MAX_NOISE_CONNECTIONS_PER_IP: usize = 256;
+/// Default time a Noise session has to register or poll the map as a known machine.
+pub const NOISE_AUTH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
+/// At most one warning per client address in this interval for refused admin or relay requests.
+pub const SECURITY_LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 /// Concurrent control request bodies being read (256 x 256 KiB = 64 MiB max).
 pub const MAX_CONCURRENT_BODY_READS: usize = 256;
 
@@ -93,6 +106,8 @@ pub struct CoordinatorStateBuilder {
     federation_callbacks: Option<Arc<dyn HandshakeCallbacks>>,
     federation_enabled: bool,
     max_noise_conns: usize,
+    max_noise_conns_per_ip: usize,
+    noise_auth_deadline: std::time::Duration,
     stream_resync_period: std::time::Duration,
     trusted_proxies: crate::client_ip::TrustedProxies,
 }
@@ -207,6 +222,18 @@ impl CoordinatorStateBuilder {
         self
     }
 
+    /// Override the concurrent Noise connection cap per client address.
+    pub fn with_max_noise_connections_per_ip(mut self, max: usize) -> Self {
+        self.max_noise_conns_per_ip = max;
+        self
+    }
+
+    /// Change how long a Noise session may stay unauthenticated (tests shorten it).
+    pub fn with_noise_auth_deadline(mut self, deadline: std::time::Duration) -> Self {
+        self.noise_auth_deadline = deadline;
+        self
+    }
+
     pub fn with_admin_api_key(mut self, key: Option<String>) -> Self {
         self.admin_api_key = key;
         self
@@ -267,6 +294,11 @@ impl CoordinatorStateBuilder {
             federation_enabled: self.federation_enabled,
             noise_conns: Arc::new(Semaphore::new(self.max_noise_conns)),
             max_noise_conns: self.max_noise_conns,
+            noise_per_ip: crate::conn_limit::PerIpLimiter::new(self.max_noise_conns_per_ip),
+            noise_auth_deadline: self.noise_auth_deadline,
+            admin_auth_log: crate::log_limit::LogLimiter::new(SECURITY_LOG_INTERVAL),
+            relay_refused_log: crate::log_limit::LogLimiter::new(SECURITY_LOG_INTERVAL),
+            noise_refused_log: crate::log_limit::LogLimiter::new(SECURITY_LOG_INTERVAL),
             noise_body_reads: Arc::new(Semaphore::new(MAX_CONCURRENT_BODY_READS)),
             stream_resync_period: self.stream_resync_period,
             trusted_proxies: self.trusted_proxies,
@@ -297,6 +329,8 @@ impl CoordinatorState {
             federation_callbacks: None,
             federation_enabled: false,
             max_noise_conns: DEFAULT_MAX_NOISE_CONNECTIONS,
+            max_noise_conns_per_ip: DEFAULT_MAX_NOISE_CONNECTIONS_PER_IP,
+            noise_auth_deadline: NOISE_AUTH_DEADLINE,
             stream_resync_period: STREAM_RESYNC_PERIOD,
             trusted_proxies: crate::client_ip::TrustedProxies::default(),
         }
@@ -338,11 +372,10 @@ impl CoordinatorState {
     /// control process) rebuild the default DERP map from the live relays.
     /// Devices get the new map when it changed.
     pub async fn refresh_relays(&self) {
-        if let Some(relay) = self.own_relay.as_ref().filter(|_| self.role.serves_relay()) {
-            if let Err(e) = self.store.relay_heartbeat(relay).await {
+        if let Some(relay) = self.own_relay.as_ref().filter(|_| self.role.serves_relay())
+            && let Err(e) = self.store.relay_heartbeat(relay).await {
                 tracing::warn!(error = %e, "relay heartbeat failed");
             }
-        }
         if self.role.serves_control() {
             let live = self.store.list_relays(coord_core::relay::RELAY_STALE_SECS).await;
             if self.caches.derp.set_relay_regions(live.iter().map(relay_region).collect()) {
@@ -447,6 +480,7 @@ impl CoordinatorState {
         for tenant in self.store.list_tenants().await {
             self.sync_gateway(tenant.id).await;
         }
+        self.relay.rescope(None).await;
         let _ = self.config_changed.send(ConfigChange::All);
     }
 
@@ -461,6 +495,7 @@ impl CoordinatorState {
                     Ok(coord_store::RemoteEvent::TenantChanged(tenant)) => {
                         state.reload_tenant_config(tenant).await;
                         state.sync_gateway(tenant).await;
+                        state.refresh_relay_scopes(tenant).await;
                         let _ = state.config_changed.send(ConfigChange::Tenant(tenant));
                     }
                     Ok(coord_store::RemoteEvent::SignInDecided(_)) => state.device_auth.wake(),

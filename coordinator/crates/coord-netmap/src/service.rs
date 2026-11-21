@@ -259,12 +259,11 @@ impl NetmapService {
             PeerEvent::NodeOffline { node_id, .. } => {
                 // A node that still exists must be in the named tenant; a deleted
                 // node can only be removed (which reveals nothing).
-                if let Some(t) = self.store.get_node_tenant(event_node).await {
-                    if t != event_tenant {
+                if let Some(t) = self.store.get_node_tenant(event_node).await
+                    && t != event_tenant {
                         tracing::warn!(node_id = node_id.as_i64(), "peer event names the wrong tenant for its node; ignored");
                         return None;
                     }
-                }
                 Some(MapResponse {
                 peers_removed: Some(vec![node_id.as_i64()]),
                 control_time: Some(chrono::Utc::now().to_rfc3339()),

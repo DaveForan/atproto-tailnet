@@ -39,6 +39,10 @@ fn validate_tags(tags: Vec<String>) -> Result<Vec<String>, String> {
     if let Some(bad) = tags.iter().find(|t| !coord_core::routes::is_valid_tag(t)) {
         return Err(format!("invalid tag {bad:?}: must match ^tag:[a-z0-9-]{{1,63}}$"));
     }
+    // The gateway tag marks the coordinator's own node: it reserves the gateway name and hides the node from device lists.
+    if tags.iter().any(|t| t == coord_core::GATEWAY_TAG) {
+        return Err(format!("{} is reserved for the coordinator", coord_core::GATEWAY_TAG));
+    }
     let mut tags = tags;
     tags.sort();
     tags.dedup();
@@ -88,11 +92,10 @@ pub async fn create_preauth_key(
             return bad_request(format!("expiration_seconds must be 1..={MAX_KEY_EXPIRATION_SECS}"));
         }
     };
-    if let Some(owner) = &body.owner {
-        if let Err(e) = validate_owner(owner) {
+    if let Some(owner) = &body.owner
+        && let Err(e) = validate_owner(owner) {
             return bad_request(e);
         }
-    }
     let tags = match validate_tags(body.tags.unwrap_or_default()) {
         Ok(t) => t,
         Err(e) => return bad_request(e),

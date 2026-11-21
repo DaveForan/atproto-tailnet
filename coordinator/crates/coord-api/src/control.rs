@@ -30,8 +30,8 @@ pub async fn handle_register(
     // A known machine re-registering with its current (or rotated-from) node key
     // is already authorized; tailscaled does this on every restart without an auth key.
     let mut known_tenant = None;
-    if let Some(existing) = state.store.get_node_by_machine_key(machine_key).await {
-        if let Some(detail) = state.store.get_node_info(existing).await {
+    if let Some(existing) = state.store.get_node_by_machine_key(machine_key).await
+        && let Some(detail) = state.store.get_node_info(existing).await {
             known_tenant = Some(detail.tenant_id);
             let old_key = req
                 .old_node_key
@@ -87,12 +87,11 @@ pub async fn handle_register(
                 return Ok((serde_json::to_string(&identity_resp)?, None));
             }
         }
-    }
 
     // Check suspension (and tenant mismatch) before validating so a single-use
     // key isn't consumed by a registration that is going to be refused.
-    if let Some(key) = auth_key {
-        if let Some(tid) = state.store.preauth_key_tenant(key).await {
+    if let Some(key) = auth_key
+        && let Some(tid) = state.store.preauth_key_tenant(key).await {
             if state.store.is_tenant_suspended(tid).await {
                 info!(tenant = %tid, "register refused: tenant suspended");
                 return Ok((serde_json::to_string(&error_response(TENANT_SUSPENDED_MSG))?, None));
@@ -102,7 +101,6 @@ pub async fn handle_register(
                 return Ok((serde_json::to_string(&error_response("this machine is registered to a different tailnet"))?, None));
             }
         }
-    }
 
     let grant = match auth_key {
         Some(key) => match state.store.validate_preauth_key(key).await {
@@ -120,9 +118,9 @@ pub async fn handle_register(
         },
     };
 
-    if let Some(ref old_key_str) = req.old_node_key {
-        if let Ok(old_key) = coord_core::keys::parse_node_key(old_key_str) {
-            if old_key != [0u8; 32] {
+    if let Some(ref old_key_str) = req.old_node_key
+        && let Ok(old_key) = coord_core::keys::parse_node_key(old_key_str)
+            && old_key != [0u8; 32] {
                 if let Err(e) = state.store.rotate_node_key(machine_key, &old_key, &node_key_bytes).await {
                     tracing::warn!(error = %e, "rotate_node_key failed");
                 }
@@ -132,8 +130,6 @@ pub async fn handle_register(
                     "node key rotated"
                 );
             }
-        }
-    }
 
     // Client-supplied hostname, reduced to one DNS label (never a dotted name
     // that could spoof another node's FQDN). Unusable names become node-<id>.
@@ -142,7 +138,7 @@ pub async fn handle_register(
         .as_ref()
         .and_then(|h| h.hostname.as_deref())
         .and_then(sanitize::dns_label);
-    let node_info = NodeInfo {
+    let mut node_info = NodeInfo {
         node_key: node_key_bytes.to_vec(),
         machine_key: machine_key.to_vec(),
         disco_key: None,
@@ -160,6 +156,10 @@ pub async fn handle_register(
     // another one, whatever credential it presents.
     if let Err(resp) = enforce_owner_lock(state, tenant_id, owner.as_deref(), machine_key, &node_info.hostname, &node_info.os).await {
         return Ok((serde_json::to_string(&resp)?, None));
+    }
+    if hostname.is_none() {
+        // A nameless node becomes node-<id> once the store gives it an id.
+        node_info.hostname.clear();
     }
     let registration = NodeRegistration {
         owner: grant.owner,
@@ -289,7 +289,7 @@ async fn interactive_sign_in(
     }
 }
 
-/// Stored briefly when a client sends no usable hostname; replaced by node-<id>.
+/// Shown for a client without a usable hostname until it gets its node-<id> name.
 const HOSTNAME_PLACEHOLDER: &str = "node";
 
 pub(crate) const MACHINE_LOCKED_MSG: &str =
@@ -353,19 +353,17 @@ pub async fn handle_map(
         }
         // The relay region the device chose as its home; peers reach it there
         let preferred = req.hostinfo.as_ref().and_then(|h| h.net_info.as_ref()).map(|n| n.preferred_derp);
-        if let Some(region) = preferred.filter(|r| (1..=999).contains(r)) {
-            if let Err(e) = state.store.set_home_relay(node_id, region).await {
+        if let Some(region) = preferred.filter(|r| (1..=999).contains(r))
+            && let Err(e) = state.store.set_home_relay(node_id, region).await {
                 tracing::warn!(error = %e, "set_home_relay failed");
             }
-        }
         // Endpoints and disco key are relayed verbatim to every peer: bound them.
         let endpoints = sanitize::endpoints(req.endpoints.as_deref().unwrap_or_default());
         let disco_key = req.disco_key.as_deref().and_then(sanitize::disco_key);
-        if !endpoints.is_empty() || disco_key.is_some() {
-            if let Err(e) = state.store.update_endpoints(node_id, endpoints, disco_key).await {
+        if (!endpoints.is_empty() || disco_key.is_some())
+            && let Err(e) = state.store.update_endpoints(node_id, endpoints, disco_key).await {
                 tracing::warn!(error = %e, "update_endpoints failed");
             }
-        }
     }
 
     build_map_snapshot(state, machine_key).await

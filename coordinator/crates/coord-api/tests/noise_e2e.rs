@@ -11,7 +11,13 @@ const NOISE_PATTERN: &str = "Noise_IK_25519_ChaChaPoly_BLAKE2s";
 const VERSION: u16 = 68;
 
 async fn start() -> (SocketAddr, Arc<CoordinatorState>) {
-    let state = Arc::new(CoordinatorState::new(coord_noise::generate_control_key()));
+    start_with(|b| b).await
+}
+
+async fn start_with(
+    configure: impl FnOnce(coord_api::CoordinatorStateBuilder) -> coord_api::CoordinatorStateBuilder,
+) -> (SocketAddr, Arc<CoordinatorState>) {
+    let state = Arc::new(configure(CoordinatorState::builder(coord_noise::generate_control_key())).build());
     let app = coord_api::router(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -132,4 +138,101 @@ async fn upgrades_with_a_broken_handshake_are_refused() {
     let mut msg = msg;
     msg[2] = 4;
     assert!(upgrade(addr, &msg).await.0.contains("400"));
+}
+
+/// Upgrade, finish the Noise handshake and start HTTP/2. Returns the client and
+/// the connection task, which ends when the server closes the session.
+async fn open_session(
+    addr: SocketAddr,
+    state: &CoordinatorState,
+    seed: u8,
+) -> (h2::client::SendRequest<bytes::Bytes>, tokio::task::JoinHandle<()>) {
+    let mut hs = initiator(&[seed; 32], &state.control_key().public, VERSION);
+    let (status, mut tcp) = upgrade(addr, &initiation_message(&mut hs, VERSION)).await;
+    assert!(status.contains("101"), "{status}");
+    let mut response = [0u8; 51];
+    tcp.read_exact(&mut response).await.unwrap();
+    hs.read_message(&response[3..], &mut [0u8; 64]).unwrap();
+    let (initiator_key, responder_key) = hs.dangerously_get_raw_split();
+    let clear = coord_noise::spawn_noise_bridge(tcp, coord_noise::NoiseTransport::new(initiator_key, responder_key));
+    let (h2, conn) = h2::client::handshake(clear).await.unwrap();
+    let task = tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    (h2, task)
+}
+
+async fn register(h2: &mut h2::client::SendRequest<bytes::Bytes>, body: serde_json::Value) -> serde_json::Value {
+    let mut ready = h2.clone().ready().await.unwrap();
+    let req = axum::http::Request::builder().method("POST").uri("http://control.test/machine/register").body(()).unwrap();
+    let (resp, mut send) = ready.send_request(req, false).unwrap();
+    send.send_data(bytes::Bytes::from(body.to_string()), true).unwrap();
+    let mut recv = resp.await.unwrap().into_body();
+    let mut out = Vec::new();
+    while let Some(chunk) = recv.data().await {
+        let chunk = chunk.unwrap();
+        recv.flow_control().release_capacity(chunk.len()).unwrap();
+        out.extend_from_slice(&chunk);
+    }
+    serde_json::from_slice(&out).unwrap()
+}
+
+#[tokio::test]
+async fn sessions_that_do_not_authenticate_in_time_are_closed() {
+    let deadline = std::time::Duration::from_millis(300);
+    let (addr, state) = start_with(|b| b.with_noise_auth_deadline(deadline)).await;
+    let tenant = state.store().create_tenant("noise-idle".into(), None, None).await.unwrap().id;
+    let auth_key = state.store().create_preauth_key(tenant, true).await.unwrap();
+
+    // A session that only completed the handshake
+    let (_idle, idle_conn) = open_session(addr, &state, 41).await;
+    // A session whose register request fails does not count either
+    let (mut failed, failed_conn) = open_session(addr, &state, 42).await;
+    let out = register(&mut failed, serde_json::json!({
+        "Version": VERSION,
+        "NodeKey": format!("nodekey:{}", hex::encode([43u8; 32])),
+        "Auth": { "AuthKey": "tskey-auth-wrong" },
+    })).await;
+    assert!(!out["Error"].as_str().unwrap_or("").is_empty(), "{out}");
+    // A registered device stays connected
+    let (mut good, good_conn) = open_session(addr, &state, 44).await;
+    let body = serde_json::json!({
+        "Version": VERSION,
+        "NodeKey": format!("nodekey:{}", hex::encode([45u8; 32])),
+        "Auth": { "AuthKey": auth_key },
+        "Hostinfo": { "Hostname": "stays", "OS": "linux" }
+    });
+    assert_eq!(register(&mut good, body.clone()).await["MachineAuthorized"], true);
+
+    let wait = deadline * 6;
+    tokio::time::timeout(wait, idle_conn).await.expect("an idle session is closed").unwrap();
+    tokio::time::timeout(wait, failed_conn).await.expect("a failed registration does not keep the session").unwrap();
+    assert!(!good_conn.is_finished(), "an authenticated session stays open");
+    assert_eq!(register(&mut good, body).await["MachineAuthorized"], true, "and keeps working");
+}
+
+#[tokio::test]
+async fn noise_connections_per_client_address_are_capped() {
+    let (addr, state) = start_with(|b| b.with_max_noise_connections_per_ip(2)).await;
+    let (first, first_conn) = open_session(addr, &state, 51).await;
+    let (_second, _second_conn) = open_session(addr, &state, 52).await;
+
+    let mut hs = initiator(&[53u8; 32], &state.control_key().public, VERSION);
+    let (status, _) = upgrade(addr, &initiation_message(&mut hs, VERSION)).await;
+    assert!(status.contains("429"), "a third connection from one address is refused: {status}");
+
+    // Closing a session frees its slot
+    drop(first);
+    first_conn.abort();
+    let mut admitted = false;
+    for _ in 0..50 {
+        let mut hs = initiator(&[54u8; 32], &state.control_key().public, VERSION);
+        let (status, _tcp) = upgrade(addr, &initiation_message(&mut hs, VERSION)).await;
+        if status.contains("101") {
+            admitted = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(admitted, "a freed slot admits a new connection");
 }

@@ -155,11 +155,10 @@ async fn a_device_registered_at_one_replica_is_a_peer_at_the_other() {
     assert_eq!(register(&state_a, &two, Some(key), None).await["MachineAuthorized"], true);
     let joined = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            if let Ok(coord_store::PeerEvent::NodeJoined { tenant_id, .. }) = events.recv().await {
-                if tenant_id == tenant {
+            if let Ok(coord_store::PeerEvent::NodeJoined { tenant_id, .. }) = events.recv().await
+                && tenant_id == tenant {
                     return;
                 }
-            }
         }
     })
     .await;

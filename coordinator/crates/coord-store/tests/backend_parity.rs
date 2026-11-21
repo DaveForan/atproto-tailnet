@@ -368,11 +368,10 @@ async fn delete_nodes_by_owner_scoped_to_tenant_and_owner() {
         while let Ok(ev) = rx.try_recv() {
             // On PostgreSQL the channel also carries events of other replicas
             // (other tests on the same database): look at this tenant only.
-            if let PeerEvent::NodeOffline { node_id, tenant_id } = ev {
-                if tenant_id == t {
+            if let PeerEvent::NodeOffline { node_id, tenant_id } = ev
+                && tenant_id == t {
                     offline.push(node_id);
                 }
-            }
         }
         assert_eq!(offline, bob_nodes, "{}", b.name);
 
@@ -892,4 +891,129 @@ async fn sqlite_hashes_plain_keys_stored_before_the_migration() {
     assert_eq!(prefix, coord_core::preauth_key_prefix(&plain));
     assert_eq!(store.list_preauth_keys(t).await[0].prefix, prefix);
     assert!(store.validate_preauth_key(&plain).await.is_some(), "the old key keeps working");
+}
+
+async fn reg(s: &Store, t: TenantId, name: &str) -> (coord_core::NodeId, [u8; 32]) {
+    let mk = rand_bytes::<32>();
+    (s.register_node(t, mk, info(name, mk)).await.unwrap().0, mk)
+}
+
+async fn hostname_of(s: &Store, id: coord_core::NodeId) -> String {
+    s.get_node_info(id).await.unwrap().info.hostname
+}
+
+#[tokio::test]
+async fn device_names_are_unique_per_tenant() {
+    for b in backends().await {
+        let s = &b.store;
+        let t = tenant(s, "names").await;
+        let other = tenant(s, "names-other").await;
+
+        let (a, a_mk) = reg(s, t, "laptop").await;
+        let (bb, _) = reg(s, t, "laptop").await;
+        let (c, _) = reg(s, t, "Laptop").await;
+        let (elsewhere, _) = reg(s, other, "laptop").await;
+        assert_eq!(hostname_of(s, a).await, "laptop", "{}: the first keeps its name", b.name);
+        assert_eq!(hostname_of(s, bb).await, "laptop-1", "{}", b.name);
+        assert_eq!(hostname_of(s, c).await, "laptop-2", "{}: names compare as DNS labels", b.name);
+        assert_eq!(hostname_of(s, elsewhere).await, "laptop", "{}: another tenant is separate", b.name);
+
+        // Re-registering keeps a node's own name; the others stay stable
+        s.register_node(t, a_mk, info("laptop", a_mk)).await.unwrap();
+        assert_eq!(hostname_of(s, a).await, "laptop", "{}", b.name);
+        assert_eq!(hostname_of(s, bb).await, "laptop-1", "{}", b.name);
+
+        // A freed suffix is reused lowest-first
+        s.delete_node(bb).await.unwrap();
+        let (d, _) = reg(s, t, "laptop").await;
+        assert_eq!(hostname_of(s, d).await, "laptop-1", "{}", b.name);
+
+        // Renames follow the same rule
+        s.rename_node(c, "laptop".into()).await.unwrap();
+        assert_eq!(hostname_of(s, c).await, "laptop-2", "{}", b.name);
+        s.rename_node(c, "desk".into()).await.unwrap();
+        assert_eq!(hostname_of(s, c).await, "desk", "{}", b.name);
+        s.rename_node(d, "desk".into()).await.unwrap();
+        assert_eq!(hostname_of(s, d).await, "desk-1", "{}", b.name);
+
+        // Only the gateway node gets the gateway's name
+        let (squatter, _) = reg(s, t, "gateway").await;
+        assert_eq!(hostname_of(s, squatter).await, "gateway-1", "{}", b.name);
+        let gw_mk = rand_bytes::<32>();
+        let gw_reg = NodeRegistration { tags: vec![coord_core::GATEWAY_TAG.into()], ..Default::default() };
+        let (gw, _, _) = s.register_node_with(t, gw_mk, info("gateway", gw_mk), gw_reg.clone()).await.unwrap();
+        assert_eq!(hostname_of(s, gw).await, "gateway", "{}", b.name);
+        s.register_node_with(t, gw_mk, info("gateway", gw_mk), gw_reg).await.unwrap();
+        assert_eq!(hostname_of(s, gw).await, "gateway", "{}: the gateway keeps it on restart", b.name);
+        s.rename_node(squatter, "gateway".into()).await.unwrap();
+        assert_eq!(hostname_of(s, squatter).await, "gateway-1", "{}", b.name);
+
+        // Concurrent registrations with one name all get different names
+        let handles: Vec<_> = (0..12)
+            .map(|_| {
+                let s = b.store.clone();
+                tokio::spawn(async move {
+                    let mk = rand_bytes::<32>();
+                    s.register_node(t, mk, info("phone", mk)).await.unwrap().0
+                })
+            })
+            .collect();
+        let mut names = std::collections::HashSet::new();
+        for h in handles {
+            let id = h.await.unwrap();
+            assert!(names.insert(hostname_of(s, id).await), "{}: concurrent registrations got the same name", b.name);
+        }
+        assert!(names.contains("phone") && names.contains("phone-11"), "{}: {names:?}", b.name);
+
+        for t in [t, other] {
+            for n in s.list_nodes_for_tenant(t).await {
+                s.delete_node(n.id).await.unwrap();
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn tenant_parent_can_be_set_moved_and_cleared() {
+    use coord_core::CoordError;
+    for b in backends().await {
+        let s = &b.store;
+        let p1 = tenant(s, "par1").await;
+        let p2 = tenant(s, "par2").await;
+        let child = tenant(s, "kid").await;
+        let grandchild = tenant(s, "grandkid").await;
+
+        let (t, old) = s.set_tenant_parent(child, Some(p1)).await.unwrap();
+        assert_eq!((t.parent_id, old), (Some(p1), None), "{}", b.name);
+        assert_eq!(s.get_tenant(child).await.unwrap().parent_id, Some(p1), "{}", b.name);
+        assert_eq!(s.get_child_tenants(p1).await.len(), 1, "{}", b.name);
+
+        let (_, old) = s.set_tenant_parent(child, Some(p2)).await.unwrap();
+        assert_eq!(old, Some(p1), "{}: the previous parent is reported", b.name);
+        assert!(s.get_child_tenants(p1).await.is_empty(), "{}", b.name);
+
+        // Refused: itself, a descendant, a second level, missing tenants
+        assert!(matches!(s.set_tenant_parent(child, Some(child)).await, Err(CoordError::Protocol(_))), "{}", b.name);
+        assert!(matches!(s.set_tenant_parent(p2, Some(child)).await, Err(CoordError::Protocol(_))), "{}: a descendant", b.name);
+        assert!(matches!(s.set_tenant_parent(grandchild, Some(child)).await, Err(CoordError::Protocol(_))), "{}: parent is a child", b.name);
+        assert!(matches!(s.set_tenant_parent(p2, Some(p1)).await, Err(CoordError::Protocol(_))), "{}: p2 has children", b.name);
+        let ghost = TenantId::generate();
+        assert!(matches!(s.set_tenant_parent(child, Some(ghost)).await, Err(CoordError::TenantNotFound(g)) if g == ghost), "{}", b.name);
+        assert!(matches!(s.set_tenant_parent(ghost, None).await, Err(CoordError::TenantNotFound(g)) if g == ghost), "{}", b.name);
+        assert_eq!(s.get_tenant(child).await.unwrap().parent_id, Some(p2), "{}: refusals change nothing", b.name);
+
+        let (t, old) = s.set_tenant_parent(child, None).await.unwrap();
+        assert_eq!((t.parent_id, old), (None, Some(p2)), "{}", b.name);
+        assert_eq!(s.get_tenant(child).await.unwrap().parent_id, None, "{}", b.name);
+
+        // Two tenants made each other's parent at once: at most one wins
+        let x = tenant(s, "x").await;
+        let y = tenant(s, "y").await;
+        let (s1, s2) = (b.store.clone(), b.store.clone());
+        let (r1, r2) = tokio::join!(
+            tokio::spawn(async move { s1.set_tenant_parent(x, Some(y)).await.is_ok() }),
+            tokio::spawn(async move { s2.set_tenant_parent(y, Some(x)).await.is_ok() }),
+        );
+        assert!(!(r1.unwrap() && r2.unwrap()), "{}: a parent cycle was created", b.name);
+    }
 }

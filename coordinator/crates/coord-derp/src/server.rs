@@ -197,6 +197,8 @@ struct Client {
     /// Re-read at every admission re-check: a parent/child link can close
     /// (posture, suspension) while the client stays connected.
     scope: RwLock<Scope>,
+    /// An in-process client (the gateway). It has no connection to close.
+    local: bool,
     queue: SendQueue,
     /// Peers that sent packets here; told when this client disconnects.
     senders: Mutex<HashSet<[u8; 32]>>,
@@ -255,6 +257,7 @@ impl DerpServer {
             id: self.next_id.fetch_add(1, Ordering::Relaxed),
             key,
             scope: RwLock::new(scope),
+            local: true,
             queue: SendQueue {
                 items: Mutex::new(VecDeque::new()),
                 notify: Notify::new(),
@@ -269,6 +272,38 @@ impl DerpServer {
             .insert(key, client.clone());
         debug!(node = %hex::encode(&key[..8]), "local derp client attached");
         LocalClient { server: self.clone(), client, not_here: Mutex::new(NoticeLimiter::new()) }
+    }
+
+    /// The current scope of the active client with `key`.
+    pub fn scope_of(&self, key: &[u8; 32]) -> Option<Scope> {
+        self.clients.read().unwrap_or_else(|e| e.into_inner()).get(key).map(|c| c.scope())
+    }
+
+    /// Re-admit now, instead of at the next keep-alive, the connected clients
+    /// whose tenant is in `tenants` (`None`: every client). A refused remote
+    /// client is disconnected. A refused local client keeps only its own tenant.
+    pub async fn rescope(&self, tenants: Option<&[[u8; 16]]>) {
+        let clients: Vec<Arc<Client>> = self
+            .clients
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .filter(|c| tenants.is_none_or(|t| t.contains(&c.scope().tenant)))
+            .cloned()
+            .collect();
+        for client in clients {
+            match self.admission.admit(&client.key).await {
+                Some(scope) => client.set_scope(scope),
+                None if client.local => {
+                    let tenant = client.scope().tenant;
+                    client.set_scope(Scope { tenant, parent: None });
+                }
+                None => {
+                    info!(node = %hex::encode(&client.key[..8]), "derp client no longer admitted");
+                    client.queue.close();
+                }
+            }
+        }
     }
 
     /// Serve one client over `io` (the stream after the HTTP upgrade) until
@@ -298,6 +333,7 @@ impl DerpServer {
             id: self.next_id.fetch_add(1, Ordering::Relaxed),
             key,
             scope: RwLock::new(scope),
+            local: false,
             queue: SendQueue {
                 items: Mutex::new(VecDeque::new()),
                 notify: Notify::new(),
@@ -933,6 +969,49 @@ mod tests {
         adm.0.store(false, Ordering::Relaxed);
         tokio::time::sleep(KEEP_ALIVE + Duration::from_secs(10)).await;
         wait_for_clients(&s, 0).await;
+    }
+
+    const LOCAL_KEY: [u8; 32] = [2; 32];
+
+    /// Admits every key into tenant 1. `LOCAL_KEY` has a parent link only while `linked` is set.
+    struct Linkable {
+        linked: AtomicBool,
+        admit_remote: AtomicBool,
+    }
+
+    #[async_trait::async_trait]
+    impl Admission for Linkable {
+        async fn admit(&self, k: &[u8; 32]) -> Option<Scope> {
+            if *k == LOCAL_KEY {
+                return self.linked.load(Ordering::Relaxed).then_some(Scope { tenant: [1; 16], parent: Some([9; 16]) });
+            }
+            self.admit_remote.load(Ordering::Relaxed).then_some(Scope { tenant: [1; 16], parent: None })
+        }
+    }
+
+    #[tokio::test]
+    async fn rescope_applies_new_scopes_at_once() {
+        let adm = Arc::new(Linkable { linked: AtomicBool::new(true), admit_remote: AtomicBool::new(true) });
+        let s = server(adm.clone());
+        let _remote = TestClient::connect(&s, 1).await.unwrap();
+        wait_for_clients(&s, 1).await;
+        let local = s.attach_local(LOCAL_KEY, Scope { tenant: [1; 16], parent: Some([9; 16]) });
+        let parent = Scope { tenant: [9; 16], parent: None };
+        let scope_of = |k: [u8; 32]| s.scope_of(&k).unwrap();
+        assert!(scope_of(local.key()).can_reach(&parent));
+
+        // The link closes: the local client loses it, without waiting for a keep-alive
+        adm.linked.store(false, Ordering::Relaxed);
+        s.rescope(Some(&[[2; 16]])).await;
+        assert!(scope_of(local.key()).can_reach(&parent), "other tenants are not re-checked");
+        s.rescope(Some(&[[1; 16]])).await;
+        assert!(!scope_of(local.key()).can_reach(&parent));
+        assert_eq!(s.connected_clients(), 2, "a refused local client stays attached");
+
+        // A refused remote client is disconnected
+        adm.admit_remote.store(false, Ordering::Relaxed);
+        s.rescope(None).await;
+        wait_for_clients(&s, 1).await;
     }
 }
 

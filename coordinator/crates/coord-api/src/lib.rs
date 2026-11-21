@@ -2,6 +2,8 @@ mod state;
 pub mod gateway;
 mod key_handler;
 pub mod client_ip;
+mod conn_limit;
+mod log_limit;
 pub mod derp_handler;
 pub mod device_auth;
 mod noise_handler;
@@ -53,10 +55,27 @@ async fn require_admin_auth(
 
     match token {
         Some(t) if constant_time_eq(t.as_bytes(), expected.as_bytes()) => next.run(req).await,
-        _ => (
-            StatusCode::UNAUTHORIZED,
-            axum::Json(serde_json::json!({"error": "unauthorized: invalid or missing admin API key"})),
-        ).into_response(),
+        _ => {
+            let peer = req
+                .extensions()
+                .get::<axum::extract::ConnectInfo<std::net::SocketAddr>>()
+                .map(|c| c.0.ip());
+            let client_ip = state.trusted_proxies.client_ip(peer, req.headers());
+            if let Some(suppressed) = state.admin_auth_log.check(client_ip) {
+                // Never log the presented token.
+                tracing::warn!(
+                    client_ip = ?client_ip,
+                    path = %req.uri().path(),
+                    reason = if token.is_some() { "wrong key" } else { "no bearer token" },
+                    suppressed,
+                    "admin API request refused"
+                );
+            }
+            (
+                StatusCode::UNAUTHORIZED,
+                axum::Json(serde_json::json!({"error": "unauthorized: invalid or missing admin API key"})),
+            ).into_response()
+        }
     }
 }
 
@@ -69,6 +88,7 @@ pub fn router(state: Arc<CoordinatorState>) -> Router {
         .route("/tenants/{id}/acl", get(admin::get_acl).post(admin::set_acl_for_tenant))
         .route("/tenants/{id}/posture", put(admin::update_tenant_posture))
         .route("/tenants/{id}/suspended", put(admin::set_tenant_suspended))
+        .route("/tenants/{id}/parent", put(admin::set_tenant_parent))
         .route(
             "/tenants/{id}/nodes",
             get(admin::list_tenant_nodes_handler).delete(admin::delete_tenant_nodes_by_owner),
@@ -257,7 +277,7 @@ pub async fn __test_serve_control_h2(
 }
 
 pub use noise_handler::{MAX_CONCURRENT_STREAMS, MAX_CONTROL_BODY};
-pub use state::DEFAULT_MAX_NOISE_CONNECTIONS;
+pub use state::{DEFAULT_MAX_NOISE_CONNECTIONS, DEFAULT_MAX_NOISE_CONNECTIONS_PER_IP, NOISE_AUTH_DEADLINE};
 
 #[cfg(test)]
 mod tests {

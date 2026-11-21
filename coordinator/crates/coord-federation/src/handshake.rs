@@ -357,14 +357,13 @@ pub async fn handle_commit(
     }
 
     // Check challenge expiry.
-    if let Some(expires_at) = &state.challenge_expires_at {
-        if *expires_at < Utc::now() {
+    if let Some(expires_at) = &state.challenge_expires_at
+        && *expires_at < Utc::now() {
             state.phase = HandshakePhase::Failed;
             state.error = Some("Challenge expired".to_string());
             state.updated_at = Utc::now();
             return Err((state, "Challenge expired before COMMIT received".to_string()));
         }
-    }
 
     // Only the collective we challenged may answer.
     let Some(remote_did) = state.remote_did.clone() else {

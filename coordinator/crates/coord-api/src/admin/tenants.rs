@@ -223,11 +223,14 @@ pub async fn update_tenant_posture(
 
     match state.store.update_tenant_posture(tenant_id, posture).await {
         Ok(tenant) => {
+            state.notify_tenant_changed(tenant_id);
             if let Some(parent) = tenant.parent_id {
                 state.notify_tenant_changed(parent);
             }
+            state.refresh_relay_scopes(tenant_id).await;
             Json(serde_json::json!(TenantResponse::from(tenant))).into_response()
         }
+        Err(coord_core::CoordError::TenantNotFound(_)) => not_found("tenant not found"),
         Err(e) => internal_error(e).into_response(),
     }
 }
@@ -255,9 +258,49 @@ pub async fn set_tenant_suspended(
             if let Some(parent) = tenant.parent_id {
                 state.notify_tenant_changed(parent);
             }
+            state.refresh_relay_scopes(tenant_id).await;
             Json(serde_json::json!(TenantResponse::from(tenant))).into_response()
         }
         Err(coord_core::CoordError::TenantNotFound(_)) => not_found("tenant not found"),
+        Err(e) => internal_error(e).into_response(),
+    }
+}
+
+/// PUT /api/tenants/{id}/parent — body `{"parent_id": "<uuid>" | null}`; null detaches the tenant.
+/// Live streams of the tenant and of the old and new parent resend their peers.
+pub async fn set_tenant_parent(
+    State(state): State<Arc<CoordinatorState>>,
+    Path(id): Path<String>,
+    Json(body): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    let Some(tenant_id) = parse_tenant_id(&id) else {
+        return bad_request("invalid tenant_id");
+    };
+    // The field is required, so a typo cannot detach a tenant by accident.
+    let parent_id = match body.get("parent_id") {
+        Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(p)) => match parse_tenant_id(p) {
+            Some(p) => Some(p),
+            None => return bad_request("invalid parent_id"),
+        },
+        _ => return bad_request("parent_id is required: a tenant id or null"),
+    };
+    match state.store.set_tenant_parent(tenant_id, parent_id).await {
+        Ok((tenant, old_parent)) => {
+            tracing::info!(tenant = %tenant_id, parent = ?parent_id, old_parent = ?old_parent, "tenant parent changed");
+            let mut changed = vec![tenant_id];
+            changed.extend(old_parent);
+            changed.extend(parent_id);
+            changed.dedup();
+            for t in changed {
+                state.notify_tenant_changed(t);
+            }
+            state.refresh_relay_scopes(tenant_id).await;
+            Json(serde_json::json!(TenantResponse::from(tenant))).into_response()
+        }
+        Err(coord_core::CoordError::TenantNotFound(missing)) if missing == tenant_id => not_found("tenant not found"),
+        Err(coord_core::CoordError::TenantNotFound(_)) => not_found("parent tenant not found"),
+        Err(coord_core::CoordError::Protocol(msg)) => bad_request(&msg),
         Err(e) => internal_error(e).into_response(),
     }
 }
