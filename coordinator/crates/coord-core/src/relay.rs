@@ -19,3 +19,14 @@ pub struct RelayInfo {
     /// 0 = no STUN on this relay.
     pub stun_port: u16,
 }
+
+/// The public keys of the gateway that a relay process runs for one tenant (ADR-0038).
+/// The relay offers them; a control process registers the gateway node from them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GatewayOffer {
+    pub node_key: [u8; 32],
+    pub machine_key: [u8; 32],
+    pub disco_key: [u8; 32],
+    /// The DERP region of the relay that runs the gateway.
+    pub region_id: i32,
+}

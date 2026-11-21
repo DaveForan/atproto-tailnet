@@ -150,42 +150,97 @@ impl Services for StoreServices {
 }
 
 impl CoordinatorState {
-    /// Start the gateway of a tenant when the tenant has an HTTPS service and
-    /// its gateway is not running here. Does nothing when this process has no
-    /// gateway configuration.
+    /// Brings the gateway of a tenant in line with its HTTPS services. Two parts (ADR-0038):
+    /// a process with a gateway offers its public keys and starts the gateway when its node exists;
+    /// a control process registers the node from the offer. A relay-only process never writes nodes.
     pub async fn sync_gateway(self: &Arc<Self>, tenant: TenantId) {
-        let Some(gateways) = self.gateways_cfg.get().cloned() else { return };
+        let gateways = self.gateways_cfg.get().cloned();
         if self.store.get_tenant(tenant).await.is_none() {
-            gateways.stop(tenant);
-            return;
-        }
-        if gateways.is_running(tenant) {
+            if let Some(g) = &gateways {
+                g.stop(tenant);
+            }
             return;
         }
         let dns = self.store.get_tenant_dns(tenant).await;
         if dns.base_domain.is_none() || !dns.records.iter().any(|r| r.port.is_some()) {
             return;
         }
-        if let Err(e) = self.start_gateway(&gateways, tenant).await {
-            warn!(tenant = %tenant, error = %e, "could not start the gateway of a tailnet");
+        let offered = match &gateways {
+            Some(g) if !g.is_running(tenant) => self.offer_gateway(g, tenant).await,
+            _ => false,
+        };
+        if self.role.serves_control() {
+            self.ensure_gateway_node(tenant).await;
+        }
+        let Some(gateways) = gateways else { return };
+        if gateways.is_running(tenant) {
+            return;
+        }
+        match self.start_gateway(&gateways, tenant).await {
+            Ok(true) => {}
+            // No node yet: a control process registers it and reports the change, which runs this again.
+            Ok(false) if offered && !self.role.serves_control() => {
+                self.store.publish(coord_store::RemoteEvent::TenantChanged(tenant)).await;
+            }
+            Ok(false) => {}
+            Err(e) => warn!(tenant = %tenant, error = %e, "could not start the gateway of a tailnet"),
         }
     }
 
-    async fn start_gateway(self: &Arc<Self>, gateways: &Arc<Gateways>, tenant: TenantId) -> Result<(), String> {
-        let service_domain = self.caches.gateways.service_domain().ok_or("no service domain (COORD_SERVICE_DOMAIN)")?.to_string();
-        self.store.get_tenant(tenant).await.ok_or("tenant not found")?;
+    fn gateway_offer(&self, gateways: &Gateways, tenant: TenantId) -> coord_core::GatewayOffer {
         let tenant_bytes = *tenant.as_uuid().as_bytes();
-        let node_secret = coord_gateway::derive_key(&gateways.secret, &tenant_bytes, "node");
-        let node_key = public_key(&node_secret);
-        let machine_key = public_key(&coord_gateway::derive_key(&gateways.secret, &tenant_bytes, "machine"));
-        // Devices need a disco key to treat the gateway as a peer.
-        // The gateway does not answer disco, so devices reach it through the relay.
-        let disco_key = public_key(&coord_gateway::derive_key(&gateways.secret, &tenant_bytes, "disco"));
+        let key = |purpose| public_key(&coord_gateway::derive_key(&gateways.secret, &tenant_bytes, purpose));
+        coord_core::GatewayOffer {
+            node_key: key("node"),
+            machine_key: key("machine"),
+            // Devices need a disco key to treat the gateway as a peer.
+            // The gateway does not answer disco, so devices reach it through the relay.
+            disco_key: key("disco"),
+            // Devices send to a peer through its home relay. The gateway's home relay is this process.
+            region_id: self.own_relay.as_ref().map(|r| r.region_id).unwrap_or(crate::state::BUILTIN_RELAY_REGION_ID),
+        }
+    }
 
+    /// Stores the keys of this process's gateway for `tenant`. Returns true when the stored offer is now ours.
+    async fn offer_gateway(&self, gateways: &Gateways, tenant: TenantId) -> bool {
+        let offer = self.gateway_offer(gateways, tenant);
+        if self.store.get_gateway_offer(tenant).await.as_ref() == Some(&offer) {
+            return true;
+        }
+        match self.store.offer_gateway(tenant, &offer).await {
+            Ok(()) => true,
+            Err(e) => {
+                warn!(tenant = %tenant, error = %e, "could not offer the gateway of a tailnet");
+                false
+            }
+        }
+    }
+
+    /// Control side: registers the gateway node of `tenant` from the stored offer.
+    /// The offer comes from a less trusted process, so its keys must not belong to any other node.
+    async fn ensure_gateway_node(self: &Arc<Self>, tenant: TenantId) {
+        let Some(offer) = self.store.get_gateway_offer(tenant).await else { return };
+        let by_node_key = self.store.get_node_by_node_key(&offer.node_key).await;
+        let by_machine_key = self.store.get_node_by_machine_key(&offer.machine_key).await;
+        let current = self.caches.gateways.get(tenant);
+        if let (Some(node), Some(machine)) = (by_node_key, by_machine_key)
+            && node == machine
+            && current == Some(node.as_i64())
+        {
+            return; // already registered with these keys
+        }
+        let nodes = self.store.list_nodes_for_tenant(tenant).await;
+        for holder in [by_node_key, by_machine_key].into_iter().flatten() {
+            let is_gateway_here = nodes.iter().any(|n| n.id == holder && n.attrs.owner.is_none() && n.attrs.tags.iter().any(|t| t == GATEWAY_TAG));
+            if !is_gateway_here {
+                error!(tenant = %tenant, node = holder.as_i64(), "gateway offer refused: its keys belong to another node");
+                return;
+            }
+        }
         let info = NodeInfo {
-            node_key: node_key.to_vec(),
-            machine_key: machine_key.to_vec(),
-            disco_key: Some(format!("discokey:{}", hex::encode(disco_key))),
+            node_key: offer.node_key.to_vec(),
+            machine_key: offer.machine_key.to_vec(),
+            disco_key: Some(format!("discokey:{}", hex::encode(offer.disco_key))),
             endpoints: vec![],
             hostname: GATEWAY_HOSTNAME.into(),
             os: "gateway".into(),
@@ -193,19 +248,47 @@ impl CoordinatorState {
             ipv6: None,
         };
         let registration = NodeRegistration { owner: None, tags: vec![GATEWAY_TAG.into()], ephemeral: false, advertised_routes: None };
-        let (node_id, addr, _) = self
-            .store
-            .register_node_with(tenant, machine_key, info, registration)
-            .await
-            .map_err(|e| format!("cannot register the gateway node: {e}"))?;
-        // Devices send to a peer through its home relay. The gateway's home relay is this process.
-        let region = self.own_relay.as_ref().map(|r| r.region_id).unwrap_or(crate::state::BUILTIN_RELAY_REGION_ID);
-        let _ = self.store.set_home_relay(node_id, region).await;
+        let node_id = match self.store.register_node_with(tenant, offer.machine_key, info, registration).await {
+            Ok((node_id, _, _)) => node_id,
+            Err(e) => {
+                warn!(tenant = %tenant, error = %e, "cannot register the gateway node");
+                return;
+            }
+        };
+        let _ = self.store.set_home_relay(node_id, offer.region_id).await;
         let _ = self.store.set_node_online(node_id, true).await;
-        self.store
-            .set_tenant_config(tenant, CONFIG_GATEWAY, Some(serde_json::json!({ "node_id": node_id.as_i64() })))
-            .await
-            .map_err(|e| format!("cannot record the gateway node: {e}"))?;
+        if let Err(e) = self.store.set_tenant_config(tenant, CONFIG_GATEWAY, Some(serde_json::json!({ "node_id": node_id.as_i64() }))).await {
+            warn!(tenant = %tenant, error = %e, "cannot record the gateway node");
+            return;
+        }
+        self.caches.gateways.set(tenant, node_id.as_i64());
+        // A new gateway secret gives new keys and a new node. Remove the node of the old keys.
+        if let Some(old) = current.filter(|old| *old != node_id.as_i64())
+            && nodes.iter().any(|n| n.id.as_i64() == old && n.attrs.owner.is_none() && n.attrs.tags.iter().any(|t| t == GATEWAY_TAG))
+        {
+            let _ = self.store.delete_node(NodeId::new(old)).await;
+        }
+        info!(tenant = %tenant, node = node_id.as_i64(), "gateway node registered");
+        self.notify_tenant_changed(tenant);
+    }
+
+    /// Starts the gateway when a control process has registered its node. `Ok(false)` = no node yet.
+    async fn start_gateway(self: &Arc<Self>, gateways: &Arc<Gateways>, tenant: TenantId) -> Result<bool, String> {
+        let service_domain = self.caches.gateways.service_domain().ok_or("no service domain (COORD_SERVICE_DOMAIN)")?.to_string();
+        let tenant_bytes = *tenant.as_uuid().as_bytes();
+        let node_secret = coord_gateway::derive_key(&gateways.secret, &tenant_bytes, "node");
+        let node_key = public_key(&node_secret);
+        let Some(node_id) = self.store.get_node_by_node_key(&node_key).await else { return Ok(false) };
+        if self.store.get_node_tenant(node_id).await != Some(tenant) {
+            return Ok(false);
+        }
+        // The netmaps name the gateway by the recorded node. Wait until that is this node.
+        let recorded = self.store.get_tenant_configs(tenant).await.map_err(|e| e.to_string())?;
+        let recorded = recorded.iter().find(|(kind, _)| kind == CONFIG_GATEWAY).and_then(|(_, v)| v["node_id"].as_i64());
+        if recorded != Some(node_id.as_i64()) {
+            return Ok(false);
+        }
+        let addr = self.store.get_node_ipv4(node_id).await.ok_or("the gateway node has no address")?;
         self.caches.gateways.set(tenant, node_id.as_i64());
 
         // The same rule as for devices: no parent link while the tenant is Closed or either side is suspended.
@@ -227,8 +310,7 @@ impl CoordinatorState {
         });
         gateways.running.lock().unwrap_or_else(|e| e.into_inner()).insert(tenant, stack);
         info!(tenant = %tenant, node = node_id.as_i64(), %addr, "gateway joined the tailnet");
-        self.notify_tenant_changed(tenant);
-        Ok(())
+        Ok(true)
     }
 
     /// Sets the domain of HTTPS service names (ADR-0038). Call once, before the gateways start and before any netmap.
@@ -245,11 +327,14 @@ impl CoordinatorState {
         self.gateways().is_some() || (!self.role.serves_relay() && self.caches.gateways.service_domain().is_some())
     }
 
-    /// Start the gateways of all tenants that have HTTPS services. Call once at startup.
+    /// Offers, registers and starts the gateways of all tenants that have HTTPS services, as far as this process's role goes.
+    /// Call once at startup.
     pub async fn start_gateways(self: &Arc<Self>) {
         if self.gateways_cfg.get().is_none() {
             self.report_gateway_off().await;
-            return;
+            if !self.role.serves_control() {
+                return;
+            }
         }
         for tenant in self.store.list_tenants().await {
             self.sync_gateway(tenant.id).await;

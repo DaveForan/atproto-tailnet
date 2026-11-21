@@ -60,6 +60,7 @@ pub struct MemoryStore {
     /// region id -> (relay, last seen in unix seconds)
     relays: Mutex<HashMap<i32, (coord_core::RelayInfo, i64)>>,
     home_relays: Mutex<HashMap<NodeId, i32>>,
+    gateway_offers: Mutex<HashMap<TenantId, coord_core::GatewayOffer>>,
     nodes: Mutex<HashMap<NodeId, StoredNode>>,
     machine_key_index: Mutex<HashMap<[u8; 32], NodeId>>,
     preauth_keys: Mutex<HashMap<String, PreAuthKey>>,
@@ -93,6 +94,7 @@ impl MemoryStore {
             remote_tx: broadcast::channel(16).0,
             relays: Mutex::new(HashMap::new()),
             home_relays: Mutex::new(HashMap::new()),
+            gateway_offers: Mutex::new(HashMap::new()),
             nodes: Mutex::new(HashMap::new()),
             machine_key_index: Mutex::new(HashMap::new()),
             preauth_keys: Mutex::new(HashMap::new()),
@@ -242,6 +244,18 @@ impl MemoryStore {
         all.remove(id).and_then(|(p, _)| p.decision)
     }
 
+    pub fn offer_gateway(&self, tenant_id: TenantId, offer: &coord_core::GatewayOffer) -> Result<(), CoordError> {
+        if !self.tenants.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&tenant_id) {
+            return Err(CoordError::TenantNotFound(tenant_id));
+        }
+        self.gateway_offers.lock().unwrap_or_else(|e| e.into_inner()).insert(tenant_id, offer.clone());
+        Ok(())
+    }
+
+    pub fn get_gateway_offer(&self, tenant_id: TenantId) -> Option<coord_core::GatewayOffer> {
+        self.gateway_offers.lock().unwrap_or_else(|e| e.into_inner()).get(&tenant_id).cloned()
+    }
+
     pub fn relay_heartbeat(&self, relay: &coord_core::RelayInfo) -> Result<(), CoordError> {
         let mut relays = self.relays.lock().unwrap_or_else(|e| e.into_inner());
         relays.insert(relay.region_id, (relay.clone(), crate::now_secs()));
@@ -361,6 +375,7 @@ impl MemoryStore {
 
         self.owner_locks.lock().unwrap_or_else(|e| e.into_inner()).retain(|(t, _), _| *t != tenant_id);
         self.tenant_config.lock().unwrap_or_else(|e| e.into_inner()).retain(|(t, _), _| *t != tenant_id);
+        self.gateway_offers.lock().unwrap_or_else(|e| e.into_inner()).remove(&tenant_id);
 
         let mut keys = self.preauth_keys.lock().unwrap_or_else(|e| e.into_inner());
         keys.retain(|_, v| v.tenant_id != tenant_id);

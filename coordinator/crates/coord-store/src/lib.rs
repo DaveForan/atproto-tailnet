@@ -270,3 +270,9 @@ mod generation_tests {
         assert!(generation_to_db(u64::MAX).is_err());
     }
 }
+
+/// A stored gateway offer: three hex keys and the relay region. `None` when a key is not 32 bytes.
+pub(crate) fn decode_gateway_offer((node_key, machine_key, disco_key, region_id): (String, String, String, i32)) -> Option<coord_core::GatewayOffer> {
+    let key = |s: &str| -> Option<[u8; 32]> { hex::decode(s).ok()?.try_into().ok() };
+    Some(coord_core::GatewayOffer { node_key: key(&node_key)?, machine_key: key(&machine_key)?, disco_key: key(&disco_key)?, region_id })
+}

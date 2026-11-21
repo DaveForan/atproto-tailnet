@@ -1048,3 +1048,23 @@ async fn create_with_parent_races_parent_change_without_second_level() {
         }
     }
 }
+
+#[tokio::test]
+async fn a_gateway_offer_is_one_row_per_tenant_and_goes_with_the_tenant() {
+    for b in backends().await {
+        let s = &b.store;
+        let t = tenant(s, "gw-offer").await;
+        assert_eq!(s.get_gateway_offer(t).await, None, "{}", b.name);
+        let first = coord_core::GatewayOffer { node_key: [1; 32], machine_key: [2; 32], disco_key: [3; 32], region_id: 1 };
+        s.offer_gateway(t, &first).await.unwrap();
+        assert_eq!(s.get_gateway_offer(t).await, Some(first), "{}", b.name);
+        let second = coord_core::GatewayOffer { node_key: [4; 32], machine_key: [5; 32], disco_key: [6; 32], region_id: 7 };
+        s.offer_gateway(t, &second).await.unwrap();
+        assert_eq!(s.get_gateway_offer(t).await, Some(second.clone()), "{}: a new offer replaces the old one", b.name);
+
+        let missing = coord_core::TenantId::new(uuid::Uuid::new_v4());
+        assert!(s.offer_gateway(missing, &second).await.is_err(), "{}: no offer for an unknown tenant", b.name);
+        s.delete_tenant(t).await.unwrap();
+        assert_eq!(s.get_gateway_offer(t).await, None, "{}", b.name);
+    }
+}

@@ -208,3 +208,82 @@ async fn a_sign_in_started_at_one_replica_is_approved_at_another_and_finished_at
     assert_eq!(done["MachineAuthorized"], true, "{done}");
     assert!(started.elapsed() < Duration::from_secs(4), "took {:?}", started.elapsed());
 }
+
+/// A process of one role on the shared database. `gateway` = it holds a gateway certificate.
+async fn process(role: coord_api::Role, gateway: bool) -> Option<Arc<CoordinatorState>> {
+    let url = test_database_url()?;
+    let pool = sqlx::PgPool::connect(&url).await.expect("connect to test DB");
+    let store = coord_store::PgStore::new(pool).await.expect("PgStore::new");
+    let mut builder = CoordinatorState::builder(coord_noise::generate_control_key())
+        .with_store(coord_store::Store::Pg(store))
+        .with_role(role)
+        .with_admin_api_key(Some(ADMIN_KEY.to_string()))
+        .with_builtin_relay_region("derp.example.com", 3478);
+    if gateway {
+        let made = rcgen::generate_simple_self_signed(vec!["*.svc.ts.example.com".to_string()]).unwrap();
+        let key = tokio_rustls::rustls::pki_types::PrivateKeyDer::Pkcs8(made.signing_key.serialize_der().into());
+        let certificate = Arc::new(coord_gateway::proxy::Certificate::from_der(vec![made.cert.der().clone()], key).unwrap());
+        builder = builder.with_gateway([9; 32], certificate);
+    }
+    let state = Arc::new(builder.build());
+    assert!(state.set_service_domain("svc.ts.example.com".into()));
+    state.load_config().await;
+    state.spawn_replica_listener();
+    Some(state)
+}
+
+async fn gateway_nodes(state: &Arc<CoordinatorState>, tenant: coord_core::TenantId) -> Vec<coord_core::NodeSummary> {
+    let nodes = state.store().list_nodes_for_tenant(tenant).await;
+    nodes.into_iter().filter(|n| n.attrs.tags.iter().any(|t| t == coord_core::GATEWAY_TAG)).collect()
+}
+
+// ADR-0038: the relay holds the gateway secret but never writes a node.
+// It offers public keys; the control process registers the node from them.
+#[tokio::test]
+async fn a_relay_offers_its_gateway_and_the_control_process_registers_the_node() {
+    let Some(control) = process(coord_api::Role::Control, false).await else { return };
+    let relay = process(coord_api::Role::Relay, true).await.unwrap();
+    let app = coord_api::router(control.clone());
+    let tenant = control.store().create_tenant(slug("gw-split"), None, None).await.unwrap().id;
+    let key = call(&app, "POST", "/api/preauth-keys".into(), Some(serde_json::json!({ "tenant_id": tenant.to_string(), "owner": "alice" }))).await.1;
+    let machine = random_key();
+    let out = register(&control, &machine, key["key"].as_str(), None).await;
+    assert_eq!(out["MachineAuthorized"], true, "{out}");
+    let device = control.store().get_node_by_machine_key(&machine).await.unwrap();
+
+    let dns = serde_json::json!({ "base_domain": "ts.example.com", "records": [{ "name": "wiki", "node": device.as_i64(), "owner": "alice", "port": 8080 }] });
+    let (status, body) = call(&app, "PUT", format!("/api/tenants/{tenant}/dns"), Some(dns)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    eventually("the relay runs the gateway of the tenant", || async { relay.gateways().unwrap().running_count() >= 1 }).await;
+    let gateways = gateway_nodes(&control, tenant).await;
+    assert_eq!(gateways.len(), 1, "one gateway node, registered by the control process");
+    assert!(gateways[0].attrs.owner.is_none());
+    let offer = control.store().get_gateway_offer(tenant).await.expect("the relay stored its offer");
+    assert_eq!(control.store().get_node_by_node_key(&offer.node_key).await, Some(gateways[0].id));
+    control.store().delete_tenant(tenant).await.unwrap();
+}
+
+#[tokio::test]
+async fn a_gateway_offer_with_the_keys_of_a_device_is_refused() {
+    let Some(control) = process(coord_api::Role::Control, false).await else { return };
+    let app = coord_api::router(control.clone());
+    let tenant = control.store().create_tenant(slug("gw-forged"), None, None).await.unwrap().id;
+    let key = call(&app, "POST", "/api/preauth-keys".into(), Some(serde_json::json!({ "tenant_id": tenant.to_string(), "owner": "alice" }))).await.1;
+    let machine = random_key();
+    register(&control, &machine, key["key"].as_str(), None).await;
+    let device = control.store().get_node_by_machine_key(&machine).await.unwrap();
+
+    // A compromised relay offers the machine key of Alice's device as its gateway.
+    let forged = coord_core::GatewayOffer { node_key: random_key(), machine_key: machine, disco_key: random_key(), region_id: 1 };
+    control.store().offer_gateway(tenant, &forged).await.unwrap();
+    let dns = serde_json::json!({ "base_domain": "ts.example.com", "records": [{ "name": "wiki", "node": device.as_i64(), "owner": "alice", "port": 8080 }] });
+    let (status, _) = call(&app, "PUT", format!("/api/tenants/{tenant}/dns"), Some(dns)).await;
+    assert_eq!(status, StatusCode::OK);
+
+    assert!(gateway_nodes(&control, tenant).await.is_empty(), "no gateway node from a forged offer");
+    let nodes = control.store().list_nodes_for_tenant(tenant).await;
+    assert_eq!(nodes.len(), 1);
+    assert_eq!(nodes[0].attrs.owner.as_deref(), Some("alice"), "Alice's device is untouched");
+    control.store().delete_tenant(tenant).await.unwrap();
+}

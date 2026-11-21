@@ -240,6 +240,23 @@ impl Store {
         }
     }
 
+    /// A relay with a gateway publishes the gateway's public keys for a tenant (ADR-0038).
+    pub async fn offer_gateway(&self, tenant_id: TenantId, offer: &coord_core::GatewayOffer) -> Result<(), CoordError> {
+        match self {
+            Store::Memory(m) => m.offer_gateway(tenant_id, offer),
+            Store::Pg(p) => p.offer_gateway(tenant_id, offer).await,
+            Store::Sqlite(s) => s.offer_gateway(tenant_id, offer).await,
+        }
+    }
+
+    pub async fn get_gateway_offer(&self, tenant_id: TenantId) -> Option<coord_core::GatewayOffer> {
+        match self {
+            Store::Memory(m) => m.get_gateway_offer(tenant_id),
+            Store::Pg(p) => p.get_gateway_offer(tenant_id).await,
+            Store::Sqlite(s) => s.get_gateway_offer(tenant_id).await,
+        }
+    }
+
     /// A relay process reports that it is alive.
     pub async fn relay_heartbeat(&self, relay: &coord_core::RelayInfo) -> Result<(), CoordError> {
         match self {
