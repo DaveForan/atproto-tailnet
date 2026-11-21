@@ -97,6 +97,8 @@ the [configuration reference](site/reference/configuration.md).
 | `COORD_CONTROL_KEY_PATH` | Yes | -- | File that holds the Noise control key. The coordinator creates it at first start. Keep it on a persistent volume. If the key changes, all clients must reconnect |
 | `COORD_DERP_MAP` | No | -- | Path to the default DERP map JSON file. Each tenant can override it from the dashboard |
 | `COORD_FEDERATION_ENABLED` | No | `false` | Serves the Rust federation endpoints. Keep it off |
+| `COORD_GATEWAY_UDP_LISTEN` | No | -- | UDP address of the gateway socket, for example `0.0.0.0:41641`. Unset: the gateway uses the relay only. Compose: `GATEWAY_UDP_LISTEN` |
+| `COORD_GATEWAY_ENDPOINTS` | No | -- | Public `ip:port` addresses of that socket, with commas between them (8 at most). Devices get them as the endpoints of the gateway. Compose: `GATEWAY_ENDPOINTS` |
 
 ### Production `.env` example (coordinator mode)
 
@@ -336,6 +338,10 @@ doctl compute firewall create --name atproto-tailnet-fw \
 Do not publish 5432 (PostgreSQL), 3000 (app), 9443 (coordinator) or 2019
 (Caddy admin). The compose file keeps them internal.
 
+With the built-in relay (`DERP_DOMAIN`), also open UDP 3478 (STUN) for all
+sources. With direct paths to the gateway, also open the gateway UDP port
+(see [Direct paths to the gateway](#direct-paths-to-the-gateway)).
+
 ### SSH keys only
 
 Turn off password login:
@@ -525,6 +531,49 @@ service moves the two keys from `coord_data` to `relay_data`.
 `relay` uses its own database role, `tailnet_relay`, with few privileges. The
 one-shot `relay-db-role` service creates the role at each start and keeps its
 random password on `relay_data`. You do not set this password.
+### Direct paths to the gateway
+
+By default, a device reaches the gateway of its tailnet through the relay.
+Direct paths let a device send to the gateway on UDP (ADR-0029 phase 2). They
+are optional. Without them, named HTTPS services work as before.
+
+To turn direct paths on:
+
+1. Set these variables in `.env`. Use the public IP address of the host of the
+   `relay` service. A host name is not permitted.
+
+   ```sh
+   GATEWAY_UDP_LISTEN=0.0.0.0:41641
+   GATEWAY_ENDPOINTS=203.0.113.7:41641
+   ```
+
+2. Publish the UDP port of the `relay` service. Docker Compose cannot publish
+   a port only when a variable is set, so the compose file does not publish
+   it. Add this file as `docker-compose.gateway-udp.yml`:
+
+   ```yaml
+   services:
+     relay:
+       ports:
+         - "41641:41641/udp"
+   ```
+
+   Then start the stack with the two files:
+
+   ```sh
+   docker compose -f docker-compose.coordinator.yml -f docker-compose.gateway-udp.yml up -d
+   ```
+
+3. Open UDP 41641 for all sources in the cloud firewall.
+
+One socket serves the gateways of all tailnets. The port in
+`GATEWAY_ENDPOINTS` must be the published port. If `GATEWAY_ENDPOINTS` is
+empty, the relay logs a warning and devices continue to use the relay. If the
+port is closed in the firewall, devices also continue to use the relay.
+
+The gateway answers only devices of the tailnet. A packet from an unknown
+sender gets no answer.
+
 Each tenant sets its own DERP relays in the dashboard. The service stores the
 settings and sends them to the coordinator for that tenant only. Connected
 devices receive the new relay map immediately. You do not need to restart the

@@ -171,6 +171,8 @@ store_backend = "sqlite"      # "sqlite", "postgres", or "memory"
 | `COORD_DERP_HOSTNAME` | *(none)* | Public hostname of the built-in DERP relay. When set, the relay is region 1 of the default map and the STUN server starts |
 | `COORD_STUN_LISTEN` | `0.0.0.0:3478` | UDP address of the STUN server. `off` disables it |
 | `COORD_DERP_KEY_PATH` | `derp.key` next to the control key | File for the relay key. The coordinator creates it at first start |
+| `COORD_GATEWAY_UDP_LISTEN` | *(none)* | UDP address of the gateway socket for direct paths (ADR-0029 phase 2), for example `0.0.0.0:41641`. Unset: the gateway uses the relay only |
+| `COORD_GATEWAY_ENDPOINTS` | *(none)* | Public `ip:port` addresses of that socket, with commas between them (8 at most). Devices get them as the endpoints of the gateway |
 | `COORD_DERP_MAP` | *(none)* | Path to JSON DERP map file (overrides TOML `derp_map_file`). It replaces the default map. Each tenant can override it from the dashboard |
 | `COORD_FEDERATION_ENABLED` | `false` | Set `true` or `1` to serve the Rust federation endpoints and the broker. Keep it off. The TypeScript service is the authoritative federation endpoint |
 | `DATABASE_URL` | *(none)* | PostgreSQL URL (required when backend = `postgres`) |

@@ -333,7 +333,7 @@ Order matters: each stage gives value alone and unblocks the next.
 - [x] WireGuard sessions (boringtun) over the in-process relay client
 - [x] Per-tailnet userspace TCP/IP (smoltcp); TCP in both directions
 - [x] Caller identity from the tailnet address (store lookup)
-- [ ] Phase 2: answer disco; direct paths to the gateway
+- [x] Phase 2: answer disco; direct paths to the gateway (off unless `COORD_GATEWAY_UDP_LISTEN` is set)
 - [ ] Verify with real Tailscale clients (Mac and phone)
 
 ### 6.6 Named tailnet services (ADR-0030)
