@@ -23,7 +23,7 @@ const configSchema = z.object({
    * Resolver IPs that devices use for baseDomain names with no record (ADR-0028).
    * When empty, devices use their own resolvers through the client forwarder.
    */
-  tailnetDnsUpstream: z.array(z.string().ip()).max(4).default([]),
+  tailnetDnsUpstream: z.array(z.union([z.ipv4(), z.ipv6()])).max(4).default([]),
   controlDomain: z
     .string()
     .regex(/^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$/i, "CONTROL_DOMAIN must be a hostname")

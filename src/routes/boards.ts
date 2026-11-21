@@ -47,7 +47,11 @@ const postBody = z.object({
   web: z.boolean().optional(),
 });
 
-const postPatch = postBody.omit({ board: true }).partial();
+// Zod 4 applies inner defaults through .partial(). Proto drops its default so an absent proto stays absent.
+const postPatch = postBody
+  .omit({ board: true })
+  .partial()
+  .extend({ proto: z.enum(["tcp", "udp"]).optional() });
 
 type Post = typeof servicePosts.$inferSelect;
 

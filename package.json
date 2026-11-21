@@ -30,7 +30,7 @@
     "jose": "^6.2.15",
     "pg": "^8.13.0",
     "pino": "^10.4.0",
-    "zod": "^3.24.0"
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@types/connect-pg-simple": "^7.0.3",

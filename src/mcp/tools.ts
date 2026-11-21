@@ -285,7 +285,7 @@ export const TOOL_DEFS: ToolDef[] = [
       "Replace the tailnet's whole ACL policy. Pass the full policy object, e.g. {\"acls\":[{\"action\":\"accept\",\"src\":[\"*\"],\"dst\":[\"*:*\"]}],\"groups\":{},\"hosts\":{},\"tagOwners\":{}}. A wrong policy can cut devices off — read get_acl first.",
     shape: {
       tailnet_id: tailnetId,
-      policy: z.record(z.unknown()).describe("Full ACL policy object"),
+      policy: z.record(z.string(), z.unknown()).describe("Full ACL policy object"),
     },
     annotations: { ...WRITE, idempotentHint: true },
     run: (api, a) => api.call("PUT", `${t(a)}/acl`, a.policy),

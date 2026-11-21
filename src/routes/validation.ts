@@ -11,12 +11,12 @@ import type { z } from "zod";
  * 400 `{ error: "Invalid body", details }` and returns null.
  * `emptyAsObject` parses a missing body as `{}`.
  */
-export function parseBody<S extends z.ZodTypeAny>(
+export function parseBody<S extends z.ZodType>(
   schema: S,
   req: Request,
   res: Response,
   opts: { emptyAsObject?: boolean } = {},
-): z.SafeParseSuccess<z.output<S>> | null {
+): z.ZodSafeParseSuccess<z.output<S>> | null {
   const parsed = schema.safeParse(opts.emptyAsObject ? (req.body ?? {}) : req.body);
   if (parsed.success) return parsed;
   res.status(400).json({ error: "Invalid body", details: parsed.error.issues });

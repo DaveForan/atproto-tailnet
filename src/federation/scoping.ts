@@ -29,7 +29,7 @@ export const scopeDeclarationSchema = z.object({
   scopes: z.array(z.enum(["local", "regional", "global"])).min(1).max(3),
   region: z.string().regex(/^\d{3}$/, "Must be UN M49 3-digit code").optional(),
   coordinates: z.tuple([z.number().min(-90).max(90), z.number().min(-180).max(180)]).optional(),
-  scopePolicies: z.record(
+  scopePolicies: z.partialRecord(
     z.enum(["local", "regional", "global"]),
     z.object({
       autoAccept: z.boolean(),
