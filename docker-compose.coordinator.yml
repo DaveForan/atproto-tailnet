@@ -91,8 +91,9 @@ services:
       COORD_SERVICE_DOMAIN: ${SERVICE_DOMAIN:-svc.${BASE_DOMAIN:?BASE_DOMAIN must be set}}
       COORD_GATEWAY_CERT: /certs/tls.crt
       COORD_GATEWAY_KEY: /certs/tls.key
-      # The gateway registers its nodes, so it needs write access to the coordinator tables
-      DATABASE_URL: postgresql://${POSTGRES_USER:-atproto_tailnet}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-atproto_tailnet}
+      # A least-privilege database role (service relay-db-role): the relay reads
+      # devices and tailnets, and writes only its own rows.
+      DATABASE_URL_FILE: /var/lib/relay/database-url
       RUST_LOG: "info"
     volumes:
       - relay_data:/var/lib/relay
@@ -112,9 +113,34 @@ services:
       retries: 5
       start_period: 30s
 
+  # ---------- Database role of the relay -----------------------------------
+  # Creates the role of the relay with the grants in scripts/relay-db-role.sql,
+  # at each start, after the control process applied the migrations. The
+  # password is made once and kept in the relay_data volume only.
+  relay-db-role:
+    image: postgres:17-alpine@sha256:526f86d93c6ea08fd3f1fe5605650cacc781b2c6013169a0ad8f42c7d3d84f32
+    user: root
+    restart: "no"
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    environment:
+      PGHOST: postgres
+      PGUSER: ${POSTGRES_USER:-atproto_tailnet}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      PGDATABASE: ${POSTGRES_DB:-atproto_tailnet}
+    entrypoint: ["/bin/sh", "/usr/local/bin/relay-db-role.sh"]
+    volumes:
+      - ./deploy/relay-db-role.sh:/usr/local/bin/relay-db-role.sh:ro
+      - ./scripts/relay-db-role.sql:/relay-db-role.sql:ro
+      - relay_data:/relay
+    networks:
+      - internal
+
   # ---------- Relay keys --------------------------------------------------
   # One-time move: earlier versions kept derp.key and gateway.key next to the
   # control key. The same gateway.key keeps the same gateway node in each tailnet.
+  # It also gives the database URL of the relay to the relay's user.
   relay-keys:
     build:
       context: ./coordinator
@@ -122,6 +148,9 @@ services:
     user: root
     restart: "no"
     network_mode: none
+    depends_on:
+      relay-db-role:
+        condition: service_completed_successfully
     entrypoint:
       - /bin/sh
       - -c
@@ -132,7 +161,8 @@ services:
             install -o coord -g coord -m 0600 /old/$$k /new/$$k && echo "moved $$k"
           fi
         done
-        chown coord:coord /new
+        chown coord:coord /new /new/database-url
+        chmod 0400 /new/database-url
     volumes:
       - coord_data:/old:ro
       - relay_data:/new

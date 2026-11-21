@@ -21,10 +21,22 @@
 --     -> SELECT, INSERT, UPDATE on coord_relays.
 --   Events of other replicas (LISTEN coord_events): needs no grant.
 --
--- The relay never writes nodes or tenants, never sends NOTIFY, and does not
--- read keys, sign-ins, configuration or federation tables. A relay with a
--- gateway (COORD_GATEWAY_CERT) registers nodes and needs the full role; the
--- Kubernetes relays have no gateway.
+-- The relay never writes nodes or tenants and does not read keys, sign-ins
+-- or federation tables.
+--
+-- A relay with a gateway (COORD_GATEWAY_CERT, ADR-0038) needs more. Add
+-- `-v gateway=1`:
+--   Which tailnets have HTTPS services, and for whom (get_tenant_dns):
+--     -> SELECT on coord_tenant_dns.
+--   Sign-in names for the identity headers, and the recorded gateway node
+--   (load_config, get_tenant_configs):
+--     -> SELECT on coord_tenant_config.
+--   The devices of a tailnet (get_peers):
+--     -> SELECT on one more column of coord_nodes.
+--   The public keys of its gateway (offer_gateway). A control process
+--   registers the gateway node from them; the relay never writes a node.
+--     -> SELECT, INSERT, UPDATE on coord_gateway_offers.
+-- Without `-v gateway=1` the script takes these grants away again.
 --
 -- Run it as the owner of the coordinator tables (the user of DATABASE_URL),
 -- in the database of the coordinator, after the coordinator has created its
@@ -32,6 +44,10 @@
 --
 --   psql "$DATABASE_URL" -v relay_role=tailnet_relay \
 --        -v relay_password="$(openssl rand -hex 24)" -f scripts/relay-db-role.sql
+--
+-- Without `-v relay_password=...` the password comes from the environment
+-- variable RELAY_DB_PASSWORD. The Docker Compose stack runs this script at
+-- each start (service relay-db-role).
 --
 -- Then give the relays this URL (RELAY_DATABASE_URL):
 --
@@ -41,6 +57,11 @@
 -- Run it again after an upgrade that changes these tables.
 
 \set ON_ERROR_STOP on
+
+\if :{?relay_password}
+\else
+  \getenv relay_password RELAY_DB_PASSWORD
+\endif
 
 -- The role: login only, no other privilege.
 SELECT format('CREATE ROLE %I LOGIN', :'relay_role')
@@ -71,3 +92,13 @@ GRANT SELECT (id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix,
 
 -- Relay discovery
 GRANT SELECT, INSERT, UPDATE ON public.coord_relays TO :"relay_role";
+
+-- Relay with a gateway (ADR-0038)
+\if :{?gateway}
+  GRANT SELECT (last_seen) ON public.coord_nodes TO :"relay_role";
+  GRANT SELECT ON public.coord_tenant_dns, public.coord_tenant_config TO :"relay_role";
+  GRANT SELECT, INSERT, UPDATE ON public.coord_gateway_offers TO :"relay_role";
+\else
+  REVOKE SELECT (last_seen) ON public.coord_nodes FROM :"relay_role";
+  REVOKE ALL ON public.coord_tenant_dns, public.coord_tenant_config, public.coord_gateway_offers FROM :"relay_role";
+\endif

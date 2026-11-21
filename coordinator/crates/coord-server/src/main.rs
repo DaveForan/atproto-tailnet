@@ -171,8 +171,18 @@ async fn main() -> anyhow::Result<()> {
 
     match store_backend.as_str() {
         "postgres" => {
-            let database_url = std::env::var("DATABASE_URL")
-                .ok()
+            // DATABASE_URL_FILE: the URL is in a file, so the password is not in the environment.
+            let from_file = match std::env::var("DATABASE_URL_FILE").ok().filter(|p| !p.is_empty()) {
+                Some(path) => Some(
+                    std::fs::read_to_string(&path)
+                        .map_err(|e| anyhow::anyhow!("cannot read DATABASE_URL_FILE {path}: {e}"))?
+                        .trim()
+                        .to_string(),
+                ),
+                None => None,
+            };
+            let database_url = from_file
+                .or_else(|| std::env::var("DATABASE_URL").ok())
                 .or(config.database_url)
                 .ok_or_else(|| {
                     anyhow::anyhow!(
