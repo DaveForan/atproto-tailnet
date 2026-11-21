@@ -107,7 +107,7 @@ export function BoardsTab() {
       />
 
       <Card title="Add a service">
-        <NewServiceForm devices={data.devices.devices} baseDomain={data.mine.baseDomain} serviceDomain={data.mine.serviceDomain} httpsServices={data.mine.httpsServices} onCreated={() => { void reload(); }} />
+        <NewServiceForm devices={data.devices.devices} baseDomain={data.mine.baseDomain} serviceDomain={data.mine.serviceDomain} httpsServices={data.mine.httpsServices} onCreated={() => { void reload(); }} onDeviceAdded={() => { void reload(); }} />
       </Card>
 
       {data.board.canEdit && (

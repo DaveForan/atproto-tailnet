@@ -363,9 +363,9 @@ Order matters: each stage gives value alone and unblocks the next.
 - [x] TS service routes: service posts with approval and Connect, friends, blocks, shares, access mode, controller board text
 - [x] Dashboard: Boards and Friends & Sharing screens; controller board on the landing page
 - [x] Migrations 0030 and 0031 dry-run against a copy of the live database
-- [ ] Missing interface parts: choose guest devices on accept, narrow ports on accept, per-device "who can reach this"
+- [x] Interface parts: choose guest devices on accept, narrow ports on accept, per-device "who can reach this" (`GET .../my-devices/access`, `access/reach.ts`)
 - [x] Private DNS names for services (through 6.4)
-- [ ] Enroll a new device inside the add-service form
+- [x] Enroll a new device inside the add-service form (single-use key for one hour, then a wait for the device)
 - [ ] Verify with two members and two real devices
 
 ### 6.10 Device-bound access (ADR-0035)

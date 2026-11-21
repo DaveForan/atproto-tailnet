@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { useTenantMutation } from "../../hooks/useMutation";
 import { useToast } from "../../components/Toast";
 import { boardsService, type MyDevice, type NewPost } from "../../services/boards";
+import { AddDeviceInline } from "./AddDeviceInline";
 
 const EMPTY_POST: NewPost = { board: "private", title: "", description: "", nodeId: "", port: 0, proto: "tcp", name: "", web: false };
 
@@ -11,17 +12,31 @@ export function NewServiceForm({
   serviceDomain,
   httpsServices,
   onCreated,
+  onDeviceAdded,
 }: {
   devices: MyDevice[];
   baseDomain: string;
   serviceDomain: string | null;
   httpsServices: boolean;
   onCreated: () => void;
+  /** A device joined from inside this form: the caller reloads its device list. */
+  onDeviceAdded: () => void;
 }) {
   const { toast } = useToast();
   const { mutate, busy } = useTenantMutation({ onError: "Could not add the service" });
   const [post, setPost] = useState<NewPost>({ ...EMPTY_POST, nodeId: devices[0]?.id ?? "" });
   const set = (patch: Partial<NewPost>) => setPost((p) => ({ ...p, ...patch }));
+  // The device that joined from this form, until the reloaded list contains it
+  const [joined, setJoined] = useState<MyDevice | null>(null);
+  const onJoined = useCallback(
+    (device: MyDevice) => {
+      setJoined(device);
+      setPost((p) => ({ ...p, nodeId: device.id }));
+      onDeviceAdded();
+    },
+    [onDeviceAdded],
+  );
+  const choices = joined && !devices.some((d) => d.id === joined.id) ? [...devices, joined] : devices;
   const domain = post.web && serviceDomain ? serviceDomain : baseDomain;
   const valid = post.title.trim() && post.nodeId && post.port >= 1 && post.port <= 65535 && (post.board === "public" || post.name?.trim());
 
@@ -41,8 +56,13 @@ export function NewServiceForm({
     });
   };
 
-  if (devices.length === 0) {
-    return <p className="help-text">Add a device first (Add device tab). A service runs on one of your devices.</p>;
+  if (choices.length === 0) {
+    return (
+      <div>
+        <p className="help-text">A service runs on one of your devices. You have none in this tailnet yet.</p>
+        <AddDeviceInline known={devices} onJoined={onJoined} />
+      </div>
+    );
   }
 
   return (
@@ -60,11 +80,14 @@ export function NewServiceForm({
       <textarea id="svc-desc" maxLength={1000} value={post.description} onChange={(e) => set({ description: e.target.value })} />
 
       <label htmlFor="svc-device">Device</label>
-      <select id="svc-device" value={post.nodeId} onChange={(e) => set({ nodeId: e.target.value })}>
-        {devices.map((d) => (
-          <option key={d.id} value={d.id}>{d.name}</option>
-        ))}
-      </select>
+      <div>
+        <select id="svc-device" value={post.nodeId} onChange={(e) => set({ nodeId: e.target.value })}>
+          {choices.map((d) => (
+            <option key={d.id} value={d.id}>{d.name}</option>
+          ))}
+        </select>
+        <AddDeviceInline known={choices} onJoined={onJoined} />
+      </div>
 
       <label htmlFor="svc-port">Port</label>
       <div className="inline-form">
