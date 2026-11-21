@@ -1,12 +1,10 @@
 /**
  * @module federation/transport
- * HTTP transport for inter-instance CFP messages (ADR-0016, ADR-0019).
- * Sends handshake, keepalive, revoke and link-negotiation messages between
- * federation broker instances over HTTPS.
+ * Outbound CFP messages between federation brokers over HTTPS (ADR-0016, ADR-0019).
  */
 
 import { logger } from "../logger.js";
-import { config } from "../config.js";
+import { isOwnOrigin } from "./discovery.js";
 import { guardedRequest, outboundErrorText } from "../identity/resolver.js";
 import type { CFPMessage, KeepaliveMessage, RevokeMessage } from "./protocol.js";
 
@@ -37,14 +35,6 @@ export interface SendResult {
 /** Largest peer answer we read (a CFP message is small). */
 const MAX_RESPONSE_BYTES = 256 * 1024;
 
-/** True when `url` points at this instance itself (same-instance federation, dev over http). */
-function isOwnInstance(url: string): boolean {
-  try {
-    return new URL(url).hostname === new URL(config.publicUrl).hostname;
-  } catch {
-    return false;
-  }
-}
 
 export async function sendMessage(
   remoteEndpoint: string,
@@ -61,8 +51,8 @@ export async function sendMessage(
   try {
     let status: number;
     let text: string;
-    if (isOwnInstance(url)) {
-      // Our own public URL (may be plain http on loopback in development)
+    // Only this instance's exact origin may skip the guard (dev serves it over http).
+    if (isOwnOrigin(url) && !/[?#]/.test(remoteEndpoint)) {
       const res = await fetch(url, {
         method: "POST",
         headers,
@@ -73,9 +63,7 @@ export async function sendMessage(
       status = res.status;
       text = res.ok ? await res.text() : "";
     } else {
-      // A peer-controlled URL: public addresses only, checked at connect time
-      // (no DNS rebinding after the check at link time), no redirects
-      // (ADR-0019 §5), size-capped.
+      // Peer-controlled URL: public addresses checked at connect time, no redirects (ADR-0019 §5), size cap.
       const res = await guardedRequest(url, {
         method: "POST",
         headers,

@@ -1,8 +1,6 @@
 /**
  * @module routes/usage
- * Usage metering and admin-set caps. Provides current usage, the tenant's
- * maxDevices/maxMembers caps (0 = unlimited) and historical snapshots.
- * Usage viewing requires membership; caps are set by the originator only.
+ * Usage, caps (0 = unlimited) and history. Members read; only the originator sets caps.
  */
 
 import { Router } from "express";
@@ -22,7 +20,7 @@ import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
 import { parseBody } from "./validation.js";
 
-export const usageRouter = Router();
+export const usageRouter = Router({ caseSensitive: true });
 
 usageRouter.get(
   "/api/tenants/:tenantId/usage",

@@ -1,17 +1,14 @@
 /**
  * @module identity/keys
- * Collective signing-key primitives (ADR-0016, ADR-0017): at-rest encryption
- * of the Ed25519 private key and detached-JWS signing/verification.
- *
- * This is the single implementation of both — the federation broker, the
- * inbound CFP endpoints and the credential issuer all go through it. Pure
- * functions only (no DB), so they are unit-testable with real keys.
+ * Collective signing keys (ADR-0016, ADR-0017): at-rest encryption and detached-JWS sign/verify. Pure functions.
  */
 
 import * as crypto from "node:crypto";
 import * as jose from "jose";
 
 type VerifyKey = jose.CryptoKey | jose.KeyObject;
+
+const GCM_TAG_BYTES = 16;
 
 /** Protected header of every detached signature this service produces. */
 const JWS_HEADER_B64 = jose.base64url.encode(
@@ -74,12 +71,16 @@ export function decryptPrivateKey(stored: string, hexKey?: string): string {
     );
   }
   const [ivHex, tagHex, encHex] = stored.split(":");
+  const tag = Buffer.from(tagHex ?? "", "hex");
+  // Security: a short tag weakens GCM authentication, so only the full 16 bytes are accepted.
+  if (tag.length !== GCM_TAG_BYTES) throw new Error("Collective private key has an invalid authentication tag");
   const decipher = crypto.createDecipheriv(
     "aes-256-gcm",
     Buffer.from(hexKey, "hex"),
     Buffer.from(ivHex, "hex"),
+    { authTagLength: GCM_TAG_BYTES },
   );
-  decipher.setAuthTag(Buffer.from(tagHex, "hex"));
+  decipher.setAuthTag(tag);
   return Buffer.concat([
     decipher.update(Buffer.from(encHex, "hex")),
     decipher.final(),

@@ -1,8 +1,6 @@
 /**
  * @module routes/auth
- * AT Protocol OAuth login/callback/logout and .well-known endpoint serving.
- * First sign-in of an allowed creator provisions a tailnet via
- * orchestrator/tenant-provisioning.ts.
+ * AT Protocol OAuth login, callback and logout, plus the .well-known client documents.
  */
 
 import { randomBytes, timingSafeEqual } from "node:crypto";
@@ -18,6 +16,7 @@ import { fetchAccountProfile } from "../identity/account.js";
 import { db } from "../db/index.js";
 import { users, memberships } from "../db/schema.js";
 import { logger } from "../logger.js";
+import { logAudit } from "../audit/log.js";
 import { establishPendingSession, establishSession, trustedDeviceCount } from "../auth/session.js";
 import { canCreateTailnet, withTailnetCreationLock } from "../operator/policy.js";
 import { provisionTenant } from "../orchestrator/tenant-provisioning.js";
@@ -77,6 +76,17 @@ const LOGIN_MISMATCH_HTML = `<!DOCTYPE html>
 </body>
 </html>`;
 
+/** Instance-level audit row for a sign-in outcome (no tokens or codes in metadata). */
+function auditSignIn(userId: string, action: "sign_in_succeeded" | "sign_in_failed", metadata: Record<string, unknown>): void {
+  logAudit({ tenantId: null, actorUserId: userId, action, targetType: "user", targetId: userId, metadata });
+}
+
+/** Audit a failed sign-in of a known account; an unknown DID has no user row to name. */
+async function auditSignInFailure(did: string, reason: string): Promise<void> {
+  const [known] = await db.select({ id: users.id }).from(users).where(eq(users.did, did));
+  if (known) auditSignIn(known.id, "sign_in_failed", { reason });
+}
+
 /** Sign-ins a browser may have in flight at once (one nonce each). */
 const MAX_PENDING_LOGIN_NONCES = 5;
 
@@ -105,7 +115,7 @@ export function loginNonceMatches(expected: string | undefined, actual: string |
  * Router for authentication routes: login initiation, OAuth callback,
  * logout, and AT Proto .well-known metadata/JWKS endpoints.
  */
-export const authRouter = Router();
+export const authRouter = Router({ caseSensitive: true });
 
 authRouter.get("/auth/login", async (req, res) => {
   try {
@@ -117,13 +127,18 @@ authRouter.get("/auth/login", async (req, res) => {
       return;
     }
 
-    const handle = req.query.handle as string;
-    if (!handle) {
+    // Repeated query keys arrive as arrays; only single strings are accepted.
+    const handle = req.query.handle;
+    if (typeof handle !== "string" || !handle || handle.length > 2048) {
       res.status(400).json({ error: "handle query parameter required" });
       return;
     }
 
-    const redirect = req.query.redirect as string | undefined;
+    const redirect = req.query.redirect;
+    if (redirect !== undefined && typeof redirect !== "string") {
+      res.status(400).json({ error: "redirect must be a single local path" });
+      return;
+    }
     if (redirect && /^\/[a-z0-9]/.test(redirect)) {
       req.session.postLoginRedirect = redirect;
     }
@@ -169,6 +184,7 @@ authRouter.get("/auth/callback", async (req, res) => {
     await session.signOut().catch((err) => logger.warn({ err }, "failed to revoke OAuth session after sign-in"));
     if (!matched) {
       logger.warn({ did: session.did }, "OAuth callback refused: not started in this browser");
+      await auditSignInFailure(session.did, "login_not_started_here");
       res.status(400).type("html").send(LOGIN_MISMATCH_HTML);
       return;
     }
@@ -183,6 +199,7 @@ authRouter.get("/auth/callback", async (req, res) => {
     const handle = profile.handle ?? user?.handle;
     if (!handle) {
       logger.warn({ did }, "sign-in refused: handle could not be verified");
+      if (user) auditSignIn(user.id, "sign_in_failed", { reason: "handle_unverified" });
       res.status(502).type("html").send(HANDLE_UNVERIFIED_HTML);
       return;
     }
@@ -191,6 +208,7 @@ authRouter.get("/auth/callback", async (req, res) => {
 
     if (user?.disabledAt) {
       logger.info({ did }, "sign-in refused: account disabled");
+      auditSignIn(user.id, "sign_in_failed", { reason: "account_disabled" });
       req.session.destroy(() => {
         res.status(403).type("html").send(ACCOUNT_DISABLED_HTML);
       });
@@ -231,10 +249,12 @@ authRouter.get("/auth/callback", async (req, res) => {
     // trusted device; until then it has no access.
     if ((await trustedDeviceCount(user.id)) > 0) {
       await establishPendingSession(req, { userId: user.id, did, redirect: dest });
+      auditSignIn(user.id, "sign_in_succeeded", { method: "atproto", devicePending: true });
       res.redirect("/verify-device");
       return;
     }
-    await establishSession(req, { userId: user.id, did });
+    await establishSession(req, { userId: user.id, did, atprotoSignIn: true });
+    auditSignIn(user.id, "sign_in_succeeded", { method: "atproto", devicePending: false });
     res.redirect(dest);
   } catch (err) {
     logger.error({ err }, "OAuth callback failed");

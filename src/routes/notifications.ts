@@ -20,7 +20,7 @@ import {
 import { tenantGuard, tenantCtx } from "./guard.js";
 import { parseBody } from "./validation.js";
 
-export const notificationsRouter = Router();
+export const notificationsRouter = Router({ caseSensitive: true });
 
 notificationsRouter.get(
   "/api/tenants/:tenantId/notifications",

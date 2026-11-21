@@ -10,7 +10,7 @@ import { users, auditLogs } from "../db/schema.js";
 import { requireAuth, param } from "./helpers.js";
 import { tenantGuard } from "./guard.js";
 
-export const auditLogRouter = Router();
+export const auditLogRouter = Router({ caseSensitive: true });
 
 // ── Audit log ───────────────────────────────────────────────────────
 

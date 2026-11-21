@@ -40,7 +40,7 @@ import { parseBody } from "./validation.js";
  * Router for /health, /api/me, /api/tenants (list, detail, delete,
  * start, stop) and public tenant lookup by slug.
  */
-export const apiRouter = Router();
+export const apiRouter = Router({ caseSensitive: true });
 
 apiRouter.get("/health", async (_req, res) => {
   try {

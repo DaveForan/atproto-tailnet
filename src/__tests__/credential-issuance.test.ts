@@ -62,16 +62,20 @@ const app = express();
 app.use(express.json());
 app.use((req: Request, _res: Response, next: NextFunction) => {
   (req as unknown as { session: Record<string, unknown> }).session = { userId: "u-1", did: "did:plc:caller" };
+  if (req.headers["x-agent-scope"]) {
+    const permissions = String(req.headers["x-agent-scope"]).split(",");
+    (req as unknown as { agentToken: unknown }).agentToken = { id: "a", tenantId: TENANT, userId: "u-1", permissions };
+  }
   next();
 });
 app.use(credentialsRouter);
 const server = app.listen(0);
 afterAll(() => server.close());
 
-async function post(path: string, body: unknown) {
+async function post(path: string, body: unknown, headers: Record<string, string> = {}) {
   const res = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/tenants/${TENANT}/credentials/${path}`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...headers },
     body: JSON.stringify(body),
   });
   return { status: res.status, json: (await res.json()) as Record<string, unknown> };
@@ -161,5 +165,29 @@ describe("capability token", () => {
     results.push(caller, subjectWith([]));
     const r = await post("capability", { subjectDid: "did:plc:member", capability: "invite" });
     expect(r.status).toBe(400);
+  });
+});
+
+describe("credential bundle", () => {
+  const member = [{ ...caller[0], membership: { ...caller[0].membership, createdAt: new Date() } }];
+
+  it("attests the caller's role permissions", async () => {
+    results.push(member, [{ name: "T" }]);
+    expect((await post("bundle", {})).status).toBe(200);
+    expect(issueRoleAttestation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ permissions: callerRole.permissions }),
+      "did:plc:caller",
+    );
+  });
+
+  it("an agent token attests only what its scope allows", async () => {
+    results.push(member, [{ did: "did:plc:caller" }], [{ name: "T" }]);
+    expect((await post("bundle", {}, { "x-agent-scope": "invite,kick" })).status).toBe(200);
+    expect(issueRoleAttestation).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ permissions: ["invite"] }),
+      "did:plc:caller",
+    );
   });
 });

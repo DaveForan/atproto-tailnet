@@ -1,8 +1,6 @@
 /**
  * @module routes/devices
- * Device and member management: list Headscale nodes grouped by user,
- * generate pre-auth keys (with optional device-approval flow), remove
- * individual nodes, list members, and kick members (cascading cleanup).
+ * Devices and members: list nodes, issue pre-auth keys (optional approval), remove nodes, kick members.
  */
 
 import { Router } from "express";
@@ -23,6 +21,8 @@ import {
   hasPermission,
   toHsUsername,
   authUserId,
+  permissionsAbove,
+  rolePermissions,
 } from "./helpers.js";
 import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
@@ -49,7 +49,7 @@ import { parseBody } from "./validation.js";
  * Router for device listing, auth-key generation, node removal,
  * member listing, and member removal with cascading cleanup.
  */
-export const devicesRouter = Router();
+export const devicesRouter = Router({ caseSensitive: true });
 
 const authKeyBody = z.object({
   reusable: z.boolean().optional(),
@@ -514,6 +514,17 @@ devicesRouter.delete(
 
     if (targetMembership.isOriginator) {
       res.status(403).json({ error: "Cannot remove the tenant originator" });
+      return;
+    }
+
+    const above = permissionsAbove(
+      result.membership,
+      result.role,
+      await rolePermissions(tenantId, targetMembership.roleId),
+      req,
+    );
+    if (above.length > 0) {
+      res.status(403).json({ error: "Cannot remove a member with permissions you do not hold", permissions: above });
       return;
     }
 

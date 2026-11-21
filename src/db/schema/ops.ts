@@ -90,6 +90,14 @@ export const auditActionEnum = pgEnum("audit_action", [
   "mcp_grant_created",
   "mcp_grant_revoked",
   "device_signin_approved",
+  "sign_in_succeeded",
+  "sign_in_failed",
+  "trusted_device_added",
+  "trusted_device_removed",
+  "trusted_device_approved",
+  "recovery_codes_generated",
+  "recovery_code_used",
+  "step_up_refused",
 ]);
 
 export const auditLogs = pgTable(

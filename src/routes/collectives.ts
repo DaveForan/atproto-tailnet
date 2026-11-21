@@ -4,7 +4,7 @@
  * Gated by "manage_sub_collectives" permission.
  */
 
-import { Router } from "express";
+import { Router, type Response } from "express";
 import { z } from "zod";
 import { eq, and, ne, sql, like } from "drizzle-orm";
 import { db } from "../db/index.js";
@@ -18,7 +18,7 @@ import {
 import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
-import { useCoordinator } from "../orchestrator/control-client.js";
+import { getCoordinatorClient, useCoordinator } from "../orchestrator/control-client.js";
 import { createTenantRecord, provisionTenantInstance } from "../orchestrator/tenant-provisioning.js";
 import { rebuildDescendantPaths } from "../orchestrator/tenant-hierarchy.js";
 import { hostnameAvailableFor, validateHostname } from "../orchestrator/hostnames.js";
@@ -31,7 +31,7 @@ import {
 } from "../operator/policy.js";
 import { parseBody } from "./validation.js";
 
-export const collectivesRouter = Router();
+export const collectivesRouter = Router({ caseSensitive: true });
 
 /**
  * Sub-collectives are provisioned like top-level tenants, so the slug must be
@@ -54,11 +54,11 @@ const floorPolicyBody = z.object({
   maxBoardPosts: z.number().int().min(0).optional(),
 });
 
-/** List sub-collectives of a collective. */
+/** List sub-collectives of a collective (suspended children stay hidden). */
 collectivesRouter.get(
   "/api/tenants/:tenantId/collectives",
   requireAuth,
-  tenantGuard(),
+  tenantGuard({ permission: "manage_sub_collectives" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const result = tenantCtx(res);
@@ -79,7 +79,7 @@ collectivesRouter.get(
       })
       .from(tenants)
       .where(
-        and(eq(tenants.parentId, tenantId), ne(tenants.status, "deleted")),
+        and(eq(tenants.parentId, tenantId), ne(tenants.status, "deleted"), eq(tenants.suspended, false)),
       )
       .orderBy(tenants.name)
       .limit(200);
@@ -255,6 +255,53 @@ function escapeLike(value: string): string {
   return value.replace(/[\\%_]/g, (c) => `\\${c}`);
 }
 
+/**
+ * Make `child` a top-level collective: coordinator first, then the database.
+ * Sends the error answer and returns false on failure; a failed database write restores the coordinator parent.
+ */
+async function moveToTopLevel(
+  child: { id: string; slug: string; coordinatorTenantId: string | null },
+  parentId: string,
+  res: Response,
+): Promise<boolean> {
+  let parentCoordinatorId: string | null = null;
+  if (useCoordinator) {
+    if (!child.coordinatorTenantId) {
+      res.status(409).json({ error: "The collective is not provisioned yet" });
+      return false;
+    }
+    const [parent] = await db
+      .select({ coordinatorTenantId: tenants.coordinatorTenantId })
+      .from(tenants)
+      .where(eq(tenants.id, parentId));
+    parentCoordinatorId = parent?.coordinatorTenantId ?? null;
+    try {
+      await getCoordinatorClient(child).setParent(null);
+    } catch (err) {
+      logger.error({ tenantId: child.id, err }, "coordinator refused to clear the parent");
+      res.status(502).json({ error: "Could not update the control plane" });
+      return false;
+    }
+  }
+  try {
+    await db
+      .update(tenants)
+      .set({ parentId: null, path: child.slug, depth: 0, floorPolicies: null, updatedAt: new Date() })
+      .where(eq(tenants.id, child.id));
+    await rebuildDescendantPaths(child.id, child.slug, 0);
+    return true;
+  } catch (err) {
+    logger.error({ tenantId: child.id, err }, "failed to store the detached collective");
+    if (useCoordinator && parentCoordinatorId) {
+      await getCoordinatorClient(child)
+        .setParent(parentCoordinatorId)
+        .catch((e: unknown) => logger.error({ tenantId: child.id, err: e }, "failed to restore the coordinator parent"));
+    }
+    res.status(500).json({ error: "Failed to update the collective" });
+    return false;
+  }
+}
+
 /** Detach a sub-collective (child declares independence). */
 collectivesRouter.post(
   "/api/tenants/:tenantId/detach",
@@ -277,18 +324,7 @@ collectivesRouter.post(
 
     const oldParentId = tenant.parentId;
 
-    await db
-      .update(tenants)
-      .set({
-        parentId: null,
-        path: tenant.slug,
-        depth: 0,
-        floorPolicies: null,
-        updatedAt: new Date(),
-      })
-      .where(eq(tenants.id, tenantId));
-
-    await rebuildDescendantPaths(tenantId, tenant.slug, 0);
+    if (!(await moveToTopLevel(tenant, oldParentId, res))) return;
 
     logAudit({
       tenantId: oldParentId,
@@ -323,18 +359,7 @@ collectivesRouter.post(
       return;
     }
 
-    await db
-      .update(tenants)
-      .set({
-        parentId: null,
-        path: child.slug,
-        depth: 0,
-        floorPolicies: null,
-        updatedAt: new Date(),
-      })
-      .where(eq(tenants.id, childId));
-
-    await rebuildDescendantPaths(childId, child.slug, 0);
+    if (!(await moveToTopLevel(child, tenantId, res))) return;
 
     logAudit({
       tenantId,
@@ -466,7 +491,8 @@ collectivesRouter.put(
     // 0 = unlimited: allowed only under an unlimited parent
     const limitErr =
       (maxDevices !== undefined && checkChildLimit("device", maxDevices, parent.maxDevices)) ||
-      (maxMembers !== undefined && checkChildLimit("member", maxMembers, parent.maxMembers));
+      (maxMembers !== undefined && checkChildLimit("member", maxMembers, parent.maxMembers)) ||
+      (maxSubCollectives !== undefined && checkChildLimit("sub-collective", maxSubCollectives, parent.maxSubCollectives));
     if (limitErr) {
       res.status(400).json({ error: limitErr });
       return;

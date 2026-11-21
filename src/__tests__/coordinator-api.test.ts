@@ -41,6 +41,16 @@ describe("CoordinatorApiClient", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("setParent sends PUT /api/tenants/{id}/parent with parent_id (null = top level)", async () => {
+    fetchMock.mockResolvedValueOnce(reply(204));
+    await scoped.setParent(null);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("http://coord/api/tenants/t-1/parent");
+    expect(init.method).toBe("PUT");
+    expect(JSON.parse(String(init.body))).toEqual({ parent_id: null });
+    await expect(instance.setParent(null)).rejects.toThrow(/instance-level client/);
+  });
+
   it("allows instance-level calls without a tenant", async () => {
     fetchMock.mockResolvedValueOnce(reply(200, { id: "c-1" }));
     expect(await instance.createTenant("t-slug")).toEqual({ id: "c-1" });

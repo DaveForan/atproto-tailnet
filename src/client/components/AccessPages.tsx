@@ -206,7 +206,7 @@ const STATUS_TEXT: Record<string, string> = {
   revoked: "This invitation was revoked by the tailnet's admins.",
 };
 
-export function InvitePage({ id, onDone }: { id: string; onDone: (slug?: string) => void }) {
+export function InvitePage({ id, onDone }: { id: string; onDone: (tenantId?: string) => void }) {
   const { user } = useSession();
   const { toast, toastFailure } = useToast();
   const [state, setState] = useState<InviteState>({ kind: "loading" });
@@ -228,13 +228,13 @@ export function InvitePage({ id, onDone }: { id: string; onDone: (slug?: string)
     return () => { cancelled = true; };
   }, [id]);
 
-  const act = async (accept: boolean, slug: string) => {
+  const act = async (accept: boolean, tenantId: string) => {
     setBusy(true);
     try {
       if (accept) await invitationService.accept(id);
       else await invitationService.decline(id);
       toast(accept ? "Invitation accepted" : "Invitation declined");
-      onDone(accept ? slug : undefined);
+      onDone(accept ? tenantId : undefined);
     } catch (e) {
       toastFailure(e, accept ? "Failed to accept invitation" : "Failed to decline invitation");
       setBusy(false);
@@ -273,13 +273,13 @@ export function InvitePage({ id, onDone }: { id: string; onDone: (slug?: string)
             <h1>@{state.invitation.inviterHandle} invited you to {state.invitation.tenant.name}</h1>
             <p className="text-dim">Accept to join the tailnet and start adding your devices.</p>
             <div className="btn-group justify-center mt-16">
-              <button type="button" disabled={busy} onClick={() => { void act(true, state.invitation.tenant.slug); }}>
+              <button type="button" disabled={busy} onClick={() => { void act(true, state.invitation.tenant.id); }}>
                 Accept
               </button>
               <button type="button"
                 className="btn-ghost"
                 disabled={busy}
-                onClick={() => { void act(false, state.invitation.tenant.slug); }}
+                onClick={() => { void act(false, state.invitation.tenant.id); }}
               >
                 Decline
               </button>
@@ -293,7 +293,7 @@ export function InvitePage({ id, onDone }: { id: string; onDone: (slug?: string)
             <p className="text-dim">{STATUS_TEXT[state.invitation.status] ?? "This invitation is no longer open."}</p>
             <button type="button"
               className="mt-16"
-              onClick={() => onDone(state.invitation.status === "accepted" ? state.invitation.tenant.slug : undefined)}
+              onClick={() => onDone(state.invitation.status === "accepted" ? state.invitation.tenant.id : undefined)}
             >
               Go to dashboard
             </button>

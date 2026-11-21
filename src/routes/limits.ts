@@ -31,7 +31,7 @@ export function isOverLimit(count: number, max: number): boolean {
  * @returns an error message, or null when acceptable.
  */
 export function checkChildLimit(
-  name: "device" | "member",
+  name: "device" | "member" | "sub-collective",
   child: number,
   parent: number | null | undefined,
 ): string | null {

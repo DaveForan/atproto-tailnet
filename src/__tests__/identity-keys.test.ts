@@ -77,9 +77,27 @@ describe("private key storage", () => {
     expect(() => decryptPrivateKey(stored, "cd".repeat(32))).toThrow();
   });
 
+  it("refuses a stored record whose GCM tag is shorter than 16 bytes", () => {
+    const { pem } = newKey();
+    const [iv, tag, enc] = encryptPrivateKey(pem, HEX_KEY).split(":");
+    for (const short of [tag.slice(0, 8), tag.slice(0, 24), ""]) {
+      expect(() => decryptPrivateKey([iv, short, enc].join(":"), HEX_KEY)).toThrow(/authentication tag/);
+    }
+  });
+
   it("loads a stored key that can sign", async () => {
     const { pem, publicKey } = newKey();
     const key = loadPrivateKey(encryptPrivateKey(pem, HEX_KEY), HEX_KEY);
     expect(await verifyDetached(publicKey, "x", signDetached(key, "x"))).toBe(true);
+  });
+});
+
+describe("federation key encryption in production", () => {
+  it("a federating non-loopback instance must set FEDERATION_KEY_ENCRYPTION_KEY", async () => {
+    const { federationKeyProblem } = await import("../config.js");
+    expect(federationKeyProblem({ federationEnabled: true }, false)).toMatch(/FEDERATION_KEY_ENCRYPTION_KEY/);
+    expect(federationKeyProblem({ federationEnabled: true, federationKeyEncryptionKey: HEX_KEY }, false)).toBeNull();
+    expect(federationKeyProblem({ federationEnabled: false }, false)).toBeNull();
+    expect(federationKeyProblem({ federationEnabled: true }, true)).toBeNull();
   });
 });

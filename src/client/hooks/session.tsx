@@ -32,7 +32,7 @@ interface SessionState {
 export interface SessionContext extends SessionState {
   selectTenant: (tenantId: string) => void;
   reload: () => Promise<void>;
-  reloadAndSelect: (slug: string) => Promise<void>;
+  reloadAndSelect: (tenantId: string) => Promise<void>;
   reloadRoles: () => Promise<void>;
   reloadSettings: () => Promise<void>;
   /** Pending invitations only. */
@@ -112,7 +112,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const selectedTenantRef = useRef<string | null>(readStoredTenant());
   const initSeqRef = useRef(0);
-  const preferSlugRef = useRef<string | null>(null);
+  const preferTenantRef = useRef<string | null>(null);
 
   const userRef = useRef<User | null>(null);
   userRef.current = state.user;
@@ -153,10 +153,10 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       let stats: Stats | null = null;
 
       if (tenants.length > 0) {
-        const preferred = preferSlugRef.current
-          ? tenants.find((t) => t.slug === preferSlugRef.current)
+        const preferred = preferTenantRef.current
+          ? tenants.find((t) => t.id === preferTenantRef.current)
           : undefined;
-        preferSlugRef.current = null;
+        preferTenantRef.current = null;
         const selected =
           preferred ?? tenants.find((t) => t.id === selectedTenantRef.current) ?? tenants[0];
         selectedTenantRef.current = selected.id;
@@ -226,8 +226,8 @@ export function SessionProvider({ children }: { children: ReactNode }) {
     await init();
   }, [init]);
 
-  const reloadAndSelect = useCallback(async (slug: string) => {
-    preferSlugRef.current = slug;
+  const reloadAndSelect = useCallback(async (tenantId: string) => {
+    preferTenantRef.current = tenantId;
     await init();
   }, [init]);
 

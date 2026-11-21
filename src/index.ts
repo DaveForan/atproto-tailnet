@@ -1,8 +1,7 @@
 /**
  * @module index
- * Entry point: middleware, route modules, background loops and graceful shutdown.
- * Order for `/api/*`: headers, JSON parsers (federation messages first, 64 KiB),
- * session, CSRF, dashboard, auth, rate limits, resolveAgentToken, enforceAgentScope, routes.
+ * Entry point: middleware, routers, background loops and graceful shutdown.
+ * `/api/*` order: headers, parsers, session, lifetime, CSRF, auth, rate limits, agent token, scope, routes.
  */
 import express from "express";
 import type { Request, Response, NextFunction } from "express";
@@ -10,9 +9,10 @@ import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import rateLimit from "express-rate-limit";
 import { randomBytes } from "node:crypto";
-import { config, sessionCookieName } from "./config.js";
+import { config, isLoopbackDeployment, sessionCookieName } from "./config.js";
 import { pool } from "./db/index.js";
 import { createShutdown } from "./shutdown.js";
+import { securityHeaders } from "./security-headers.js";
 import { authRouter } from "./routes/auth.js";
 import { apiRouter, tlsCertAllowedForSlug } from "./routes/api.js";
 import { hostnamesRouter } from "./routes/hostnames.js";
@@ -24,7 +24,7 @@ import { sharingRouter } from "./routes/sharing.js";
 import { machineLockRouter } from "./routes/machine-lock.js";
 import { deviceSignInRouter } from "./routes/device-signin.js";
 import { deviceTrustRouter } from "./routes/device-trust.js";
-import { enforceDeviceEnrollment } from "./auth/session.js";
+import { enforceDeviceEnrollment, enforceSessionLifetime } from "./auth/session.js";
 import { agentsRouter } from "./routes/agents.js";
 import { aclRouter } from "./routes/acl.js";
 import { derpRouter } from "./routes/derp.js";
@@ -39,7 +39,8 @@ import { federationBodyParser, federationMessagesRouter } from "./routes/federat
 import { dashboardRouter } from "./routes/dashboard.js";
 import { operatorRouter, instanceRouter } from "./routes/operator.js";
 import { enforceOperatorState } from "./operator/access.js";
-import { resolveAgentToken, enforceAgentScope, csrfTokenMatches } from "./routes/helpers.js";
+import { resolveAgentToken, enforceAgentScope } from "./routes/helpers.js";
+import { csrfProtection } from "./auth/middleware.js";
 import { oauthRouter, mcpRouter, isInternalMcpCall } from "./mcp/index.js";
 import { mcpConnectionsRouter } from "./routes/mcp-connections.js";
 import { startHealthMonitor, stopHealthMonitor } from "./orchestrator/monitor.js";
@@ -51,6 +52,8 @@ import { purgeStoredOAuthSessions } from "./auth/atproto.js";
 
 const app = express();
 app.disable("x-powered-by");
+// Path-prefix middlewares (CSRF, enrolment gate, limits) assume one spelling of each route.
+app.set("case sensitive routing", true);
 
 // ── Internal endpoint for Caddy on-demand TLS ───────────────────────
 // Caddy calls this before issuing a certificate for a hostname.
@@ -85,21 +88,7 @@ app.get("/internal/tls-check", async (req: Request, res: Response) => {
 // secure session cookie is never sent and per-IP rate limits see one client.
 app.set("trust proxy", config.trustProxy);
 
-app.use((_req: Request, res: Response, next: NextFunction) => {
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("X-Frame-Options", "DENY");
-  res.setHeader("X-XSS-Protection", "0");
-  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
-  res.setHeader(
-    "Permissions-Policy",
-    "camera=(), microphone=(), geolocation=()",
-  );
-  res.setHeader(
-    "Content-Security-Policy",
-    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; connect-src 'self'; frame-ancestors 'none'",
-  );
-  next();
-});
+app.use(securityHeaders(config.publicUrl, isLoopbackDeployment));
 
 // Federation messages get their own, smaller body limit. This parser runs
 // first, so the global parser skips the already-parsed body.
@@ -177,6 +166,7 @@ const federationLimiter = rateLimit({
   message: { error: "Too many requests, try again later" },
 });
 
+app.use(enforceSessionLifetime);
 // After a recovery-code sign-in, only device enrolment is allowed (ADR-0035)
 app.use(enforceDeviceEnrollment);
 
@@ -192,34 +182,7 @@ app.get("/api/csrf-token", (req: Request, res: Response) => {
   res.json({ token: req.session.csrfToken });
 });
 
-// ── CSRF validation middleware ────────────────────────────────────────
-// Validates X-CSRF-Token header on state-changing requests to /api/*.
-// Exempt: Bearer-authenticated requests (agent tokens), .well-known, auth callbacks.
-app.use((req: Request, res: Response, next: NextFunction) => {
-  if (req.method !== "POST" && req.method !== "PUT" && req.method !== "PATCH" && req.method !== "DELETE") {
-    next();
-    return;
-  }
-  if (!req.path.startsWith("/api/")) {
-    next();
-    return;
-  }
-  // Agent tokens use Bearer auth, not sessions — no CSRF risk
-  if (req.headers.authorization?.startsWith("Bearer ")) {
-    next();
-    return;
-  }
-  // No session means no cookie-based auth to exploit
-  if (!req.session.userId) {
-    next();
-    return;
-  }
-  if (!csrfTokenMatches(req.headers["x-csrf-token"], req.session.csrfToken)) {
-    res.status(403).json({ error: "Invalid or missing CSRF token" });
-    return;
-  }
-  next();
-});
+app.use(csrfProtection);
 
 import path from "node:path";
 import { startLeaderElection, stopLeaderElection } from "./orchestrator/leader.js";
@@ -292,7 +255,7 @@ const server = app.listen(config.port, () => {
   if (config.federationEnabled) startBroker();
   startAbuseSweep();
   void reconcileTenantRouting();
-  // Earlier versions kept account tokens after sign-in; revoke and drop them
+  // The service keeps no account tokens: revoke and drop any stored ones
   void purgeStoredOAuthSessions()
     .then((n) => n > 0 && logger.info({ sessions: n }, "revoked stored OAuth sessions"))
     .catch((err) => logger.warn({ err }, "failed to purge stored OAuth sessions"));

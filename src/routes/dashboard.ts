@@ -1,6 +1,6 @@
 import { Router } from "express";
 
-export const dashboardRouter = Router();
+export const dashboardRouter = Router({ caseSensitive: true });
 
 const DASHBOARD_HTML = `<!DOCTYPE html>
 <html lang="en">

@@ -1,10 +1,7 @@
 /**
  * @module routes/hostnames
- * Tailnet public addresses (`<name>.<BASE_DOMAIN>`): list, set the primary
- * (the previous one stays as a routed alias), retire an alias.
- *
- * Changing addresses is originator-only and never via agent tokens: it
- * changes the URL every new device is given.
+ * Tailnet public addresses: list, set the primary (old one stays an alias), retire an alias.
+ * Originator only, never agent tokens: it changes the URL new devices get.
  */
 import { Router } from "express";
 import { config } from "../config.js";
@@ -25,7 +22,7 @@ import {
 } from "../orchestrator/hostnames.js";
 import { stepUpForSession } from "../auth/step-up.js";
 
-export const hostnamesRouter = Router();
+export const hostnamesRouter = Router({ caseSensitive: true });
 
 const ERRORS: Record<HostnameError, { status: number; message: string }> = {
   invalid: {

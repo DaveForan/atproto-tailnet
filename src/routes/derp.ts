@@ -1,8 +1,6 @@
 /**
  * @module routes/derp
- * Custom DERP relay management per tenant. Allows configuring custom relay
- * regions, toggling the embedded DERP server, and disabling public relays.
- * Gated by the "manage_acl" permission (DERP is network infrastructure config).
+ * Per-tenant DERP relays: custom regions, embedded relay and public relay toggles (manage_acl; writes need step-up).
  */
 
 import { Router } from "express";
@@ -25,8 +23,9 @@ import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
 import { getCoordinatorClient, useCoordinator } from "../orchestrator/control-client.js";
 import { parseBody } from "./validation.js";
+import { stepUpForSession } from "../auth/step-up.js";
 
-export const derpRouter = Router();
+export const derpRouter = Router({ caseSensitive: true });
 
 const DERP_LABEL_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 const DERP_HOSTNAME_RE = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?)*$/;
@@ -69,6 +68,7 @@ derpRouter.get(
 derpRouter.put(
   "/api/tenants/:tenantId/derp",
   requireAuth,
+  stepUpForSession,
   tenantGuard({ permission: "manage_acl" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");

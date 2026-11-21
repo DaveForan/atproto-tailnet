@@ -1,7 +1,6 @@
 /**
  * @module federation/discovery
- * Peer discovery for cross-instance federation (ADR-0019 §3).
- * Fetches and validates a remote collective's federation descriptor.
+ * Peer discovery (ADR-0019 §3): fetch and check a remote collective's federation descriptor.
  */
 
 import { logger } from "../logger.js";
@@ -51,22 +50,29 @@ export async function discoverPeer(
   }
 
   let hostname: string;
+  let hostWithPort: string;
   try {
-    hostname = new URL(`https://${host}`).hostname;
+    const parsed = new URL(`https://${host}`);
+    hostname = parsed.hostname;
+    hostWithPort = parsed.host;
   } catch {
     return { ok: false, error: "Invalid peer address format" };
   }
-  if (!(await isAllowedBrokerHost(hostname))) {
+  // Only this exact instance (same host and port) skips the public-address rules.
+  const own = ownOrigin();
+  const isOwn = own !== null && hostWithPort === new URL(own).host;
+  if (!isOwn && !(await resolvesToPublicAddresses(hostname))) {
     return { ok: false, error: `Host ${host} is not allowed (private/loopback)` };
   }
 
-  const url = `https://${host}/.well-known/collective-federation?collective=${encodeURIComponent(slug)}`;
+  const base = isOwn ? own : `https://${hostWithPort}`;
+  const url = `${base}/.well-known/collective-federation?collective=${encodeURIComponent(slug)}`;
 
   let descriptor: FederationDescriptor;
   try {
     let status: number;
     let text: string;
-    if (hostname === ownHostname()) {
+    if (isOwn) {
       const res = await fetch(url, {
         signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS),
         headers: { Accept: "application/json" },
@@ -75,8 +81,7 @@ export async function discoverPeer(
       status = res.status;
       text = res.ok ? await res.text() : "";
     } else {
-      // The public-address check above is repeated at connect time, so a
-      // name that re-resolves to a private address (DNS rebinding) fails here
+      // guardedRequest repeats the address check at connect time (DNS rebinding).
       const res = await guardedRequest(url, {
         headers: { Accept: "application/json" },
         timeoutMs: DISCOVERY_TIMEOUT_MS,
@@ -133,36 +138,29 @@ export async function discoverPeer(
   };
 }
 
-/** Hostname of this instance's own public URL, or null if it does not parse. */
-function ownHostname(): string | null {
+/** Origin (scheme, host, port) of this instance's public URL, or null if it does not parse. */
+export function ownOrigin(): string | null {
   try {
-    return new URL(config.publicUrl).hostname;
+    return new URL(config.publicUrl).origin;
   } catch {
     return null;
   }
 }
 
-/**
- * Whether we may send requests to `host`. This instance's own host is always
- * allowed (same-instance federation, including loopback dev deployments).
- * Anything else must be — or resolve only to — public addresses: never
- * private, loopback, link-local, CGNAT (100.64.0.0/10), unspecified, ULA
- * (fc00::/7) or IPv4-mapped forms of those.
- */
-async function isAllowedBrokerHost(host: string): Promise<boolean> {
-  if (!host) return false;
-  if (host === ownHostname()) return true;
-  return resolvesToPublicAddresses(host);
+/** True when `url` has exactly this instance's origin. */
+export function isOwnOrigin(url: string): boolean {
+  try {
+    const own = ownOrigin();
+    return own !== null && new URL(url).origin === own;
+  } catch {
+    return false;
+  }
 }
 
 /**
- * Whether a peer-supplied broker URL may be stored and dialled. HTTPS is
- * required, except for this instance's own URL (the dev allowance: a local
- * deployment served over plain http talks to itself). The host must pass
- * {@link isAllowedBrokerHost}, which resolves it via DNS.
- *
- * The check runs at the time a URL is accepted; a name that re-resolves to a
- * private address later is not caught here.
+ * Whether a peer-supplied broker URL may be stored and dialled: https to public addresses only,
+ * no credentials, query or fragment. This instance's exact origin is exempt (dev may use http).
+ * The address check runs at acceptance; transport repeats it at connect time.
  */
 export async function isAllowedBrokerUrl(url: string): Promise<boolean> {
   let parsed: URL;
@@ -172,9 +170,8 @@ export async function isAllowedBrokerUrl(url: string): Promise<boolean> {
     return false;
   }
   if (parsed.username || parsed.password) return false;
-  const own = ownHostname();
-  if (parsed.protocol !== "https:") {
-    if (parsed.protocol !== "http:" || parsed.hostname !== own) return false;
-  }
-  return isAllowedBrokerHost(parsed.hostname);
+  if (url.includes("?") || url.includes("#")) return false;
+  if (isOwnOrigin(url)) return true;
+  if (parsed.protocol !== "https:") return false;
+  return resolvesToPublicAddresses(parsed.hostname);
 }

@@ -154,9 +154,9 @@ function AppContent() {
   }
 
   if (inviteId) {
-    const done = (slug?: string) => {
+    const done = (tenantId?: string) => {
       goHome();
-      void (slug ? reloadAndSelect(slug) : reload());
+      void (tenantId ? reloadAndSelect(tenantId) : reload());
     };
     return (
       <>

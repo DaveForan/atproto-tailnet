@@ -1,13 +1,7 @@
 /**
  * @module routes/machine-lock
- * A member locks their own devices in a tailnet to the machines they have now
- * (ADR-0035 §2). The coordinator stores and enforces the lock: while it is on,
- * no other machine can join as this member, with a valid auth key or an
- * approved sign-in alike.
- *
- * Session only: never agent tokens or MCP tokens. When the member has trusted
- * devices, every change needs a fresh proof from one of them, so a stolen
- * session cannot open the lock.
+ * Machine lock (ADR-0035 §2): a member pins their devices to current machines; the coordinator enforces it.
+ * Session only; with trusted devices every change needs a fresh device proof.
  */
 
 import { Router, type Response } from "express";
@@ -23,7 +17,7 @@ import { listUserDevices } from "../access/devices.js";
 import { syncTenantAccess } from "../access/sync.js";
 import { requireFreshDeviceProof } from "./device-trust.js";
 
-export const machineLockRouter = Router();
+export const machineLockRouter = Router({ caseSensitive: true });
 
 /** How long "allow one new device" stays open. */
 export const ALLOW_ONE_SECONDS = 10 * 60;

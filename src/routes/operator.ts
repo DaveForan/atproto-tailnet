@@ -1,10 +1,7 @@
 /**
  * @module routes/operator
- * Instance-operator API (`/api/operator/*`, guarded by requireOperator:
- * session or MCP token of an OPERATOR_DIDS user, never agent tokens) and the
- * public instance descriptor (`GET /api/instance`). Every operator action is
- * audit-logged (tenant-scoped actions under the tenant, instance-level ones
- * with a NULL tenant).
+ * Instance-operator API (`/api/operator/*`, session or operator MCP token, never agent tokens) and `GET /api/instance`.
+ * Every operator action is audited.
  */
 
 import { Router } from "express";
@@ -42,10 +39,10 @@ import { stepUpForSession } from "../auth/step-up.js";
 import { parseBody } from "./validation.js";
 
 /** Router for /api/operator/* (all routes behind requireOperator). */
-export const operatorRouter = Router();
+export const operatorRouter = Router({ caseSensitive: true });
 
 /** Public instance descriptor — mount before agent-token resolution. */
-export const instanceRouter = Router();
+export const instanceRouter = Router({ caseSensitive: true });
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

@@ -1,11 +1,6 @@
 /**
  * @module routes/federation
- * Federation link management between collectives. Each side stores its own
- * view of the link (per-side model): localTenantId owns the row, peerDid
- * identifies the remote collective, direction records who initiated. The
- * requester sends a federation request to a target tenant by slug; the
- * target's originator or manage_settings holder accepts/rejects. Either
- * side can revoke.  Gated by the "manage_settings" permission.
+ * Federation links between collectives (manage_settings). Each side owns its own row; either side can revoke.
  */
 
 import { Router } from "express";
@@ -63,7 +58,7 @@ function requestMessageId(link: { id: string; signedRequest: string | null }): s
   return link.id;
 }
 
-export const federationRouter = Router();
+export const federationRouter = Router({ caseSensitive: true });
 
 federationRouter.get(
   "/api/tenants/:tenantId/federation",
@@ -154,27 +149,17 @@ federationRouter.post(
         lockdownMode: tenants.lockdownMode,
       })
       .from(tenants)
-      .where(targetFilter)
+      .where(and(targetFilter, ne(tenants.status, "deleted"), eq(tenants.suspended, false)))
       .limit(1);
 
-    if (targetRows.length === 0) {
-      res.status(404).json({ error: "Target tailnet not found" });
-      return;
-    }
-
     const target = targetRows[0];
-    if (target.id === tenantId) {
+    if (target?.id === tenantId) {
       res.status(400).json({ error: "Cannot federate with yourself" });
       return;
     }
-
-    if (target.lockdownMode) {
-      res.status(403).json({ error: "Target collective is in lockdown mode" });
-      return;
-    }
-
-    if (target.federationPosture === "closed") {
-      res.status(403).json({ error: "Target collective does not accept federation requests" });
+    // One answer for missing, closed and locked-down targets: a probe learns nothing more.
+    if (!target || target.lockdownMode || target.federationPosture === "closed") {
+      res.status(404).json({ error: "No collective with that name accepts federation requests" });
       return;
     }
 
@@ -372,7 +357,7 @@ export const respondBody = z.object({
 federationRouter.post(
   "/api/tenants/:tenantId/federation/:linkId/accept",
   requireAuth,
-  tenantGuard({ permission: "manage_settings" }),
+  tenantGuard({ permission: "manage_settings", notLockedDown: true }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const linkId = param(req, "linkId");

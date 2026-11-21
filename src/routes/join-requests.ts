@@ -17,7 +17,7 @@ import { enforceMemberLimit } from "./limits.js";
 import { notify } from "../notifications/service.js";
 import { parseBody } from "./validation.js";
 
-export const joinRequestsRouter = Router();
+export const joinRequestsRouter = Router({ caseSensitive: true });
 
 /** Max pending join requests a tailnet queues before refusing new ones. */
 export const MAX_PENDING_JOIN_REQUESTS = 50;

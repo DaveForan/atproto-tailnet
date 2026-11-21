@@ -308,10 +308,12 @@ describe("DIDResolver trust boundaries", () => {
     for (const addr of [
       "127.0.0.1", "10.1.2.3", "172.16.0.1", "192.168.1.1", "169.254.169.254",
       "100.64.0.1", "0.0.0.0", "::1", "fe80::1", "fd00::1", "::ffff:127.0.0.1",
+      // IPv4-compatible, unparsed mapped form, 6to4, Teredo, local NAT64, site-local
+      "::7f00:1", "0:0:0:0:0:ffff:808:808", "2002:7f00:1::1", "2001:0:4136:e378::1", "64:ff9b:1::a00:1", "fec0::1",
     ]) {
       expect(isPublicAddress(addr), addr).toBe(false);
     }
-    for (const addr of ["93.184.216.34", "8.8.8.8", "2606:4700:4700::1111"]) {
+    for (const addr of ["93.184.216.34", "8.8.8.8", "2606:4700:4700::1111", "::ffff:8.8.8.8", "2001:db9::1"]) {
       expect(isPublicAddress(addr), addr).toBe(true);
     }
   });

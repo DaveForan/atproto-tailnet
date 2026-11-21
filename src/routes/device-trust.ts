@@ -1,16 +1,7 @@
 /**
  * @module routes/device-trust
- * Device-bound sign-in (ADR-0035).
- *
- * While a user has trusted devices, the AT Protocol sign-in only identifies
- * the account: the session stays *pending* until the browser proves a trusted
- * device by signing a challenge. Another browser is refused. It can ask to be
- * added, which a trusted device confirms with a short code, or the user can
- * use a recovery code.
- *
- * Changing the lock (devices, limit, recovery codes) needs a fresh proof from
- * the trusted device of the session ("step-up"), so a stolen session cookie
- * alone cannot remove the lock.
+ * Device-bound sign-in (ADR-0035): a session stays pending until a trusted device proves itself.
+ * Lock changes (devices, limit, recovery codes) need a fresh device proof (step-up).
  */
 
 import { Router, type Request, type Response } from "express";
@@ -44,9 +35,10 @@ import {
 } from "../auth/device-trust.js";
 import { config } from "../config.js";
 import { alertUser, clearSignInNotice, endOtherSessions, establishSession, trustedDeviceCount } from "../auth/session.js";
-import { deviceProofFresh, stepUpMissing } from "../auth/step-up.js";
+import { deviceProofFresh, markDeviceProof, refuseStepUp, stepUpMissing } from "../auth/step-up.js";
+import { logAudit } from "../audit/log.js";
 
-export const deviceTrustRouter = Router();
+export const deviceTrustRouter = Router({ caseSensitive: true });
 
 // ── Device cookie and profile ───────────────────────────────────────────
 
@@ -76,6 +68,23 @@ function clearDeviceCookie(res: Response): void {
 /** True when the browser sent the device cookie that belongs to this trusted device. */
 function hasDeviceCookie(req: Request, device: { cookieHash: string | null }): boolean {
   return deviceCookieMatches(device.cookieHash, readCookie(req.headers.cookie, deviceCookieName(secureCookies())));
+}
+
+/** How long after an AT Protocol sign-in the first trusted device may be added. */
+export const FIRST_DEVICE_SIGN_IN_WINDOW_MS = 10 * 60 * 1000;
+
+function recentAtprotoSignIn(req: Request): boolean {
+  const at = req.session.authAt;
+  return !!at && Date.now() - at < FIRST_DEVICE_SIGN_IN_WINDOW_MS;
+}
+
+/** Instance-level audit row for an account event; metadata never holds codes, keys or cookies. */
+function auditAccount(
+  userId: string,
+  action: "sign_in_succeeded" | "sign_in_failed" | "trusted_device_added" | "trusted_device_removed" | "trusted_device_approved" | "recovery_codes_generated" | "recovery_code_used",
+  metadata: Record<string, unknown>,
+): void {
+  logAudit({ tenantId: null, actorUserId: userId, action, targetType: "user", targetId: userId, metadata });
 }
 
 function requestProfile(req: Request) {
@@ -167,6 +176,7 @@ deviceTrustRouter.post("/api/device-trust/pending/verify", async (req, res) => {
     !hasDeviceCookie(req, device)
   ) {
     req.session.proofAttempts = (req.session.proofAttempts ?? 0) + 1;
+    auditAccount(pending.userId, "sign_in_failed", { reason: "device_not_trusted" });
     res.status(403).json({ error: "This device could not be verified", code: "device_not_trusted" });
     return;
   }
@@ -174,7 +184,13 @@ deviceTrustRouter.post("/api/device-trust/pending/verify", async (req, res) => {
   await db.update(trustedDevices).set({ lastUsedAt: new Date() }).where(eq(trustedDevices.id, device.id));
   await noteProfile(req, device);
   await clearSignInNotice(req);
-  await establishSession(req, { userId: pending.userId, did: pending.did, trustedDeviceId: device.id });
+  await establishSession(req, {
+    userId: pending.userId,
+    did: pending.did,
+    trustedDeviceId: device.id,
+    deviceCookieHash: device.cookieHash,
+  });
+  auditAccount(pending.userId, "sign_in_succeeded", { method: "trusted_device", deviceId: device.id });
   res.json({ status: "signed_in", redirect });
 });
 
@@ -193,6 +209,7 @@ deviceTrustRouter.post("/api/device-trust/pending/recover", async (req, res) => 
     : [];
   if (used.length === 0) {
     req.session.proofAttempts = (req.session.proofAttempts ?? 0) + 1;
+    auditAccount(pending.userId, "sign_in_failed", { reason: "invalid_recovery_code" });
     res.status(403).json({ error: "That recovery code is not valid" });
     return;
   }
@@ -200,6 +217,8 @@ deviceTrustRouter.post("/api/device-trust/pending/recover", async (req, res) => 
   // The recovery alert below replaces the notice
   await clearSignInNotice(req);
   await establishSession(req, { userId: pending.userId, did: pending.did, mustEnrollDevice: true });
+  auditAccount(pending.userId, "recovery_code_used", { codeId: used[0].id });
+  auditAccount(pending.userId, "sign_in_succeeded", { method: "recovery_code" });
   void alertUser(pending.userId, "A recovery code was used to sign in", "If this was not you, remove the new device and make new recovery codes.");
   res.json({ status: "signed_in", redirect });
 });
@@ -279,24 +298,17 @@ deviceTrustRouter.get("/api/device-trust/pending/request", async (req, res) => {
 const stepUpFresh = deviceProofFresh;
 
 /**
- * True when the request may change the lock: no lock yet, or a fresh device
- * proof. Same freshness rule as `stepUpForSession` (`deviceProofFresh`,
- * `STEP_UP_TTL_MS`); in addition, a session without a trusted device (a
- * recovery-code session, or one whose device was removed) is refused while the
- * user still has trusted devices, which needs one database lookup.
+ * True when the request may change the lock: no lock yet, or a fresh device proof.
+ * A session without a trusted device is refused while the user still has trusted devices.
  */
 async function mayChangeLock(req: Request, res: Response): Promise<boolean> {
   if (stepUpFresh(req)) return true;
   if (!stepUpMissing(req) && (await trustedDeviceCount(req.session.userId!)) === 0) return true;
-  res.status(403).json({ error: "Confirm on this trusted device first", code: "step_up_required" });
+  refuseStepUp(req, res);
   return false;
 }
 
-/**
- * Gate for other sensitive changes of the signed-in user (for example the
- * machine lock): with trusted devices, a fresh proof is required. Sends the
- * `step_up_required` response and returns false when it is missing.
- */
+/** Gate for other sensitive changes of the user (for example the machine lock); sends `step_up_required` and returns false without a fresh proof. */
 export const requireFreshDeviceProof = mayChangeLock;
 
 deviceTrustRouter.get("/api/trusted-devices", requireSession, async (req, res) => {
@@ -366,11 +378,17 @@ deviceTrustRouter.post("/api/trusted-devices", requireSession, async (req, res) 
     res.status(403).json({ error: "Sign in on the new device and approve it from a trusted device", code: "use_request" });
     return;
   }
+  // Turning the lock on decides who keeps access: a stolen old session must not do it.
+  if (count === 0 && !recentAtprotoSignIn(req)) {
+    res.status(403).json({ error: "Sign in again, then add this device within 10 minutes", code: "reauth_required" });
+    return;
+  }
   const [user] = await db.select({ max: users.maxTrustedDevices }).from(users).where(eq(users.id, userId));
   if (count >= (user?.max ?? 3)) {
     res.status(409).json({ error: "You reached your limit of trusted devices. Remove one first", code: "device_limit" });
     return;
   }
+  const cookieHash = setDeviceCookie(res);
   const [device] = await db
     .insert(trustedDevices)
     .values({
@@ -378,7 +396,7 @@ deviceTrustRouter.post("/api/trusted-devices", requireSession, async (req, res) 
       name,
       publicKeyJwk: jwk,
       userAgent: String(req.headers["user-agent"] ?? "").slice(0, 300) || null,
-      cookieHash: setDeviceCookie(res),
+      cookieHash,
       profile: requestProfile(req),
       lastUsedAt: new Date(),
     })
@@ -394,7 +412,9 @@ deviceTrustRouter.post("/api/trusted-devices", requireSession, async (req, res) 
     await endOtherSessions(userId, req.sessionID);
   }
   req.session.trustedDeviceId = device.id;
-  req.session.deviceVerifiedAt = Date.now();
+  markDeviceProof(req, cookieHash);
+  auditAccount(userId, "trusted_device_added", { deviceId: device.id, name: device.name, firstDevice: count === 0 });
+  if (codes) auditAccount(userId, "recovery_codes_generated", { count: codes.length });
   delete req.session.mustEnrollDevice;
   res.status(201).json({ id: device.id, name: device.name, recoveryCodes: codes });
 });
@@ -418,7 +438,7 @@ deviceTrustRouter.post("/api/trusted-devices/step-up", requireSession, async (re
     res.status(403).json({ error: "This device could not be verified", code: "device_not_trusted" });
     return;
   }
-  req.session.deviceVerifiedAt = Date.now();
+  markDeviceProof(req, device.cookieHash);
   res.json({ status: "verified", validForMs: STEP_UP_TTL_MS });
 });
 
@@ -436,12 +456,14 @@ deviceTrustRouter.delete("/api/trusted-devices/:id", requireSession, async (req,
   }
   await endOtherSessions(userId, req.sessionID, id);
   const left = await trustedDeviceCount(userId);
+  auditAccount(userId, "trusted_device_removed", { deviceId: id, devicesLeft: left });
   if (left === 0) {
     // No trusted device is left: the lock is off, and old codes must not linger
     await db.delete(recoveryCodes).where(eq(recoveryCodes.userId, userId));
   }
   if (req.session.trustedDeviceId === id) {
     delete req.session.deviceVerifiedAt;
+    delete req.session.deviceCookieHash;
     clearDeviceCookie(res);
     // While other trusted devices remain, this browser is no longer trusted:
     // keep the (now removed) device id so every sensitive action needs a
@@ -490,7 +512,7 @@ deviceTrustRouter.put("/api/trusted-devices/limit", requireSession, async (req, 
 deviceTrustRouter.post("/api/trusted-devices/requests/:id/approve", requireSession, async (req, res) => {
   const userId = req.session.userId!;
   if (!stepUpFresh(req)) {
-    res.status(403).json({ error: "Confirm on this trusted device first", code: "step_up_required" });
+    refuseStepUp(req, res);
     return;
   }
   const [request] = await db
@@ -523,6 +545,7 @@ deviceTrustRouter.post("/api/trusted-devices/requests/:id/approve", requireSessi
     profile: request.profile,
   });
   await db.update(deviceTrustRequests).set({ status: "approved" }).where(eq(deviceTrustRequests.id, request.id));
+  auditAccount(userId, "trusted_device_approved", { deviceId: request.id, name: request.name });
   res.json({ status: "approved", deviceId: request.id });
 });
 
@@ -543,11 +566,12 @@ deviceTrustRouter.post("/api/trusted-devices/requests/:id/deny", requireSession,
 deviceTrustRouter.post("/api/trusted-devices/recovery-codes", requireSession, async (req, res) => {
   const userId = req.session.userId!;
   if (!stepUpFresh(req)) {
-    res.status(403).json({ error: "Confirm on this trusted device first", code: "step_up_required" });
+    refuseStepUp(req, res);
     return;
   }
   const codes = generateRecoveryCodes();
   await db.delete(recoveryCodes).where(eq(recoveryCodes.userId, userId));
   await db.insert(recoveryCodes).values(codes.map((c) => ({ userId, codeHash: hashRecoveryCode(c) })));
+  auditAccount(userId, "recovery_codes_generated", { count: codes.length });
   res.json({ recoveryCodes: codes });
 });

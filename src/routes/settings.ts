@@ -1,8 +1,6 @@
 /**
  * @module routes/settings
- * Tenant settings: toggles for device approval, lockdown (entering it revokes
- * outstanding keys), join requests, board, services, agent tokens,
- * hibernation and the notification webhook.
+ * Tenant settings toggles and the notification webhook. Entering lockdown revokes outstanding keys.
  */
 
 import { Router } from "express";
@@ -19,8 +17,9 @@ import { config } from "../config.js";
 import { validateWebhookUrl } from "../notifications/webhook.js";
 import { revokeAllTenantKeys } from "../access/keys.js";
 import { parseBody } from "./validation.js";
+import { refuseStepUp, stepUpMissing } from "../auth/step-up.js";
 
-export const settingsRouter = Router();
+export const settingsRouter = Router({ caseSensitive: true });
 
 const settingsBody = z.object({
   requireDeviceApproval: z.boolean().optional(),
@@ -39,6 +38,20 @@ const settingsBody = z.object({
   /** Write-only; null/"" clears it. */
   notificationWebhookSecret: z.string().max(256).nullable().optional(),
 });
+
+/**
+ * Settings that change who may get in or be told: never from an agent token, and a session needs step-up.
+ * Security: an agent token with manage_settings must not open the tailnet or redirect its notifications.
+ */
+export const SENSITIVE_SETTINGS = [
+  "lockdownMode",
+  "allowAgentTokens",
+  "allowMemberAgentTokens",
+  "notificationWebhookUrl",
+  "notificationWebhookSecret",
+  "requireDeviceApproval",
+  "allowJoinRequests",
+] as const;
 
 /** Settings response; the webhook URL is shown only to settings managers, the secret never. */
 function settingsView(
@@ -91,6 +104,18 @@ settingsRouter.patch(
 
     const parsed = parseBody(settingsBody, req, res);
     if (!parsed) return;
+
+    const sensitive = SENSITIVE_SETTINGS.filter((k) => parsed.data[k] !== undefined);
+    if (sensitive.length > 0) {
+      if (req.agentToken) {
+        res.status(403).json({ error: "Agent tokens cannot change security settings", settings: sensitive });
+        return;
+      }
+      if (stepUpMissing(req)) {
+        refuseStepUp(req, res);
+        return;
+      }
+    }
 
     const updates: Record<string, unknown> = { updatedAt: new Date() };
 

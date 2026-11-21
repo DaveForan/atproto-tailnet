@@ -1,14 +1,7 @@
 /**
  * @module routes/mcp-connections
- * The signed-in user's MCP OAuth grants ("connections") for the dashboard:
- *
- * - GET    /api/mcp/connections      → [{id, clientName, operator, createdAt, lastUsedAt}]
- *   (`operator: true` when the grant includes the instance-operator scope)
- * - DELETE /api/mcp/connections/:id  → revokes the grant and all its tokens
- *
- * Dashboard session only: agent tokens and MCP tokens cannot list or revoke
- * connections (an MCP client must not manage its own or other grants).
- * DELETE is CSRF-protected by the global middleware (session request).
+ * The user's MCP OAuth grants: list and revoke (with all tokens).
+ * Dashboard session only: an MCP client must not manage grants.
  */
 import { Router } from "express";
 import { requireSession, param } from "./helpers.js";
@@ -16,7 +9,7 @@ import { oauthProvider } from "../oauth/index.js";
 import type { TailnetOAuthProvider } from "../oauth/provider.js";
 
 export function createMcpConnectionsRouter(provider: TailnetOAuthProvider): Router {
-  const router = Router();
+  const router = Router({ caseSensitive: true });
 
   router.get("/api/mcp/connections", requireSession, async (req, res) => {
     const grants = await provider.store.listActiveGrants(req.session.userId!);

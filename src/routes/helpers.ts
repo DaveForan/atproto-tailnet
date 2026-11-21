@@ -1,15 +1,6 @@
 /**
  * @module helpers
- *
- * Shared middleware and utility functions used across all route modules.
- *
- * - {@link requireAuth} — rejects unauthenticated requests (session or Bearer token)
- * - {@link param} — normalises Express 5 route params to a plain string
- * - {@link getTenantForUser} — loads tenant + membership + role in one query
- * - {@link hasPermission} — checks a permission against role (+ agent token scope)
- * - {@link isLockedDown} — returns true when the tenant is in lockdown
- * - {@link toHsUsername} / {@link tenantLoginServer} — Headscale naming helpers
- * - request authentication middleware, re-exported from auth/middleware.ts
+ * Shared route helpers: params, tenant lookup, permission checks, naming. Re-exports request auth.
  */
 
 import type { Request } from "express";
@@ -17,7 +8,7 @@ import { eq, and, ne } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { tenants, memberships, roles } from "../db/schema.js";
 import { tenantPublicUrl } from "../config.js";
-import { effectivePermissions, type Permission } from "../members/permissions.js";
+import { ALL_PERMISSIONS, effectivePermissions, type Permission } from "../members/permissions.js";
 
 // Request authentication lives in auth/middleware.ts; routes import it from here.
 export {
@@ -28,14 +19,9 @@ export {
   requireSession,
 } from "../auth/middleware.js";
 
-// authUserId / authUserDid live in auth/request-user.ts (also used by the
-// operator guard); re-exported here for route handlers.
 export { authUserId, authUserDid } from "../auth/request-user.js";
 
-/**
- * Extracts a named route param, normalising Express 5's
- * `string | string[]` return type to a plain string.
- */
+/** A named route param as one string (Express 5 types it `string | string[]`). */
 export function param(req: Request, name: string): string {
   const val = req.params[name];
   if (Array.isArray(val)) return val[0];
@@ -51,12 +37,7 @@ export type TenantForUser = {
 
 const ACTIVITY_DEBOUNCE_MS = 5 * 60 * 1000;
 
-/**
- * Loads a tenant + the caller's membership + their role in one query.
- * Also touches `lastActivityAt` (debounced to once per 5 minutes).
- *
- * Returns `null` if the user is not a member **or** the tenant is soft-deleted.
- */
+/** Tenant, membership and role in one query; null for non-members and deleted tenants. Touches `lastActivityAt` at most every 5 min. */
 export async function getTenantForUser(
   tenantId: string,
   userId: string,
@@ -90,15 +71,8 @@ export async function getTenantForUser(
 }
 
 /**
- * Checks whether a membership has a specific permission.
- *
- * - Originators implicitly have all permissions.
- * - Others check their role's JSONB permissions array.
- * - If the request was made via an agent token, the permission must also
- *   appear in the token's scoped permissions list.
- *
- * @param req - Optional Express request; when provided, agent token scope
- *              is checked. Pass `undefined` to skip token scoping.
+ * True when the member holds `permission` (originators hold all).
+ * Security: pass `req` so an agent token's scope also applies.
  */
 export function hasPermission(
   membership: typeof memberships.$inferSelect,
@@ -121,11 +95,7 @@ export function hasPermission(
   return perms.includes(permission);
 }
 
-/**
- * The subset of `permissions` the caller does not effectively hold
- * ({@link effectivePermissions} with the agent-token scope). Stops escalation:
- * a caller may only grant permissions they hold.
- */
+/** The `permissions` the caller does not hold (agent-token scope included); a caller grants only what they hold. */
 export function missingPermissions(
   membership: typeof memberships.$inferSelect,
   role: typeof roles.$inferSelect | null,
@@ -134,6 +104,30 @@ export function missingPermissions(
 ): string[] {
   const held = new Set<string>(effectivePermissions(membership, role, req.agentToken?.permissions));
   return permissions.filter((p) => !held.has(p));
+}
+
+/** Permissions of a tenant's role (empty for no role or an unknown id). */
+export async function rolePermissions(tenantId: string, roleId: string | null): Promise<string[]> {
+  if (!roleId) return [];
+  const [row] = await db
+    .select({ permissions: roles.permissions })
+    .from(roles)
+    .where(and(eq(roles.id, roleId), eq(roles.tenantId, tenantId)));
+  return (row?.permissions ?? []) as string[];
+}
+
+/**
+ * Known permissions in `target` that the caller does not hold.
+ * Security: a caller may not demote, kick or delete what outranks them.
+ */
+export function permissionsAbove(
+  membership: typeof memberships.$inferSelect,
+  role: typeof roles.$inferSelect | null,
+  target: readonly string[],
+  req: Request,
+): string[] {
+  const known = ALL_PERMISSIONS as readonly string[];
+  return missingPermissions(membership, role, target.filter((p) => known.includes(p)), req);
 }
 
 /** Returns true when the tenant is in lockdown mode. */

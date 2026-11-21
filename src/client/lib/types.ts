@@ -92,7 +92,7 @@ export interface SentInvitation {
 
 export interface InvitationDetail {
   id: string;
-  tenant: { name: string; slug: string };
+  tenant: { id: string; name: string; address: string | null };
   inviterHandle: string;
   status: "pending" | "accepted" | "declined" | "revoked";
 }

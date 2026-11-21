@@ -59,6 +59,7 @@ const MAC_SAFARI = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/
 const WIN_CHROME = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
 const COOKIE = "tailnet-device";
 const TOKEN = "device-cookie-token";
+const HASH = hashDeviceCookie(TOKEN);
 /** A trusted-device row whose device cookie is TOKEN. */
 const row = (jwk: unknown, extra: Record<string, unknown> = {}) => ({
   id: DEV,
@@ -160,8 +161,10 @@ describe("pending sign-in", () => {
     const r = await call("POST", "/api/device-trust/pending/verify", { deviceId: DEV, signature: d.signIt(json.challenge) });
     expect(r.status).toBe(200);
     expect(r.json.redirect).toBe("/invite/abc");
-    expect(session).toMatchObject({ userId: "u-1", did: "did:plc:x", trustedDeviceId: DEV });
+    expect(session).toMatchObject({ userId: "u-1", did: "did:plc:x", trustedDeviceId: DEV, deviceCookieHash: HASH });
     expect(session.pendingUserId).toBeUndefined();
+    // A device-only sign-in is not an AT Protocol sign-in
+    expect(session.authAt).toBeUndefined();
   });
 
   it("another key, an unknown device or a replayed challenge is refused", async () => {
@@ -229,7 +232,8 @@ describe("pending sign-in", () => {
 });
 
 describe("managing trusted devices", () => {
-  const signedIn = (extra: Sess = {}) => ({ userId: "u-1", did: "did:plc:x", ...extra });
+  // A fresh AT Protocol sign-in; device proofs are bound to the browser's device cookie (TOKEN).
+  const signedIn = (extra: Sess = {}) => ({ userId: "u-1", did: "did:plc:x", authAt: Date.now(), deviceCookieHash: HASH, ...extra });
 
   it("the first device turns the lock on, returns recovery codes once and ends other sessions", async () => {
     const d = device();
@@ -243,6 +247,34 @@ describe("managing trusted devices", () => {
     expect(poolQuery).toHaveBeenCalledWith(expect.stringContaining('DELETE FROM "session"'), ["u-1", "sid-1"]);
     const stored = writes.find((w) => w.op === "insert" && w.table === "recovery_codes")!.arg as Array<Record<string, string>>;
     expect(stored.every((c) => /^[0-9a-f]{64}$/.test(c.codeHash))).toBe(true); // hashes only
+  });
+
+  it("the first device needs an AT Protocol sign-in from the last 10 minutes", async () => {
+    const d = device();
+    for (const authAt of [undefined, Date.now() - 11 * 60_000]) {
+      session = signedIn({ authAt });
+      const { json } = await call("POST", "/api/trusted-devices/challenge");
+      results.push([]); // no trusted devices yet
+      const r = await call("POST", "/api/trusted-devices", { name: "Mac", publicKeyJwk: d.jwk, signature: d.signIt(json.challenge) });
+      expect(r.status).toBe(403);
+      expect(r.json.code).toBe("reauth_required");
+      expect(writes.some((w) => w.op === "insert" && w.table === "trusted_devices")).toBe(false);
+      expect(session.trustedDeviceId).toBeUndefined();
+    }
+  });
+
+  it("a proof is bound to the device cookie: another browser with the session cookie cannot use it", async () => {
+    const d = device();
+    session = signedIn({ trustedDeviceId: DEV, deviceCookieHash: undefined });
+    const { json } = await call("POST", "/api/trusted-devices/challenge");
+    results.push([row(d.jwk)]);
+    expect((await call("POST", "/api/trusted-devices/step-up", { signature: d.signIt(json.challenge) })).status).toBe(200);
+    expect(session.deviceCookieHash).toBe(HASH);
+
+    cookieJar = {}; // the session cookie was copied, the device cookie was not
+    results.push([{ id: DEV }]);
+    expect((await call("DELETE", `/api/trusted-devices/${DEV}`)).json.code).toBe("step_up_required");
+    expect(writes.some((w) => w.op === "delete" && w.table === "trusted_devices")).toBe(false);
   });
 
   it("enrolment needs a signature by the key being enrolled", async () => {
@@ -404,10 +436,12 @@ describe("device cookie and profile", () => {
   it("enrolment sets an HttpOnly cookie and stores only its hash, with the profile", async () => {
     const d = device();
     cookieJar = {};
-    session = { userId: "u-1", did: "did:plc:x" };
+    session = { userId: "u-1", did: "did:plc:x", authAt: Date.now() };
     const { json } = await call("POST", "/api/trusted-devices/challenge");
     results.push([], [{ max: 3 }], [{ id: DEV, name: "Mac" }]);
     await call("POST", "/api/trusted-devices", { name: "Mac", publicKeyJwk: d.jwk, signature: d.signIt(json.challenge), profile: { cores: 10, touch: false } });
+    // The new proof is bound to the cookie just set
+    expect(session.deviceCookieHash).toBe(hashDeviceCookie(cookieJar[COOKIE]));
     const stored = writes.find((w) => w.op === "insert" && w.table === "trusted_devices")!.arg as Record<string, any>;
     expect(cookieJar[COOKIE]).toBeTruthy();
     expect(stored.cookieHash).toBe(hashDeviceCookie(cookieJar[COOKIE]));
@@ -424,7 +458,7 @@ describe("device cookie and profile", () => {
     expect(asked.cookieHash).toBe(hashDeviceCookie(cookieJar[COOKIE]));
 
     writes.length = 0;
-    session = { userId: "u-1", did: "did:plc:x", trustedDeviceId: DEV, deviceVerifiedAt: Date.now() };
+    session = { userId: "u-1", did: "did:plc:x", trustedDeviceId: DEV, deviceVerifiedAt: Date.now(), deviceCookieHash: hashDeviceCookie(cookieJar[COOKIE]) };
     const request = { id: "req-1", userId: "u-1", name: "Phone", publicKeyJwk: asked.publicKeyJwk, code: "ABCDEF", status: "pending", expiresAt: new Date(Date.now() + 60_000), cookieHash: asked.cookieHash, profile: asked.profile };
     results.push([request], [{ max: 3 }], [{ id: DEV }]);
     await call("POST", "/api/trusted-devices/requests/req-1/approve", { code: "ABCDEF" });
@@ -467,7 +501,7 @@ describe("device cookie and profile", () => {
   });
 
   it("clearing a warning needs a fresh proof, then forgets the profile", async () => {
-    session = { userId: "u-1", did: "did:plc:x", trustedDeviceId: DEV, deviceVerifiedAt: Date.now() - 10 * 60_000 };
+    session = { userId: "u-1", did: "did:plc:x", trustedDeviceId: DEV, deviceVerifiedAt: Date.now() - 10 * 60_000, deviceCookieHash: HASH };
     results.push([{ id: DEV }]);
     expect((await call("POST", `/api/trusted-devices/${DEV}/dismiss-warning`)).json.code).toBe("step_up_required");
     session.deviceVerifiedAt = Date.now();
@@ -523,5 +557,60 @@ describe("sign-in on hold notice", () => {
     results.push([row(d.jwk)]);
     expect((await call("POST", "/api/device-trust/pending/verify", { deviceId: DEV, signature: d.signIt(challenge) })).status).toBe(200);
     expect(writes.some((w) => w.op === "delete" && w.table === "notifications")).toBe(true);
+  });
+});
+
+describe("security events are audited without secrets", () => {
+  const audits = () =>
+    writes
+      .filter((w) => w.op === "insert" && w.table === "audit_logs")
+      .map((w) => w.arg as { action: string; tenantId: unknown; actorUserId: string; metadata: Record<string, unknown> });
+
+  it("device sign-in success and failure", async () => {
+    const d = device();
+    session = { pendingUserId: "u-1", pendingDid: "did:plc:x" };
+    results.push([{ handle: "h" }]);
+    let challenge = (await call("GET", "/api/device-trust/pending")).json.challenge;
+    results.push([row(d.jwk)]);
+    await call("POST", "/api/device-trust/pending/verify", { deviceId: DEV, signature: device().signIt(challenge) });
+    results.push([{ handle: "h" }]);
+    challenge = (await call("GET", "/api/device-trust/pending")).json.challenge;
+    results.push([row(d.jwk)]);
+    await call("POST", "/api/device-trust/pending/verify", { deviceId: DEV, signature: d.signIt(challenge) });
+    expect(audits().map((a) => [a.action, a.metadata.reason ?? a.metadata.method])).toEqual([
+      ["sign_in_failed", "device_not_trusted"],
+      ["sign_in_succeeded", "trusted_device"],
+    ]);
+    expect(audits().every((a) => a.tenantId === null && a.actorUserId === "u-1")).toBe(true);
+  });
+
+  it("recovery code use, first device, new codes and step-up refusal", async () => {
+    session = { pendingUserId: "u-1", pendingDid: "did:plc:x" };
+    results.push([]);
+    await call("POST", "/api/device-trust/pending/recover", { code: "WRONG-CODE1" });
+    results.push([{ id: "code-1" }]);
+    await call("POST", "/api/device-trust/pending/recover", { code: "ABCDE-FGHJK" });
+
+    const d = device();
+    session = { userId: "u-1", did: "did:plc:x", authAt: Date.now() };
+    const { json } = await call("POST", "/api/trusted-devices/challenge");
+    results.push([], [{ max: 3 }], [{ id: DEV, name: "Mac" }]);
+    const enrolled = await call("POST", "/api/trusted-devices", { name: "Mac", publicKeyJwk: d.jwk, signature: d.signIt(json.challenge) });
+
+    session = { userId: "u-1", did: "did:plc:x", trustedDeviceId: DEV };
+    await call("POST", "/api/trusted-devices/recovery-codes");
+
+    expect(audits().map((a) => a.action)).toEqual([
+      "sign_in_failed",
+      "recovery_code_used",
+      "sign_in_succeeded",
+      "trusted_device_added",
+      "recovery_codes_generated",
+      "step_up_refused",
+    ]);
+    const text = JSON.stringify(audits());
+    for (const secret of ["ABCDE-FGHJK", "WRONG-CODE1", ...(enrolled.json.recoveryCodes as string[]), TOKEN, cookieJar[COOKIE]]) {
+      expect(text).not.toContain(secret);
+    }
   });
 });

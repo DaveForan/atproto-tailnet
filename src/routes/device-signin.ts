@@ -1,11 +1,7 @@
 /**
  * @module routes/device-signin
- * Interactive device sign-in (ADR-0032). A device without an auth key is sent
- * to `/device/<id>`; the signed-in member chooses a tailnet and approves, and
- * the coordinator then lets the waiting device in as that member's device.
- *
- * The checks of the auth-key path apply (membership, lockdown, device limit,
- * device approval). Device locks are Headscale-only, so they never apply here.
+ * Interactive device sign-in (ADR-0032): a member approves a waiting device at `/device/<id>`.
+ * The auth-key checks apply (membership, lockdown, device limit, approval); Headscale device locks do not.
  */
 
 import { Router } from "express";
@@ -24,7 +20,7 @@ import { getCoordinatorClient, useCoordinator } from "../orchestrator/control-cl
 import { pushTenantIdentity } from "../orchestrator/coordinator-identity.js";
 import { stepUpForSession } from "../auth/step-up.js";
 
-export const deviceSignInRouter = Router();
+export const deviceSignInRouter = Router({ caseSensitive: true });
 
 const ID_RE = /^[0-9a-f]{32}$/;
 

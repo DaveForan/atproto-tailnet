@@ -20,7 +20,7 @@ import { parsePolicy } from "../policy-engine/parser.js";
 import { evaluateTraversal } from "../policy-engine/evaluator.js";
 import type { CompiledPolicy, TraversalRequest } from "../policy-engine/types.js";
 
-export const traversalRouter = Router();
+export const traversalRouter = Router({ caseSensitive: true });
 
 traversalRouter.get(
   "/api/tenants/:tenantId/traversal-policy",

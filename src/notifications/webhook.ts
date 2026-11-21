@@ -1,14 +1,7 @@
 /**
  * @module notifications/webhook
- * Outbound notification webhooks (self-hosted ntfy, Gotify, Matrix bridges…).
- *
- * SSRF posture: targets must be https:// and every address the host resolves
- * to must be public ({@link resolvesToPublicAddresses} from identity/resolver).
- * The check is repeated at connect time through a guarded DNS lookup, so a
- * DNS-rebinding answer cannot slip a private address in between validation
- * and delivery. Redirects are never followed and delivery times out after 5s.
- * `WEBHOOK_ALLOW_PRIVATE=true` lifts the address and https rules — intended
- * only for single-organisation self-hosting.
+ * Outbound notification webhooks: https to public addresses (re-checked at connect time), no redirects, 5 s timeout.
+ * `WEBHOOK_ALLOW_PRIVATE=true` lifts the address and https rules (single-organisation self-hosting only).
  */
 
 import { createHmac } from "node:crypto";
@@ -23,6 +16,8 @@ export const WEBHOOK_TIMEOUT_MS = 5_000;
 export const WEBHOOK_MAX_URL_LENGTH = 2048;
 export const EVENT_HEADER = "X-Atproto-Tailnet-Event";
 export const SIGNATURE_HEADER = "X-Atproto-Tailnet-Signature";
+/** Unix seconds of the delivery; part of the signed text so receivers can refuse replays. */
+export const TIMESTAMP_HEADER = "X-Atproto-Tailnet-Timestamp";
 
 /** JSON body POSTed to the webhook. */
 export interface WebhookPayload {
@@ -82,9 +77,9 @@ export async function validateWebhookUrl(
   return null;
 }
 
-/** `sha256=<hex HMAC-SHA256 of the raw body>` */
-export function signWebhookBody(rawBody: string, secret: string): string {
-  return `sha256=${createHmac("sha256", secret).update(rawBody).digest("hex")}`;
+/** `sha256=<hex HMAC-SHA256 of "<timestamp>.<raw body>">` */
+export function signWebhookBody(rawBody: string, secret: string, timestamp: string): string {
+  return `sha256=${createHmac("sha256", secret).update(`${timestamp}.${rawBody}`).digest("hex")}`;
 }
 
 /** Headers for one delivery; the signature header is present only with a secret. */
@@ -92,13 +87,15 @@ export function buildWebhookHeaders(
   rawBody: string,
   type: string,
   secret: string | null | undefined,
+  timestamp: string = String(Math.floor(Date.now() / 1000)),
 ): Record<string, string> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "User-Agent": "atproto-tailnet-webhook/1",
     [EVENT_HEADER]: type,
+    [TIMESTAMP_HEADER]: timestamp,
   };
-  if (secret) headers[SIGNATURE_HEADER] = signWebhookBody(rawBody, secret);
+  if (secret) headers[SIGNATURE_HEADER] = signWebhookBody(rawBody, secret, timestamp);
   return headers;
 }
 

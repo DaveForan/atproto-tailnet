@@ -55,6 +55,7 @@ import { apiRouter } from "../routes/api.js";
 import { devicesRouter } from "../routes/devices.js";
 import { securityRouter } from "../routes/security.js";
 import { aclRouter } from "../routes/acl.js";
+import { derpRouter } from "../routes/derp.js";
 import { deviceSignInRouter } from "../routes/device-signin.js";
 import { agentsRouter } from "../routes/agents.js";
 import { hostnamesRouter } from "../routes/hostnames.js";
@@ -106,6 +107,7 @@ describe("step-up on sensitive routes (ADR-0035)", () => {
     [securityRouter, "delete", "/api/tenants/:tenantId/device-locks"],
     [securityRouter, "post", "/api/tenants/:tenantId/device-approvals/:approvalId/approve"],
     [aclRouter, "put", "/api/tenants/:tenantId/acl"],
+    [derpRouter, "put", "/api/tenants/:tenantId/derp"],
     [apiRouter, "delete", "/api/tenants/:id"],
     [agentsRouter, "post", "/api/tenants/:tenantId/agent-tokens"],
     [hostnamesRouter, "put", "/api/tenants/:tenantId/hostnames/primary"],
@@ -201,6 +203,64 @@ describe("GET /api/tenants", () => {
     const list = await get();
     expect(dialect.sqlToQuery(wheres[0] as SQL).sql).not.toContain('"tenants"."id"');
     expect(list[0].coordinatorTenantId).toBe("c-a");
+  });
+});
+
+describe("sensitive settings", () => {
+  const tenantRow = { id: T, slug: "t-a", lockdownMode: false, lastActivityAt: new Date(), requireDeviceApproval: false };
+  const guardRow = (perms: string[]) => [{ tenant: tenantRow, membership: { id: "m", isOriginator: false }, role: { permissions: perms } }];
+  let ctx: { session: Record<string, unknown>; agent?: Record<string, unknown> } = { session: {} };
+  const app = express();
+  app.use(express.json());
+  app.use((req: Request, _res: Response, next: NextFunction) => {
+    (req as unknown as { session: unknown }).session = ctx.session;
+    if (ctx.agent) (req as unknown as { agentToken: unknown }).agentToken = ctx.agent;
+    next();
+  });
+  app.use(securityRouter);
+  const server = app.listen(0);
+  afterAll(() => server.close());
+  const patch = async (body: Record<string, unknown>) => {
+    const r = await fetch(`http://127.0.0.1:${(server.address() as AddressInfo).port}/api/tenants/${T}/settings`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return { status: r.status, json: (await r.json()) as Record<string, unknown> };
+  };
+
+  beforeEach(() => {
+    results.length = 0;
+  });
+
+  it.each([
+    { lockdownMode: false },
+    { allowAgentTokens: true },
+    { allowMemberAgentTokens: true },
+    { notificationWebhookUrl: "https://hooks.example.com/x" },
+    { notificationWebhookSecret: "s" },
+    { requireDeviceApproval: false },
+    { allowJoinRequests: true },
+  ])("an agent token with manage_settings cannot change %j", async (body) => {
+    ctx = { session: {}, agent: { id: "a", tenantId: T, userId: "u-1", permissions: ["manage_settings"] } };
+    results.push(guardRow(["manage_settings"]));
+    const r = await patch(body);
+    expect(r.status).toBe(403);
+    expect(r.json.error).toMatch(/Agent tokens/);
+  });
+
+  it("an agent token can still change plain settings", async () => {
+    ctx = { session: {}, agent: { id: "a", tenantId: T, userId: "u-1", permissions: ["manage_settings"] } };
+    results.push(guardRow(["manage_settings"]), [], [tenantRow]);
+    expect((await patch({ boardEnabled: true, hibernateAfterDays: 3 })).status).toBe(200);
+  });
+
+  it("a trusted-device session needs step-up for security settings only", async () => {
+    ctx = { session: { userId: "u-1", trustedDeviceId: "dev-1", deviceVerifiedAt: Date.now() - 60 * 60_000 } };
+    results.push(guardRow(["manage_settings"]));
+    expect((await patch({ allowJoinRequests: true })).json.code).toBe("step_up_required");
+    results.push(guardRow(["manage_settings"]), [], [tenantRow]);
+    expect((await patch({ boardEnabled: true })).status).toBe(200);
   });
 });
 

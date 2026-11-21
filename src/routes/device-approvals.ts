@@ -19,7 +19,7 @@ import { tenantLoginServerFor } from "../orchestrator/hostnames.js";
 import { enforceDeviceLimit } from "./limits.js";
 import { issueMemberKey } from "../access/keys.js";
 
-export const deviceApprovalsRouter = Router();
+export const deviceApprovalsRouter = Router({ caseSensitive: true });
 
 // ── Device approvals ────────────────────────────────────────────────
 

@@ -66,12 +66,13 @@ const T = "11111111-1111-4111-8111-111111111111";
 const ALICE = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const BOB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const POST = "99999999-9999-4999-8999-999999999999";
-const tenant = { id: T, slug: "t-x", lockdownMode: false, lastActivityAt: new Date(), accessMode: "member", controllerBoardText: null };
-const ctx = (opts: { originator?: boolean; perms?: string[]; lockdown?: boolean } = {}) => [
+const tenant = { id: T, slug: "t-x", lockdownMode: false, boardEnabled: true, lastActivityAt: new Date(), accessMode: "member", controllerBoardText: null };
+// Members hold create_posts unless a test says otherwise
+const ctx = (opts: { originator?: boolean; perms?: string[]; lockdown?: boolean; board?: boolean } = {}) => [
   {
-    tenant: { ...tenant, lockdownMode: opts.lockdown ?? false },
+    tenant: { ...tenant, lockdownMode: opts.lockdown ?? false, boardEnabled: opts.board ?? true },
     membership: { id: "m", isOriginator: opts.originator ?? false },
-    role: { permissions: opts.perms ?? [] },
+    role: { permissions: opts.perms ?? ["create_posts"] },
   },
 ];
 const post = (over: Record<string, unknown> = {}) => ({
@@ -157,6 +158,39 @@ describe("service posts", () => {
   it("is blocked by lockdown", async () => {
     results.push(ctx({ lockdown: true }));
     expect((await call("POST", "/boards/posts", body)).status).toBe(403);
+  });
+
+  it("a public post needs create_posts; a private post does not", async () => {
+    results.push(ctx({ perms: [] }));
+    const r = await call("POST", "/boards/posts", body);
+    expect(r.status).toBe(403);
+    expect(insertOf("service_posts")).toBeUndefined();
+    results.push(ctx({ perms: [] }), [], [], [post({ board: "private", name: "notes" })]);
+    expect((await call("POST", "/boards/posts", { ...body, board: "private", name: "notes" })).status).toBe(201);
+    // An agent token without create_posts in its scope cannot post publicly either
+    results.push(ctx());
+    expect((await call("POST", "/boards/posts", body, { "x-agent": "1" })).status).toBe(403);
+  });
+
+  it("the public board must be enabled to post, change a public post or connect", async () => {
+    results.push(ctx({ board: false, originator: true }));
+    const created = await call("POST", "/boards/posts", body);
+    expect(created.status).toBe(403);
+    expect(created.json.code).toBe("board_disabled");
+    expect(insertOf("service_posts")).toBeUndefined();
+
+    results.push(ctx({ board: false }), [post({ authorId: BOB, nodeId: "20" })]);
+    expect((await call("PATCH", `/boards/posts/${POST}`, { port: 4000 })).json.code).toBe("board_disabled");
+    expect(writes.some((w) => w.op === "update" && w.table === "service_posts")).toBe(false);
+
+    results.push(ctx({ board: false }), [post()]);
+    expect((await call("PUT", `/boards/posts/${POST}/connections`, { nodeIds: ["20"] })).json.code).toBe("board_disabled");
+    expect(insertOf("service_connections")).toBeUndefined();
+    // Disconnecting still works, and private posts are not affected
+    results.push(ctx({ board: false }), [post()]);
+    expect((await call("PUT", `/boards/posts/${POST}/connections`, { nodeIds: [] })).status).toBe(200);
+    results.push(ctx({ board: false }), [], [], [post({ board: "private", name: "notes" })]);
+    expect((await call("POST", "/boards/posts", { ...body, board: "private", name: "notes" })).status).toBe(201);
   });
 
   it("changing the port of an approved post drops connections and needs a new approval", async () => {

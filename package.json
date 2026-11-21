@@ -16,13 +16,14 @@
     "reset-device-lock": "tsx --env-file=.env src/scripts/reset-device-lock.ts"
   },
   "dependencies": {
+    "@atproto-labs/fetch-node": "^0.2.0",
     "@atproto/crypto": "^0.5.7",
     "@atproto/oauth-client-node": "^0.3.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "connect-pg-simple": "^10.0.0",
     "dockerode": "^4.0.0",
     "drizzle-kit": "^0.30.0",
-    "drizzle-orm": "^0.39.0",
+    "drizzle-orm": "^0.45.2",
     "express": "^5.1.0",
     "express-rate-limit": "^8.7.1",
     "express-session": "^1.18.0",

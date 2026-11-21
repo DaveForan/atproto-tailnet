@@ -8,6 +8,7 @@ import {
   nodeTransport,
   SIGNATURE_HEADER,
   EVENT_HEADER,
+  TIMESTAMP_HEADER,
   type WebhookPayload,
 } from "../notifications/webhook.js";
 
@@ -22,10 +23,20 @@ const payload: WebhookPayload = {
 };
 
 describe("webhook signing", () => {
-  it("signs the raw body with HMAC-SHA256", () => {
+  it("signs \"<timestamp>.<raw body>\" with HMAC-SHA256", () => {
     const body = JSON.stringify(payload);
-    const expected = createHmac("sha256", "s3cret").update(body).digest("hex");
-    expect(signWebhookBody(body, "s3cret")).toBe(`sha256=${expected}`);
+    const expected = createHmac("sha256", "s3cret").update(`1795000000.${body}`).digest("hex");
+    expect(signWebhookBody(body, "s3cret", "1795000000")).toBe(`sha256=${expected}`);
+    // The same body at another time has another signature: a captured delivery cannot be replayed later
+    expect(signWebhookBody(body, "s3cret", "1795000001")).not.toBe(`sha256=${expected}`);
+  });
+
+  it("sends the signed timestamp in its own header", () => {
+    const headers = buildWebhookHeaders("{}", "join_request", "k", "1795000000");
+    expect(headers[TIMESTAMP_HEADER]).toBe("1795000000");
+    expect(headers[SIGNATURE_HEADER]).toBe(signWebhookBody("{}", "k", "1795000000"));
+    const now = Math.floor(Date.now() / 1000);
+    expect(Math.abs(Number(buildWebhookHeaders("{}", "x", null)[TIMESTAMP_HEADER]) - now)).toBeLessThan(5);
   });
 
   it("adds the signature header only when a secret is set", () => {
@@ -45,7 +56,7 @@ describe("webhook signing", () => {
     expect(r).toEqual({ ok: true, status: 204 });
     const [, headers, body] = transport.mock.calls[0] as unknown as [URL, Record<string, string>, string];
     expect(JSON.parse(body)).toEqual(payload);
-    expect(headers[SIGNATURE_HEADER]).toBe(signWebhookBody(body, "s3cret"));
+    expect(headers[SIGNATURE_HEADER]).toBe(signWebhookBody(body, "s3cret", headers[TIMESTAMP_HEADER]));
   });
 
   it("reports redirects as failures (never followed)", async () => {

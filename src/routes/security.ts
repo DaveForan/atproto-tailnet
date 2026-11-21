@@ -1,9 +1,7 @@
 /**
  * @module routes/security
- * Tenant security surface, composed from focused routers (mounted in this
- * order): notifications, permissions list, settings, roles (CRUD, assignment,
- * default role), device approvals, join-request review, device locks and the
- * audit log.
+ * Tenant security routers in mount order: notifications, permissions, settings, roles, device approvals,
+ * join requests, device locks, audit log.
  */
 
 import { Router } from "express";
@@ -21,7 +19,7 @@ import { auditLogRouter } from "./audit-log.js";
  * Router for tenant settings, roles CRUD, role assignment, device approvals/locks,
  * join-request management, and audit log retrieval.
  */
-export const securityRouter = Router();
+export const securityRouter = Router({ caseSensitive: true });
 
 // Notifications live in their own module; mounted here so index.ts is unchanged.
 securityRouter.use(notificationsRouter);

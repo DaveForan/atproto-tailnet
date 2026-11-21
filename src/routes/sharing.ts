@@ -1,12 +1,7 @@
 /**
  * @module routes/sharing
- * Friends and device shares between members of a tailnet (ADR-0036).
- *
- * Two members become friends when one asks and the other accepts. Only
- * friends can ask for access to each other's devices. A share exposes one
- * device of the *owner*, on chosen ports, to the *guest*'s devices, and is
- * active only once the side that did not start it accepts. Either side can
- * end it at any time. Operators have no access to these routes' data.
+ * Friends and device shares (ADR-0036): a share opens one owner device on chosen ports to the guest's devices.
+ * It is active after the other side accepts; either side ends it. Operators have no access.
  */
 
 import { Router } from "express";
@@ -23,7 +18,7 @@ import { syncTenantAccess } from "../access/sync.js";
 import { stepUpForSession } from "../auth/step-up.js";
 import { parseBody } from "./validation.js";
 
-export const sharingRouter = Router();
+export const sharingRouter = Router({ caseSensitive: true });
 
 /** Pending friend requests a member may have sent at once. */
 export const MAX_PENDING_FRIEND_REQUESTS = 20;

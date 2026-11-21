@@ -41,7 +41,7 @@ import { verifyServiceAuth } from "../credentials/service-auth.js";
 import { getResolver } from "../identity/resolver.js";
 import * as jose from "jose";
 
-export const credentialsRouter = Router();
+export const credentialsRouter = Router({ caseSensitive: true });
 
 /** Subject DID from the body (`subjectDid` from the dashboard, `userDid` from API callers). */
 function subjectDidFrom(body: unknown): string | null {
@@ -328,7 +328,8 @@ credentialsRouter.post(
       .where(eq(tenants.id, tenantId))
       .limit(1);
 
-    const rolePerms: string[] = result.role?.permissions as string[] ?? [];
+    // An agent token attests only what its scope allows.
+    const rolePerms: string[] = effectivePermissions(result.membership, result.role, req.agentToken?.permissions);
 
     try {
       const membershipCred = await issueMembershipCredential(

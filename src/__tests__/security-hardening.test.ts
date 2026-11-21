@@ -523,3 +523,31 @@ describe("PUT /api/tenants/:id/federation/posture", () => {
     expect(r.json).toEqual({ posture: "closed" });
   });
 });
+
+// ── Federation: target lookup leaks nothing; accepting is blocked by lockdown ──
+describe("federation requests and acceptance", () => {
+  const OTHER = "22222222-2222-4222-8222-222222222222";
+  const membership = (over: Record<string, unknown> = {}) => [
+    { tenant: tenantRow(over), membership: { isOriginator: true, roleId: null }, role: null },
+  ];
+
+  it("missing, closed and locked-down targets get the same 404; deleted and suspended are excluded", async () => {
+    const answers: Array<{ status: number; json: unknown }> = [];
+    for (const target of [[], [{ id: OTHER, name: "B", federationPosture: "closed", lockdownMode: false }], [{ id: OTHER, name: "B", federationPosture: "open", lockdownMode: true }]]) {
+      results.push(membership(), target);
+      answers.push(await call("POST", `/api/tenants/${TENANT}/federation`, BOB, { targetSlug: "other" }));
+    }
+    expect(answers.map((a) => a.status)).toEqual([404, 404, 404]);
+    expect(new Set(answers.map((a) => JSON.stringify(a.json))).size).toBe(1);
+    const where = writes.filter((w) => w.method === "where").map((w) => dialect.sqlToQuery(w.arg as SQL).sql).find((q) => q.includes('"tenants"."slug"'));
+    expect(where).toContain('"tenants"."status" <> $');
+    expect(where).toContain('"tenants"."suspended" = $');
+  });
+
+  it("accepting a federation request is refused during lockdown", async () => {
+    results.push(membership({ lockdownMode: true }));
+    const r = await call("POST", `/api/tenants/${TENANT}/federation/${OTHER}/accept`, BOB, {});
+    expect(r.status).toBe(403);
+    expect(writes.some((w) => w.op === "update")).toBe(false);
+  });
+});

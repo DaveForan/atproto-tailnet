@@ -182,18 +182,19 @@ export function enforceAgentScope(
     next();
     return;
   }
-  const m = req.path.match(
-    /\/api\/tenants\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i,
+  const path = req.path.toLowerCase();
+  const m = path.match(
+    /^\/api\/tenants\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/,
   );
   if (m) {
-    if (m[1] !== req.agentToken.tenantId) {
+    if (m[1] !== req.agentToken.tenantId.toLowerCase()) {
       res.status(403).json({ error: "Agent token is scoped to a different tenant" });
       return;
     }
   } else {
     // Without a tenant id in the path, only these cross-tenant-safe routes are open
     const allowed = ["/api/me", "/api/permissions", "/api/tenants", "/health"];
-    if (!allowed.includes(req.path)) {
+    if (!allowed.includes(path)) {
       res.status(403).json({ error: "Agent tokens cannot access non-tenant-scoped routes" });
       return;
     }
@@ -210,6 +211,35 @@ export function csrfTokenMatches(header: unknown, expected: string | undefined):
   const a = Buffer.from(header);
   const b = Buffer.from(expected);
   return a.length === b.length && timingSafeEqual(a, b);
+}
+
+/**
+ * Checks `X-CSRF-Token` on state-changing `/api/*` requests of a cookie session.
+ * Bearer requests carry no cookie authority, so they are exempt.
+ * Security: the path compares lowercased because Express may match routes case-insensitively.
+ */
+export function csrfProtection(req: Request, res: Response, next: NextFunction): void {
+  if (req.method !== "POST" && req.method !== "PUT" && req.method !== "PATCH" && req.method !== "DELETE") {
+    next();
+    return;
+  }
+  if (!req.path.toLowerCase().startsWith("/api/")) {
+    next();
+    return;
+  }
+  if (req.headers.authorization?.startsWith("Bearer ")) {
+    next();
+    return;
+  }
+  if (!req.session.userId) {
+    next();
+    return;
+  }
+  if (!csrfTokenMatches(req.headers["x-csrf-token"], req.session.csrfToken)) {
+    res.status(403).json({ error: "Invalid or missing CSRF token" });
+    return;
+  }
+  next();
 }
 
 /**

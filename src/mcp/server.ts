@@ -1,14 +1,7 @@
 /**
  * @module mcp/server
- * Remote MCP endpoint (`/mcp`, Streamable HTTP) protected by MCP OAuth bearer
- * tokens.
- *
- * Stateless mode: every POST builds a fresh McpServer + transport (no
- * Mcp-Session-Id, JSON responses). Nothing lives in memory between requests,
- * so restarts and multiple instances need no session affinity, and the tool
- * list is computed per request from the caller (operator tools only for
- * operators whose grant includes the operator scope). The tools are thin REST calls, so there is nothing to stream and
- * no server-initiated messages — GET (SSE) and DELETE answer 405.
+ * Remote MCP endpoint (`/mcp`, Streamable HTTP, MCP OAuth bearer). Stateless: a new server per POST.
+ * Operator tools only for grants with the operator scope. GET (SSE) and DELETE answer 405.
  */
 import { Router } from "express";
 import type { Request, Response } from "express";
@@ -42,7 +35,7 @@ export interface McpRouterOptions {
 const OPERATOR_CACHE_MS = 60 * 1000;
 
 export function createMcpRouter(opts: McpRouterOptions): Router {
-  const router = Router();
+  const router = Router({ caseSensitive: true });
   const makeApi = opts.apiClientFactory ?? ((token: string) => new HttpApiClient({ baseUrl: opts.apiBaseUrl, token }));
   const operatorCache = new Map<string, { value: boolean; expiresAt: number }>();
 

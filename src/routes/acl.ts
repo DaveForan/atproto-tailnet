@@ -1,11 +1,7 @@
 /**
  * @module routes/acl
- * ACL policy management: read the current Headscale policy and push updates.
- * Gated by the "manage_acl" permission. Policies are pushed directly to the
- * Headscale instance via its REST API (policy mode: database). In
- * coordinator mode the policy is translated to the coordinator's
- * `{default_deny, rules}` model (see orchestrator/coordinator-acl.ts) and
- * rejected with 400 if it can't be expressed faithfully.
+ * ACL policy read and update (manage_acl). Coordinator mode translates it to `{default_deny, rules}`
+ * and answers 400 when the policy cannot be expressed exactly.
  */
 
 import { Router } from "express";
@@ -37,7 +33,7 @@ function instanceAvailable(tenant: {
 }
 
 /** Router for ACL policy CRUD: get and update. */
-export const aclRouter = Router();
+export const aclRouter = Router({ caseSensitive: true });
 
 const aclRuleSchema = z.object({
   action: z.enum(["accept"]),

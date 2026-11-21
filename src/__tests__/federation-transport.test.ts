@@ -210,3 +210,18 @@ describe("federation transport", () => {
     expect(r).toEqual({ ok: false, error: "address not allowed" });
   });
 });
+
+describe("own-instance exemption", () => {
+  const hello = { type: "HELLO", collectiveDid: "did:web:a", federationType: "peer", offeredCidrs: [] } as unknown as HelloMessage;
+
+  it("only the exact own origin skips the guarded request", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, text: async () => "" }));
+    guardedRequest.mockClear();
+    await sendMessage("http://localhost:3000", hello, "did:web:b");
+    expect(guardedRequest).not.toHaveBeenCalled();
+
+    // Same host, another port: guarded (which refuses http and private addresses)
+    await sendMessage("http://localhost:6379", hello, "did:web:b");
+    expect(guardedRequest).toHaveBeenCalledWith(expect.stringContaining("localhost:6379"), expect.anything());
+  });
+});

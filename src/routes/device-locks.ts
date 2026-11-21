@@ -1,8 +1,6 @@
 /**
  * @module routes/device-locks
- * Device locks (Headscale mode): lock a member to their current devices
- * (self or `lock_devices`, step-up), remove a lock (`lock_devices`, step-up)
- * and read a member's lock state.
+ * Device locks (Headscale mode): lock a member to current devices (self or `lock_devices`, step-up), unlock, read.
  */
 
 import { Router } from "express";
@@ -24,7 +22,7 @@ import { stepUpForSession } from "../auth/step-up.js";
 import { logger } from "../logger.js";
 import { parseBody } from "./validation.js";
 
-export const deviceLocksRouter = Router();
+export const deviceLocksRouter = Router({ caseSensitive: true });
 
 /** Coordinator mode has the per-member machine lock (ADR-0035 §2) instead. */
 const COORDINATOR_MODE_ERROR = "Device locks exist only in Headscale mode. Use the machine lock in coordinator mode.";

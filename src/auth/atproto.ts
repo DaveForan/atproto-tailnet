@@ -1,21 +1,20 @@
 /**
  * @module auth/atproto
- * AT Protocol OAuth client setup using the BFF (backend-for-frontend) pattern.
- * The server acts as a confidential client: it holds the private key, performs
- * DPoP-bound token requests, and manages PKCE state -- the browser never sees tokens.
- * OAuth state and sessions are persisted to PostgreSQL via Drizzle-backed stores
- * so they survive server restarts.
+ * AT Protocol OAuth client (confidential BFF client). State and sessions live in PostgreSQL.
  */
 import { NodeOAuthClient } from "@atproto/oauth-client-node";
+import { safeFetchWrap } from "@atproto-labs/fetch-node";
 import type {
   NodeSavedState,
   NodeSavedSession,
 } from "@atproto/oauth-client-node";
 import { JoseKey } from "@atproto/jwk-jose";
+import net from "node:net";
 import { eq, lt } from "drizzle-orm";
 import { config, isLoopbackDeployment } from "../config.js";
 import { db } from "../db/index.js";
 import { oauthStates, oauthSessions } from "../db/schema.js";
+import { isPublicAddress } from "../identity/resolver.js";
 
 /**
  * The only OAuth scope requested: `atproto` proves who the account is and
@@ -90,18 +89,51 @@ const dbSessionStore: SessionStore = {
   },
 };
 
+/** Fetch signature the OAuth client accepts. */
+export type OAuthFetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
+
+/** Host of a fetch input without IPv6 brackets. */
+function inputHost(input: string | URL | Request): string {
+  const url = typeof input === "string" ? new URL(input) : input instanceof URL ? input : new URL(input.url);
+  return url.hostname.replace(/^\[|\]$/g, "");
+}
+
+/**
+ * Fetch for every OAuth lookup (did:web, PDS and auth-server metadata, token calls).
+ * Security: the user picks these hosts at /auth/login. Outside a loopback deployment
+ * only https to public unicast addresses is allowed, and redirects are never followed.
+ */
+export function createOAuthFetch(loopback: boolean, base: OAuthFetch = globalThis.fetch): OAuthFetch {
+  const safe = safeFetchWrap({
+    fetch: base,
+    ssrfProtection: !loopback,
+    allowImplicitRedirect: false,
+    timeout: 10_000,
+  });
+  return async (input, init) => {
+    // IP literals skip the connect-time DNS check, so they are judged here.
+    const host = inputHost(input);
+    if (!loopback && net.isIP(host) && !isPublicAddress(host)) {
+      throw new TypeError("OAuth fetch refused: non-public address");
+    }
+    // A followed redirect could reach an address the checks never saw.
+    const asked = init?.redirect ?? (input instanceof Request ? input.redirect : "follow");
+    return safe(input, { ...init, redirect: asked === "follow" ? "error" : asked });
+  };
+}
+
 let clientInstance: NodeOAuthClient | null = null;
 
 /**
- * Returns the singleton NodeOAuthClient, creating it on first call.
- * In dev (localhost) uses a loopback client_id with no keyset;
- * in production uses private_key_jwt auth with a JWK loaded from ATPROTO_PRIVATE_KEY.
+ * The singleton OAuth client: a loopback client_id in local development,
+ * private_key_jwt with ATPROTO_PRIVATE_KEY otherwise.
  */
 export async function getOAuthClient(): Promise<NodeOAuthClient> {
   if (clientInstance) return clientInstance;
 
   const url = config.publicUrl;
   const enc = encodeURIComponent;
+  const fetch = createOAuthFetch(isLoopbackDeployment);
 
   if (isLoopbackDeployment) {
     // Loopback clients must be redirected to an IP literal, never the name
@@ -125,6 +157,7 @@ export async function getOAuthClient(): Promise<NodeOAuthClient> {
       },
       stateStore: dbStateStore,
       sessionStore: dbSessionStore,
+      fetch,
     });
   } else {
     const privateKey = await JoseKey.fromImportable(
@@ -150,6 +183,7 @@ export async function getOAuthClient(): Promise<NodeOAuthClient> {
       keyset: [privateKey],
       stateStore: dbStateStore,
       sessionStore: dbSessionStore,
+      fetch,
     });
   }
 
@@ -195,12 +229,7 @@ export async function getPublicJwks(): Promise<{ keys: unknown[] }> {
   return { keys: pub ? [pub] : [] };
 }
 
-/**
- * Revoke and delete every OAuth session stored by earlier versions, which
- * kept long-lived tokens (with a broader scope) after sign-in. The service no
- * longer keeps any account tokens: a sign-in is revoked as soon as the
- * account is identified. Best effort per session; the row is always deleted.
- */
+/** Revoke and delete every stored OAuth session (the service keeps no account tokens). Best effort; rows are always deleted. */
 export async function purgeStoredOAuthSessions(): Promise<number> {
   const rows = await db.select({ key: oauthSessions.key }).from(oauthSessions);
   if (rows.length === 0) return 0;

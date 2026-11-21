@@ -1,11 +1,6 @@
 /**
  * @module routes/routes
- * Exit node and subnet router management. Lists advertised routes from
- * Headscale and allows approving them or withdrawing approval. Route ids are
- * synthesized per node + prefix (`routeId()` in orchestrator/headscale-api);
- * DELETE withdraws approval, since Headscale no longer deletes routes.
- * Works the same in coordinator mode (node advertised/approved routes).
- * Gated by the "manage_devices" permission.
+ * Exit nodes and subnet routes (manage_devices): list, approve, withdraw. Route ids are node + prefix (`routeId()`).
  */
 
 import { Router } from "express";
@@ -20,7 +15,7 @@ import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
 
-export const routesRouter = Router();
+export const routesRouter = Router({ caseSensitive: true });
 
 routesRouter.get(
   "/api/tenants/:tenantId/routes",

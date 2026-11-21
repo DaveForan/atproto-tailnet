@@ -251,6 +251,11 @@ export class CoordinatorApiClient {
     await this.request("PUT", this.tenantPath("/suspended"), { suspended });
   }
 
+  /** Move the tenant under another coordinator tenant; null makes it top-level (detach/eject). */
+  async setParent(parentId: string | null): Promise<void> {
+    await this.request("PUT", this.tenantPath("/parent"), { parent_id: parentId });
+  }
+
   // ── Tenant configuration ──
 
   async setPosture(posture: string): Promise<void> {

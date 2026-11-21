@@ -1,8 +1,7 @@
 /**
  * @module config
- * Central Zod-validated configuration for the atproto-tailnet service.
- * All env vars flow through here; nothing reads process.env directly elsewhere.
- * Throws at startup if production invariants are violated (e.g. weak session secret).
+ * Zod-validated configuration; nothing else reads process.env.
+ * Startup fails when a production rule is broken (weak secrets, missing keys).
  */
 import { z } from "zod";
 import { logger } from "./logger.js";
@@ -173,6 +172,21 @@ if (
     "COORDINATOR_API_KEY must be a strong, non-placeholder value (>= 32 chars) in production",
   );
 }
+
+/**
+ * Error for a federating production instance without key encryption, else null.
+ * Security: collective private keys would otherwise be stored as plain base64.
+ */
+export function federationKeyProblem(
+  cfg: { federationEnabled: boolean; federationKeyEncryptionKey?: string },
+  loopback: boolean,
+): string | null {
+  if (loopback || !cfg.federationEnabled || cfg.federationKeyEncryptionKey) return null;
+  return "FEDERATION_KEY_ENCRYPTION_KEY (64 hex characters) is required when FEDERATION_ENABLED=true in production";
+}
+
+const federationKeyError = federationKeyProblem(config, isLoopbackDeployment);
+if (federationKeyError) throw new Error(federationKeyError);
 
 // Without operators nobody can create a tailnet (or administer the instance).
 // Loud, but not fatal: the first deploy may set OPERATOR_DIDS afterwards.

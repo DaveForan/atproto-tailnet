@@ -1,18 +1,7 @@
 /**
  * @module routes/federation-messages
- * Inbound CFP message endpoints for inter-broker federation (ADR-0016).
- * Machine-to-machine: authenticated by the sender's DID signature, never by
- * session cookies. The addressed collective is named by the `CFP-Recipient`
- * header, since one instance hosts many collectives.
- *
- * The handshake is two request/response exchanges driven by the initiator:
- *   POST hello  → CHALLENGE
- *   POST commit → ESTABLISHED
- * followed by signed KEEPALIVE and REVOKE messages for the session's lifetime.
- *
- * Signatures cover the RFC 8785 (JCS) form of the message as received
- * (`req.body`, minus `signature`) — never the Zod output, which drops unknown
- * members. Transmitted key order is irrelevant (see federation/auth.ts).
+ * Inbound CFP endpoints (ADR-0016), authenticated by DID signature; `CFP-Recipient` names the collective.
+ * Security: signatures cover the JCS form of the body as received, never the Zod output.
  */
 
 import express, { Router, type Request, type Response } from "express";
@@ -65,7 +54,7 @@ import type {
   LinkRevokeMessage,
 } from "../federation/protocol.js";
 
-export const federationMessagesRouter = Router();
+export const federationMessagesRouter = Router({ caseSensitive: true });
 
 /** JSON parser for CFP messages; mount it on the message path before the global parser. */
 export const federationBodyParser = express.json({ limit: MAX_FEDERATION_BODY_BYTES });

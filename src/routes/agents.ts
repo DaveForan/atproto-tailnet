@@ -1,39 +1,7 @@
 /**
  * @module agents
- *
- * Agent token management — create, list, and revoke API tokens that allow
- * AI agents (or any programmatic client) to authenticate with the system.
- *
- * ## Token format
- *
- * Tokens are prefixed with `at_` followed by 64 hex characters (32 random
- * bytes). Only the SHA-256 hash is stored; the raw token is returned once
- * at creation. The first 8 characters of the raw token are stored as a
- * prefix for identification in the UI.
- *
- * ## Security model
- *
- * - Tokens are scoped to a **single tenant** and a **subset of permissions**.
- * - A token cannot grant a permission the creator's role doesn't have.
- * - The originator can always create tokens (when agent tokens are enabled).
- * - Non-originator members need `create_agent_tokens` **and** the tenant
- *   must have `allowMemberAgentTokens` enabled.
- * - Tokens carry a mandatory expiry (max 365 days).
- * - The `manage_agent_tokens` permission allows viewing and revoking any
- *   member's tokens; without it, members can only manage their own.
- *
- * ## Usage
- *
- * Agents authenticate by sending the token in the `Authorization` header:
- *
- * ```
- * Authorization: Bearer at_<hex>
- * ```
- *
- * The {@link resolveAgentToken} middleware in `helpers.ts` resolves the
- * token and populates the request context. All existing API endpoints work
- * transparently — the agent is subject to the intersection of the token's
- * scoped permissions and the user's role permissions.
+ * Agent tokens (`at_` + 64 hex, SHA-256 stored, one tenant, a permission subset, expiry ≤ 365 days).
+ * Security: a token never grants more than its creator holds; members also need `allowMemberAgentTokens`.
  */
 
 import { randomBytes, createHash } from "node:crypto";
@@ -55,7 +23,7 @@ import { effectivePermissions, permissionsSchema } from "../members/permissions.
 import { stepUpForSession } from "../auth/step-up.js";
 import { parseBody } from "./validation.js";
 
-export const agentsRouter = Router();
+export const agentsRouter = Router({ caseSensitive: true });
 
 /** Maximum token lifetime: 365 days. */
 const MAX_EXPIRY_DAYS = 365;

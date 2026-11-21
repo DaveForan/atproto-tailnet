@@ -1,17 +1,7 @@
 /**
  * @module oauth/router
- * Mounts the MCP OAuth endpoints using the SDK's handlers with our provider:
- *
- * - GET  /.well-known/oauth-authorization-server     (RFC 8414)
- * - GET  /.well-known/oauth-protected-resource[/mcp] (RFC 9728)
- * - POST /oauth/register   dynamic client registration (RFC 7591)
- * - GET|POST /oauth/authorize  → sign-in (existing Bluesky login) → consent page
- * - POST /oauth/consent    Allow/Deny form (session + CSRF token)
- * - POST /oauth/token      authorization_code (PKCE S256) + refresh_token
- * - POST /oauth/revoke     RFC 7009
- *
- * The SDK's `mcpAuthRouter` hard-codes /authorize, /token, … at the root, so
- * the same handlers are mounted here under /oauth/ with our own metadata.
+ * MCP OAuth endpoints (RFC 8414, 9728, 7591, 7009) under /oauth/ with our provider and metadata.
+ * The SDK router hard-codes root paths, so its handlers are mounted here instead.
  */
 import express, { Router } from "express";
 import type { Request, Response } from "express";
@@ -76,7 +66,7 @@ function safeEqual(a: string, b: string): boolean {
 export function createOAuthRouter(opts: OAuthRouterOptions): Router {
   const { provider, publicUrl } = opts;
   const rl = <T extends object>(cfg: T): T | false => (opts.disableRateLimits ? false : cfg);
-  const router = Router();
+  const router = Router({ caseSensitive: true });
 
   const asMetadata = buildAuthorizationServerMetadata(publicUrl);
   const prm = buildProtectedResourceMetadata(publicUrl, provider.resourceUrl);

@@ -233,6 +233,8 @@ describe("auth callback", () => {
     expect(writes.some((w) => w.table === "memberships")).toBe(false);
     // Identification only: the OAuth tokens are revoked as soon as the DID is known
     expect(signOut).toHaveBeenCalledTimes(1);
+    const audit = writes.find((w) => w.op === "insert" && w.table === "audit_logs")?.arg as Record<string, unknown>;
+    expect(audit).toMatchObject({ tenantId: null, actorUserId: "u-new", action: "sign_in_succeeded" });
   });
 
   it("refuses a new account whose handle cannot be verified", async () => {
@@ -249,6 +251,8 @@ describe("auth callback", () => {
     const r = await call("GET", "/auth/callback?code=x&state=y", undefined, undefined, { "x-login-nonce": "nonce-2" });
     expect(r.status).toBe(403);
     expect(r.text).toMatch(/Account disabled/);
+    const audit = writes.find((w) => w.op === "insert" && w.table === "audit_logs")?.arg as Record<string, unknown>;
+    expect(audit).toMatchObject({ tenantId: null, actorUserId: "u-bob", action: "sign_in_failed", metadata: { reason: "account_disabled" } });
   });
 
   // Login CSRF: a callback URL replayed in another browser must not sign it in
@@ -473,16 +477,31 @@ describe("invitations", () => {
     expect((r.json as unknown as Array<{ inviteUrl: string }>)[0].inviteUrl).toMatch(new RegExp(`/invite/${INV}$`));
   });
 
+  it("GET /api/invitations lists public addresses, never slugs", async () => {
+    results.push(
+      [{ did: "did:plc:carol", disabledAt: null }],
+      [{ id: INV, tenantId: TENANT, tenantName: "Acme", inviterHandle: "op.test", status: "pending" }],
+      [{ slug: "alias-one", tenantId: TENANT, isPrimary: false }, { slug: "quiet-harbor-4821", tenantId: TENANT, isPrimary: true }],
+    );
+    const r = await call("GET", "/api/invitations", "u-carol|did:plc:carol");
+    expect(r.status).toBe(200);
+    const list = r.json as unknown as Array<Record<string, unknown>>;
+    expect(list[0].tenantAddress).toBe("quiet-harbor-4821");
+    expect(list[0]).not.toHaveProperty("tenantSlug");
+  });
+
   it("GET /api/invitations/:id is for the invitee only", async () => {
     results.push(
       [{ did: "did:plc:carol", disabledAt: null }],
-      [{ id: INV, status: "pending", tenantId: TENANT, tenantName: "Acme", tenantSlug: "acme", tenantStatus: "running", inviterHandle: "op.test" }],
+      [{ id: INV, status: "pending", tenantId: TENANT, tenantName: "Acme", tenantStatus: "running", inviterHandle: "op.test" }],
+      [{ slug: "quiet-harbor-4821", tenantId: TENANT, isPrimary: true }],
     );
     let r = await call("GET", `/api/invitations/${INV}`, "u-carol|did:plc:carol");
     expect(r.status).toBe(200);
+    // The invitee sees the public address, never the internal slug
     expect(r.json).toEqual({
       id: INV,
-      tenant: { id: TENANT, name: "Acme", slug: "acme" },
+      tenant: { id: TENANT, name: "Acme", address: "quiet-harbor-4821" },
       inviterHandle: "op.test",
       status: "pending",
     });

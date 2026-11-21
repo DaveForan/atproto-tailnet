@@ -1,9 +1,6 @@
 /**
  * @module routes/ip-config
- * Per-tenant IP range configuration. Allows customizing IPv4/IPv6 prefixes
- * and allocation strategy. Changes require a container restart and will
- * cause existing devices to lose their assigned IPs.
- * Gated by the "manage_settings" permission.
+ * Per-tenant IP prefixes and allocation strategy (manage_settings). A change restarts the container and reassigns addresses.
  */
 
 import { Router } from "express";
@@ -28,7 +25,7 @@ import { logger } from "../logger.js";
 import { useCoordinator } from "../orchestrator/control-client.js";
 import { parseBody } from "./validation.js";
 
-export const ipConfigRouter = Router();
+export const ipConfigRouter = Router({ caseSensitive: true });
 
 export const CIDR_V4_RE = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
 export const CIDR_V6_RE = /^[0-9a-fA-F:]+\/\d{1,3}$/;

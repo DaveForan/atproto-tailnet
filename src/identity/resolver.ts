@@ -407,12 +407,17 @@ for (const [addr, prefix] of [
 ] as const) {
   NON_PUBLIC.addSubnet(addr, prefix, "ipv4");
 }
+// Transition ranges (IPv4-compatible/mapped, 6to4, Teredo, NAT64) can embed or reach private IPv4.
 for (const [addr, prefix] of [
-  ["::", 127], ["64:ff9b::", 96], ["fc00::", 7],
+  ["::", 96], ["64:ff9b::", 96], ["64:ff9b:1::", 48],
+  ["2001::", 32], ["2002::", 16], ["fc00::", 7], ["fec0::", 10],
   ["fe80::", 10], ["ff00::", 8],
 ] as const) {
   NON_PUBLIC.addSubnet(addr, prefix, "ipv6");
 }
+// Kept apart: net.BlockList also matches plain IPv4 against an IPv4-mapped subnet.
+const IPV4_MAPPED = new net.BlockList();
+IPV4_MAPPED.addSubnet("::ffff:0:0", 96, "ipv6");
 
 export function isPublicAddress(address: string): boolean {
   // IPv4-mapped IPv6 (::ffff:a.b.c.d) is judged as the IPv4 address it reaches.
@@ -428,6 +433,8 @@ export function isPublicAddress(address: string): boolean {
 
   const family = net.isIP(address);
   if (family === 0) return false;
+  // Mapped forms the patterns above do not parse are refused.
+  if (family === 6 && IPV4_MAPPED.check(address, "ipv6")) return false;
   return !NON_PUBLIC.check(address, family === 4 ? "ipv4" : "ipv6");
 }
 

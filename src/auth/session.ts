@@ -11,6 +11,7 @@ import { memberships, trustedDevices, notifications } from "../db/schema.js";
 import { logger } from "../logger.js";
 import { notifyUser } from "../notifications/service.js";
 import { deviceProfile } from "./device-trust.js";
+import { markDeviceProof } from "./step-up.js";
 
 /** Number of trusted devices of a user (0 = the lock is off). */
 export async function trustedDeviceCount(userId: string): Promise<number> {
@@ -18,24 +19,65 @@ export async function trustedDeviceCount(userId: string): Promise<number> {
   return rows.length;
 }
 
-/** Replace the session with a signed-in one (new session id: no fixation). */
+/** A session ends this long after sign-in, however active it is. */
+export const SESSION_ABSOLUTE_MS = 7 * 24 * 60 * 60 * 1000;
+/** A session ends after this long without a request. */
+export const SESSION_IDLE_MS = 24 * 60 * 60 * 1000;
+/** `lastSeenAt` is written at most this often, so most requests do not rewrite the session row. */
+export const SESSION_TOUCH_MS = 5 * 60 * 1000;
+
+/**
+ * Replace the session with a signed-in one (new session id: no fixation).
+ * `atprotoSignIn` marks a sign-in that the AT Protocol callback just completed.
+ * `deviceCookieHash` is the stored hash of the device cookie this request proved.
+ */
 export function establishSession(
   req: Request,
-  data: { userId: string; did: string; trustedDeviceId?: string; mustEnrollDevice?: boolean },
+  data: {
+    userId: string;
+    did: string;
+    trustedDeviceId?: string;
+    deviceCookieHash?: string | null;
+    mustEnrollDevice?: boolean;
+    atprotoSignIn?: boolean;
+  },
 ): Promise<void> {
   return new Promise((resolve, reject) => {
     req.session.regenerate((err) => {
       if (err) return reject(err);
+      const now = Date.now();
       req.session.userId = data.userId;
       req.session.did = data.did;
+      req.session.createdAt = now;
+      req.session.lastSeenAt = now;
+      if (data.atprotoSignIn) req.session.authAt = now;
       if (data.trustedDeviceId) {
         req.session.trustedDeviceId = data.trustedDeviceId;
-        req.session.deviceVerifiedAt = Date.now();
+        markDeviceProof(req, data.deviceCookieHash ?? null);
       }
       if (data.mustEnrollDevice) req.session.mustEnrollDevice = true;
       req.session.save((e) => (e ? reject(e) : resolve()));
     });
   });
+}
+
+/**
+ * Ends sessions past the absolute or idle lifetime; the request goes on with an empty session.
+ * Security: connect-pg-simple renews the store TTL on every request, so it never expires a busy session.
+ * Sessions without `createdAt` predate these limits and end too.
+ */
+export function enforceSessionLifetime(req: Request, _res: Response, next: NextFunction): void {
+  const s = req.session;
+  if (!s || (!s.userId && !s.pendingUserId)) return next();
+  const now = Date.now();
+  const created = s.createdAt;
+  const seen = s.lastSeenAt ?? created;
+  if (!created || !seen || now - created > SESSION_ABSOLUTE_MS || now - seen > SESSION_IDLE_MS) {
+    s.regenerate((err) => next(err));
+    return;
+  }
+  if (now - seen > SESSION_TOUCH_MS) s.lastSeenAt = now;
+  next();
 }
 
 /** Replace the session with a pending one: identified, device not yet proven. */
@@ -46,8 +88,11 @@ export function establishPendingSession(
   return new Promise((resolve, reject) => {
     req.session.regenerate((err) => {
       if (err) return reject(err);
+      const now = Date.now();
       req.session.pendingUserId = data.userId;
       req.session.pendingDid = data.did;
+      req.session.createdAt = now;
+      req.session.lastSeenAt = now;
       req.session.postLoginRedirect = data.redirect;
       // The owner is told about every sign-in that is on hold. A trusted
       // device removes the notice when it proves itself a moment later, so
@@ -127,14 +172,16 @@ export async function alertUser(userId: string, title: string, body: string): Pr
  * Mount after the session middleware.
  */
 export function enforceDeviceEnrollment(req: Request, res: Response, next: NextFunction): void {
-  if (!req.session.mustEnrollDevice || !req.path.startsWith("/api/")) return next();
+  // Lowercased: a route that matches case-insensitively must not skip the gate.
+  const path = req.path.toLowerCase();
+  if (!req.session.mustEnrollDevice || !path.startsWith("/api/")) return next();
   const allowed =
-    req.path === "/api/me" ||
-    req.path === "/api/csrf-token" ||
-    req.path === "/api/permissions" ||
-    req.path === "/api/tenants" ||
-    req.path.startsWith("/api/trusted-devices") ||
-    req.path.startsWith("/api/public/");
+    path === "/api/me" ||
+    path === "/api/csrf-token" ||
+    path === "/api/permissions" ||
+    path === "/api/tenants" ||
+    path.startsWith("/api/trusted-devices") ||
+    path.startsWith("/api/public/");
   if (allowed) return next();
   res.status(403).json({ error: "Add this device as a trusted device first", code: "enroll_required" });
 }

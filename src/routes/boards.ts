@@ -1,12 +1,7 @@
 /**
  * @module routes/boards
- * The three boards of a tailnet (ADR-0036):
- *
- * - Controller board — the originator's public text, readable by anyone.
- * - Public board — service posts (one device + one port) offered to members.
- *   A post is visible to others only after an operator approves it; a viewer
- *   then connects chosen devices of their own, which opens that one port.
- * - Private board — a member's services for their own devices.
+ * Boards of a tailnet (ADR-0036): controller board (public text), public board (approved
+ * service posts that members connect to; needs `boardEnabled`) and private board (own services).
  */
 
 import { Router, type Request, type Response } from "express";
@@ -33,7 +28,7 @@ import { config } from "../config.js";
 import { useCoordinator } from "../orchestrator/control-client.js";
 import { parseBody } from "./validation.js";
 
-export const boardsRouter = Router();
+export const boardsRouter = Router({ caseSensitive: true });
 
 /** Posts a member may have that are not removed (public + private). */
 export const MAX_POSTS_PER_MEMBER = 50;
@@ -72,6 +67,13 @@ async function webServiceProblem(
     return { status: 409, error: "This instance does not serve web addresses", code: "web_unavailable" };
   }
   return null;
+}
+
+/** Answer when the tailnet's public board is turned off; sent and true, or false. */
+function refuseBoardOff(tenant: { boardEnabled: boolean }, res: Response): boolean {
+  if (tenant.boardEnabled) return false;
+  res.status(403).json({ error: "The public board is turned off in this tailnet", code: "board_disabled" });
+  return true;
 }
 
 /** Reviewing public posts needs approve_services. */
@@ -234,6 +236,13 @@ boardsRouter.post("/api/tenants/:tenantId/boards/posts", requireAuth, tenantGuar
   const parsed = parseBody(postBody, req, res);
   if (!parsed) return;
   const data = parsed.data;
+  if (data.board === "public") {
+    if (refuseBoardOff(result.tenant, res)) return;
+    if (!hasPermission(result.membership, result.role, "create_posts", req)) {
+      res.status(403).json({ error: "Insufficient permissions" });
+      return;
+    }
+  }
   const named = serviceName(data.name, data.board === "private");
   if ("error" in named) {
     res.status(400).json({ error: named.error });
@@ -334,6 +343,7 @@ boardsRouter.patch("/api/tenants/:tenantId/boards/posts/:postId", requireAuth, t
     res.status(403).json({ error: "Tenant is in lockdown mode" });
     return;
   }
+  if (post.board === "public" && refuseBoardOff(result.tenant, res)) return;
   const parsed = parseBody(postPatch, req, res);
   if (!parsed) return;
   const data = parsed.data;
@@ -539,6 +549,8 @@ boardsRouter.put("/api/tenants/:tenantId/boards/posts/:postId/connections", requ
     res.status(403).json({ error: "Tenant is in lockdown mode" });
     return;
   }
+  // Disconnecting stays possible: it only removes access.
+  if (wanted.length > 0 && refuseBoardOff(result.tenant, res)) return;
   if (wanted.length > 0) {
     const mine = await listUserDevices(result.tenant, userId).catch(() => null);
     if (!mine) {

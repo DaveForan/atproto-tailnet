@@ -1,8 +1,7 @@
 /**
  * @module routes/invitations
- * Invitation lifecycle: create (resolve handle via DNS/HTTP/Bluesky API),
- * list sent, list received, accept (provisions Headscale user + membership),
- * decline, and revoke. Gated by the "invite" permission and lockdown mode.
+ * Invitation lifecycle: create, list sent and received, accept, decline, revoke ("invite" permission, lockdown).
+ * Invitees see a tailnet's public address, never its internal slug.
  */
 
 import { Router } from "express";
@@ -26,6 +25,7 @@ import {
 import { tenantGuard } from "./guard.js";
 import { logAudit } from "../audit/log.js";
 import { enforceMemberLimit } from "./limits.js";
+import { liveHostnamesByTenant } from "../orchestrator/hostnames.js";
 import {
   ACCOUNT_DID_RE,
   normalizeAccountDid,
@@ -36,7 +36,7 @@ import {
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Router for invitation CRUD: create, list, accept, decline, and revoke. */
-export const invitationsRouter = Router();
+export const invitationsRouter = Router({ caseSensitive: true });
 
 invitationsRouter.get(
   "/api/tenants/:tenantId/invitations",
@@ -179,7 +179,6 @@ invitationsRouter.get("/api/invitations", requireAuth, async (req, res) => {
       id: invitations.id,
       tenantId: invitations.tenantId,
       tenantName: tenants.name,
-      tenantSlug: tenants.slug,
       inviterHandle: users.handle,
       inviterDisplayName: users.displayName,
       status: invitations.status,
@@ -198,7 +197,8 @@ invitationsRouter.get("/api/invitations", requireAuth, async (req, res) => {
     )
     .limit(100);
 
-  res.json(pendingInvitations);
+  const addresses = await liveHostnamesByTenant([...new Set(pendingInvitations.map((i) => i.tenantId))]);
+  res.json(pendingInvitations.map((i) => ({ ...i, tenantAddress: addresses.get(i.tenantId)?.[0] ?? null })));
 });
 
 /**
@@ -222,7 +222,6 @@ invitationsRouter.get(
         status: invitations.status,
         tenantId: tenants.id,
         tenantName: tenants.name,
-        tenantSlug: tenants.slug,
         tenantStatus: tenants.status,
         tenantSuspended: tenants.suspended,
         inviterHandle: users.handle,
@@ -237,9 +236,10 @@ invitationsRouter.get(
       return;
     }
 
+    const address = (await liveHostnamesByTenant([row.tenantId])).get(row.tenantId)?.[0] ?? null;
     res.json({
       id: row.id,
-      tenant: { id: row.tenantId, name: row.tenantName, slug: row.tenantSlug },
+      tenant: { id: row.tenantId, name: row.tenantName, address },
       inviterHandle: row.inviterHandle,
       status: row.status,
     });

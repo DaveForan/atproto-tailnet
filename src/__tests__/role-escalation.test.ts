@@ -1,7 +1,6 @@
 /**
- * Role escalation through the default role: a member with manage_roles must
- * not be able to (a) make a broader role the default, or (b) delete a role so
- * its holders — possibly themselves — fall onto a broader default role.
+ * Role escalation and hierarchy: a member with manage_roles must not make a broader role the default,
+ * move holders onto a broader default role, or demote, kick or delete what outranks them.
  *
  * DB is a chainable mock (same pattern as operator.test.ts): each awaited
  * query resolves to the next entry of `results`; writes are recorded.
@@ -51,6 +50,7 @@ vi.mock("../db/index.js", () => ({
 import express from "express";
 import type { Request, Response, NextFunction } from "express";
 import { securityRouter } from "../routes/security.js";
+import { devicesRouter } from "../routes/devices.js";
 
 const TENANT = "11111111-1111-4111-8111-111111111111";
 const tenant = { id: TENANT, defaultRoleId: "44444444-4444-4444-8444-444444444444", lastActivityAt: new Date(), lockdownMode: false };
@@ -67,6 +67,7 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
   next();
 });
 app.use(securityRouter);
+app.use(devicesRouter);
 const server = app.listen(0);
 afterAll(() => server.close());
 
@@ -113,5 +114,58 @@ describe("DELETE role", () => {
     results.push(tenantForUser(), [managerRole], [tenant], [citizenRole]);
     const r = await call("DELETE", `/api/tenants/${TENANT}/roles/${managerRole.id}`);
     expect(r.status).toBe(200);
+  });
+});
+
+describe("privilege hierarchy", () => {
+  const MEMBER = "u-admin";
+  const target = { id: "m-2", userId: MEMBER, tenantId: TENANT, roleId: adminRole.id, isOriginator: false };
+
+  it("a role that outranks the caller cannot be deleted", async () => {
+    results.push(tenantForUser(), [adminRole]);
+    const r = await call("DELETE", `/api/tenants/${TENANT}/roles/${adminRole.id}`);
+    expect(r.status).toBe(403);
+    expect(r.json.permissions).toEqual(["kick", "manage_settings", "manage_acl"]);
+    expect(writes.length).toBe(0);
+  });
+
+  it("a member who outranks the caller cannot be demoted", async () => {
+    results.push(tenantForUser(), [target], [{ permissions: adminRole.permissions }]);
+    const r = await call("PUT", `/api/tenants/${TENANT}/members/${MEMBER}/role`, { roleId: citizenRole.id });
+    expect(r.status).toBe(403);
+    expect(writes.some((w) => w.table === "memberships")).toBe(false);
+  });
+
+  it("a member within the caller's permissions can be given another role", async () => {
+    results.push(tenantForUser(), [{ ...target, roleId: citizenRole.id }], [{ permissions: citizenRole.permissions }], [managerRole]);
+    expect((await call("PUT", `/api/tenants/${TENANT}/members/${MEMBER}/role`, { roleId: managerRole.id })).status).toBe(200);
+  });
+
+  it("removing permissions from a role that outranks the caller is refused", async () => {
+    results.push(tenantForUser(), [adminRole]);
+    const r = await call("PATCH", `/api/tenants/${TENANT}/roles/${adminRole.id}`, { permissions: ["invite"] });
+    expect(r.status).toBe(403);
+    expect(writes.some((w) => w.table === "roles")).toBe(false);
+  });
+
+  it("an originator outranks everyone; unknown permission names never count", async () => {
+    const { permissionsAbove } = await import("../routes/helpers.js");
+    const req = {} as Request;
+    const full = { ...membership, createdAt: new Date(), canInvite: false, canKick: false };
+    const originator = { ...full, isOriginator: true };
+    expect(permissionsAbove(originator, null, adminRole.permissions, req)).toEqual([]);
+    expect(permissionsAbove(full, managerRole as never, ["invite", "retired_permission"], req)).toEqual([]);
+    // An agent token's scope limits even an originator
+    const scoped = { agentToken: { permissions: ["invite"] } } as unknown as Request;
+    expect(permissionsAbove(originator, null, ["invite", "kick"], scoped)).toEqual(["kick"]);
+  });
+
+  it("a member who outranks the caller cannot be kicked", async () => {
+    const kicker = { ...managerRole, permissions: ["kick", "invite"] };
+    results.push([{ tenant, membership, role: kicker }], [target], [{ permissions: adminRole.permissions }]);
+    const r = await call("DELETE", `/api/tenants/${TENANT}/members/${MEMBER}`);
+    expect(r.status).toBe(403);
+    expect(r.json.permissions).toEqual(["manage_roles", "manage_settings", "manage_acl"]);
+    expect(writes.length).toBe(0);
   });
 });

@@ -35,7 +35,7 @@ vi.mock("../identity/resolver.js", async (orig) => ({
 }));
 
 import * as crypto from "node:crypto";
-import { discoverPeer, isAllowedBrokerUrl } from "../federation/discovery.js";
+import { discoverPeer, isAllowedBrokerUrl, isOwnOrigin } from "../federation/discovery.js";
 import { signedPayload } from "../federation/auth.js";
 import { signDetached } from "../identity/keys.js";
 import type { PublicKeyResolver } from "../credentials/verifier.js";
@@ -215,5 +215,31 @@ describe("isAllowedBrokerUrl", () => {
   it("rejects non-URL strings and URLs with credentials", async () => {
     expect(await isAllowedBrokerUrl("not a url")).toBe(false);
     expect(await isAllowedBrokerUrl("https://user:pw@remote.example.com")).toBe(false);
+  });
+});
+
+describe("own-instance exemption", () => {
+  // Tests run with the default PUBLIC_URL http://localhost:3000
+  it("only this exact origin skips the public-address rule", async () => {
+    expect(isOwnOrigin("http://localhost:3000/api/federation/messages/hello")).toBe(true);
+    expect(await isAllowedBrokerUrl("http://localhost:3000")).toBe(true);
+    // Same host, other port or scheme: an internal service, not this instance
+    expect(isOwnOrigin("http://localhost:6379/")).toBe(false);
+    expect(await isAllowedBrokerUrl("http://localhost:6379")).toBe(false);
+    expect(await isAllowedBrokerUrl("https://localhost:3000")).toBe(false);
+    expect(await isAllowedBrokerUrl("http://localhost")).toBe(false);
+  });
+
+  it("broker URLs with a query or fragment are refused", async () => {
+    expect(await isAllowedBrokerUrl("https://remote.example.com/?x=1")).toBe(false);
+    expect(await isAllowedBrokerUrl("https://remote.example.com/#frag")).toBe(false);
+    expect(await isAllowedBrokerUrl("http://localhost:3000/?")).toBe(false);
+  });
+
+  it("discovery of localhost on another port goes nowhere", async () => {
+    const result = await discoverPeer("test@localhost:6379");
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("not allowed");
+    expect(guardedRequest).not.toHaveBeenCalledWith(expect.stringContaining("6379"), expect.anything());
   });
 });

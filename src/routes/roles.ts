@@ -9,14 +9,14 @@ import { eq, and } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/index.js";
 import { tenants, memberships, roles } from "../db/schema.js";
-import { requireAuth, param, missingPermissions, authUserId } from "./helpers.js";
+import { requireAuth, param, missingPermissions, permissionsAbove, rolePermissions, authUserId } from "./helpers.js";
 import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
 import { stepUpForSession } from "../auth/step-up.js";
 import { permissionsSchema } from "../members/permissions.js";
 import { parseBody } from "./validation.js";
 
-export const rolesRouter = Router();
+export const rolesRouter = Router({ caseSensitive: true });
 
 const roleBody = z.object({
   name: z.string().min(1).max(50),
@@ -144,8 +144,13 @@ rolesRouter.patch(
       return;
     }
 
-    // Anti-escalation: any permission being added to the role must be held by the caller
     if (parsed.data.permissions !== undefined) {
+      // Removing permissions demotes every holder, so the role must not outrank the caller.
+      const above = permissionsAbove(result.membership, result.role, targetRole.permissions as string[], req);
+      if (above.length > 0) {
+        res.status(403).json({ error: "Cannot change a role with permissions you do not hold", permissions: above });
+        return;
+      }
       const existing = new Set(targetRole.permissions as string[]);
       const added = parsed.data.permissions.filter((p) => !existing.has(p));
       const lacking = missingPermissions(result.membership, result.role, added, req);
@@ -213,6 +218,12 @@ rolesRouter.delete(
 
     if (targetRole.isSystem) {
       res.status(403).json({ error: "Cannot delete a system role" });
+      return;
+    }
+
+    const above = permissionsAbove(result.membership, result.role, targetRole.permissions as string[], req);
+    if (above.length > 0) {
+      res.status(403).json({ error: "Cannot delete a role with permissions you do not hold", permissions: above });
       return;
     }
 
@@ -302,6 +313,17 @@ rolesRouter.put(
 
     if (targetMembership.isOriginator) {
       res.status(403).json({ error: "Cannot change the originator's role" });
+      return;
+    }
+
+    const above = permissionsAbove(
+      result.membership,
+      result.role,
+      await rolePermissions(tenantId, targetMembership.roleId),
+      req,
+    );
+    if (above.length > 0) {
+      res.status(403).json({ error: "Cannot change the role of a member with permissions you do not hold", permissions: above });
       return;
     }
 
