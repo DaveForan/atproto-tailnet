@@ -54,6 +54,15 @@ export interface DeviceReach {
   entries: ReachEntry[];
 }
 
+export interface MyAccess {
+  mode: "open" | "member";
+  /** The tailnet is open and I chose the open policy for my devices. */
+  open: boolean;
+  /** Other members who chose it: their devices reach mine within the tailnet's policy. */
+  openMembers: number;
+  devices: DeviceReach[];
+}
+
 export interface NewShare {
   kind: "request" | "offer";
   friendId: string;
@@ -84,7 +93,7 @@ export const sharingService = {
   acceptShare: (tid: string, id: string, body: { ports?: PortSpec[]; guestNodeIds?: string[] } = {}) =>
     tenantApi<{ status: string }>(tid, `/shares/${id}/accept`, json("POST", body)),
   endShare: (tid: string, id: string) => tenantApi(tid, `/shares/${id}`, json("DELETE")),
-  myAccess: (tid: string) => tenantApi<{ mode: "open" | "member"; devices: DeviceReach[] }>(tid, "/my-devices/access"),
+  myAccess: (tid: string) => tenantApi<MyAccess>(tid, "/my-devices/access"),
   stopSharingDevice: (tid: string, nodeId: string) => tenantApi<{ sharesEnded: number }>(tid, `/my-devices/${nodeId}/shares`, json("DELETE")),
 };
 

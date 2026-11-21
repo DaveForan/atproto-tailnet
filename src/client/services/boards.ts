@@ -100,8 +100,9 @@ export const boardsService = {
     tenantApi(tid, `/boards/posts/${postId}/connections/${userId}`, json("DELETE")),
 
   accessMode: (tid: string) =>
-    tenantApi<{ mode: "open" | "member"; supported: boolean; canEdit: boolean }>(tid, "/access-mode"),
+    tenantApi<{ mode: "open" | "member"; supported: boolean; canEdit: boolean; mine: boolean }>(tid, "/access-mode"),
   setAccessMode: (tid: string, mode: "open" | "member") => tenantApi(tid, "/access-mode", json("PUT", { mode })),
+  setMyOpenAccess: (tid: string, open: boolean) => tenantApi<{ open: boolean; applied: boolean }>(tid, "/access-mode/mine", json("PUT", { open })),
 
   controllerBoard: (tid: string) =>
     tenantApi<{ text: string; canEdit: boolean; address: string }>(tid, "/controller-board"),

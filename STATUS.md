@@ -35,6 +35,7 @@ After the first start: sign in yourself before you share the URL, then connect C
 - Boards are off by default. An admin must turn the board on before public posts work.
 - Named HTTPS service addresses move to `<name>.svc.<BASE_DOMAIN>`.
 - Compose runs two coordinator containers: `coordinator` (control) and `relay` (DERP, STUN, gateway).
+- Next deploy: open mode no longer opens anybody's devices by itself. In an open tailnet, each member must choose the open policy for their own devices (Friends & sharing). Until then the devices of different members do not reach each other.
 
 ## Not yet tested live
 

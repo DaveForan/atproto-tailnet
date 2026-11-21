@@ -149,7 +149,7 @@ describe("privilege hierarchy", () => {
   it("an originator outranks everyone; unknown permission names never count", async () => {
     const { permissionsAbove } = await import("../routes/helpers.js");
     const req = {} as Request;
-    const full = { ...membership, createdAt: new Date(), canInvite: false, canKick: false };
+    const full = { ...membership, createdAt: new Date(), canInvite: false, canKick: false, openAccess: false };
     const originator = { ...full, isOriginator: true };
     expect(permissionsAbove(originator, null, adminRole.permissions, req)).toEqual([]);
     expect(permissionsAbove(full, managerRole as never, ["invite", "retired_permission"], req)).toEqual([]);

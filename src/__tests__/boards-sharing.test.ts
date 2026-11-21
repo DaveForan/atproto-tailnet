@@ -263,6 +263,36 @@ describe("review", () => {
   });
 });
 
+describe("the open policy is each member's own choice", () => {
+  it("a member puts their own devices under it, and only their own membership changes", async () => {
+    results.push(ctx());
+    const r = await call("PUT", "/access-mode/mine", { open: true });
+    expect(r.status).toBe(200);
+    expect(r.json).toEqual({ open: true, applied: true });
+    expect(writes.filter((w) => w.op === "update")).toEqual([{ op: "update", table: "memberships", method: "set", arg: { openAccess: true } }]);
+    expect(syncTenantAccess).toHaveBeenCalledWith(T);
+  });
+
+  it("an agent token cannot open a member's devices", async () => {
+    results.push(ctx());
+    expect((await call("PUT", "/access-mode/mine", { open: true }, { "x-agent": "1" })).status).toBe(403);
+    expect(writes.some((w) => w.table === "memberships")).toBe(false);
+  });
+
+  it("lockdown blocks joining, never leaving", async () => {
+    results.push(ctx({ lockdown: true }));
+    expect((await call("PUT", "/access-mode/mine", { open: true })).status).toBe(403);
+    results.push(ctx({ lockdown: true }));
+    expect((await call("PUT", "/access-mode/mine", { open: false })).status).toBe(200);
+  });
+
+  it("changing the tailnet's mode writes no membership: it opens nobody's devices", async () => {
+    results.push(ctx({ perms: ["manage_acl"] }));
+    expect((await call("PUT", "/access-mode", { mode: "open" })).status).toBe(200);
+    expect(writes.some((w) => w.table === "memberships")).toBe(false);
+  });
+});
+
 describe("Connect", () => {
   it("connects only the caller's own devices to an approved post", async () => {
     results.push(ctx(), [post()]);

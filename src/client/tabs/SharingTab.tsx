@@ -4,7 +4,7 @@ import { Card } from "../components/Card";
 import { Loading } from "../components/Loading";
 import { LoadError } from "../components/LoadError";
 import { boardsService, type MyDevice } from "../services/boards";
-import { sharingService, type DeviceReach, type FriendsData, type Person, type Share } from "../services/sharing";
+import { sharingService, type MyAccess, type FriendsData, type Person, type Share } from "../services/sharing";
 import { ReachCard } from "./sharing/ReachCard";
 import { SharesCard, type SharingAct } from "./sharing/SharesCard";
 import { RequestsCard } from "./sharing/RequestsCard";
@@ -16,7 +16,7 @@ interface SharingData {
   shares: { shares: Share[] };
   devices: { devices: MyDevice[] };
   candidates: { members: Person[] };
-  access: { mode: "open" | "member"; devices: DeviceReach[] };
+  access: MyAccess;
 }
 
 const FALLBACK: SharingData = {
@@ -24,7 +24,7 @@ const FALLBACK: SharingData = {
   shares: { shares: [] },
   devices: { devices: [] },
   candidates: { members: [] },
-  access: { mode: "member", devices: [] },
+  access: { mode: "member", open: false, openMembers: 0, devices: [] },
 };
 
 const LOADERS: TenantLoaders<SharingData> = {
@@ -50,7 +50,7 @@ export function SharingTab() {
       <LoadError error={error} onRetry={reload} />
       <RequestsCard incoming={friends.incoming} waiting={shares.filter((s) => s.awaitingMe)} devices={data.devices.devices} act={act} busy={busy} />
       <SharesCard shares={shares.filter((s) => !s.awaitingMe)} devices={data.devices.devices} act={act} busy={busy} />
-      <ReachCard mode={data.access.mode} devices={data.access.devices} act={act} busy={busy} />
+      <ReachCard access={data.access} act={act} busy={busy} />
       <Card title="Share a device">
         <NewShareForm friends={friends.friends} devices={data.devices.devices} onCreated={() => { void reload(); }} />
       </Card>

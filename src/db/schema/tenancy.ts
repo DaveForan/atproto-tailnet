@@ -201,6 +201,8 @@ export const memberships = pgTable(
     roleId: uuid("role_id").references(() => roles.id),
     /** True only for the tenant creator, who can never be removed. */
     isOriginator: boolean("is_originator").notNull().default(false),
+    /** The member put their own devices under the tailnet's open policy. Only the member sets it. */
+    openAccess: boolean("open_access").notNull().default(false),
     /** Legacy: permissions come from the role. */
     canInvite: boolean("can_invite").notNull().default(false),
     canKick: boolean("can_kick").notNull().default(false),

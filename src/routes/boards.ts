@@ -8,7 +8,7 @@ import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { tenants, users, roles, servicePosts, serviceConnections, instanceSettings } from "../db/schema.js";
+import { tenants, users, roles, memberships, servicePosts, serviceConnections, instanceSettings } from "../db/schema.js";
 import {
   requireAuth,
   param,
@@ -28,6 +28,7 @@ import { lintBoardText, parseBoardText, renderBoardHtml } from "../shared/board-
 import { config } from "../config.js";
 import { useCoordinator } from "../orchestrator/control-client.js";
 import { parseBody } from "./validation.js";
+import { stepUpForSession } from "../auth/step-up.js";
 
 export const boardsRouter = Router({ caseSensitive: true });
 
@@ -707,13 +708,44 @@ boardsRouter.get("/api/tenants/:tenantId/access-mode", requireAuth, tenantGuard(
     mode: result.tenant.accessMode === "member" ? "member" : "open",
     supported: useCoordinator,
     canEdit: hasPermission(result.membership, result.role, "manage_acl", req),
+    // The caller's own choice: do my devices follow the open policy?
+    mine: result.membership.openAccess,
   });
 });
 
 /**
+ * The caller puts their own devices under the tailnet's open policy, or takes them out.
+ * Security: this is the only way a member's devices become reachable in open mode.
+ * Nobody can set it for another member, and an agent token cannot set it.
+ */
+boardsRouter.put(
+  "/api/tenants/:tenantId/access-mode/mine",
+  requireAuth,
+  stepUpForSession,
+  tenantGuard({ noAgentToken: "Only the member can open their own devices" }),
+  async (req, res) => {
+    const result = tenantCtx(res);
+    const parsed = z.object({ open: z.boolean() }).safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: "open must be true or false" });
+      return;
+    }
+    // Leaving stays possible in lockdown: it only removes access
+    if (parsed.data.open && isLockedDown(result.tenant)) {
+      res.status(403).json({ error: "Tenant is in lockdown mode" });
+      return;
+    }
+    await db.update(memberships).set({ openAccess: parsed.data.open }).where(eq(memberships.id, result.membership.id));
+    const applied = await syncTenantAccess(result.tenant.id);
+    res.json({ open: parsed.data.open, applied });
+  },
+);
+
+/**
  * "member": a device reaches only its owner's devices, plus approved service
- * posts and shares between friends. "open": every device reaches every
- * device (or the ACL policy applies).
+ * posts and shares between friends. "open": the same, and the devices of the
+ * members who chose it reach each other (or the ACL policy applies to them).
+ * The mode alone opens no member's device.
  */
 boardsRouter.put("/api/tenants/:tenantId/access-mode", requireAuth, tenantGuard({ permission: "manage_acl" }), async (req, res) => {
   const userId = authUserId(req);

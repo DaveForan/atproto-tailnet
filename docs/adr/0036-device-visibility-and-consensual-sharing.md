@@ -238,3 +238,38 @@ Not yet built:
 - The per-device "who can reach this" screen (the API has "stop all sharing").
 - Confirmation on a trusted device (ADR-0035).
 - A test with two real devices of two members.
+
+### Open mode is each member's own choice (2026-11-21)
+
+Before this change, open mode put every device of a tailnet under the ACL
+policy, or under allow-all without a policy. Thus a member who could change
+the mode or the policy could expose the devices of every other member. This
+is against the purpose of this ADR.
+
+The rule is now: only the owner opens a device to the tailnet.
+
+- A member chooses the open policy for their own devices
+  (`memberships.open_access`, `PUT /api/tenants/:id/access-mode/mine`). The
+  default is off. Nobody can set it for another member. An agent token cannot
+  set it. A session with a trusted device needs a fresh device proof.
+- The service sends the members who chose it to the coordinator as
+  `open_owners`, together with the same rules as in member mode.
+- In open mode the coordinator applies the ACL policy (or allow-all) only
+  between the devices of open owners and devices without an owner. Each
+  other device keeps the member view: its owner's devices, and what the
+  rules open. An open device does not see a device that is not open, unless
+  a rule links the two.
+- Each device has its own view in both modes. Thus a peer event sends each
+  stream its own map. The coordinator has no tenant-wide delta any more.
+- A change of the tailnet's mode or policy changes nothing for a member who
+  did not choose the open policy.
+
+Consequence for an existing open tailnet: after the upgrade, the devices of
+different members do not reach each other until each member chooses the open
+policy. The devices of one member reach each other as before.
+
+Not changed: a child tailnet with posture Open shows its devices to the
+devices of the parent that follow the open policy. The devices of a child
+that have an owner are shown only when that owner is an open owner of the
+parent.
+

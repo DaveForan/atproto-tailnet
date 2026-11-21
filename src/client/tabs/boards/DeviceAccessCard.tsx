@@ -16,7 +16,7 @@ export function DeviceAccessCard({
       <p className="card-description">
         {mode === "member"
           ? "Members only: a device reaches its owner's other devices, plus services they connected to and shares between friends."
-          : "Open: every device in this tailnet can reach every other device on every port."}
+          : "Open: members who choose it let their devices reach each other, on every port or as the ACL policy says. Each member chooses for their own devices, under Friends & sharing. The devices of everyone else stay members-only."}
       </p>
       <button
         type="button"
@@ -26,7 +26,7 @@ export function DeviceAccessCard({
           const next = mode === "member" ? "open" : "member";
           if (next === "member" && !(await confirm({
             title: "Switch to members-only access?",
-            message: "Devices of different members will stop reaching each other until they connect to a service or share.",
+            message: "Devices of members who chose the open policy will stop reaching each other until they connect to a service or share.",
             confirmLabel: "Switch",
           }))) return;
           onChange(next);

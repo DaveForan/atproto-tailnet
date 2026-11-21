@@ -571,6 +571,8 @@ sharingRouter.delete("/api/tenants/:tenantId/shares/:shareId", requireAuth, memb
 /**
  * Who can reach each of the caller's devices, and why: connections to their public services and active shares.
  * The caller's own devices always reach each other and are not listed.
+ * `open` is true when the tailnet is in open mode and the caller chose it for their devices:
+ * then the devices of the `openMembers` other members who chose it reach them too, within the tailnet's policy.
  */
 sharingRouter.get("/api/tenants/:tenantId/my-devices/access", requireAuth, member, async (req, res) => {
   const m = tenantCtx(res);
@@ -582,8 +584,17 @@ sharingRouter.get("/api/tenants/:tenantId/my-devices/access", requireAuth, membe
   }
   const mine = all.filter((d) => d.ownerId === m.userId);
   const mode = m.tenant.accessMode === "member" ? "member" : "open";
-  if (mode === "open" || mine.length === 0) {
-    res.json({ mode, devices: mine.map((d) => ({ id: d.id, name: d.name, online: d.online, entries: [] })) });
+  const open = mode === "open" && m.membership.openAccess;
+  const openMembers = open
+    ? (
+        await db
+          .select({ userId: memberships.userId })
+          .from(memberships)
+          .where(and(eq(memberships.tenantId, tenantId), eq(memberships.openAccess, true)))
+      ).filter((r) => r.userId !== m.userId).length
+    : 0;
+  if (mine.length === 0) {
+    res.json({ mode, open, openMembers, devices: [] });
     return;
   }
   const posts = await db
@@ -608,6 +619,8 @@ sharingRouter.get("/api/tenants/:tenantId/my-devices/access", requireAuth, membe
   const title = new Map(posts.map((p) => [p.id, p.title]));
   res.json({
     mode,
+    open,
+    openMembers,
     devices: reach.map(({ device, entries }) => ({
       id: device.id,
       name: device.name,

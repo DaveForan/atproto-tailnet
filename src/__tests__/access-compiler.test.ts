@@ -41,11 +41,19 @@ const share = (over: Partial<CompileInput["shares"][number]> = {}) => ({
 });
 
 describe("compileAccess", () => {
-  it("open mode sends no rules", () => {
-    expect(compileAccess(base({ mode: "open", posts: [post()], connections: [{ postId: "p1", nodeId: "20" }] }))).toEqual({
+  it("open mode sends the same rules, and only the members who chose it as open owners", () => {
+    const input = base({ posts: [post()], connections: [{ postId: "p1", nodeId: "20" }], shares: [share()] });
+    const member = compileAccess(input);
+    // Nobody chose it: the mode alone opens no member's device
+    expect(compileAccess({ ...input, mode: "open" })).toEqual({ mode: "open", rules: member.rules, open_owners: [] });
+    expect(compileAccess({ ...input, mode: "open", openOwners: ["u-bob", "u-alice", "u-bob"] })).toEqual({
       mode: "open",
-      rules: [],
+      rules: member.rules,
+      open_owners: ["u-alice", "u-bob"],
     });
+    // Member mode has no open owners, whatever the input says
+    expect(compileAccess({ ...input, openOwners: ["u-bob"] })).toEqual({ mode: "member", rules: member.rules });
+    expect(member.rules.length).toBe(2);
   });
 
   it("an approved public post opens its one port to connected devices only", () => {

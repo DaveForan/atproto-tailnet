@@ -129,7 +129,6 @@ export async function loadTenantAccess(
   mode: AccessMode,
   nodeOwners?: ReadonlyMap<string, string>,
 ): Promise<CoordinatorAccess> {
-  if (mode !== "member") return { mode: "open", rules: [] };
   const posts = await db.select().from(servicePosts).where(eq(servicePosts.tenantId, tenantId));
   const postIds = posts.filter((p) => p.board === "public" && p.status === "approved").map((p) => p.id);
   const connected = postIds.length
@@ -137,7 +136,17 @@ export async function loadTenantAccess(
     : [];
   const connections = await allowedConnections(tenantId, posts, connected);
   const shares = await db.select().from(deviceShares).where(eq(deviceShares.tenantId, tenantId));
-  return compileAccess({ mode, posts, connections, shares, nodeOwners });
+  // Security: only a member's own choice puts their devices under the open policy
+  const openOwners =
+    mode === "open"
+      ? (
+          await db
+            .select({ userId: memberships.userId })
+            .from(memberships)
+            .where(and(eq(memberships.tenantId, tenantId), eq(memberships.openAccess, true)))
+        ).map((m) => m.userId)
+      : [];
+  return compileAccess({ mode, posts, connections, shares, nodeOwners, openOwners });
 }
 
 /** Compile the current device and service names of a tailnet from the database. */

@@ -22,6 +22,8 @@ export interface CoordinatorAccessRule {
 export interface CoordinatorAccess {
   mode: AccessMode;
   rules: CoordinatorAccessRule[];
+  /** Open mode: the owners (user ids) who put their own devices under the open policy. */
+  open_owners?: string[];
 }
 
 export interface CompileInput {
@@ -52,6 +54,8 @@ export interface CompileInput {
    * Devices absent from the map are not checked.
    */
   nodeOwners?: ReadonlyMap<string, string>;
+  /** Members (user ids) who chose the tailnet's open policy for their own devices. Used in open mode. */
+  openOwners?: string[];
   now?: Date;
 }
 
@@ -156,10 +160,11 @@ function nodeNumber(id: string): number | null {
  *   expired.
  * - Private-board posts add nothing: a member's own devices already reach
  *   each other.
- * - In "open" mode the coordinator ignores rules, so none are sent.
+ * - "open" mode adds the tailnet's policy between the devices of the members
+ *   in `openOwners` only. The rules are the same in both modes, because every
+ *   other member's devices stay as in "member" mode.
  */
 export function compileAccess(input: CompileInput): CoordinatorAccess {
-  if (input.mode !== "member") return { mode: "open", rules: [] };
   const now = input.now ?? new Date();
   const rules: CoordinatorAccessRule[] = [];
 
@@ -211,6 +216,7 @@ export function compileAccess(input: CompileInput): CoordinatorAccess {
     }
   }
 
+  if (input.mode !== "member") return { mode: "open", rules, open_owners: [...new Set(input.openOwners ?? [])].sort() };
   return { mode: "member", rules };
 }
 
