@@ -532,6 +532,40 @@ stack.
 
 ### Updating
 
+Use the deploy script. Run it on your own machine, in a clone that is equal
+to the pushed branch:
+
+```sh
+DEPLOY_HOST=root@203.0.113.10 deploy/deploy.sh
+```
+
+You can write `DEPLOY_HOST`, `DEPLOY_SSH_KEY`, `DEPLOY_DIR` and
+`DEPLOY_BRANCH` to the file `deploy/deploy.env`. Git ignores this file.
+
+The script does these steps and stops at the first failure:
+
+1. Parity. The local tree is clean and equal to the remote branch. The
+   server tree is clean. Thus only pushed commits are deployed.
+2. Backup. A database dump goes to `/root/backups` on the server. The script
+   keeps the 14 newest dumps.
+3. Build. The running stack does not change during the build.
+4. Migrations on a copy. The script restores the dump to a temporary
+   database and applies the migrations of the service and of the
+   coordinator to it. The number of users, tailnets and devices must not
+   change.
+5. Start, and wait until all services are healthy.
+6. Verify from your machine. The dashboard, the control URL and the relay
+   answer. The admin API of the coordinator is not reachable.
+
+Before step 5, a failure leaves the running stack as it was.
+
+- `--check` does steps 1 and 6 only. It changes nothing.
+- `--restart-all` stops the full stack before the start. This is necessary
+  when a Docker network changed. It causes approximately one minute of
+  downtime.
+
+To update by hand:
+
 ```sh
 git pull
 docker compose -f docker-compose.coordinator.yml build

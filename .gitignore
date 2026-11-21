@@ -6,3 +6,7 @@ data/
 *.db-journal
 # vitest cache (vitest.config.ts sets root to src/, so it lands in src/node_modules/.vite)
 **/node_modules/.vite/
+
+# Local settings of deploy/deploy.sh
+deploy/deploy.env
+.claude/worktrees/

@@ -393,7 +393,7 @@ Order matters: each stage gives value alone and unblocks the next.
 ### 6.9 Operations (no ADR)
 - [ ] DigitalOcean backups + nightly `pg_dump` and coordinator key off the droplet; test a restore
 - [ ] Uptime check on `/health` and droplet alerts (CPU, memory, disk)
-- [ ] One-command deploy script (parity check, build, restart, verify)
+- [x] One-command deploy script: `deploy/deploy.sh` (parity check, backup, build, migrations on a copy, restart, verify)
 - [ ] Confirm domain auto-renew at the registrar
 
 ---
