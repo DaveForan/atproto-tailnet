@@ -523,6 +523,7 @@ dependencies = [
  "boringtun",
  "bytes",
  "coord-derp",
+ "crypto_box",
  "http",
  "http-body-util",
  "hyper",

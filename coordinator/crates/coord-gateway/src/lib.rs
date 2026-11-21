@@ -3,6 +3,8 @@
 
 pub mod netstack;
 
+pub mod disco;
+pub mod direct;
 pub mod tunnel;
 pub mod proxy;
 

@@ -23,6 +23,8 @@ tracing = { workspace = true }
 thiserror = { workspace = true }
 async-trait = "0.1"
 blake2 = "0.10"
+# NaCl box for disco messages (ADR-0029 phase 2)
+crypto_box = { version = "0.9", default-features = false, features = ["salsa20"] }
 rand = { workspace = true }
 
 [dev-dependencies]
