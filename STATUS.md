@@ -1,6 +1,6 @@
 # Status memo
 
-Last updated: 2026-11-21. HEAD `61d6d8e` on `master`. CI is green (TS, Rust, clippy `-D warnings`, `cargo doc`, `cargo audit`).
+Last updated: 2026-11-20. Code as of `61d6d8e` on `master`. CI is green (TS, Rust, clippy `-D warnings`, `cargo doc`, `cargo audit`).
 
 ## Where we are
 
