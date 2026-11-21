@@ -137,8 +137,12 @@ Differences from the decision:
   coordinator sends no rule and no name for that member's devices, and the
   gateway gives the answer of an unknown name. The author and the originator
   always have access. A role change or a deleted role pushes the rules again.
-- In a tailnet with an ACL policy (open mode with rules), no rule is added
-  for the gateway. The originator must allow it in the policy.
+- In a tailnet with an ACL policy (open mode with rules), the coordinator
+  adds one filter rule to each device that runs an HTTPS service: the
+  gateway may reach the published ports, TCP only (`gateway_filter` in
+  coord-netmap). The policy cannot block a published service, and the rule
+  goes away with the service. Viewers need no rule: the gateway is not a
+  client, and it checks each caller against the service's visibility.
 - The hierarchy rule is built as a view only. Members of a parent tailnet
   see the public services of each child tailnet whose posture is Open
   (`GET .../boards/children`): title, description, port and author. They get

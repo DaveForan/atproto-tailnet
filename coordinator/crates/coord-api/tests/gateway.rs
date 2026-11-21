@@ -380,3 +380,67 @@ async fn the_gateway_relay_scope_follows_posture_suspension_and_parent() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(link(), None, "a detached child has no parent");
 }
+
+// ADR-0030: a tailnet with its own ACL policy (open mode) still serves HTTPS services.
+// The device of the service accepts the gateway on the published port, whatever the policy says.
+#[tokio::test]
+async fn an_acl_policy_does_not_block_the_gateway_from_a_published_port() {
+    let (app, state) = setup();
+    let tenant = state.store().create_tenant("gw-acl".into(), None, None).await.unwrap().id;
+    let t = tenant.to_string();
+    let app_dev = register(&app, &state, &t, "alice", 41, "alice-server").await;
+    let viewer = register(&app, &state, &t, "bob", 42, "bob-laptop").await;
+    // The policy opens SSH between devices and nothing else
+    let policy = serde_json::json!({ "tenant_id": t, "policy": { "default_deny": false, "rules": [{ "src": "*", "dst": "*", "ports": [{ "Single": 22 }] }] } });
+    let (status, body) = call(&app, "POST", "/api/acl".into(), Some(policy)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let ports_of = |map: &serde_json::Value| -> Vec<(String, u64)> {
+        let mut out = Vec::new();
+        for rule in map["PacketFilter"].as_array().unwrap() {
+            for dst in rule["DstPorts"].as_array().unwrap() {
+                out.push((rule["SrcIPs"][0].as_str().unwrap().to_string(), dst["Ports"]["First"].as_u64().unwrap()));
+            }
+        }
+        out
+    };
+    assert_eq!(ports_of(&netmap(&state, &app_dev).await), vec![("*".to_string(), 22)], "before any service: the policy only");
+
+    let dns = serde_json::json!({ "base_domain": BASE, "records": [{ "name": "wiki", "node": app_dev.id, "owner": "alice", "nodes": [viewer.id], "port": 8080 }] });
+    let (status, body) = call(&app, "PUT", format!("/api/tenants/{t}/dns"), Some(dns)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let app_map = netmap(&state, &app_dev).await;
+    let gateway_peer = app_map["Peers"].as_array().unwrap().iter().find(|p| p["Hostinfo"]["Hostname"] == "gateway").expect("the gateway is a peer").clone();
+    let gateway_addr = gateway_peer["Addresses"][0].as_str().unwrap().to_string();
+    assert_eq!(ports_of(&app_map), vec![("*".to_string(), 22), (gateway_addr.clone(), 8080)], "the policy, plus the gateway on the published port");
+    let service_rule = &app_map["PacketFilter"][1];
+    assert_eq!(service_rule["IPProto"], serde_json::json!([6]), "TCP only: {service_rule}");
+    // The viewer's own filter does not change: the gateway never calls a viewer
+    assert_eq!(ports_of(&netmap(&state, &viewer).await), vec![("*".to_string(), 22)]);
+
+    // Data path under the policy
+    let gateway_ip: Ipv4Addr = gateway_addr.split('/').next().unwrap().parse().unwrap();
+    let gateway_key: [u8; 32] = hex::decode(gateway_peer["Key"].as_str().unwrap().trim_start_matches("nodekey:")).unwrap().try_into().unwrap();
+    call(&app, "PUT", format!("/api/tenants/{t}/identity"), Some(serde_json::json!({ "tailnet_name": "Acl", "users": { "bob": { "login_name": "bob.example.com" } } }))).await;
+    let known = [(gateway_key, gateway_ip)];
+    let app_stack = online(&state, &tenant, &app_dev, &known);
+    let viewer_stack = online(&state, &tenant, &viewer, &known);
+    let mut incoming = app_stack.listen(8080).await.unwrap();
+    tokio::spawn(async move {
+        while let Some(Accepted { mut stream, .. }) = incoming.recv().await {
+            tokio::spawn(async move {
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    if stream.read_exact(&mut byte).await.is_err() {
+                        return;
+                    }
+                    head.push(byte[0]);
+                }
+                let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok").await;
+            });
+        }
+    });
+    let answer = https_get(&viewer_stack, gateway_ip, "wiki.svc.ts.example.com", "/", "").await.unwrap();
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+}

@@ -343,7 +343,7 @@ Order matters: each stage gives value alone and unblocks the next.
 - [x] Dashboard: "This is a web application" on the service form; HTTPS links on the boards
 - [x] Certificate copy service in the compose file; reload every 6 hours
 - [x] MCP tools; a service for some roles only; a parent sees the public services of Open children (view only)
-- [ ] ACL-policy rule for the gateway in a tailnet with an ACL policy
+- [x] ACL-policy rule for the gateway in a tailnet with an ACL policy (`gateway_filter`)
 - [ ] Verify `https://<name>.<BASE_DOMAIN>` from a second device; not reachable from outside
 
 ### 6.7 Public service exposure (ADR-0031)

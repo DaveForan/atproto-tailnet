@@ -10,7 +10,7 @@ use coord_proto::map::{DerpMap, FilterRule, MapNode, MapResponse, UserProfile};
 use coord_store::{PeerEvent, Store};
 
 use crate::{
-    device_fqdn, dns_view, member_view, service_rules, user_id_for, DerpRegistry, GatewayRegistry, IdentityRegistry,
+    device_fqdn, dns_view, gateway_filter, member_view, service_rules, user_id_for, DerpRegistry, GatewayRegistry, IdentityRegistry,
 };
 
 pub struct NetmapService {
@@ -101,6 +101,14 @@ impl NetmapService {
             }
             member_view(node_id.as_i64(), detail.attrs.owner.as_deref(), &ipv4.to_string(), &all_peers, &rules)
         });
+        // Open mode: the gateway must reach each published port, also under a narrow ACL policy.
+        let open_service_filter = match (gateway, member_mode) {
+            (Some(gw), false) => {
+                let gateway_ips: Vec<String> = all_peers.iter().filter(|p| p.node_id.as_i64() == gw).flat_map(|p| p.addresses.clone()).collect();
+                gateway_filter(&dns, gw, &gateway_ips, node_id.as_i64(), &ipv4.to_string())
+            }
+            _ => Vec::new(),
+        };
         let (peers, member_filter): (Vec<coord_core::PeerInfo>, Option<Vec<FilterRule>>) = match member {
             Some(view) => (view.peers.into_iter().cloned().collect(), Some(view.filter)),
             None => (all_peers, None),
@@ -160,8 +168,9 @@ impl NetmapService {
             // Member mode: per-device filter, where an empty list blocks everything.
             // Otherwise: the tenant's ACL policy, or allow-all.
             packet_filter: Some(member_filter.unwrap_or_else(|| {
-                self.acl
-                    .filter_rules_for_node(tenant_id, node_id, &ipv4.to_string())
+                let mut filter = self.acl.filter_rules_for_node(tenant_id, node_id, &ipv4.to_string());
+                filter.extend(open_service_filter);
+                filter
             })),
             domain: Some(domain),
             user_profiles: Some(user_profiles),

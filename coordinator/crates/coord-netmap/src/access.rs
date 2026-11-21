@@ -31,6 +31,27 @@ pub fn service_rules(dns: &coord_core::TenantDns, gateway: i64, everyone: &[i64]
     rules
 }
 
+/// Filter rules that HTTPS services add for device `self_id` in an `open`-mode tenant (ADR-0030).
+/// The tenant's own ACL policy can be narrower than the services need.
+/// So each device that runs an HTTPS service accepts the gateway on that one port, whatever the policy says.
+/// Nothing is added for viewers: the gateway is not a client and checks each caller itself.
+pub fn gateway_filter(dns: &coord_core::TenantDns, gateway: i64, gateway_ips: &[String], self_id: i64, self_ip: &str) -> Vec<FilterRule> {
+    if gateway_ips.is_empty() || self_id == gateway {
+        return Vec::new();
+    }
+    let mut ports: Vec<u16> = dns.records.iter().filter(|r| r.node == self_id).filter_map(|r| r.port).collect();
+    ports.sort_unstable();
+    ports.dedup();
+    if ports.is_empty() {
+        return Vec::new();
+    }
+    vec![FilterRule {
+        src_ips: gateway_ips.to_vec(),
+        dst_ports: ports.into_iter().map(|p| NetPortRange { ip: self_ip.to_string(), ports: PortRange { first: p, last: p } }).collect(),
+        ip_proto: coord_core::AccessProto::Tcp.ip_protos(),
+    }]
+}
+
 /// What one device sees and accepts in a `member`-mode tenant (ADR-0036).
 pub struct MemberView<'a> {
     /// Peers the device can reach or that can reach it.
@@ -216,5 +237,40 @@ mod member_view_tests {
         assert!(v.filter.iter().any(|f| f.ip_proto == Some(vec![17])));
         let icmp = v.filter.iter().find(|f| f.ip_proto == Some(vec![1, 58])).unwrap();
         assert_eq!((icmp.dst_ports[0].ports.first, icmp.dst_ports[0].ports.last), (0, 65535));
+    }
+}
+
+#[cfg(test)]
+mod gateway_filter_tests {
+    use super::*;
+    use coord_core::{DnsRecord, TenantDns};
+
+    fn dns(records: Vec<DnsRecord>) -> TenantDns {
+        TenantDns { base_domain: Some("ts.example.com".into()), records, ..Default::default() }
+    }
+
+    fn record(name: &str, node: i64, port: Option<u16>) -> DnsRecord {
+        DnsRecord { name: name.into(), node, owner: Some("alice".into()), nodes: vec![], port }
+    }
+
+    #[test]
+    fn the_device_of_an_https_service_accepts_the_gateway_on_the_published_ports_only() {
+        let dns = dns(vec![record("wiki", 10, Some(8080)), record("notes", 10, Some(3000)), record("again", 10, Some(8080)), record("plain", 10, None), record("other", 11, Some(9000))]);
+        let gw = vec!["100.64.0.9/32".to_string()];
+        let filter = gateway_filter(&dns, 9, &gw, 10, "100.64.0.10");
+        assert_eq!(filter.len(), 1);
+        assert_eq!(filter[0].src_ips, gw);
+        assert_eq!(filter[0].ip_proto, Some(vec![6]), "TCP only");
+        let ports: Vec<(String, u16, u16)> = filter[0].dst_ports.iter().map(|d| (d.ip.clone(), d.ports.first, d.ports.last)).collect();
+        assert_eq!(ports, vec![("100.64.0.10".to_string(), 3000, 3000), ("100.64.0.10".to_string(), 8080, 8080)]);
+    }
+
+    #[test]
+    fn nothing_is_added_for_other_devices_the_gateway_itself_or_without_a_gateway_address() {
+        let dns = dns(vec![record("wiki", 10, Some(8080))]);
+        let gw = vec!["100.64.0.9/32".to_string()];
+        assert!(gateway_filter(&dns, 9, &gw, 12, "100.64.0.12").is_empty(), "a viewer gets no rule");
+        assert!(gateway_filter(&dns, 9, &gw, 9, "100.64.0.9").is_empty(), "the gateway is not a client");
+        assert!(gateway_filter(&dns, 9, &[], 10, "100.64.0.10").is_empty(), "no gateway peer: no rule");
     }
 }
