@@ -8,6 +8,7 @@ import {
   type CompileInput,
   type DnsInput,
 } from "../access/compiler.js";
+import { deviceReach } from "../access/reach.js";
 
 const NOW = new Date("2026-11-20T12:00:00Z");
 const base = (over: Partial<CompileInput> = {}): CompileInput => ({
@@ -265,5 +266,72 @@ describe("expiry", () => {
     const s = share({ expiresAt });
     expect(compileAccess(base({ shares: [s], now: new Date(NOW.getTime() + 999) })).rules).toHaveLength(1);
     expect(compileAccess(base({ shares: [s], now: expiresAt })).rules).toEqual([]);
+  });
+});
+
+describe("deviceReach", () => {
+  const owners = new Map([
+    ["10", "u-alice"],
+    ["11", "u-alice"],
+    ["20", "u-bob"],
+    ["21", "u-bob"],
+    ["30", "u-carol"],
+    ["31", "u-dan"],
+  ]);
+  const input = base({
+    nodeOwners: owners,
+    posts: [
+      post({ id: "p1", authorId: "u-alice" }),
+      post({ id: "p2", authorId: "u-alice", status: "pending", port: 4000 }),
+      post({ id: "p3", authorId: "u-alice", board: "private", port: 5000 }),
+      post({ id: "p4", authorId: "u-alice", nodeId: "11", proto: "udp", port: 53 }),
+    ],
+    connections: [
+      { postId: "p1", nodeId: "20", userId: "u-bob" },
+      { postId: "p1", nodeId: "21", userId: "u-bob" },
+      { postId: "p1", nodeId: "30", userId: "u-carol" },
+      // Dan's device 31 was connected by Carol: the device changed owner, so it opens nothing
+      { postId: "p1", nodeId: "31", userId: "u-carol" },
+      { postId: "p2", nodeId: "20", userId: "u-bob" },
+      { postId: "p4", nodeId: "30", userId: "u-carol" },
+    ],
+    shares: [
+      share({ id: "s1", ownerId: "u-alice" }),
+      share({ id: "s2", ownerId: "u-alice", guestId: "u-carol", guestNodeIds: ["30", "31"], ports: [{ proto: "udp", first: 5000, last: 5010 }] }),
+      share({ id: "s3", ownerId: "u-alice", guestId: "u-dan", status: "requested" }),
+      share({ id: "s4", ownerId: "u-alice", guestId: "u-dan", expiresAt: new Date(NOW.getTime() - 1000) }),
+      share({ id: "s5", ownerId: "u-alice", guestId: "u-dan", ownerNodeId: "11", guestNodeIds: ["31"] }),
+    ],
+  });
+
+  it("lists who reaches a device, and why", () => {
+    const entries = deviceReach(input, "10");
+    expect(entries.map((e) => [e.kind, e.id, e.userId, e.devices])).toEqual([
+      ["service", "p1", "u-bob", ["20", "21"]],
+      ["service", "p1", "u-carol", ["30"]],
+      ["share", "s1", "u-bob", "all"],
+      ["share", "s2", "u-carol", ["30"]],
+    ]);
+    expect(deviceReach(input, "99")).toEqual([]);
+  });
+
+  it("reach agrees with the compiled rules", () => {
+    const rules = compileAccess(input).rules;
+    for (const node of ["10", "11"]) {
+      const fromRules = new Set<string>();
+      for (const r of rules.filter((r) => String(r.dst_node) === node)) {
+        const ports = JSON.stringify(r.ports);
+        if (r.src_owner) fromRules.add(`owner:${r.src_owner}|${ports}`);
+        for (const n of r.src_nodes ?? []) fromRules.add(`node:${n}|${ports}`);
+      }
+      const fromReach = new Set<string>();
+      for (const e of deviceReach(input, node)) {
+        const ports = JSON.stringify(e.ports.map((p) => ({ proto: p.proto, first: p.first, last: p.last })));
+        if (e.devices === "all") fromReach.add(`owner:${e.userId}|${ports}`);
+        else for (const n of e.devices) fromReach.add(`node:${n}|${ports}`);
+      }
+      expect([...fromReach].sort()).toEqual([...fromRules].sort());
+      expect(fromRules.size).toBeGreaterThan(0);
+    }
   });
 });

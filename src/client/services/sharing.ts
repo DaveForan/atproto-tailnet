@@ -34,6 +34,26 @@ export interface Share {
   expiresAt: string | null;
 }
 
+/** Why devices of another member reach one of my devices. */
+export interface ReachEntry {
+  kind: "service" | "share";
+  id: string;
+  member: Person;
+  /** Device names of that member, or "all" for every device they have. */
+  devices: string[] | "all";
+  ports: PortSpec[];
+  /** The service title, for kind "service". */
+  title: string | null;
+  expiresAt: string | null;
+}
+
+export interface DeviceReach {
+  id: string;
+  name: string;
+  online: boolean;
+  entries: ReachEntry[];
+}
+
 export interface NewShare {
   kind: "request" | "offer";
   friendId: string;
@@ -64,6 +84,8 @@ export const sharingService = {
   acceptShare: (tid: string, id: string, body: { ports?: PortSpec[]; guestNodeIds?: string[] } = {}) =>
     tenantApi<{ status: string }>(tid, `/shares/${id}/accept`, json("POST", body)),
   endShare: (tid: string, id: string) => tenantApi(tid, `/shares/${id}`, json("DELETE")),
+  myAccess: (tid: string) => tenantApi<{ mode: "open" | "member"; devices: DeviceReach[] }>(tid, "/my-devices/access"),
+  stopSharingDevice: (tid: string, nodeId: string) => tenantApi<{ sharesEnded: number }>(tid, `/my-devices/${nodeId}/shares`, json("DELETE")),
 };
 
 /** "tcp 22, tcp 8000-8010, ping" */

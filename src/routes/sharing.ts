@@ -8,12 +8,22 @@ import { Router } from "express";
 import { z } from "zod";
 import { and, eq, inArray, or } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { users, memberships, friendships, memberBlocks, deviceShares, type AccessPortSpec } from "../db/schema.js";
+import {
+  users,
+  memberships,
+  friendships,
+  memberBlocks,
+  deviceShares,
+  servicePosts,
+  serviceConnections,
+  type AccessPortSpec,
+} from "../db/schema.js";
 import { requireAuth, param } from "./helpers.js";
 import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
 import { notifyUser } from "../notifications/service.js";
-import { listUserDevices } from "../access/devices.js";
+import { listUserDevices, listTenantDevices } from "../access/devices.js";
+import { deviceReach } from "../access/reach.js";
 import { syncTenantAccess } from "../access/sync.js";
 import { stepUpForSession } from "../auth/step-up.js";
 import { parseBody } from "./validation.js";
@@ -556,6 +566,63 @@ sharingRouter.delete("/api/tenants/:tenantId/shares/:shareId", requireAuth, memb
     link: "/#sharing",
   });
   res.json({ status: "ended" });
+});
+
+/**
+ * Who can reach each of the caller's devices, and why: connections to their public services and active shares.
+ * The caller's own devices always reach each other and are not listed.
+ */
+sharingRouter.get("/api/tenants/:tenantId/my-devices/access", requireAuth, member, async (req, res) => {
+  const m = tenantCtx(res);
+  const tenantId = m.tenant.id;
+  const all = await listTenantDevices(m.tenant).catch(() => null);
+  if (!all) {
+    res.status(502).json({ error: "Could not list devices" });
+    return;
+  }
+  const mine = all.filter((d) => d.ownerId === m.userId);
+  const mode = m.tenant.accessMode === "member" ? "member" : "open";
+  if (mode === "open" || mine.length === 0) {
+    res.json({ mode, devices: mine.map((d) => ({ id: d.id, name: d.name, online: d.online, entries: [] })) });
+    return;
+  }
+  const posts = await db
+    .select()
+    .from(servicePosts)
+    .where(and(eq(servicePosts.tenantId, tenantId), eq(servicePosts.authorId, m.userId), eq(servicePosts.board, "public")));
+  const approved = posts.filter((p) => p.status === "approved").map((p) => p.id);
+  const connections = approved.length
+    ? await db.select().from(serviceConnections).where(inArray(serviceConnections.postId, approved))
+    : [];
+  const shares = await db
+    .select()
+    .from(deviceShares)
+    .where(and(eq(deviceShares.tenantId, tenantId), eq(deviceShares.ownerId, m.userId), eq(deviceShares.status, "active")));
+  const nodeOwners = new Map<string, string>();
+  for (const d of all) if (d.ownerId) nodeOwners.set(d.id, d.ownerId);
+  const input = { posts, connections, shares, nodeOwners };
+  const reach = mine.map((d) => ({ device: d, entries: deviceReach(input, d.id) }));
+  const who = await handles(reach.flatMap((r) => r.entries.map((e) => e.userId)));
+  const name = new Map(all.map((d) => [d.id, d.name]));
+  const title = new Map(posts.map((p) => [p.id, p.title]));
+  res.json({
+    mode,
+    devices: reach.map(({ device, entries }) => ({
+      id: device.id,
+      name: device.name,
+      online: device.online,
+      entries: entries.map((e) => ({
+        kind: e.kind,
+        id: e.id,
+        member: { userId: e.userId, ...who.get(e.userId) },
+        // Names only: the address of another member's device is not shown here
+        devices: e.devices === "all" ? "all" : e.devices.map((id) => name.get(id) ?? `device-${id}`),
+        ports: e.ports,
+        title: e.kind === "service" ? (title.get(e.id) ?? null) : null,
+        expiresAt: e.expiresAt,
+      })),
+    })),
+  });
 });
 
 /** Stop all sharing of one of the caller's devices. */

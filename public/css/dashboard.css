@@ -1169,6 +1169,8 @@ button.chip:disabled { cursor: default; opacity: 0.75; }
 .list-heading { font-size: 13px; font-weight: 600; color: var(--text-dim); margin: 16px 0 6px; }
 
 .post-list { list-style: none; display: grid; gap: 12px; }
+.reach-list { list-style: none; display: grid; gap: 4px; margin: 6px 0; }
+.reach-list li { overflow-wrap: anywhere; }
 .post-card {
   border: 1px solid var(--border);
   border-radius: 8px;

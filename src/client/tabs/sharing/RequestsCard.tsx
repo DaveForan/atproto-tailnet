@@ -1,16 +1,19 @@
 import { Card } from "../../components/Card";
 import { sharingService, type Person, type Share } from "../../services/sharing";
 import { ShareRow, who, type SharingAct } from "./SharesCard";
+import type { MyDevice } from "../../services/boards";
 
 /** Friend requests and shares that wait for this user's answer. */
 export function RequestsCard({
   incoming,
   waiting,
+  devices,
   act,
   busy,
 }: {
   incoming: Person[];
   waiting: Share[];
+  devices: MyDevice[];
   act: SharingAct;
   busy: boolean;
 }) {
@@ -29,7 +32,7 @@ export function RequestsCard({
           </li>
         ))}
         {waiting.map((s) => (
-          <ShareRow key={s.id} share={s} act={act} busy={busy} />
+          <ShareRow key={s.id} share={s} devices={devices} act={act} busy={busy} />
         ))}
       </ul>
     </Card>
