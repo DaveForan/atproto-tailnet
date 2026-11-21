@@ -43,6 +43,14 @@ cp .env.coordinator.example .env   # Edit secrets
 docker compose -f docker-compose.coordinator.yml up -d
 ```
 
+## Comments
+
+- Write a comment only when the code cannot say it: a security reason, a protocol rule, an invariant, an ordering constraint, or a workaround with its cause.
+- Delete comments that restate the code, narrate history ("added for…", "previously…"), or cite tickets, reviews or agents.
+- Use ASD-STE100: short sentences (about 20 words at most), active voice, present tense, one idea per sentence.
+- Keep it brief: one line where possible; doc comments one sentence of purpose; module headers at most 3 short lines.
+- Keep `// SAFETY:` notes and lint suppressions with their reason. Never edit applied migrations, not even comments.
+
 ## Key patterns
 
 - **Dashboard client**: React 19 SPA built by esbuild (`esbuild.config.ts`). ESM build with code splitting: entry points `src/client/main.tsx` → `public/js/dashboard.js` and `src/client/join.tsx` → `public/js/join.js`, shared/lazy chunks in `public/js/chunks/`; HTML shells load them with `<script type="module">` (src/routes/dashboard.ts). CSP: `script-src 'self'; style-src 'self'`
