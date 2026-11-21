@@ -102,6 +102,8 @@ get `DATABASE_URL`. They use their own role, which can only:
 It cannot read keys, sign-ins, configuration, federation data or any table
 of the TS service, and it cannot change nodes or tenants.
 `scripts/relay-db-role.sql` creates the role and explains each grant.
+The relays of these manifests run no gateway. A relay with a gateway needs
+`-v gateway=1` in the command below (ADR-0038).
 
 The coordinator must have created its tables first. Thus the order for a
 new instance is:

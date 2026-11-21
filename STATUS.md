@@ -38,14 +38,13 @@ After the first start: sign in yourself before you share the URL, then connect C
 
 ## Not yet tested live
 
-- Real Let's Encrypt certificates through DigitalOcean DNS (the main wildcard and the `*.svc` wildcard).
 - A real Bluesky sign-in in production.
 - Named services at the new `svc` addresses with a real client outside the test stack.
 
 ## Next steps
 
-1. Deploy to DigitalOcean and do the live checks above.
-2. Give the relay container a least-privilege database role. The gateway still writes nodes and tenant config, so the relay uses the owner role today (ADR-0038 follow-up).
+1. Done 2026-11-21: `21534fc` runs on the Droplet. Both wildcard certificates came from Let's Encrypt through DigitalOcean DNS (the `*.svc` one at the second try: the first DNS lookup failed). A real macOS client reconnected by itself and uses the relay. Still open: the two sign-in and `svc` checks above.
+2. Done, not yet deployed: the relay container has a least-privilege database role (`relay-db-role` compose service, ADR-0038). The relay offers its gateway keys and the control process registers the node.
 3. Resume federation when a second collective needs access (resume criteria in ADR-0033): gateway data plane, protocol version on CFP messages, replica-safe handshake state, traversal policy enforcement.
 4. Optional: the @atproto packages still bundle zod 3 (advisory flagged by `npm audit`); it clears when they release.
 

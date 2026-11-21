@@ -522,6 +522,9 @@ for HTTPS services. `relay` has no admin key and no control key. It keeps
 `derp.key` and `gateway.key` on the `relay_data` volume. `DERP_DOMAIN` is
 required. On the first start after an upgrade, the one-shot `relay-keys`
 service moves the two keys from `coord_data` to `relay_data`.
+`relay` uses its own database role, `tailnet_relay`, with few privileges. The
+one-shot `relay-db-role` service creates the role at each start and keeps its
+random password on `relay_data`. You do not set this password.
 Each tenant sets its own DERP relays in the dashboard. The service stores the
 settings and sends them to the coordinator for that tenant only. Connected
 devices receive the new relay map immediately. You do not need to restart the

@@ -50,6 +50,22 @@ Certificate Transparency logs (ADR-0030 refuses that).
    in the relay. The helper deletes copies of an earlier, wider certificate.
 5. **PEM parsing** uses the `PemObject` API of `rustls-pki-types`. The
    unmaintained `rustls-pemfile` (RUSTSEC-2025-0134) is removed.
+6. **The relay does not write nodes.** The relay process holds the gateway
+   secret, but a control process registers the gateway node. The relay writes
+   the public keys of its gateway for a tailnet to `coord_gateway_offers` (one
+   row for each tailnet) and reports a tenant change. A control process reads
+   the offer and registers the node, sets its home relay and records it in the
+   tenant configuration. It refuses an offer whose node key or machine key
+   belongs to a node that is not the gateway of that tailnet. Then the relay
+   starts the gateway. A process with both roles does both steps.
+7. **Database role of the relay.** In the compose stack the relay uses the
+   role `tailnet_relay` (`scripts/relay-db-role.sql` with `-v gateway=1`). The
+   one-shot `relay-db-role` service creates it at each start, after the
+   control process applied the migrations. The password is random and stays
+   in the `relay_data` volume. The relay reads its URL from
+   `DATABASE_URL_FILE`. The role reads devices, tailnets, tailnet DNS and
+   tenant configuration. It writes only `coord_relays` and
+   `coord_gateway_offers`.
 
 ## Consequences
 
@@ -57,6 +73,13 @@ Certificate Transparency logs (ADR-0030 refuses that).
   the `*.<SERVICE_DOMAIN>` key. It does not expose the control key, the admin
   key, or any certificate for tailnet addresses, `APP_DOMAIN`,
   `CONTROL_DOMAIN` or `DERP_DOMAIN`.
+- A leak of the relay's database password lets the holder read device and
+  tailnet data of the coordinator, and replace gateway offers. It cannot
+  change devices, tailnets, keys or configuration, and it cannot read
+  pre-auth keys, sign-ins or the tables of the TS service. A replaced offer
+  makes the holder the gateway of a tailnet that has HTTPS services: it can
+  then reach the published service ports of that tailnet. A compromised relay
+  process has this reach in any case, because it holds the gateway secret.
 - Existing service names `<name>.<BASE_DOMAIN>` stop working with HTTPS. They
   needed the control-plane wildcard, so they cannot stay. The same name is now
   `<name>.<SERVICE_DOMAIN>`. Board links change automatically. Names without
@@ -70,7 +93,4 @@ Certificate Transparency logs (ADR-0030 refuses that).
 
 ## Follow-up
 
-- Least-privilege PostgreSQL role for a relay with a gateway. The relay now
-  uses the owner role of the coordinator tables, because the gateway registers
-  nodes and writes tenant configuration (`scripts/relay-db-role.sql`).
 - A real-client test (ADR-0029) with the new names.
