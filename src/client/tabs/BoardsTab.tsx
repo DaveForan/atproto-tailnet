@@ -100,6 +100,7 @@ export function BoardsTab() {
       <PrivateBoardCard posts={mine("private")} baseDomain={data.mine.baseDomain} serviceDomain={data.mine.serviceDomain} onRemove={remove} busy={busy} />
 
       <MyPublicServicesCard
+        onChanged={() => { void reload(); }}
         posts={mine("public")}
         onRemove={remove}
         busy={busy}

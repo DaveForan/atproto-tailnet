@@ -3,6 +3,7 @@ import { useTenantMutation } from "../../hooks/useMutation";
 import { useToast } from "../../components/Toast";
 import { boardsService, type MyDevice, type NewPost } from "../../services/boards";
 import { AddDeviceInline } from "./AddDeviceInline";
+import { RolePicker } from "./RolePicker";
 
 const EMPTY_POST: NewPost = { board: "private", title: "", description: "", nodeId: "", port: 0, proto: "tcp", name: "", web: false };
 
@@ -49,6 +50,7 @@ export function NewServiceForm({
         description: post.description?.trim() || undefined,
         name: post.name?.trim().toLowerCase() || undefined,
         web: Boolean(post.web && post.proto === "tcp" && post.name),
+        roleIds: post.board === "public" ? (post.roleIds ?? []) : undefined,
       });
       toast(created?.status === "pending" ? "Sent for approval" : "Service added");
       setPost({ ...EMPTY_POST, nodeId: devices[0]?.id ?? "" });
@@ -72,6 +74,13 @@ export function NewServiceForm({
         <option value="private">Private — only my devices</option>
         <option value="public">Public — offer to members (needs approval)</option>
       </select>
+
+      {post.board === "public" && (
+        <>
+          <span className="form-label">Who may connect</span>
+          <RolePicker selected={post.roleIds ?? []} onChange={(roleIds) => set({ roleIds })} />
+        </>
+      )}
 
       <label htmlFor="svc-title">Title</label>
       <input id="svc-title" type="text" maxLength={120} value={post.title} onChange={(e) => set({ title: e.target.value })} required />

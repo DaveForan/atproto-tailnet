@@ -1190,7 +1190,7 @@ button.chip:disabled { cursor: default; opacity: 0.75; }
 
 /* Label and control side by side; stacked on narrow screens */
 .form-grid { display: grid; grid-template-columns: minmax(120px, 180px) minmax(0, 1fr); gap: 12px 16px; align-items: start; }
-.form-grid > label { padding-top: 8px; font-size: 14px; color: var(--text-dim); }
+.form-grid > label, .form-grid > .form-label { padding-top: 8px; font-size: 14px; color: var(--text-dim); }
 .form-grid input[type="text"], .form-grid input[type="number"], .form-grid select, .form-grid textarea { width: 100%; }
 .form-grid textarea { min-height: 72px; resize: vertical; }
 .form-actions { grid-column: 2; display: grid; gap: 6px; justify-items: start; }

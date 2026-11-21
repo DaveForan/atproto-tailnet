@@ -8,7 +8,7 @@ import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { tenants, users, servicePosts, serviceConnections, instanceSettings } from "../db/schema.js";
+import { tenants, users, roles, servicePosts, serviceConnections, instanceSettings } from "../db/schema.js";
 import {
   requireAuth,
   param,
@@ -22,6 +22,7 @@ import { httpsServiceDomain, httpsServicesAvailable } from "../orchestrator/gate
 import { notify, notifyUser } from "../notifications/service.js";
 import { listTenantDevices, listUserDevices } from "../access/devices.js";
 import { syncTenantAccess } from "../access/sync.js";
+import { roleAllows } from "../access/compiler.js";
 import { validateHostname, tenantIdForPublicLink, primaryHostname } from "../orchestrator/hostnames.js";
 import { lintBoardText, parseBoardText, renderBoardHtml } from "../shared/board-text.js";
 import { config } from "../config.js";
@@ -34,6 +35,8 @@ export const boardsRouter = Router({ caseSensitive: true });
 export const MAX_POSTS_PER_MEMBER = 50;
 /** Devices one member may connect to one post. */
 export const MAX_CONNECTED_DEVICES = 32;
+/** Roles one post can be restricted to. */
+export const MAX_POST_ROLES = 20;
 
 const postBody = z.object({
   board: z.enum(["public", "private"]),
@@ -45,6 +48,8 @@ const postBody = z.object({
   name: z.string().optional(),
   /** Serve the name as an HTTPS web address through the gateway (ADR-0030). */
   web: z.boolean().optional(),
+  /** Public board only: the roles whose members may connect. Empty or absent = every member. */
+  roleIds: z.array(z.string().uuid()).max(MAX_POST_ROLES).optional(),
 });
 
 // Zod 4 applies inner defaults through .partial(). Proto drops its default so an absent proto stays absent.
@@ -54,6 +59,19 @@ const postPatch = postBody
   .extend({ proto: z.enum(["tcp", "udp"]).optional() });
 
 type Post = typeof servicePosts.$inferSelect;
+
+/** The role ids without repeats when all are roles of the tailnet; null when one is not. */
+async function tenantRoleIds(tenantId: string, ids: string[]): Promise<string[] | null> {
+  const wanted = [...new Set(ids)];
+  if (wanted.length === 0) return [];
+  const found = await db.select({ id: roles.id }).from(roles).where(and(eq(roles.tenantId, tenantId), inArray(roles.id, wanted)));
+  return found.length === wanted.length ? wanted : null;
+}
+
+/** True when the caller may connect to the post: no role restriction, or a matching role, the author or the originator. */
+function mayConnect(post: Post, userId: string, membership: { roleId: string | null; isOriginator: boolean }): boolean {
+  return roleAllows(post, userId, new Map([[userId, membership]]));
+}
 
 /**
  * Why a post cannot be a web service, or null. A web service needs a name
@@ -144,9 +162,16 @@ boardsRouter.get("/api/tenants/:tenantId/boards/public", requireAuth, tenantGuar
   const deviceById = new Map(devices.map((d) => [d.id, d]));
   const serviceDomain = await httpsServiceDomain();
 
+  // A post for some roles only is not shown to other members. Reviewers of the board see every post.
+  const seesAll =
+    hasPermission(result.membership, result.role, "manage_board", req) ||
+    hasPermission(result.membership, result.role, "approve_services", req);
+  const visible = posts.filter(({ post }) => seesAll || mayConnect(post, userId, result.membership));
+
   res.json({
-    posts: posts.map(({ post, authorHandle, authorName }) => {
-      const mine = connections.filter((c) => c.postId === post.id && c.userId === userId).map((c) => c.nodeId);
+    posts: visible.map(({ post, authorHandle, authorName }) => {
+      const canConnect = mayConnect(post, userId, result.membership);
+      const mine = canConnect ? connections.filter((c) => c.postId === post.id && c.userId === userId).map((c) => c.nodeId) : [];
       const isAuthor = post.authorId === userId;
       const device = deviceById.get(post.nodeId);
       return {
@@ -164,6 +189,8 @@ boardsRouter.get("/api/tenants/:tenantId/boards/public", requireAuth, tenantGuar
         // The web address works on the author's devices and on connected devices
         url: post.web && post.name && serviceDomain && (mine.length > 0 || isAuthor) ? `https://${post.name}.${serviceDomain}` : null,
         deviceOnline: device?.online ?? false,
+        restricted: post.allowedRoleIds.length > 0,
+        canConnect,
         myConnectedDevices: mine,
         connectedDevices: isAuthor ? connections.filter((c) => c.postId === post.id).length : undefined,
         createdAt: post.createdAt,
@@ -262,6 +289,15 @@ boardsRouter.post("/api/tenants/:tenantId/boards/posts", requireAuth, tenantGuar
     res.status(webProblem.status).json({ error: webProblem.error, code: webProblem.code });
     return;
   }
+  if (data.roleIds?.length && data.board !== "public") {
+    res.status(400).json({ error: "Only a public service can be for some roles", code: "roles_need_public" });
+    return;
+  }
+  const allowedRoleIds = await tenantRoleIds(result.tenant.id, data.roleIds ?? []);
+  if (!allowedRoleIds) {
+    res.status(400).json({ error: "One of the roles is not a role of this tailnet", code: "unknown_role" });
+    return;
+  }
 
   // A post is always on a device of its author
   const devices = await listUserDevices(result.tenant, userId).catch(() => null);
@@ -301,6 +337,7 @@ boardsRouter.post("/api/tenants/:tenantId/boards/posts", requireAuth, tenantGuar
         proto: data.proto,
         port: data.port,
         web: data.web ?? false,
+        allowedRoleIds,
         status: approved ? "approved" : "pending",
         reviewedById: approved && data.board === "public" ? userId : null,
         reviewedAt: approved && data.board === "public" ? new Date() : null,
@@ -377,6 +414,18 @@ boardsRouter.patch("/api/tenants/:tenantId/boards/posts/:postId", requireAuth, t
   if (data.port !== undefined) updates.port = data.port;
   if (data.proto !== undefined) updates.proto = data.proto;
   if (data.web !== undefined) updates.web = data.web;
+  if (data.roleIds !== undefined) {
+    if (data.roleIds.length > 0 && post.board !== "public") {
+      res.status(400).json({ error: "Only a public service can be for some roles", code: "roles_need_public" });
+      return;
+    }
+    const allowed = await tenantRoleIds(result.tenant.id, data.roleIds);
+    if (!allowed) {
+      res.status(400).json({ error: "One of the roles is not a role of this tailnet", code: "unknown_role" });
+      return;
+    }
+    updates.allowedRoleIds = allowed;
+  }
   // The rules of a web service hold for the post as it will be after this change
   if (updates.web ?? post.web) {
     const webProblem = await webServiceProblem(
@@ -413,7 +462,8 @@ boardsRouter.patch("/api/tenants/:tenantId/boards/posts/:postId", requireAuth, t
   try {
     const [updated] = await db.update(servicePosts).set(updates).where(eq(servicePosts.id, post.id)).returning();
     const namesChanged = updated.name !== post.name || (updated.name !== null && updated.nodeId !== post.nodeId);
-    if ((targetChanged && post.board === "public") || namesChanged || backToReview) {
+    const rolesChanged = JSON.stringify([...updated.allowedRoleIds].sort()) !== JSON.stringify([...post.allowedRoleIds].sort());
+    if ((targetChanged && post.board === "public") || namesChanged || backToReview || rolesChanged) {
       await syncTenantAccess(result.tenant.id);
     }
     if (backToReview || (targetChanged && post.board === "public" && updated.status === "pending")) {
@@ -547,6 +597,11 @@ boardsRouter.put("/api/tenants/:tenantId/boards/posts/:postId/connections", requ
   );
   if (!parsed) return;
   const wanted = [...new Set(parsed.data.nodeIds)];
+  // The same answer as for a post that does not exist: a restricted post is not shown to other roles
+  if (wanted.length > 0 && !mayConnect(post, userId, result.membership)) {
+    res.status(404).json({ error: "Post not found" });
+    return;
+  }
   if (wanted.length > 0 && isLockedDown(result.tenant)) {
     res.status(403).json({ error: "Tenant is in lockdown mode" });
     return;

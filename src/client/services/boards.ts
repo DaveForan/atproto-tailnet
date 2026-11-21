@@ -22,6 +22,10 @@ export interface PublicPost {
   /** The HTTPS address, when this is a web service that this viewer can open. */
   url: string | null;
   deviceOnline: boolean;
+  /** Only members of some roles may connect. */
+  restricted: boolean;
+  /** False for a reviewer who sees a post that their role may not connect to. */
+  canConnect: boolean;
   myConnectedDevices: string[];
   connectedDevices?: number;
 }
@@ -36,6 +40,8 @@ export interface MyPost {
   proto: "tcp" | "udp";
   port: number;
   web: boolean;
+  /** Roles that may connect. Empty = every member. */
+  allowedRoleIds: string[];
   status: "pending" | "approved" | "rejected";
   rejectReason: string | null;
   device: MyDevice | null;
@@ -55,6 +61,8 @@ export interface NewPost {
   proto: "tcp" | "udp";
   name?: string;
   web?: boolean;
+  /** Public board only: roles that may connect. Empty = every member. */
+  roleIds?: string[];
 }
 
 const json = (method: string, body?: unknown): RequestInit => ({
@@ -69,6 +77,7 @@ export const boardsService = {
   pending: (tid: string) => tenantApi<{ posts: PendingPost[] }>(tid, "/boards/pending"),
   create: (tid: string, post: NewPost) => tenantApi<MyPost>(tid, "/boards/posts", json("POST", post)),
   remove: (tid: string, postId: string) => tenantApi(tid, `/boards/posts/${postId}`, json("DELETE")),
+  setRoles: (tid: string, postId: string, roleIds: string[]) => tenantApi<MyPost>(tid, `/boards/posts/${postId}`, json("PATCH", { roleIds })),
   approve: (tid: string, postId: string) => tenantApi(tid, `/boards/posts/${postId}/approve`, json("POST", {})),
   reject: (tid: string, postId: string, reason: string) =>
     tenantApi(tid, `/boards/posts/${postId}/reject`, json("POST", { reason })),

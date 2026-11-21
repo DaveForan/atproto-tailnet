@@ -100,6 +100,43 @@ export function findStaleAccess(input: Pick<CompileInput, "posts" | "connections
   return stale;
 }
 
+/** A member's role, for posts that only some roles may connect to. */
+export interface MemberRole {
+  roleId: string | null;
+  isOriginator: boolean;
+}
+
+/** True when `userId` may connect to a post with this role restriction. The author and the originator always may. */
+export function roleAllows(
+  post: { authorId?: string; allowedRoleIds?: string[] | null },
+  userId: string | undefined,
+  members: ReadonlyMap<string, MemberRole>,
+): boolean {
+  const allowed = post.allowedRoleIds ?? [];
+  if (allowed.length === 0) return true;
+  if (userId === undefined) return false;
+  if (userId === post.authorId) return true;
+  const member = members.get(userId);
+  if (!member) return false;
+  return member.isOriginator || (member.roleId !== null && allowed.includes(member.roleId));
+}
+
+/**
+ * Drops the connections of members whose role may not connect to the post (any more).
+ * The rows stay in the database; they open nothing while the role does not match.
+ */
+export function connectionsAllowedByRole<C extends { postId: string; userId?: string }>(
+  posts: Array<{ id: string; authorId?: string; allowedRoleIds?: string[] | null }>,
+  connections: C[],
+  members: ReadonlyMap<string, MemberRole>,
+): C[] {
+  const byId = new Map(posts.map((p) => [p.id, p]));
+  return connections.filter((c) => {
+    const post = byId.get(c.postId);
+    return post !== undefined && roleAllows(post, c.userId, members);
+  });
+}
+
 /** True when a share is active and its expiry has not passed at `now`. */
 export function shareIsLive(share: { status: string; expiresAt: Date | null }, now: Date): boolean {
   return share.status === "active" && !(share.expiresAt && share.expiresAt.getTime() <= now.getTime());

@@ -24,7 +24,7 @@ import { logAudit } from "../audit/log.js";
 import { notifyUser } from "../notifications/service.js";
 import { listUserDevices, listTenantDevices } from "../access/devices.js";
 import { deviceReach } from "../access/reach.js";
-import { syncTenantAccess } from "../access/sync.js";
+import { syncTenantAccess, allowedConnections } from "../access/sync.js";
 import { stepUpForSession } from "../auth/step-up.js";
 import { parseBody } from "./validation.js";
 
@@ -591,9 +591,10 @@ sharingRouter.get("/api/tenants/:tenantId/my-devices/access", requireAuth, membe
     .from(servicePosts)
     .where(and(eq(servicePosts.tenantId, tenantId), eq(servicePosts.authorId, m.userId), eq(servicePosts.board, "public")));
   const approved = posts.filter((p) => p.status === "approved").map((p) => p.id);
-  const connections = approved.length
+  const connected = approved.length
     ? await db.select().from(serviceConnections).where(inArray(serviceConnections.postId, approved))
     : [];
+  const connections = await allowedConnections(tenantId, posts, connected);
   const shares = await db
     .select()
     .from(deviceShares)

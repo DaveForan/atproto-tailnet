@@ -46,6 +46,8 @@ export const servicePosts = pgTable(
     port: integer("port").notNull(),
     /** Served by the gateway as `https://<name>.<BASE_DOMAIN>` (ADR-0030). */
     web: boolean("web").notNull().default(false),
+    /** Roles whose members may connect to a public post. Empty means every member. */
+    allowedRoleIds: jsonb("allowed_role_ids").notNull().$type<string[]>().default([]),
     status: text("status").notNull().$type<"pending" | "approved" | "rejected" | "removed">().default("pending"),
     rejectReason: text("reject_reason"),
     reviewedById: uuid("reviewed_by_id").references(() => users.id),

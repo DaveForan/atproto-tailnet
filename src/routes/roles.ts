@@ -15,6 +15,7 @@ import { logAudit } from "../audit/log.js";
 import { stepUpForSession } from "../auth/step-up.js";
 import { permissionsSchema } from "../members/permissions.js";
 import { parseBody } from "./validation.js";
+import { syncTenantAccess } from "../access/sync.js";
 
 export const rolesRouter = Router({ caseSensitive: true });
 
@@ -272,6 +273,8 @@ rolesRouter.delete(
       targetId: roleId,
       metadata: { name: targetRole.name },
     });
+    // Service posts for this role only: its members lose that access
+    await syncTenantAccess(tenantId);
 
     res.json({ status: "deleted" });
   },
@@ -362,6 +365,8 @@ rolesRouter.put(
       targetId: targetUserId,
       metadata: { roleId: parsed.data.roleId, roleName: targetRole.name },
     });
+    // Service posts can be for some roles only: the new role decides what the member's devices reach
+    await syncTenantAccess(tenantId);
 
     res.json({ userId: targetUserId, roleId: parsed.data.roleId, roleName: targetRole.name });
   },

@@ -61,6 +61,7 @@ export function PublicPostCard({ post, devices, onChanged }: { post: PublicPost;
         <span className="mono text-sm">
           {post.proto} {post.port}
         </span>
+        {post.restricted && <Badge variant="pending">some roles only</Badge>}
         {connected && <Badge variant="running">connected</Badge>}
         {!post.deviceOnline && <Badge variant="stopped">offline</Badge>}
       </div>
@@ -80,7 +81,8 @@ export function PublicPostCard({ post, devices, onChanged }: { post: PublicPost;
           </p>
         )
       )}
-      {!post.isAuthor &&
+      {!post.isAuthor && !post.canConnect && <p className="help-text">Your role cannot connect to this service. You see it because you review the board.</p>}
+      {!post.isAuthor && post.canConnect &&
         (open ? (
           <div className="form-stack">
             <DevicePicker devices={devices} selected={selected} onChange={setSelected} idPrefix={`post-${post.id}`} />

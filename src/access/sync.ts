@@ -6,14 +6,16 @@
 
 import { and, eq, inArray, lt, ne } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { tenants, servicePosts, serviceConnections, deviceShares } from "../db/schema.js";
+import { tenants, servicePosts, serviceConnections, deviceShares, memberships } from "../db/schema.js";
 import { config } from "../config.js";
 import { getCoordinatorClient } from "../orchestrator/control-client.js";
 import { logger } from "../logger.js";
 import {
   compileAccess,
   compileDns,
+  connectionsAllowedByRole,
   findStaleAccess,
+  type MemberRole,
   type AccessMode,
   type CoordinatorAccess,
   type CoordinatorDns,
@@ -102,6 +104,25 @@ export async function closeStaleAccess(tenantId: string, nodeOwners: ReadonlyMap
   return stale;
 }
 
+/** The role of each member of a tailnet, for role-restricted service posts. */
+export async function loadMemberRoles(tenantId: string): Promise<Map<string, MemberRole>> {
+  const rows = await db
+    .select({ userId: memberships.userId, roleId: memberships.roleId, isOriginator: memberships.isOriginator })
+    .from(memberships)
+    .where(eq(memberships.tenantId, tenantId));
+  return new Map(rows.map((r) => [r.userId, { roleId: r.roleId, isOriginator: r.isOriginator }]));
+}
+
+/** Connections that the roles of the members still allow. Reads the roles only when a post is for some roles. */
+export async function allowedConnections<C extends { postId: string; userId?: string }>(
+  tenantId: string,
+  posts: Array<{ id: string; authorId?: string; allowedRoleIds?: string[] | null }>,
+  connections: C[],
+): Promise<C[]> {
+  if (!posts.some((p) => (p.allowedRoleIds ?? []).length > 0)) return connections;
+  return connectionsAllowedByRole(posts, connections, await loadMemberRoles(tenantId));
+}
+
 /** Compile the current access rules of a tailnet from the database. */
 export async function loadTenantAccess(
   tenantId: string,
@@ -111,9 +132,10 @@ export async function loadTenantAccess(
   if (mode !== "member") return { mode: "open", rules: [] };
   const posts = await db.select().from(servicePosts).where(eq(servicePosts.tenantId, tenantId));
   const postIds = posts.filter((p) => p.board === "public" && p.status === "approved").map((p) => p.id);
-  const connections = postIds.length
+  const connected = postIds.length
     ? await db.select().from(serviceConnections).where(inArray(serviceConnections.postId, postIds))
     : [];
+  const connections = await allowedConnections(tenantId, posts, connected);
   const shares = await db.select().from(deviceShares).where(eq(deviceShares.tenantId, tenantId));
   return compileAccess({ mode, posts, connections, shares, nodeOwners });
 }
@@ -126,9 +148,10 @@ export async function loadTenantDns(
   const posts = await db.select().from(servicePosts).where(eq(servicePosts.tenantId, tenant.id));
   const named = posts.filter((p) => p.name && p.status !== "removed");
   const publicIds = named.filter((p) => p.board === "public" && p.status === "approved").map((p) => p.id);
-  const connections = publicIds.length
+  const connected = publicIds.length
     ? await db.select().from(serviceConnections).where(inArray(serviceConnections.postId, publicIds))
     : [];
+  const connections = await allowedConnections(tenant.id, named, connected);
   return compileDns({
     baseDomain: config.baseDomain,
     tailnetLabel: await primaryHostname(tenant.id, tenant.slug),

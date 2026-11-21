@@ -2,6 +2,7 @@ import { Card } from "../../components/Card";
 import { Badge } from "../../components/Badge";
 import { EmptyState } from "../../components/EmptyState";
 import type { MyPost } from "../../services/boards";
+import { PostRoles } from "./RolePicker";
 
 export function PrivateBoardCard({
   posts,
@@ -52,11 +53,13 @@ export function MyPublicServicesCard({
   posts,
   onRemove,
   onDisconnect,
+  onChanged,
   busy = false,
 }: {
   posts: MyPost[];
   onRemove: (postId: string) => void;
   onDisconnect: (postId: string, userId: string) => void;
+  onChanged: () => void;
   busy?: boolean;
 }) {
   return (
@@ -74,6 +77,7 @@ export function MyPublicServicesCard({
               </div>
               {p.status === "rejected" && p.rejectReason && <p className="help-text">Reason: {p.rejectReason}</p>}
               <p className="text-dim text-sm">on {p.device?.name ?? "a device that is gone"}</p>
+              <PostRoles post={p} onChanged={onChanged} />
               {p.connections && p.connections.length > 0 && (
                 <ul className="item-list">
                   {p.connections.map((c) => (

@@ -1,6 +1,8 @@
 /** Access rule compilation (ADR-0036): posts, connections and shares → coordinator rules. */
 import { describe, it, expect } from "vitest";
 import {
+  connectionsAllowedByRole,
+  roleAllows,
   compileAccess,
   compileDns,
   findStaleAccess,
@@ -333,5 +335,43 @@ describe("deviceReach", () => {
       expect([...fromReach].sort()).toEqual([...fromRules].sort());
       expect(fromRules.size).toBeGreaterThan(0);
     }
+  });
+});
+
+describe("posts for some roles", () => {
+  const members = new Map([
+    ["u-alice", { roleId: "r-admin", isOriginator: false }],
+    ["u-bob", { roleId: "r-kitchen", isOriginator: false }],
+    ["u-carol", { roleId: "r-guest", isOriginator: false }],
+    ["u-owner", { roleId: null, isOriginator: true }],
+  ]);
+  const restricted = { id: "p1", authorId: "u-alice", allowedRoleIds: ["r-kitchen"] };
+
+  it("allows the role, the author and the originator; nobody else", () => {
+    expect(roleAllows(restricted, "u-bob", members)).toBe(true);
+    expect(roleAllows(restricted, "u-alice", members)).toBe(true);
+    expect(roleAllows(restricted, "u-owner", members)).toBe(true);
+    expect(roleAllows(restricted, "u-carol", members)).toBe(false);
+    expect(roleAllows(restricted, "u-gone", members)).toBe(false);
+    expect(roleAllows(restricted, undefined, members)).toBe(false);
+    expect(roleAllows({ allowedRoleIds: [] }, "u-carol", members)).toBe(true);
+    expect(roleAllows({}, "u-gone", members)).toBe(true);
+  });
+
+  it("a connection of a member who lost the role opens nothing", () => {
+    const posts = [post({ id: "p1", authorId: "u-alice" }), post({ id: "p2", authorId: "u-alice", port: 4000 })];
+    const connections = [
+      { postId: "p1", nodeId: "20", userId: "u-bob" },
+      { postId: "p1", nodeId: "30", userId: "u-carol" },
+      { postId: "p2", nodeId: "30", userId: "u-carol" },
+      { postId: "gone", nodeId: "30", userId: "u-carol" },
+    ];
+    const kept = connectionsAllowedByRole([{ ...posts[0], allowedRoleIds: ["r-kitchen"] }, posts[1]], connections, members);
+    expect(kept.map((c) => `${c.postId}:${c.nodeId}`)).toEqual(["p1:20", "p2:30"]);
+    const rules = compileAccess(base({ posts, connections: kept })).rules;
+    expect(rules).toEqual([
+      { src_nodes: [20], dst_node: 10, ports: [{ proto: "tcp", first: 3000, last: 3000 }] },
+      { src_nodes: [30], dst_node: 10, ports: [{ proto: "tcp", first: 4000, last: 4000 }] },
+    ]);
   });
 });

@@ -74,7 +74,7 @@ const ctx = (opts: { originator?: boolean; perms?: string[]; lockdown?: boolean;
   },
 ];
 const post = (over: Record<string, unknown> = {}) => ({
-  id: POST, tenantId: T, authorId: ALICE, board: "public", status: "approved", title: "App", nodeId: "10", proto: "tcp", port: 3000, ...over,
+  id: POST, tenantId: T, authorId: ALICE, board: "public", status: "approved", title: "App", nodeId: "10", proto: "tcp", port: 3000, allowedRoleIds: [], ...over,
 });
 
 const app = express();
@@ -270,6 +270,28 @@ describe("Connect", () => {
     expect(r.status).toBe(200);
     expect(insertOf("service_connections")).toEqual([{ postId: POST, userId: BOB, nodeId: "20" }]);
     expect(syncTenantAccess).toHaveBeenCalledWith(T);
+  });
+
+  it("a post for some roles is closed to members of other roles, and gives the answer of an unknown post", async () => {
+    const ROLE = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    const withRole = (roleId: string | null, originator = false) => {
+      const c = ctx({ originator });
+      (c[0].membership as Record<string, unknown>).roleId = roleId;
+      return c;
+    };
+    results.push(withRole("dddddddd-dddd-4ddd-8ddd-dddddddddddd"), [post({ allowedRoleIds: [ROLE] })]);
+    const refused = await call("PUT", `/boards/posts/${POST}/connections`, { nodeIds: ["20"] });
+    expect(refused.status).toBe(404);
+    expect(insertOf("service_connections")).toBeUndefined();
+
+    results.push(withRole(ROLE), [post({ allowedRoleIds: [ROLE] })]);
+    expect((await call("PUT", `/boards/posts/${POST}/connections`, { nodeIds: ["20"] })).status).toBe(200);
+    results.push(withRole(null, true), [post({ allowedRoleIds: [ROLE] })]);
+    expect((await call("PUT", `/boards/posts/${POST}/connections`, { nodeIds: ["20"] })).status).toBe(200);
+
+    // Disconnecting stays possible after the role was lost
+    results.push(withRole(null), [post({ allowedRoleIds: [ROLE] })]);
+    expect((await call("PUT", `/boards/posts/${POST}/connections`, { nodeIds: [] })).status).toBe(200);
   });
 
   it("refuses someone else's device", async () => {

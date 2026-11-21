@@ -281,6 +281,13 @@
       "when": 1794028818003,
       "tag": "0039_audit_security_events",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1794115218003,
+      "tag": "0040_service_post_roles",
+      "breakpoints": true
     }
   ]
 }
