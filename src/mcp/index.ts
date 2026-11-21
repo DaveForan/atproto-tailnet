@@ -1,7 +1,6 @@
 /**
  * @module mcp
- * Process-wide routers for the remote MCP server and its OAuth endpoints,
- * mounted by src/index.ts.
+ * Process-wide routers for the remote MCP server and its OAuth endpoints, mounted by src/index.ts.
  */
 import { config } from "../config.js";
 import { oauthProvider, MCP_RESOURCE_URL } from "../oauth/index.js";

@@ -1,5 +1,4 @@
 /**
- * @module index
  * Entry point: middleware, routers, background loops and graceful shutdown.
  * `/api/*` order: headers, parsers, session, lifetime, CSRF, auth, rate limits, agent token, scope, routes.
  */
@@ -55,12 +54,10 @@ app.disable("x-powered-by");
 // Path-prefix middlewares (CSRF, enrolment gate, limits) assume one spelling of each route.
 app.set("case sensitive routing", true);
 
-// ── Internal endpoint for Caddy on-demand TLS ───────────────────────
-// Caddy calls this before issuing a certificate for a hostname.
-// Returns 200 if the hostname belongs to a real tenant, 403 otherwise.
-// Must be before all middleware (no session, no CSRF, no rate limiting).
+// Caddy on-demand TLS check: 200 for a real tenant hostname, else 403.
+// It must come before all middleware (no session, CSRF, or rate limit).
 app.get("/internal/tls-check", async (req: Request, res: Response) => {
-  // Without Caddy nothing asks this, and the edge proxy may not block the path
+  // Without Caddy, nothing calls this, and the edge proxy may not block the path
   if (!config.caddyEnabled) {
     res.status(404).end();
     return;
@@ -83,9 +80,8 @@ app.get("/internal/tls-check", async (req: Request, res: Response) => {
   }
 });
 
-// ── Security headers ──────────────────────────────────────────────────
-// Behind Caddy, req.secure / req.ip come from X-Forwarded-*; without this the
-// secure session cookie is never sent and per-IP rate limits see one client.
+// Behind Caddy, req.secure and req.ip come from X-Forwarded-*.
+// Without this, the secure cookie is never sent and per-IP limits see one client.
 app.set("trust proxy", config.trustProxy);
 
 app.use(securityHeaders(config.publicUrl, isLoopbackDeployment));
@@ -127,9 +123,8 @@ const authLimiter = rateLimit({
 /** Requests per minute for callers without a dashboard session, per address. */
 const API_LIMIT_PER_ADDRESS = 60;
 /**
- * Requests per minute for one signed-in user. One page of the dashboard makes
- * about ten requests, so the per-address number is too low for normal use, and
- * people behind one address (a home, an office) must not share one budget.
+ * Requests per minute for one signed-in user. One dashboard page makes about ten requests.
+ * Users behind one shared address must not share one budget.
  */
 const API_LIMIT_PER_USER = 300;
 
@@ -170,7 +165,6 @@ app.use(enforceSessionLifetime);
 // After a recovery-code sign-in, only device enrolment is allowed (ADR-0035)
 app.use(enforceDeviceEnrollment);
 
-// ── CSRF token endpoint ───────────────────────────────────────────────
 app.get("/api/csrf-token", (req: Request, res: Response) => {
   if (!req.session.userId) {
     res.status(401).json({ error: "Not authenticated" });
@@ -188,24 +182,23 @@ import path from "node:path";
 import { startLeaderElection, stopLeaderElection } from "./orchestrator/leader.js";
 app.use(express.static(path.join(import.meta.dirname, "..", "public")));
 app.use(dashboardRouter);
-// Remote MCP server + its OAuth endpoints (own rate limits; before the
-// /.well-known auth limiter so connector discovery is not throttled at 10/min)
+// MCP and its OAuth endpoints have their own limits. They come before the
+// /.well-known auth limiter so connector discovery is not throttled at 10/min.
 app.use(oauthRouter);
 app.use(mcpRouter);
 app.use("/auth", authLimiter);
 app.use("/.well-known", authLimiter);
 app.use(authRouter);
 
-// Broker-to-broker CFP messages (ADR-0016): authenticated by DID signature,
-// not sessions or agent tokens. Keepalives for every session arrive from the
-// peer broker's single address, so they get their own, higher limit.
+// Broker-to-broker CFP messages (ADR-0016) use DID signatures, not sessions.
+// All keepalives come from one peer address, so they get a higher limit.
 if (!config.federationEnabled) {
   app.use(
     [
       "/api/federation",
       "/api/tenants/:tenantId/federation",
       "/api/tenants/:tenantId/traversal-policy",
-      // Federation discovery (posture, region) — collective DID docs stay served
+      // Federation discovery only. Collective DID documents stay available.
       "/.well-known/collective-federation",
     ],
     (_req: Request, res: Response) => {
@@ -218,11 +211,11 @@ app.use(federationMessagesRouter);
 
 app.use("/collective", apiLimiter);
 app.use("/api", apiLimiter);
-app.use(instanceRouter); // public GET /api/instance — before Bearer resolution
+app.use(instanceRouter); // Public; must come before Bearer resolution
 app.use(resolveAgentToken);
 app.use(enforceAgentScope);
-// Disabled users (any credential) and suspended tenants (members) — keep
-// after every credential resolver so it sees the authenticated user
+// Blocks disabled users and suspended tenants. It must come after every
+// credential resolver so that it sees the authenticated user.
 app.use(enforceOperatorState);
 app.use(operatorRouter);
 app.use(mcpConnectionsRouter);

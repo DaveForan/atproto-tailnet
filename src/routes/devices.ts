@@ -45,10 +45,6 @@ import {
 import type { ControlPreAuthKeyInfo } from "../orchestrator/control-client.js";
 import { parseBody } from "./validation.js";
 
-/**
- * Router for device listing, auth-key generation, node removal,
- * member listing, and member removal with cascading cleanup.
- */
 export const devicesRouter = Router({ caseSensitive: true });
 
 const authKeyBody = z.object({
@@ -302,7 +298,6 @@ devicesRouter.delete(
   },
 );
 
-// ── Issued auth keys ────────────────────────────────────────────────
 
 /** Untracked control-plane keys (relay keys, keys from before tracking) use this id prefix. */
 const CONTROL_KEY_PREFIX = "cp:";

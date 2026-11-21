@@ -1,12 +1,8 @@
 /**
  * @module orchestrator/monitor
  * Background health-check and hibernation loop.
- * Headscale mode: probes each running tenant container via REST and attempts
- * a Docker start on failure (marking the tenant "error" if that fails).
- * Coordinator mode: probes the shared coordinator once per sweep (outages are
- * logged, never written to tenant status) and resyncs in-memory coordinator
- * state when it becomes healthy.
- * Also stops idle tenants whose lastActivityAt exceeds hibernateAfterDays.
+ * Headscale mode restarts failed containers. Coordinator mode probes once per sweep.
+ * A coordinator outage never changes tenant status.
  */
 
 import { eq, and, isNotNull, gt, inArray, sql } from "drizzle-orm";
@@ -26,15 +22,10 @@ import { logger } from "../logger.js";
 import { isLeader } from "./leader.js";
 import { notifyRefusedMachines } from "./machine-refusals.js";
 
-/** Boot id of the coordinator process whose in-memory state is in sync (null = not synced). */
+/** Boot id of the coordinator whose in-memory state is in sync; null when not synced. */
 let syncedBootId: string | null = null;
-/** Consecutive failed probes of the shared coordinator. */
 let coordinatorFailCount = 0;
 
-/**
- * Run a single health-check sweep across all running tenants.
- * Exported for the per-tenant endpoint to reuse (and for testability).
- */
 export async function checkAllTenants(): Promise<void> {
   if (useCoordinator) {
     await checkCoordinator();
@@ -65,8 +56,7 @@ export async function checkAllTenants(): Promise<void> {
     logger.warn({ tenantSlug: tenant.slug }, "health check failed, attempting restart");
 
     try {
-      // startInstance treats Docker's 304 "already started" as success, so a
-      // running-but-unresponsive container is not flipped to error here.
+      // Docker's 304 "already started" counts as success, so a hung container stays "running"
       await startInstance(tenant.containerId!);
       logger.info({ tenantSlug: tenant.slug }, "start issued (or container already running)");
     } catch (err) {
@@ -80,12 +70,8 @@ export async function checkAllTenants(): Promise<void> {
 }
 
 /**
- * Coordinator mode: probe the single shared coordinator. Its health is not a
- * per-tenant property, so an outage is only logged — tenant status is never
- * flipped to "error" by it. When health transitions to healthy (including
- * the first successful probe after this service starts), per-tenant state
- * the coordinator keeps only in memory is pushed back and tenants left in
- * "error" by older monitor versions are recovered.
+ * Coordinator health is not per tenant, so an outage is only logged.
+ * On a new boot id it pushes back the state the coordinator keeps only in memory.
  */
 async function checkCoordinator(): Promise<void> {
   if (!config.coordinatorUrl) return;
@@ -101,7 +87,7 @@ async function checkCoordinator(): Promise<void> {
   }
 
   coordinatorFailCount = 0;
-  // A changed boot id means the coordinator restarted (even between sweeps) and lost its in-memory state.
+  // A changed boot id means a restart, even between sweeps, so in-memory state is lost
   if (bootId === syncedBootId) return;
 
   logger.info({ bootId }, "coordinator (re)started or recovered — resyncing tenant state");
@@ -111,11 +97,8 @@ async function checkCoordinator(): Promise<void> {
 }
 
 /**
- * Pushes the DB-held per-tenant config the coordinator keeps only in memory
- * (ACL policy, route auto-approvers, custom DERP regions + public-relay toggle) and recovers tenants
- * that the coordinator still knows about but that are marked "error".
- *
- * @returns true when every tenant was resynced successfully.
+ * Pushes the per-tenant config that the coordinator keeps only in memory.
+ * It also recovers "error" tenants that the coordinator still has. Returns true when all succeed.
  */
 export async function resyncCoordinatorState(): Promise<boolean> {
   if (!config.coordinatorUrl) return true;
@@ -143,8 +126,7 @@ export async function resyncCoordinatorState(): Promise<boolean> {
     const client = getCoordinatorClient(t);
     try {
       if (t.status === "error") {
-        // Only recover tenants the coordinator actually has; a provisioning
-        // failure can leave a coordinatorTenantId whose tenant was rolled back.
+        // A failed provisioning can leave a coordinatorTenantId whose tenant was rolled back
         if (!(await client.tenantExists())) continue;
         await db
           .update(tenants)
@@ -162,8 +144,7 @@ export async function resyncCoordinatorState(): Promise<boolean> {
       }
 
       await pushTenantIdentity(t.id, t.coordinatorTenantId!);
-      // Access rules and names are stored by the coordinator; this covers a
-      // first start after an upgrade and a change that failed to push
+      // The coordinator stores access rules, but a past push can have failed
       if (!(await syncTenantAccess(t.id))) allOk = false;
 
       const regions = (t.customDerpRegions ?? []) as DerpRegion[];
@@ -183,10 +164,7 @@ export async function resyncCoordinatorState(): Promise<boolean> {
   return allOk;
 }
 
-/**
- * Hibernate tenants whose lastActivityAt exceeds their hibernateAfterDays threshold.
- * Only considers running tenants with hibernateAfterDays > 0.
- */
+/** Stops running tenants idle longer than `hibernateAfterDays`; 0 disables it. */
 export async function hibernateIdleTenants(): Promise<void> {
   const filters = [
     eq(tenants.status, "running"),
@@ -244,10 +222,6 @@ export async function hibernateIdleTenants(): Promise<void> {
   }
 }
 
-/**
- * Check the health of a single tenant's Headscale instance.
- * Returns a status object suitable for the per-tenant health endpoint.
- */
 export async function checkTenantHealth(
   tenant: { port: number; apiKey: string; coordinatorTenantId?: string | null },
 ): Promise<{ healthy: boolean }> {
@@ -256,10 +230,6 @@ export async function checkTenantHealth(
   return { healthy };
 }
 
-/**
- * Record a usage snapshot for each running tenant.
- * Counts devices (from Headscale API) and members (from DB).
- */
 export async function recordUsageSnapshots(): Promise<void> {
   const usageWhere = useCoordinator
     ? eq(tenants.status, "running")
@@ -301,7 +271,7 @@ export async function recordUsageSnapshots(): Promise<void> {
 
 let monitorTimer: ReturnType<typeof setInterval> | null = null;
 
-/** Start the background health-check interval. Call once after server listen. */
+/** Call once after the server listens. */
 export function startHealthMonitor(intervalMs = 60_000): void {
   if (monitorTimer) return;
   logger.info({ intervalMs }, "starting health monitor");
@@ -310,7 +280,6 @@ export function startHealthMonitor(intervalMs = 60_000): void {
   monitorTimer = setInterval(async () => {
     // With several replicas, only the leader does the sweep (ADR-0034)
     if (!isLeader()) return;
-    // Never start a sweep while the previous one is still running
     if (sweeping) {
       logger.warn("previous health sweep still running — skipping tick");
       return;
@@ -320,7 +289,7 @@ export function startHealthMonitor(intervalMs = 60_000): void {
     try {
       await checkAllTenants();
       await hibernateIdleTenants();
-      // Caddy drops admin-API routes when it restarts from its Caddyfile.
+      // Caddy drops admin-API routes when it restarts from its Caddyfile
       await syncTenantRoutes().catch((err) =>
         logger.warn({ err }, "failed to sync Caddy routes"),
       );
@@ -329,13 +298,13 @@ export function startHealthMonitor(intervalMs = 60_000): void {
           logger.warn({ err }, "failed to notify about refused machines"),
         );
       }
-      // Every tick: an expired share must stop working within a minute.
+      // An expired share must stop working within a minute
       await endExpiredShares().catch((err) =>
         logger.warn({ err }, "failed to end expired device shares"),
       );
       if (tick % 5 === 0) {
         if (useCoordinator) {
-          // New members / renamed handles (coordinator only notifies clients on change)
+          // Picks up new members and renamed handles
           await syncAllTenantIdentities().catch((err) =>
             logger.warn({ err }, "failed to sync tenant identities"),
           );
@@ -356,7 +325,7 @@ export function startHealthMonitor(intervalMs = 60_000): void {
   }, intervalMs);
 }
 
-/** Stop the health-check interval; a sweep already running finishes on its own. */
+/** A sweep that is already running finishes on its own. */
 export function stopHealthMonitor(): void {
   if (monitorTimer) clearInterval(monitorTimer);
   monitorTimer = null;

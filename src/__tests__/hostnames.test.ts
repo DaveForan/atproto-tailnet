@@ -1,10 +1,7 @@
 /**
- * Tailnet public addresses: validation, availability (other tailnets' names,
- * internal slugs, quarantine), primary changes, Caddy routing of aliases and
- * the originator-only API.
- *
- * DB is a chainable mock: each awaited query resolves to the next `results`
- * entry; `.set()/.values()` payloads and deletes are recorded in `writes`.
+ * Tailnet public addresses: validation, availability, primary changes, Caddy aliases and the API.
+ * The DB is a chainable mock: each awaited query resolves to the next `results` entry.
+ * `.set()/.values()` payloads and deletes are recorded in `writes`.
  */
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import type { AddressInfo } from "node:net";

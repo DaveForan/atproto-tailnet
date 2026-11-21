@@ -1,7 +1,4 @@
-/**
- * @module credentials/types
- * Types for the AT Proto identity passport system (ADR-0012).
- */
+/** AT Proto identity passport types (ADR-0012). */
 
 export interface CredentialSubject {
   id: string; // user DID

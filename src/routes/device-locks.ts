@@ -132,8 +132,8 @@ deviceLocksRouter.delete(
   "/api/tenants/:tenantId/device-locks",
   requireAuth,
   stepUpForSession,
-  // Removing a lock — including your own — requires lock_devices; otherwise
-  // a locked member could simply unlock themselves.
+  // Removing any lock, even your own, needs lock_devices.
+  // Otherwise a locked member could unlock themselves.
   tenantGuard({ permission: "lock_devices" }),
   async (req, res) => {
     const tenantId = param(req, "tenantId");

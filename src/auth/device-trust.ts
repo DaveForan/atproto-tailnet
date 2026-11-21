@@ -1,11 +1,7 @@
 /**
  * @module auth/device-trust
- * Cryptography and rules of device-bound sign-in (ADR-0035).
- *
- * A trusted device holds an ECDSA P-256 key that its browser will use but not
- * reveal. To prove itself it signs a random, single-use challenge; the server
- * checks the signature against the stored public key. No shared secret exists,
- * so a copy of the database does not let anyone impersonate a device.
+ * Device-bound sign-in (ADR-0035): a non-extractable P-256 browser key signs single-use challenges.
+ * Security: no shared secret exists, so a database copy cannot impersonate a device.
  */
 
 import { createHash, createPublicKey, randomBytes, randomInt, timingSafeEqual, verify } from "node:crypto";
@@ -118,7 +114,6 @@ export function cleanDeviceName(input: unknown): string | null {
   return name.length > 0 ? name : null;
 }
 
-// ── Device cookie ───────────────────────────────────────────────────────
 
 /** Lifetime of the device cookie (browsers cap cookies at about 400 days). */
 export const DEVICE_COOKIE_MAX_AGE_MS = 400 * 24 * 60 * 60 * 1000;
@@ -154,15 +149,12 @@ export function deviceCookieMatches(storedHash: string | null, token: string | n
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-// ── Device profile ──────────────────────────────────────────────────────
 
 export type DeviceProfile = Record<string, string>;
 
 /**
- * Coarse traits of a browser: system, browser family, and whether it is a
- * touch device. Versions are left out on purpose, because they change with
- * every update. The profile never decides access: it only lets the service
- * warn the user when a trusted key appears on a machine that looks different.
+ * Coarse browser traits: system, browser family, touch. Versions change on every update, so they are left out.
+ * The profile never decides access. It only warns when a trusted key appears on a different-looking machine.
  */
 export function deviceProfile(userAgent: string | undefined, extra: unknown): DeviceProfile {
   const ua = userAgent ?? "";
@@ -207,9 +199,8 @@ const IDENTITY_TRAITS: Array<[string, string]> = [
 ];
 
 /**
- * Human-readable differences between the profile at enrolment and now, for
- * the traits that do not change on one machine. Empty when it looks the same
- * or when there is no profile to compare with.
+ * Readable changes in machine-stable traits since enrolment.
+ * Empty when nothing changed or no enrolment profile exists.
  */
 export function profileChanges(enrolled: DeviceProfile | null | undefined, now: DeviceProfile): string[] {
   if (!enrolled) return [];

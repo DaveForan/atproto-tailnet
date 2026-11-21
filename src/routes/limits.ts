@@ -24,10 +24,8 @@ export function isOverLimit(count: number, max: number): boolean {
 }
 
 /**
- * A sub-collective's cap must fit inside its parent's. Parent 0 = unlimited
- * (anything goes); under a capped parent the child may not be 0 (unlimited)
- * nor exceed the parent.
- *
+ * A sub-collective's cap must fit inside its parent's cap (0 = unlimited).
+ * Under a capped parent the child may not be 0 or exceed the parent.
  * @returns an error message, or null when acceptable.
  */
 export function checkChildLimit(
@@ -41,7 +39,6 @@ export function checkChildLimit(
   return null;
 }
 
-/** Number of members in a tenant. */
 export async function countMembers(tenantId: string): Promise<number> {
   const [row] = await db
     .select({ count: sql<number>`count(*)::int` })

@@ -1,7 +1,6 @@
 /**
  * @module access/compiler
- * Turns a tailnet's approved service posts, device connections and shares
- * between friends into the access rules the coordinator enforces (ADR-0036).
+ * Turns approved service posts, device connections and shares into coordinator access rules (ADR-0036).
  * Pure: no database or network access.
  */
 
@@ -48,10 +47,9 @@ export interface CompileInput {
     expiresAt: Date | null;
   }>;
   /**
-   * Current owner (user id) of each device, from the control plane. A device
-   * keeps its node id when it registers again under another member, so a post,
-   * connection or share whose recorded owner differs from this is stale and
-   * opens nothing. Devices absent from the map are not checked.
+   * Current owner (user id) of each device, from the control plane.
+   * A re-registered device keeps its node id, so an item with a different recorded owner is stale and opens nothing.
+   * Devices absent from the map are not checked.
    */
   nodeOwners?: ReadonlyMap<string, string>;
   now?: Date;
@@ -75,10 +73,7 @@ function ownerMoved(owners: ReadonlyMap<string, string> | undefined, nodeId: str
   return now !== undefined && now !== recorded;
 }
 
-/**
- * Find the posts, connections and shares that a device's change of owner
- * made stale. Ended shares and removed posts are ignored.
- */
+/** Finds the posts, connections and shares made stale by a device's change of owner. */
 export function findStaleAccess(input: Pick<CompileInput, "posts" | "connections" | "shares" | "nodeOwners">): StaleAccess {
   const owners = input.nodeOwners;
   const stale: StaleAccess = { postIds: [], connections: [], shareIds: [], guestNodes: [] };
@@ -116,8 +111,7 @@ function nodeNumber(id: string): number | null {
 }
 
 /**
- * Compile the rule set of one tailnet.
- *
+ * Compiles the rule set of one tailnet.
  * - A public service post opens its one port to the devices connected to it,
  *   and only while the post is approved.
  * - A share opens the listed ports of the owner's device to the guest's
@@ -183,8 +177,6 @@ export function compileAccess(input: CompileInput): CoordinatorAccess {
   return { mode: "member", rules };
 }
 
-// ── DNS (ADR-0028) ──────────────────────────────────────────────────────
-
 export interface CoordinatorDnsRecord {
   name: string;
   node: number;
@@ -222,8 +214,7 @@ export interface DnsInput {
 }
 
 /**
- * Compile the names of a tailnet's services.
- *
+ * Compiles the DNS names of a tailnet's services (ADR-0028).
  * - A private-board service resolves only on its author's devices.
  * - An approved public service resolves on its author's devices and on the
  *   devices connected to it.

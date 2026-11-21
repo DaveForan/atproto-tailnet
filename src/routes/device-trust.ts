@@ -40,7 +40,6 @@ import { logAudit } from "../audit/log.js";
 
 export const deviceTrustRouter = Router({ caseSensitive: true });
 
-// ── Device cookie and profile ───────────────────────────────────────────
 
 const secureCookies = (): boolean => config.publicUrl.startsWith("https");
 
@@ -147,7 +146,6 @@ function requirePending(req: Request, res: Response): { userId: string; did: str
   return { userId, did };
 }
 
-// ── Pending sign-in: prove a trusted device ─────────────────────────────
 
 deviceTrustRouter.get("/api/device-trust/pending", async (req, res) => {
   const pending = requirePending(req, res);
@@ -293,7 +291,6 @@ deviceTrustRouter.get("/api/device-trust/pending/request", async (req, res) => {
   res.json({ status: expired ? "expired" : row.status, deviceId: row.status === "approved" ? row.id : null });
 });
 
-// ── Signed in: manage trusted devices ───────────────────────────────────
 
 const stepUpFresh = deviceProofFresh;
 
@@ -308,7 +305,7 @@ async function mayChangeLock(req: Request, res: Response): Promise<boolean> {
   return false;
 }
 
-/** Gate for other sensitive changes of the user (for example the machine lock); sends `step_up_required` and returns false without a fresh proof. */
+/** Gate for other sensitive user changes, such as the machine lock. Without a fresh proof it sends `step_up_required` and returns false. */
 export const requireFreshDeviceProof = mayChangeLock;
 
 deviceTrustRouter.get("/api/trusted-devices", requireSession, async (req, res) => {

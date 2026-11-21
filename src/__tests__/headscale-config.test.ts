@@ -1,18 +1,9 @@
-/**
- * Tests for generateHeadscaleConfig from the Headscale orchestrator.
- *
- * These are pure-function tests: generateHeadscaleConfig builds a YAML
- * config string from inputs + the app config defaults (baseDomain, publicUrl).
- */
+/** generateHeadscaleConfig: YAML from inputs plus the app config defaults (baseDomain, publicUrl). */
 
 import { describe, it, expect } from "vitest";
 import { generateHeadscaleConfig } from "../orchestrator/headscale.js";
 
-/**
- * Helper: parse the generated YAML-like config string into a map of
- * key lines for quick assertions. Not a full YAML parser -- just
- * enough to check specific lines.
- */
+/** Splits the config into lines for assertions. Not a YAML parser. */
 function configLines(yaml: string): string[] {
   return yaml.split("\n");
 }

@@ -1,13 +1,6 @@
-/**
- * @module security-headers
- * Response security headers for every request.
- */
 import type { Request, Response, NextFunction } from "express";
 
-/**
- * Middleware that sets the security headers.
- * Security: HSTS comes from the app too, because a proxy other than Caddy may not add it.
- */
+/** Security: the app sets HSTS too, because a proxy other than Caddy may not add it. */
 export function securityHeaders(publicUrl: string, loopback: boolean) {
   const sendHsts = publicUrl.startsWith("https:") && !loopback;
   return (_req: Request, res: Response, next: NextFunction): void => {

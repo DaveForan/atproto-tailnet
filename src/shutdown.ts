@@ -1,7 +1,6 @@
 /**
- * @module shutdown
- * Graceful stop on SIGTERM/SIGINT: refuse new connections, stop background
- * loops, close the database pool, then exit. A timer forces the exit.
+ * Graceful stop on SIGTERM/SIGINT. Order: refuse new connections, stop loops, close the pool, exit.
+ * A timer forces the exit.
  */
 
 import type { Server } from "node:http";
@@ -9,7 +8,6 @@ import { logger } from "./logger.js";
 
 export interface ShutdownDeps {
   server: Pick<Server, "close">;
-  /** Background loops to stop; each may be async. */
   stopLoops: Array<() => void | Promise<void>>;
   closePool: () => Promise<void>;
   exit: (code: number) => void;

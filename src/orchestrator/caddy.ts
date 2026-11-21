@@ -1,16 +1,7 @@
 /**
  * @module orchestrator/caddy
- * Tenant subdomain routing via the Caddy admin API.
- *
- * The service owns exactly one route in Caddy's config, tagged
- * `@id: tailnet_tenants` and kept first in the HTTP server named
- * `tailnet_proxy` (the Caddyfile names that server). It matches
- * `*.{baseDomain}` and contains one reverse-proxy route per tenant.
- *
- * The route is always written whole from the database
- * ({@link syncTenantRoutes}) rather than edited entry by entry, so it is
- * idempotent and self-healing: Caddy forgets admin-API changes when it
- * restarts from its Caddyfile, and the next sync puts them back.
+ * Tenant subdomain routing via the Caddy admin API. We own one route, kept first in `tailnet_proxy`.
+ * Caddy forgets admin-API changes on restart, so each sync writes the whole route from the database.
  */
 
 import http from "node:http";
@@ -29,9 +20,8 @@ import {
 import { useCoordinator } from "./control-client.js";
 import { liveHostnamesByTenant } from "./hostnames.js";
 
-/** Name of the Caddy HTTP server tenant routes live in — set in the Caddyfile. */
+/** The Caddyfile sets this server name. */
 export const CADDY_SERVER = "tailnet_proxy";
-/** `@id` of the route this service manages. */
 export const TENANT_ROUTER_ID = "tailnet_tenants";
 
 const SERVER_PATH = `/config/apps/http/servers/${CADDY_SERVER}`;
@@ -57,7 +47,7 @@ export interface CaddyRoute {
 }
 
 export interface RoutableTenant {
-  /** Internal id — the coordinator's tenant slug and the Headscale container name. */
+  /** Internal id: the coordinator's tenant slug and the Headscale container name. */
   slug: string;
   port: number;
   /** Live public names (primary first). Defaults to `[slug]`. */
@@ -76,9 +66,8 @@ export type CaddyRequest = (
 ) => Promise<CaddyResponse>;
 
 /**
- * One request to the Caddy admin API. Uses `node:http` rather than `fetch`:
- * `fetch` adds a `Sec-Fetch-Mode` header, which makes Caddy (2.11+) treat the
- * caller as a browser and reject it with 403 for having no allowed Origin.
+ * Uses `node:http`, because `fetch` adds a `Sec-Fetch-Mode` header.
+ * Caddy 2.11+ then treats the caller as a browser and returns 403 for no allowed Origin.
  */
 const caddyRequest: CaddyRequest = (method, path, body) => {
   const url = new URL(path, config.caddyAdminUrl);
@@ -126,11 +115,7 @@ function fail(method: string, path: string, res: CaddyResponse): Error {
   );
 }
 
-/**
- * Where Caddy reaches a tenant's control plane. In coordinator mode all
- * tenants share a single upstream (the coordinator); in Headscale mode each
- * tenant has its own Docker container upstream.
- */
+/** Caddy's upstream for a tenant: the shared coordinator, or the tenant's Headscale container. */
 export function tenantUpstream(
   tenant: RoutableTenant,
   network = config.headscale.network,
@@ -144,21 +129,15 @@ export function tenantUpstream(
     : `localhost:${tenant.port}`;
 }
 
-/**
- * The managed route: `*.{baseDomain}` → one reverse proxy per tenant, and a
- * 404 for any other name under the base domain so it never falls through to
- * the main app.
- */
-// /health is not exposed: it leaks the coordinator boot_id and is not needed
-// by Tailscale clients (the monitor probes the coordinator directly).
+// Security: /health stays private because it leaks the coordinator boot_id. Clients do not need it.
 export const COORDINATOR_PUBLIC_PATHS = ["/key", "/ts2021"];
 
-/** Every live public name of a tenant, as hosts under the base domain. */
 function hostsFor(t: RoutableTenant, baseDomain: string): string[] {
   const names = t.hostnames && t.hostnames.length > 0 ? t.hostnames : [t.slug];
   return names.map((n) => `${n}.${baseDomain}`);
 }
 
+/** Unknown names under the base domain get a 404, so they never fall through to the main app. */
 export function buildTenantRouter(
   routable: RoutableTenant[],
   opts: { baseDomain?: string; network?: string; coordinator?: boolean } = {},
@@ -176,8 +155,8 @@ export function buildTenantRouter(
         handler: "subroute",
         routes: [
           ...sorted.map((t) => ({
-            // The coordinator also serves its admin API (/api/*) on this port;
-            // only the paths Tailscale clients need are exposed publicly.
+            // Security: the coordinator serves its admin API (/api/*) on this port too.
+            // Expose only the paths that Tailscale clients need.
             match: [
               coordinator
                 ? { host: hostsFor(t, baseDomain), path: COORDINATOR_PUBLIC_PATHS }
@@ -215,10 +194,7 @@ export function buildTenantRouter(
   };
 }
 
-/**
- * Make Caddy's managed route equal `desired`. Writes only when it differs —
- * every admin-API write makes Caddy reload its whole config.
- */
+/** Writes only when the route differs, because each admin-API write reloads the whole Caddy config. */
 export async function applyTenantRouter(
   desired: CaddyRoute,
   request: CaddyRequest = caddyRequest,
@@ -233,8 +209,7 @@ export async function applyTenantRouter(
     return "updated";
   }
 
-  // Not there yet (first run, or Caddy restarted from its Caddyfile): insert
-  // it ahead of the Caddyfile's own routes so a wildcard site cannot shadow it.
+  // Insert ahead of the Caddyfile's routes, so that a wildcard site cannot shadow it
   const routesPath = `${SERVER_PATH}/routes`;
   const routes = await request("GET", routesPath);
   if (!ok(routes)) {
@@ -254,7 +229,6 @@ export async function applyTenantRouter(
   return "created";
 }
 
-/** Tenants that have an instance to route to. */
 async function listRoutableTenants(): Promise<
   Array<RoutableTenant & { containerId: string | null }>
 > {
@@ -280,17 +254,12 @@ async function listRoutableTenants(): Promise<
   }));
 }
 
-// Syncs are serialized: two overlapping read-compare-write cycles could
-// otherwise both insert the managed route.
+// Syncs run in series, because overlapping read-compare-write cycles can both insert the route
 let syncQueue: Promise<unknown> = Promise.resolve();
 
-/**
- * Bring Caddy's tenant routes in line with the database. Call after anything
- * that adds or removes a tenant instance; the health monitor also calls it
- * every sweep so routes come back after a Caddy restart.
- */
+/** Call after a tenant instance is added or removed. The monitor also calls it each sweep. */
 export function syncTenantRoutes(): Promise<void> {
-  // No Caddy to configure (CADDY_ADMIN_URL=off): the edge proxy has static routes
+  // CADDY_ADMIN_URL=off: the edge proxy has static routes
   if (!config.caddyEnabled) return Promise.resolve();
   const run = syncQueue.then(async () => {
     const routable = await listRoutableTenants();
@@ -304,10 +273,8 @@ export function syncTenantRoutes(): Promise<void> {
 }
 
 /**
- * Startup reconciliation: attach every tenant container to the shared Docker
- * network (containers created before `HEADSCALE_NETWORK` was set are not on
- * it), then sync routes. Failures are logged, never thrown — the service
- * still starts when Caddy is down.
+ * Attaches older tenant containers to the shared network, then syncs routes.
+ * It logs failures and never throws, so the service starts when Caddy is down.
  */
 export async function reconcileTenantRouting(): Promise<void> {
   try {

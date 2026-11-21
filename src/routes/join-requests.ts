@@ -61,7 +61,6 @@ joinRequestsRouter.post(
       return;
     }
 
-    // Already a member?
     const [existing] = await db
       .select()
       .from(memberships)

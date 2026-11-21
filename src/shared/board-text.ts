@@ -1,11 +1,7 @@
 /**
- * Controller board text (ADR-0036): the originator's public page.
- *
- * Text only. A small subset of Markdown is parsed into blocks: headings
- * (`#`, `##`, `###`), paragraphs, unordered (`-`) and ordered (`1.`) lists,
- * with inline bold (`**x**`), italic (`*x*`) and links (`[label](https://…)`).
- * Everything else — including HTML — is literal text. Used by the server
- * (lint on save, HTML for the public page) and by the dashboard (preview).
+ * Board text for the originator's public page (ADR-0036). Server and dashboard both use it.
+ * Supported Markdown: `#`-`###` headings, paragraphs, `-` and `1.` lists, `**bold**`, `*italic*`, https links.
+ * Everything else, including HTML, is literal text.
  */
 
 export const BOARD_TEXT_MAX_LENGTH = 4000;
@@ -22,16 +18,14 @@ export type Block =
   | { kind: "list"; ordered: boolean; items: Inline[][] };
 
 /**
- * Characters refused on save: control characters (except newline and tab),
- * zero-width characters and direction overrides, which can hide or reorder
- * what a reader sees.
+ * Characters refused on save: control characters (except newline and tab), zero-width and direction overrides.
+ * Security: these can hide or reorder what a reader sees.
  */
 // eslint-disable-next-line no-control-regex
 const FORBIDDEN = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f​-‏‪-‮⁠-⁩﻿]/;
 
 const LINK = /\[([^\]\n]{1,200})\]\(([^)\s]{1,2000})\)/;
 
-/** An https URL with a host, or null. */
 export function safeHttpsUrl(raw: string): string | null {
   try {
     const u = new URL(raw);
@@ -95,7 +89,7 @@ function parseInline(src: string): Inline[] {
   return out;
 }
 
-/** Parse board text into blocks. Never throws; unknown syntax is plain text. */
+/** Parses board text into blocks. It never throws. Unknown syntax is plain text. */
 export function parseBoardText(text: string): Block[] {
   const blocks: Block[] = [];
   let paragraph: string[] = [];
@@ -154,7 +148,7 @@ function inlineHtml(inline: Inline[]): string {
     .join("");
 }
 
-/** Render blocks as HTML. Every piece of text is escaped; only our own tags appear. */
+/** Renders blocks as HTML. Security: all text is escaped, and only our own tags appear. */
 export function renderBoardHtml(blocks: Block[]): string {
   return blocks
     .map((b) => {

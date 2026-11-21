@@ -186,10 +186,9 @@ function parseAll(cidrs: (string | null | undefined)[]): ParsedCidr[] {
 }
 
 /**
- * Validate CIDRs a local collective offers to share (ADR-0019 §6): each must
- * parse, must not be a default route, and must lie inside the tenant's own
- * tailnet range or inside one of its approved subnet routes. Returns the
- * normalised prefixes, or the reasons they were refused.
+ * Validates CIDRs a local collective offers to share (ADR-0019 §6). Returns normalised prefixes or refusal reasons.
+ * Each must parse and must not be a default route.
+ * Each must lie inside the tenant's tailnet range or one of its approved subnet routes.
  */
 export function validateLocalOffer(
   offered: string[],
@@ -220,10 +219,9 @@ export function validateLocalOffer(
 }
 
 /**
- * Validate CIDRs a peer offers to share with a local collective (ADR-0019 §6):
- * each must parse, must not be a default route, and must not overlap the
- * local collective's own range or prefixes already imported over its other
- * active links. Returns the normalised prefixes, or the reasons they were refused.
+ * Validates CIDRs a peer offers to a local collective (ADR-0019 §6). Returns normalised prefixes or refusal reasons.
+ * Each must parse and must not be a default route.
+ * Each must not overlap the local range or prefixes imported over other active links.
  */
 export function validatePeerOffer(
   offered: string[],
@@ -256,8 +254,8 @@ export function validatePeerOffer(
 }
 
 /**
- * True when `prefix` is a valid, non-default CIDR contained in (equal to or
- * more specific than) at least one of `agreed`. An empty agreed list contains nothing.
+ * True when `prefix` is a valid, non-default CIDR equal to or inside one of `agreed`.
+ * An empty agreed list contains nothing.
  */
 export function isWithinAgreed(prefix: string, agreed: string[]): boolean {
   const parsed = parseCidr(prefix);

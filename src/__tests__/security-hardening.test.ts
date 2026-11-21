@@ -1,13 +1,7 @@
 /**
- * Regression tests for the public-surface / abuse hardening:
- * sub-collective creation gating, join-request spam limits, public slug
- * lookup, invitations on suspended/deleted tailnets, invite-by-handle SSRF
- * guard + DID normalisation, anonymous /invite/:id, suspended tenants on
- * public board / DID endpoints, and the TLS ask check.
- *
- * The DB is a chainable mock (same shape as operator.test.ts): each awaited
- * query resolves to the next entry of `results`; `.set()`/`.values()`/
- * `.where()` arguments are recorded in `writes`.
+ * Public-surface and abuse hardening: creation gating, join spam, slug lookup, invitations, SSRF, TLS ask.
+ * The DB is a chainable mock: each awaited query resolves to the next `results` entry.
+ * `.set()`/`.values()`/`.where()` arguments are recorded in `writes`.
  */
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import type { AddressInfo } from "node:net";
@@ -120,7 +114,7 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-// ── Test HTTP app with a fake session (x-user: "<userId>|<did>") ──
+// Test HTTP app with a fake session: the x-user header is "<userId>|<did>".
 type FakeSession = Record<string, unknown>;
 const sessions: FakeSession[] = [];
 const app = express();
@@ -205,7 +199,6 @@ function tenantRow(over: Record<string, unknown> = {}) {
   };
 }
 
-// ── 1. Sub-collectives require tailnet-creation rights ──
 describe("sub-collective creation", () => {
   const membership = (over: Record<string, unknown> = {}) => [
     { tenant: tenantRow(over), membership: { isOriginator: true, roleId: null }, role: null },
@@ -239,7 +232,6 @@ describe("sub-collective creation", () => {
   });
 });
 
-// ── 2. Join-request spam ──
 describe("join requests", () => {
   const path = `/api/tenants/${TENANT}/join-requests`;
   const hoursAgo = (h: number) => new Date(Date.now() - h * 3600_000);
@@ -332,7 +324,6 @@ describe("join requests", () => {
   });
 });
 
-// ── 3. Public slug lookup ──
 describe("GET /api/tenants/by-slug/:slug/public", () => {
   it("is 404 unless the tailnet accepts join requests", async () => {
     // Each lookup resolves the public name first (tenant_hostnames), then loads the tenant
@@ -351,7 +342,6 @@ describe("GET /api/tenants/by-slug/:slug/public", () => {
   });
 });
 
-// ── 4. Invitations on suspended / deleted tailnets ──
 describe("invitations and tenant state", () => {
   const INV = "22222222-2222-4222-8222-222222222222";
   const invitation = [{ id: INV, tenantId: TENANT, inviteeDid: "did:plc:bob", status: "pending" }];
@@ -373,7 +363,6 @@ describe("invitations and tenant state", () => {
   });
 });
 
-// ── 5. Invite-by-handle SSRF guard + DID normalisation ──
 describe("handle resolution and DID normalisation", () => {
   it("never fetches .well-known on a handle resolving to non-public addresses", async () => {
     resolvesToPublicAddresses.mockResolvedValueOnce(false);
@@ -433,7 +422,6 @@ describe("handle resolution and DID normalisation", () => {
   });
 });
 
-// ── 6. Anonymous /invite/:id doesn't write the session ──
 describe("GET /invite/:id", () => {
   it("serves the shell without touching an anonymous session", async () => {
     sessions.length = 0;
@@ -444,7 +432,6 @@ describe("GET /invite/:id", () => {
   });
 });
 
-// ── 7. Suspended / deleted tenants on public endpoints ──
 describe("public board and DID endpoints", () => {
   it("the controller board is not served for deleted or suspended tenants", async () => {
     expect(await publicControllerBoard(null)).toBeNull();
@@ -486,7 +473,6 @@ describe("public board and DID endpoints", () => {
   });
 });
 
-// ── 8. TLS ask check ──
 describe("tlsCertAllowedForSlug", () => {
   it("only live tenants get certificates", async () => {
     // Not a live public name → refused without looking at tenants
@@ -504,7 +490,6 @@ describe("tlsCertAllowedForSlug", () => {
   });
 });
 
-// ── Federation posture: selective is not implemented ──
 describe("PUT /api/tenants/:id/federation/posture", () => {
   const membership = [{ tenant: tenantRow(), membership: { isOriginator: true, roleId: null }, role: null }];
 
@@ -524,7 +509,6 @@ describe("PUT /api/tenants/:id/federation/posture", () => {
   });
 });
 
-// ── Federation: target lookup leaks nothing; accepting is blocked by lockdown ──
 describe("federation requests and acceptance", () => {
   const OTHER = "22222222-2222-4222-8222-222222222222";
   const membership = (over: Record<string, unknown> = {}) => [

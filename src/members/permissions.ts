@@ -1,7 +1,4 @@
-/**
- * @module members/permissions
- * Every permission a role can grant. A new permission also needs a label in {@link PERMISSION_LABELS}.
- */
+/** Every permission a role can grant. A new permission also needs a label in {@link PERMISSION_LABELS}. */
 import { z } from "zod";
 
 export const ALL_PERMISSIONS = [
@@ -24,7 +21,6 @@ export const ALL_PERMISSIONS = [
   "manage_sub_collectives",
 ] as const;
 
-/** A single permission string from {@link ALL_PERMISSIONS}. */
 export type Permission = (typeof ALL_PERMISSIONS)[number];
 
 /** Human-readable labels for the dashboard UI. */
@@ -48,16 +44,11 @@ export const PERMISSION_LABELS: Record<Permission, string> = {
   manage_sub_collectives: "Create, manage, and detach sub-collectives",
 };
 
-/** Originator system role always has every permission. */
 export const ORIGINATOR_PERMISSIONS: readonly Permission[] = ALL_PERMISSIONS;
 
-/** Citizen system role starts with no extra permissions. */
 export const DEFAULT_CITIZEN_PERMISSIONS: readonly Permission[] = [];
 
-/**
- * Permissions a member effectively holds: all for originators, else the
- * known permissions of the role, narrowed to an agent token's scope.
- */
+/** Originators hold all permissions. Others hold the known role permissions, narrowed to the token scope. */
 export function effectivePermissions(
   membership: { isOriginator: boolean },
   role: { permissions: unknown } | null,
@@ -70,5 +61,4 @@ export function effectivePermissions(
   return tokenScope ? base.filter((p) => tokenScope.includes(p)) : base;
 }
 
-/** A list of known permission names (request bodies). */
 export const permissionsSchema = z.array(z.enum(ALL_PERMISSIONS));

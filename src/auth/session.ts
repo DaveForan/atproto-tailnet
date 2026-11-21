@@ -94,9 +94,8 @@ export function establishPendingSession(
       req.session.createdAt = now;
       req.session.lastSeenAt = now;
       req.session.postLoginRedirect = data.redirect;
-      // The owner is told about every sign-in that is on hold. A trusted
-      // device removes the notice when it proves itself a moment later, so
-      // only attempts from other devices stay visible.
+      // Every held sign-in notifies the owner. A trusted device clears the notice when it proves itself.
+      // So only attempts from other devices stay visible.
       void noteSignInOnHold(req, data.userId)
         .then((id) => {
           if (id) req.session.pendingNoticeId = id;

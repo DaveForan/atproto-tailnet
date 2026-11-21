@@ -1,7 +1,4 @@
-/**
- * @module policy-engine/parser
- * Parse and validate traversal policy documents (YAML or JSON).
- */
+/** Parses and validates traversal policy documents (YAML or JSON). */
 
 import { z } from "zod";
 import type { TraversalPolicy, PolicyRule, RuleType } from "./types.js";

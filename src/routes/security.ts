@@ -15,16 +15,10 @@ import { joinRequestsRouter } from "./join-requests.js";
 import { deviceLocksRouter } from "./device-locks.js";
 import { auditLogRouter } from "./audit-log.js";
 
-/**
- * Router for tenant settings, roles CRUD, role assignment, device approvals/locks,
- * join-request management, and audit log retrieval.
- */
 export const securityRouter = Router({ caseSensitive: true });
 
-// Notifications live in their own module; mounted here so index.ts is unchanged.
 securityRouter.use(notificationsRouter);
 
-// ── Permissions list ────────────────────────────────────────────────
 
 securityRouter.get("/api/permissions", requireAuth, (_req, res) => {
   res.json(ALL_PERMISSIONS);

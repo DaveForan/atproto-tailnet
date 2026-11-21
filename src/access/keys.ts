@@ -1,12 +1,8 @@
 /**
  * @module access/keys
- * Key issuance tracking and access revocation shared by the device, approval,
- * service-device and member routes. Works in both control-plane modes:
- *
- * - Coordinator: keys carry `owner = <our user id>`; nodes inherit it, so a
- *   member's devices/keys are removed with the delete-/revoke-by-owner calls.
- * - Headscale: devices belong to the member's Headscale user; keys are expired
- *   by id (`POST /api/v1/preauthkey/expire`) from the `auth_keys` table.
+ * Key issuance tracking and access revocation for both control-plane modes.
+ * Coordinator: keys and nodes carry `owner = <our user id>`, so revoke-by-owner removes them.
+ * Headscale: keys are expired by id from the `auth_keys` table.
  */
 
 import { and, eq, isNull } from "drizzle-orm";
@@ -40,10 +36,7 @@ export function memberKeyOptionsError(
   return null;
 }
 
-/**
- * Revoke every outstanding key of a tenant (lockdown). Best effort per key;
- * returns how many were revoked on the control plane.
- */
+/** Revokes every outstanding key of a tenant (lockdown), best effort per key; returns the revoked count. */
 export async function revokeAllTenantKeys(
   tenantId: string,
   client: ControlClient,
@@ -146,9 +139,8 @@ export interface RevokeAccessResult {
 }
 
 /**
- * Remove a member's devices and revoke their outstanding keys (kick). Best
- * effort per step — every step runs even if an earlier one fails; failures
- * are returned (and logged) rather than thrown.
+ * Removes a member's devices and revokes their outstanding keys (kick).
+ * Every step runs even if an earlier one fails; failures are returned, not thrown.
  */
 export async function revokeMemberAccess(params: {
   tenantId: string;

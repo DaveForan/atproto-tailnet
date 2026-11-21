@@ -532,10 +532,9 @@ async function trustedIssuerDids(tenantId: string, ownDid: string): Promise<Set<
 }
 
 /**
- * Revoke a credential this collective issued. The caller presents the
- * credential itself: only a JWT signed by this collective's key, whose `jti`
- * is the id being revoked, is accepted — so one tenant can never mark another
- * issuer's credential as revoked.
+ * Revoke a credential this collective issued. The caller presents the credential itself.
+ * Security: only a JWT signed by this collective's key with `jti` equal to the id is accepted.
+ * So no tenant can revoke another issuer's credential.
  */
 credentialsRouter.post(
   "/api/tenants/:tenantId/credentials/:credentialId/revoke",

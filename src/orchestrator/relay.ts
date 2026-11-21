@@ -1,8 +1,7 @@
 /**
  * @module orchestrator/relay
- * Docker lifecycle for federation relay halves (ADR-0020). Each relay half is
- * a tailscale container registered in one collective's Headscale, advertising
- * the peer's CIDRs into the local tailnet. Two halves per link.
+ * Docker lifecycle for federation relay halves (ADR-0020). Each link has two halves.
+ * A half is a tailscale container in one collective that advertises the peer's CIDRs.
  */
 
 import Docker from "dockerode";
@@ -33,13 +32,7 @@ export function relayNetworkName(linkId: string): string {
   return `${RELAY_NETWORK_PREFIX}${linkId.slice(0, 12)}`;
 }
 
-/**
- * Create and start a relay half container. The container:
- * - Joins the tenant's Headscale with a tagged pre-auth key
- * - Advertises the peer's CIDRs as subnet routes
- * - Runs with --netfilter-mode=off and --snat-subnet-routes=false
- * - Sets up iptables rules to forward only agreed CIDRs
- */
+/** Starts a relay half. Its iptables rules forward only the agreed CIDRs. */
 export async function createRelayHalf(cfg: RelayHalfConfig): Promise<string> {
   const name = relayContainerName(cfg.linkId, cfg.side);
 
@@ -84,9 +77,7 @@ export async function createRelayHalf(cfg: RelayHalfConfig): Promise<string> {
   return container.id;
 }
 
-/**
- * Build iptables FORWARD rules that only allow the agreed CIDRs in each direction.
- */
+/** Default-drop FORWARD rules that allow only the agreed CIDRs in each direction. */
 export function buildForwardRules(localCidrs: string[], peerCidrs: string[]): string[] {
   const rules: string[] = [
     "iptables -P FORWARD DROP",
@@ -108,7 +99,6 @@ export function buildForwardRules(localCidrs: string[], peerCidrs: string[]): st
   return rules;
 }
 
-/** Stop and remove a relay half container. */
 export async function destroyRelayHalf(containerId: string): Promise<void> {
   try {
     const container = docker.getContainer(containerId);
@@ -127,7 +117,6 @@ export async function destroyRelayHalf(containerId: string): Promise<void> {
   }
 }
 
-/** Check if a relay container is running. */
 export async function isRelayHalfRunning(containerId: string): Promise<boolean> {
   try {
     const container = docker.getContainer(containerId);

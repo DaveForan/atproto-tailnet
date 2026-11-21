@@ -1,8 +1,7 @@
 /**
  * @module oauth/pages
- * Server-rendered sign-in, consent and error pages for the MCP OAuth flow.
- * No inline scripts or styles (CSP `script-src 'self'; style-src 'self'`) —
- * styling comes from /css/dashboard.css. All interpolated values are escaped.
+ * Server-rendered sign-in, consent and error pages for MCP OAuth. All interpolated values are escaped.
+ * No inline scripts or styles (CSP `script-src 'self'; style-src 'self'`); styles come from /css/dashboard.css.
  */
 
 export function esc(s: string): string {
@@ -50,11 +49,8 @@ export function signInPage(opts: { clientName: string; returnTo: string }): stri
 
 /**
  * Consent step: Allow / Deny posted with a session-bound CSRF token.
- *
- * Anti-phishing: the app name is self-asserted at dynamic registration, so it
- * is labelled "Unverified app" and the redirect host — the one thing the
- * client cannot fake — is shown prominently in the heading and body. The
- * operator scope is a separate, unchecked opt-in shown only to operators.
+ * Security: the app name is self-asserted, so it shows as "Unverified app" beside the unforgeable redirect host.
+ * The operator scope is a separate, unchecked opt-in shown only to operators.
  */
 export function consentPage(opts: {
   clientName: string;
@@ -62,7 +58,7 @@ export function consentPage(opts: {
   redirectHost: string;
   requestId: string;
   csrfToken: string;
-  /** False for dynamically registered clients (all of them today). */
+  /** False for dynamically registered clients. */
   verified?: boolean;
   /** Show the "Also allow instance operator actions" checkbox (operators only). */
   offerOperatorScope?: boolean;

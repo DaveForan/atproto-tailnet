@@ -1,19 +1,7 @@
 /**
  * @module oauth/provider
- * MCP OAuth 2.1 authorization server backed by our DB, implementing the SDK's
- * {@link OAuthServerProvider}. The SDK handlers (authorize/token/register/
- * revoke) do request parsing, client authentication and PKCE S256
- * verification; this class owns policy and state:
- *
- * - Dynamic client registration: public clients only (PKCE, no secret);
- *   redirect URIs must be https, or http on a loopback host.
- * - Authorization: existing Bluesky session + consent page (see oauth/router.ts).
- * - Codes: in-memory, 60 s TTL, single use; replaying a used code revokes the
- *   grant it produced (OAuth 2.1 §4.1.3).
- * - Tokens: opaque `mcp_…`, SHA-256 at rest, access 1 h, refresh 30 d rotated
- *   on every use; reuse of a rotated refresh token revokes the whole grant.
- * - Every token is bound to user + client + resource (the /mcp URL), and stops
- *   working when the grant is revoked or the user is disabled.
+ * DB-backed MCP OAuth 2.1 server. The SDK handlers parse requests, authenticate clients and verify PKCE S256.
+ * This class owns policy and state. Tokens bind to user, client and the /mcp resource.
  */
 import type { Request, Response } from "express";
 import type { OAuthServerProvider, AuthorizationParams } from "@modelcontextprotocol/sdk/server/auth/provider.js";
@@ -173,7 +161,6 @@ export class TailnetOAuthProvider implements OAuthServerProvider {
   /** Whether `did` may grant the instance-operator scope. */
   readonly isOperatorDid: (did: string) => boolean;
 
-  // ── Clients (dynamic registration) ──────────────────────────────────
 
   get clientsStore(): OAuthRegisteredClientsStore {
     return {
@@ -234,7 +221,6 @@ export class TailnetOAuthProvider implements OAuthServerProvider {
     };
   }
 
-  // ── Authorization (sign-in + consent) ───────────────────────────────
 
   /** Normalises the requested resource; undefined means "the MCP endpoint". */
   private checkResource(resource: URL | string | undefined): string {
@@ -483,7 +469,6 @@ export class TailnetOAuthProvider implements OAuthServerProvider {
     }
   }
 
-  // ── Resource-server side ────────────────────────────────────────────
 
   async verifyAccessToken(token: string): Promise<AuthInfo> {
     if (!isMcpToken(token)) throw new InvalidTokenError("Invalid access token");

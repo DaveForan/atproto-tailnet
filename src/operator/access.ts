@@ -1,13 +1,8 @@
 /**
  * @module operator/access
- * Request-time enforcement of operator decisions, mounted once in front of
- * every authenticated API router (after credential resolution):
- *
- * - disabled users: any credential (session, agent token, MCP token) is
- *   refused with 403 `account_disabled`; a session is destroyed.
- * - suspended tenants: a member's request to `/api/tenants/:id/...` is refused
- *   with 403 `tenant_suspended`. Operators acting as themselves bypass it.
- *   Non-members fall through so routes keep answering 404 (no existence leak).
+ * Enforces user disablement (403 `account_disabled`) and tenant suspension (403 `tenant_suspended`).
+ * Mounted before every authenticated API router, after credential resolution.
+ * Non-members fall through so routes still answer 404 (no existence leak).
  */
 
 import type { Request, Response, NextFunction } from "express";

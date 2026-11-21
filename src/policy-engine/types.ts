@@ -1,7 +1,4 @@
-/**
- * @module policy-engine/types
- * Core types for the Traversal Policy Engine (ADR-0011).
- */
+/** Traversal policy engine types (ADR-0011). */
 
 export interface TraversalRequest {
   identity: string;

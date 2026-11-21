@@ -1,8 +1,7 @@
 /**
  * @module mcp/api-client
- * Calls the existing REST API in-process (HTTP to 127.0.0.1:PORT) with the
- * caller's own MCP bearer token, so tools get exactly the user's permissions
- * and reuse all business logic. No logic is duplicated here.
+ * Calls the REST API on 127.0.0.1:PORT with the caller's MCP bearer token.
+ * So tools get exactly the user's permissions and reuse all business logic.
  */
 import { INTERNAL_MCP_HEADER, INTERNAL_MCP_SECRET } from "./internal.js";
 
@@ -50,11 +49,9 @@ function errorMessage(status: number, body: unknown): string {
 }
 
 /**
- * Defense in depth against path traversal through tool arguments: the URL the
- * request will actually hit must have exactly the path that was constructed
- * (no dot segments — WHATWG also normalizes `%2e` — no backslashes, no query
- * or fragment smuggled in), and no segment may carry an encoded slash,
- * backslash or dot segment that Express would decode later.
+ * Security: blocks path traversal through tool arguments (defense in depth).
+ * The final URL path must equal the constructed one: no dot segments (WHATWG also normalizes `%2e`), backslashes, query or fragment.
+ * No segment may carry an encoded slash, backslash or dot segment that Express decodes later.
  */
 export function assertSamePath(path: string, url: URL): void {
   if (url.pathname !== path || url.search !== "" || url.hash !== "") {

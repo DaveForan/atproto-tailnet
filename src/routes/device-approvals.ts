@@ -21,7 +21,6 @@ import { issueMemberKey } from "../access/keys.js";
 
 export const deviceApprovalsRouter = Router({ caseSensitive: true });
 
-// ── Device approvals ────────────────────────────────────────────────
 
 async function expireStalePending(tenantId: string): Promise<void> {
   await db

@@ -41,11 +41,9 @@ dashboardRouter.get("/join/:slug", (req, res) => {
 const INVITE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * Invitation link (`inviteUrl`). Serves the dashboard shell, which shows the
- * invitation to the signed-in invitee. Anonymous visitors get the login view,
- * whose form passes `redirect=/invite/:id` to /auth/login (validated there as
- * a local path) so sign-in comes back here. Nothing is written to the session
- * for anonymous visitors — the link alone must not create a session row.
+ * Invitation link (`inviteUrl`): the dashboard shell shows the invitation to the signed-in invitee.
+ * Anonymous visitors get the login view with `redirect=/invite/:id`.
+ * Security: the link alone must not create a session row, so anonymous visits write nothing.
  */
 dashboardRouter.get("/invite/:id", (req, res) => {
   const id = req.params.id;
@@ -57,9 +55,8 @@ dashboardRouter.get("/invite/:id", (req, res) => {
 });
 
 /**
- * Device sign-in link (ADR-0032). Serves the dashboard shell, which shows the
- * waiting device to the signed-in member. Anonymous visitors get the login
- * view with `redirect=/device/:id`.
+ * Device sign-in link (ADR-0032): the dashboard shell shows the waiting device to the signed-in member.
+ * Anonymous visitors get the login view with `redirect=/device/:id`.
  */
 dashboardRouter.get("/device/:id", (req, res) => {
   const id = req.params.id;

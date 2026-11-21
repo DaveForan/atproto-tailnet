@@ -1,16 +1,8 @@
 /**
  * @module orchestrator/coordinator-acl
- * Translation between the Headscale ACL policy format used by the API and
- * dashboard (`{acls, groups, hosts, tagOwners, autoApprovers}`) and the Rust
- * coordinator's `coord_acl::AclPolicy` (`{default_deny, rules:[{src,dst,ports}]}`).
- *
- * The coordinator copies each rule's `src` into a Tailscale FilterRule
- * `SrcIPs` entry and `dst` into `DstPorts[].IP`, so both must be `*`, an IP
- * address, or a CIDR. It has no notion of users, groups, tags or route
- * auto-approval, so policies using those are rejected (never silently
- * dropped — dropping an allow rule is safe but dropping e.g. a group
- * restriction would widen access, and dropping autoApprovers changes
- * behaviour invisibly).
+ * Translates Headscale ACL policies to and from the coordinator's `coord_acl::AclPolicy`.
+ * Rule `src`/`dst` become FilterRule `SrcIPs`/`DstPorts[].IP`, so each must be `*`, an IP, or a CIDR.
+ * Security: we reject groups, tags and autoApprovers, because dropping them silently can widen access.
  */
 
 import { isIP } from "node:net";
@@ -52,7 +44,6 @@ export class AclTranslationError extends Error {
 
 const SUPPORTED_KEYS = new Set(["acls", "groups", "hosts", "tagOwners", "autoApprovers"]);
 
-/** True for `*`, a bare IPv4/IPv6 address, or an IPv4/IPv6 CIDR. */
 function isAddressOrCidr(value: string): boolean {
   if (value === "*") return true;
   const slash = value.indexOf("/");
@@ -117,12 +108,8 @@ function splitDst(entry: string, where: string): { target: string; ports: string
 }
 
 /**
- * Translates a Headscale-format policy into the coordinator model.
- * Rule semantics follow Tailscale: the listed rules are the only allowed
- * traffic, and an empty `acls` list denies everything.
- *
- * @throws {AclTranslationError} when the policy uses constructs the
- *   coordinator cannot represent.
+ * Follows Tailscale semantics: only listed rules allow traffic, and empty `acls` denies all.
+ * @throws {AclTranslationError} when the coordinator cannot represent the policy.
  */
 export function headscaleToCoordinatorPolicy(policy: HeadscaleAclPolicy): CoordAclPolicy {
   for (const key of Object.keys(policy)) {
@@ -187,11 +174,7 @@ function formatPort(p: unknown): string | null {
   return null;
 }
 
-/**
- * Renders a coordinator policy in the Headscale shape the dashboard's
- * AclTab expects (`acls`/`groups`/`hosts`). Host aliases are not stored by
- * the coordinator, so rules come back with literal addresses.
- */
+/** The coordinator does not store host aliases, so rules come back with literal addresses. */
 export function coordinatorToHeadscalePolicy(raw: unknown): {
   acls: Array<{ action: "accept"; src: string[]; dst: string[] }>;
   groups: Record<string, string[]>;

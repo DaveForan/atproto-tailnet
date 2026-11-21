@@ -59,7 +59,6 @@ export const federationMessagesRouter = Router({ caseSensitive: true });
 /** JSON parser for CFP messages; mount it on the message path before the global parser. */
 export const federationBodyParser = express.json({ limit: MAX_FEDERATION_BODY_BYTES });
 
-// ── Message shapes (untrusted input) ─────────────────────────────────────
 
 const did = z.string().min(8).max(512).startsWith("did:");
 const signature = z.string().min(1).max(1024);
@@ -164,7 +163,6 @@ function clientIp(req: Request): string {
   return (req.ip ?? req.socket.remoteAddress ?? "unknown") as string;
 }
 
-// ── Pending handshakes (responder side, between HELLO and COMMIT) ────────
 
 interface PendingHandshake {
   state: HandshakeState;
@@ -190,7 +188,6 @@ function rememberHandshake(nonce: string, pending: PendingHandshake): void {
   pendingHandshakes.set(nonce, pending);
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────
 
 /** The local collective a message is addressed to, or null after replying with an error. */
 async function resolveRecipient(
@@ -274,7 +271,6 @@ async function authenticateSessionMessage(
   return session;
 }
 
-// ── HELLO → CHALLENGE ────────────────────────────────────────────────────
 
 federationMessagesRouter.post(
   "/api/federation/messages/hello",
@@ -345,7 +341,6 @@ federationMessagesRouter.post(
   },
 );
 
-// ── COMMIT → ESTABLISHED ─────────────────────────────────────────────────
 
 federationMessagesRouter.post(
   "/api/federation/messages/commit",
@@ -410,7 +405,6 @@ federationMessagesRouter.post(
   },
 );
 
-// ── KEEPALIVE ────────────────────────────────────────────────────────────
 
 federationMessagesRouter.post(
   "/api/federation/messages/keepalive",
@@ -448,7 +442,6 @@ federationMessagesRouter.post(
   },
 );
 
-// ── REVOKE ───────────────────────────────────────────────────────────────
 
 federationMessagesRouter.post(
   "/api/federation/messages/revoke",
@@ -495,9 +488,7 @@ federationMessagesRouter.post(
   },
 );
 
-// ── Helpers for link negotiation ────────────────────────────────────────
 
-/** Look up a tenant's federation posture. */
 async function getTenantPosture(
   tenantId: string,
 ): Promise<{ posture: string; lockdownMode: boolean } | null> {
@@ -512,7 +503,6 @@ async function getTenantPosture(
   return row ?? null;
 }
 
-/** Count pending inbound link requests for a tenant. */
 async function countPendingInbound(tenantId: string): Promise<number> {
   const [row] = await db
     .select({ count: sql<number>`count(*)::int` })
@@ -585,7 +575,6 @@ async function authenticateLinkMessage(
   return true;
 }
 
-// ── LINK_REQUEST ────────────────────────────────────────────────────────
 
 federationMessagesRouter.post(
   "/api/federation/messages/link-request",
@@ -679,7 +668,6 @@ federationMessagesRouter.post(
   },
 );
 
-// ── LINK_ACCEPT ─────────────────────────────────────────────────────────
 
 federationMessagesRouter.post(
   "/api/federation/messages/link-accept",
@@ -754,7 +742,6 @@ federationMessagesRouter.post(
   },
 );
 
-// ── LINK_REJECT ─────────────────────────────────────────────────────────
 
 federationMessagesRouter.post(
   "/api/federation/messages/link-reject",
@@ -805,7 +792,6 @@ federationMessagesRouter.post(
   },
 );
 
-// ── LINK_REVOKE ─────────────────────────────────────────────────────────
 
 federationMessagesRouter.post(
   "/api/federation/messages/link-revoke",

@@ -34,10 +34,8 @@ import { parseBody } from "./validation.js";
 export const collectivesRouter = Router({ caseSensitive: true });
 
 /**
- * Sub-collectives are provisioned like top-level tenants, so the slug must be
- * a DNS label (it becomes `<slug>.<BASE_DOMAIN>`, a container name and the
- * coordinator slug, which requires ^[a-z0-9][a-z0-9-]{0,62}$). No dots: the
- * materialized path uses "." as separator.
+ * The slug must be a DNS label: it becomes `<slug>.<BASE_DOMAIN>`, a container name and the coordinator slug.
+ * The coordinator requires ^[a-z0-9][a-z0-9-]{0,62}$. No dots: the materialized path uses "." as separator.
  */
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
 const MAX_DEPTH = 5;

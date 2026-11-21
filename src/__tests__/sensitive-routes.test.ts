@@ -1,5 +1,5 @@
 /**
- * Security fixes on sensitive routes:
+ * Sensitive routes:
  * - ADR-0035 step-up on every sensitive route, before the tenant guard;
  * - GET /api/tenants for an agent token lists only its own tailnet and never
  *   the coordinator's internal tenant id;

@@ -1,7 +1,4 @@
-/**
- * @module members/cascade
- * Removes everything a member leaves behind in one tailnet.
- */
+/** Removes everything a member leaves behind in one tailnet. */
 
 import { and, eq } from "drizzle-orm";
 import { db } from "../db/index.js";
@@ -48,7 +45,7 @@ export async function removeMemberCascade(
       userId: removedUserId,
       hsUsername: toHsUsername(removedUser.handle),
     });
-    // Their machine lock in this tailnet goes with them (ADR-0035)
+    // The member's machine lock in this tailnet goes too (ADR-0035)
     if (useCoordinator && client) {
       await getCoordinatorClient(tenant)
         .deleteOwnerLock(removedUserId)
@@ -67,7 +64,7 @@ export async function removeMemberCascade(
       ),
     );
 
-  // Posts, connections, friendships and shares of the member (ADR-0036)
+  // Removes posts, connections, friendships and shares (ADR-0036)
   await removeMemberAccessState(tenantId, removedUserId);
   await syncTenantAccess(tenantId);
 

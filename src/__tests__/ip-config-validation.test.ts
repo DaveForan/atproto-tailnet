@@ -1,9 +1,4 @@
-/**
- * Tests for Zod validation schemas used in ip-config, DERP, and federation routes.
- *
- * Tests the schemas directly (no HTTP, no DB) to verify accept/reject behavior
- * for valid and invalid inputs.
- */
+/** Zod schemas of the ip-config, DERP and federation routes, tested directly (no HTTP, no DB). */
 
 import { describe, it, expect } from "vitest";
 import {
@@ -20,9 +15,6 @@ import {
   respondBody,
 } from "../routes/federation.js";
 
-// ---------------------------------------------------------------------------
-// CIDR regex patterns
-// ---------------------------------------------------------------------------
 
 describe("CIDR_V4_RE", () => {
   it.each([
@@ -71,9 +63,6 @@ describe("CIDR_V6_RE", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// ipConfigBody schema
-// ---------------------------------------------------------------------------
 
 describe("ipConfigBody schema", () => {
   it("accepts a valid full body", () => {
@@ -118,9 +107,6 @@ describe("ipConfigBody schema", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// derpRegionSchema
-// ---------------------------------------------------------------------------
 
 describe("derpRegionSchema", () => {
   const validRegion = {
@@ -237,9 +223,6 @@ describe("derpRegionSchema", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// derpConfigBody
-// ---------------------------------------------------------------------------
 
 describe("derpConfigBody", () => {
   it("accepts an empty body (all optional)", () => {
@@ -275,9 +258,6 @@ describe("derpConfigBody", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// createFederationBody
-// ---------------------------------------------------------------------------
 
 describe("createFederationBody", () => {
   it("accepts a minimal valid body", () => {
@@ -331,9 +311,6 @@ describe("createFederationBody", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// respondBody (federation accept/reject)
-// ---------------------------------------------------------------------------
 
 describe("respondBody (federation)", () => {
   it("accepts an empty body", () => {

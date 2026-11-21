@@ -1,11 +1,7 @@
 /**
  * @module orchestrator/control-client
- * Unified interface for control-plane operations. Abstracts whether the
- * backend is a per-tenant Headscale container or the shared Rust coordinator.
- *
- * All call sites should use {@link getControlClient} (either mode) or
- * {@link getCoordinatorClient} (coordinator-only calls) instead of directly
- * constructing HeadscaleApiClient or CoordinatorApiClient.
+ * One control-plane interface for per-tenant Headscale and the shared Rust coordinator.
+ * Call sites use these factories, not the API client constructors.
  */
 
 import { config } from "../config.js";
@@ -61,17 +57,9 @@ export interface ControlClient {
   healthcheck(): Promise<boolean>;
 }
 
-/** True when the service is configured to use the Rust coordinator. */
 export const useCoordinator = Boolean(config.coordinatorUrl);
 
-/**
- * Return a control client for the given tenant. When COORDINATOR_URL is set,
- * returns a CoordinatorApiClient scoped to the tenant's coordinator-side ID;
- * otherwise returns a HeadscaleApiClient connected to the tenant's container.
- *
- * @param tenant - Must include `port`, `apiKey`, and `coordinatorTenantId`
- *   (the latter only required in coordinator mode).
- */
+/** Returns the coordinator client when `COORDINATOR_URL` is set, else the tenant's Headscale client. */
 export function getControlClient(tenant: {
   port: number;
   apiKey: string;
@@ -84,13 +72,8 @@ export function getControlClient(tenant: {
 }
 
 /**
- * The Rust coordinator's admin client. With a tenant: scoped to the tenant's
- * coordinator-side id (throws when the tenant has none). Without one: an
- * instance-level client for calls that are not tenant-scoped (health probe,
- * device sign-in, refused-machine log).
- *
- * Coordinator mode only — throws when `COORDINATOR_URL` is not set. Callers
- * that run in both modes check {@link useCoordinator} first.
+ * Returns a coordinator client scoped to the tenant, or instance-level without one.
+ * Errors: throws outside coordinator mode, or when the tenant has no coordinator id.
  */
 export function getCoordinatorClient(
   tenant?: { coordinatorTenantId?: string | null } | null,

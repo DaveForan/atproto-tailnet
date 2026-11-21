@@ -24,9 +24,8 @@ import { claimDefaultTailnet } from "../operator/policy.js";
 import { logger } from "../logger.js";
 
 /**
- * Opaque internal id for a new tailnet. Never derived from the handle: the id
- * is the coordinator's tenant slug and is part of the collective DID, so a
- * handle-based id would reveal who runs which tailnet.
+ * Security: the slug is part of the collective DID, so it is never derived from the handle.
+ * A handle-based slug would reveal who runs which tailnet.
  */
 async function generateUniqueSlug(): Promise<string> {
   for (let i = 0; i < 20; i++) {
@@ -63,8 +62,7 @@ export async function createTenantRecord(rec: NewTenantRecord): Promise<Tenant> 
   for (let attempt = 0; ; attempt++) {
     const slug = rec.slug ?? (await generateUniqueSlug());
     const hostname = rec.hostname ?? (await generateAvailableFriendlyName());
-    // Coordinator tenants have no Headscale container, so they get a
-    // placeholder port instead of one from the range.
+    // Coordinator tenants have no Headscale container, so they get a placeholder port
     const port = await allocateTenantPort(!useCoordinator);
     try {
       return await db.transaction(async (tx) => {
@@ -134,9 +132,8 @@ export async function createTenantRecord(rec: NewTenantRecord): Promise<Tenant> 
 }
 
 /**
- * Creates a top-level tenant owned by `user` and provisions its control plane
- * after the commit. Callers must have checked {@link canCreateTailnet}. The
- * first operator tailnet becomes the instance default when none is set.
+ * Creates a top-level tenant and provisions its control plane after the commit.
+ * Callers must check `canCreateTailnet` first.
  */
 export async function provisionTenant(
   user: typeof users.$inferSelect,
@@ -160,11 +157,7 @@ export async function provisionTenant(
   return tenant;
 }
 
-/**
- * Brings up the tenant's control plane (coordinator tenant or Headscale
- * container), marks it running and syncs Caddy. On failure the tenant is
- * marked "error". Sub-collectives pass the parent's coordinator tenant id.
- */
+/** Brings up the tenant's control plane. On failure it marks the tenant "error" and returns false. */
 export async function provisionTenantInstance(
   tenantId: string,
   slug: string,
@@ -194,7 +187,6 @@ export async function provisionTenantInstance(
   }
 }
 
-/** Sentinel value stored in apiKey for coordinator-mode tenants. */
 const COORDINATOR_API_KEY_SENTINEL = "__coordinator__";
 
 async function provisionViaCoordinator(

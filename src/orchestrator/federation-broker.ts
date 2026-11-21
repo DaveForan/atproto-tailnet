@@ -1,18 +1,7 @@
 /**
  * @module orchestrator/federation-broker
- *
- * Federation Control Plane (FCP) — manages broker sessions, relay nodes,
- * route propagation, and collective DID lifecycle for cross-tailnet
- * federation (ADR-0010, ADR-0016).
- *
- * The broker runs as a background service alongside the monitor. Each tick it
- * reconciles `federation_links` with `broker_sessions`, drives the CFP
- * handshake for sessions that are not yet established, exchanges keepalives,
- * and tears down sessions whose link is no longer active.
- *
- * Every active link row represents one side of a federation — `localTenantId`
- * is the local collective, `peerDid` is the remote. The side whose link has
- * direction "incoming" (the acceptor) initiates the outbound handshake.
+ * Federation Control Plane: broker sessions, relays, routes and collective DIDs (ADR-0010, ADR-0016).
+ * Each link row is one side of a federation. The accepting ("incoming") side starts the handshake.
  */
 
 import * as crypto from "node:crypto";
@@ -76,13 +65,11 @@ import { isLeader } from "./leader.js";
 const BROKER_TICK_MS = 30_000;
 const KEEPALIVE_STALE_MS = 90_000;
 
-/** Capabilities this broker implements. */
 export const LOCAL_CAPABILITIES: Capability[] = ["route-exchange"];
 
 /**
- * Tag a relay node must carry for Headscale to auto-approve the federated
- * routes it advertises. Only tagged relays may attract traffic for a peer's
- * CIDRs — an ordinary member device advertising them is not approved.
+ * Security: only relays with this tag get auto-approval for federated routes.
+ * A member device that advertises a peer's CIDRs is not approved.
  */
 export const FEDERATION_RELAY_TAG = "tag:federation-relay";
 
@@ -127,7 +114,6 @@ async function brokerTick(): Promise<void> {
   }
 }
 
-// ── Link ↔ session reconciliation ────────────────────────────────────────
 
 async function reconcileActiveSessions(): Promise<void> {
   const activeLinks = await db
@@ -147,16 +133,12 @@ async function reconcileActiveSessions(): Promise<void> {
     }
   }
 
-  // (Re-)handshake sessions that are not healthy while their link is still
-  // active: never completed (`connecting`: peer unreachable, restart
-  // mid-handshake), revoked by the peer (`disconnected`), or with stale
-  // keepalives (`degraded`). The accepting (incoming) side initiates, with
-  // per-link exponential backoff so an unreachable peer is not hammered.
+  // Re-handshake unhealthy sessions of active links. The incoming side initiates.
+  // Per-link exponential backoff protects an unreachable peer.
   const now = Date.now();
   for (const link of activeLinks) {
     if (link.direction !== "incoming") continue;
-    // A permanently revoked link is never re-established (ADR-0014 §6); its
-    // status normally leaves "active" too, this guards any stale row.
+    // ADR-0014 §6: a permanently revoked link is never re-established. This guards a stale row.
     if (link.revokedPermanently) continue;
 
     const [session] = await db
@@ -198,28 +180,25 @@ async function reconcileActiveSessions(): Promise<void> {
     }
   }
 
-  // Forget backoff state for links that are no longer active.
   for (const linkId of handshakeBackoff.keys()) {
     if (!activeIds.has(linkId)) handshakeBackoff.delete(linkId);
   }
 }
 
-/** Session states the initiator recovers from by handshaking again. */
 const RECOVERABLE_SESSION_STATUSES: BrokerSession["status"][] = ["connecting", "disconnected", "degraded"];
 
 const HANDSHAKE_RETRY_BASE_MS = BROKER_TICK_MS;
 const HANDSHAKE_RETRY_MAX_MS = 30 * 60_000;
 
-/** Per-link handshake retry state (in memory; a restart retries immediately). */
+/** In memory only, so a restart retries at once. */
 const handshakeBackoff = new Map<string, { failures: number; nextAttemptAt: number }>();
 
-/** Delay before retry number `failures + 1`: 30s, 60s, 120s, … capped at 30 min, ±20% jitter. */
+/** 30s, 60s, 120s, and so on, up to 30 min, with ±20% jitter. */
 export function handshakeRetryDelayMs(failures: number, random: () => number = Math.random): number {
   const exp = Math.min(HANDSHAKE_RETRY_MAX_MS, HANDSHAKE_RETRY_BASE_MS * 2 ** Math.max(0, failures - 1));
   return Math.round(exp * (0.8 + 0.4 * random()));
 }
 
-/** Create the session row for an active link if it is missing. */
 async function ensureSessionsForLink(link: FederationLink): Promise<void> {
   const [session] = await db
     .insert(brokerSessions)
@@ -231,7 +210,7 @@ async function ensureSessionsForLink(link: FederationLink): Promise<void> {
       remoteEndpoint: link.peerBrokerUrl ?? config.publicUrl,
       protocolVersion: link.protocolVersion,
       exportedRoutes: link.localCidrs,
-      // Filled in from the peer's announcements when the handshake completes.
+      // The completed handshake fills this from the peer's announcements
       importedRoutes: [],
     })
     .onConflictDoNothing()
@@ -242,7 +221,6 @@ async function ensureSessionsForLink(link: FederationLink): Promise<void> {
       { linkId: link.id, sessionId: session.id, localTenantId: link.localTenantId },
       "created broker session for federation link",
     );
-    // Provision relay for outgoing links (we requested the federation).
     if (link.direction === "outgoing") {
       await provisionRelayNode(session.id, link);
     }
@@ -320,7 +298,7 @@ async function provisionRelayNode(
 }
 
 async function teardownBrokerSession(stale: BrokerSession): Promise<void> {
-  // Re-read: the peer's own teardown may have revoked this session moments ago.
+  // Re-read, because the peer's own teardown can have revoked this session just now
   const [session] = await db
     .select()
     .from(brokerSessions)
@@ -332,8 +310,7 @@ async function teardownBrokerSession(stale: BrokerSession): Promise<void> {
 
   if (session.cfpSessionId && session.remoteEndpoint && session.status !== "disconnected") {
     try {
-      // Sessions are only torn down once their link left "active" (revoked or
-      // rejected by an operator), which is final: the peer must not retry.
+      // Teardown happens only after the link left "active". That is final, so the peer must not retry.
       const revoke = await signMessage(
         {
           type: "REVOKE" as const,
@@ -350,7 +327,6 @@ async function teardownBrokerSession(stale: BrokerSession): Promise<void> {
     }
   }
 
-  // Tear down relay containers and deregister from Headscale.
   const relays = await db
     .select()
     .from(relayNodes)
@@ -383,7 +359,6 @@ async function teardownBrokerSession(stale: BrokerSession): Promise<void> {
   await withdrawFederatedRoutes(session.localTenantId, session.importedRoutes);
 }
 
-// ── Keepalive ────────────────────────────────────────────────────────────
 
 async function sendKeepalives(): Promise<void> {
   const sessions = await db
@@ -405,7 +380,7 @@ async function sendKeepalives(): Promise<void> {
         (payload) => signAsCollective(session.localTenantId, payload),
       );
 
-      // A successful round-trip proves the peer still holds the session.
+      // A successful round-trip proves that the peer still holds the session
       if (await sendKeepalive(session.remoteEndpoint, keepalive, session.peerDid)) {
         await db
           .update(brokerSessions)
@@ -482,12 +457,8 @@ async function checkRelayHealth(): Promise<void> {
   }
 }
 
-// ── Collective DID lifecycle and signing ─────────────────────────────────
 
-/**
- * Host component of this instance's collective DIDs. did:web percent-encodes
- * the port separator, so `localhost:3000` becomes `localhost%3A3000`.
- */
+/** did:web percent-encodes the port separator, so `localhost:3000` becomes `localhost%3A3000`. */
 export function collectiveDidHost(): string {
   return encodeURIComponent(new URL(config.publicUrl).host);
 }
@@ -544,12 +515,12 @@ export async function rotateCollectiveDid(
   return ensureCollectiveDid(tenantId, domain);
 }
 
-/** RFC 7638 thumbprint of a collective's public key, for display. */
+/** RFC 7638 thumbprint, for display. */
 export function publicKeyFingerprint(publicKeyJwk: JsonWebKey): Promise<string> {
   return jose.calculateJwkThumbprint(publicKeyJwk as jose.JWK, "sha256");
 }
 
-/** The collective's DID and Ed25519 key pair, or null if it has no DID yet. */
+/** Returns null when the collective has no DID yet. */
 export async function loadCollectiveKeyPair(tenantId: string): Promise<{
   did: string;
   privateKey: crypto.KeyObject;
@@ -573,7 +544,7 @@ export async function loadCollectiveKeyPair(tenantId: string): Promise<{
   return { did: row.did, privateKey, publicKey: crypto.createPublicKey(privateKey) };
 }
 
-/** Detached-JWS signature over `payload` by the tenant's collective key. */
+/** Returns a detached JWS. */
 export async function signAsCollective(
   tenantId: string,
   payload: string,
@@ -583,12 +554,8 @@ export async function signAsCollective(
   return signDetached(keys.privateKey, payload);
 }
 
-// ── Outbound handshake ───────────────────────────────────────────────────
 
-/**
- * Record a completed handshake on `localTenantId`'s session for the link and
- * install the routes it imported. Used by both initiator and responder.
- */
+/** Initiator and responder both call this. It also installs the imported routes. */
 export async function markSessionEstablished(
   linkId: string,
   localTenantId: string,
@@ -615,10 +582,8 @@ export async function markSessionEstablished(
 }
 
 /**
- * Run the initiator side of the CFP handshake for a link:
- * HELLO → (CHALLENGE) → COMMIT → (ESTABLISHED). The peer's replies come back
- * as the HTTP responses and are verified against the peer's DID before use.
- * Returns true when the session is established.
+ * CFP initiator: HELLO → (CHALLENGE) → COMMIT → (ESTABLISHED). Returns true when established.
+ * Security: we verify each reply against the peer's DID before use.
  */
 export async function initiateOutboundHandshake(
   linkId: string,
@@ -732,9 +697,8 @@ export async function initiateOutboundHandshake(
   }
 }
 
-// ── Cross-instance link messages (ADR-0019 §2) ───────────────────────────
 
-/** Base URL peers reach this collective's broker at (as in its discovery document). */
+/** The broker URL from this collective's discovery document. */
 export async function localBrokerUrl(tenantId: string): Promise<string> {
   const [row] = await db
     .select({ brokerEndpoint: collectiveDids.brokerEndpoint })
@@ -744,7 +708,7 @@ export async function localBrokerUrl(tenantId: string): Promise<string> {
   return row?.brokerEndpoint ?? config.publicUrl;
 }
 
-/** The local tenant owning `did`, or null when the collective lives on another instance. */
+/** Returns null when the collective lives on another instance. */
 export async function localTenantForDid(did: string): Promise<string | null> {
   const [row] = await db
     .select({ tenantId: collectiveDids.tenantId })
@@ -788,9 +752,8 @@ function auditDelivery(
 }
 
 /**
- * Queue a signed link message for the link's peer (replacing any earlier
- * undelivered one — the newest operator decision wins) and try to deliver it
- * right away; the broker loop retries with backoff until it gets through.
+ * Replaces any undelivered message, so the newest operator decision wins (ADR-0019 §2).
+ * The broker loop retries with backoff.
  */
 export async function queueLinkMessage(
   link: Pick<FederationLink, "id" | "peerDid" | "peerBrokerUrl">,
@@ -813,10 +776,8 @@ export async function queueLinkMessage(
 const deliveriesInFlight = new Set<string>();
 
 /**
- * One delivery attempt of the link's queued message, if it is due. The row is
- * only updated while it still holds the same message (an operator may have
- * queued a newer one meanwhile). Returns the outcome, or null when nothing was
- * attempted.
+ * Updates the row only if it still holds the same message, because an operator can queue a newer one.
+ * Returns null when nothing is due.
  */
 export async function deliverLinkOutbox(linkId: string): Promise<DeliveryOutcome | null> {
   if (deliveriesInFlight.has(linkId)) return null;
@@ -849,7 +810,7 @@ export async function deliverLinkOutbox(linkId: string): Promise<DeliveryOutcome
     const finalOutcome: DeliveryOutcome = next === null ? "delivered" : next.failedAt ? "failed" : "retry";
 
     if (finalOutcome === "failed" && entry.message.type === "LINK_REQUEST") {
-      // The peer refused (or never took) the request: the link cannot proceed.
+      // The peer refused or never took the request, so the link cannot proceed
       await db
         .update(federationLinks)
         .set({ outbox: next as unknown as Record<string, unknown>, status: "rejected", updatedAt: new Date() })
@@ -863,7 +824,7 @@ export async function deliverLinkOutbox(linkId: string): Promise<DeliveryOutcome
 
     if (finalOutcome === "delivered") {
       auditDelivery(link, { ...entry, attempts: entry.attempts + 1 }, "delivered");
-      // The peer's link is active now; we (the accepting side) open the session.
+      // The accepting side opens the session
       if (entry.message.type === "LINK_ACCEPT" && link.status === "active") {
         handshakeBackoff.delete(link.id);
         initiateOutboundHandshake(link.id, link.localTenantId).catch((err) =>
@@ -884,7 +845,6 @@ export async function deliverLinkOutbox(linkId: string): Promise<DeliveryOutcome
   }
 }
 
-/** Broker-loop step: attempt every queued link message that is due. */
 async function deliverPendingLinkMessages(): Promise<void> {
   const rows = await db
     .select({ id: federationLinks.id, outbox: federationLinks.outbox })
@@ -902,13 +862,8 @@ async function deliverPendingLinkMessages(): Promise<void> {
   }
 }
 
-// ── Route installation ───────────────────────────────────────────────────
-//
-// Imported prefixes are approved only when advertised by a relay node tagged
-// FEDERATION_RELAY_TAG. Headscale mode edits the policy's `autoApprovers`;
-// coordinator mode edits the coordinator's per-tenant auto-approvers
-// (`PUT /api/tenants/{id}/auto-approvers`), which live in memory there and
-// are re-asserted every broker tick (see reconcileCoordinatorAutoApprovers).
+// Only relays tagged FEDERATION_RELAY_TAG get imported prefixes approved.
+// The coordinator keeps auto-approvers in memory, so each broker tick re-asserts them.
 
 type RouteApprovers = Record<string, string[]>;
 
@@ -918,19 +873,17 @@ type AclPolicy = {
   [k: string]: unknown;
 };
 
-/** Coordinator auto-approvers (contract A): `{routes: {cidr: [tag]}, exit_node: [tag]}`. */
 export interface CoordinatorAutoApprovers {
   routes: RouteApprovers;
   exit_node: string[];
 }
 
-/** The CoordinatorApiClient methods this module needs (contract A). */
 interface AutoApproverApi {
   getAutoApprovers(): Promise<Partial<CoordinatorAutoApprovers> | null | undefined>;
   setAutoApprovers(approvers: CoordinatorAutoApprovers): Promise<unknown>;
 }
 
-/** The DB row is the source of truth: the monitor replays it after a coordinator restart. */
+/** The DB row is the source of truth. The monitor replays it after a coordinator restart. */
 async function storeAndPushAutoApprovers(
   tenantId: string,
   client: AutoApproverApi,
@@ -962,7 +915,6 @@ function withoutRelayApprovers(routes: RouteApprovers | undefined, cidrs: string
   return next;
 }
 
-/** Add federated CIDRs to a policy's route auto-approvers for the relay tag. */
 export function addFederatedRoutesToPolicy(policy: AclPolicy, cidrs: string[]): AclPolicy {
   const tagOwners = { ...(policy.tagOwners ?? {}) };
   tagOwners[FEDERATION_RELAY_TAG] ??= [];
@@ -970,13 +922,12 @@ export function addFederatedRoutesToPolicy(policy: AclPolicy, cidrs: string[]): 
   return { ...policy, tagOwners, autoApprovers: { ...policy.autoApprovers, routes } };
 }
 
-/** Inverse of {@link addFederatedRoutesToPolicy}; other approvers are left alone. */
+/** Leaves other approvers unchanged. */
 export function removeFederatedRoutesFromPolicy(policy: AclPolicy, cidrs: string[]): AclPolicy {
   const routes = withoutRelayApprovers(policy.autoApprovers?.routes, cidrs);
   return { ...policy, autoApprovers: { ...policy.autoApprovers, routes } };
 }
 
-/** Normalise whatever the coordinator returned into the contract shape. */
 export function normalizeAutoApprovers(
   raw: Partial<CoordinatorAutoApprovers> | null | undefined,
 ): CoordinatorAutoApprovers {
@@ -986,7 +937,7 @@ export function normalizeAutoApprovers(
   };
 }
 
-/** Coordinator counterpart of {@link addFederatedRoutesToPolicy}; exit-node and other entries are kept. */
+/** Keeps exit-node and other entries. */
 export function addFederatedRoutesToAutoApprovers(
   current: CoordinatorAutoApprovers,
   cidrs: string[],
@@ -994,7 +945,6 @@ export function addFederatedRoutesToAutoApprovers(
   return { ...current, routes: withRelayApprovers(current.routes, cidrs) };
 }
 
-/** Coordinator counterpart of {@link removeFederatedRoutesFromPolicy}. */
 export function removeFederatedRoutesFromAutoApprovers(
   current: CoordinatorAutoApprovers,
   cidrs: string[],
@@ -1002,11 +952,7 @@ export function removeFederatedRoutesFromAutoApprovers(
   return { ...current, routes: withoutRelayApprovers(current.routes, cidrs) };
 }
 
-/**
- * Make the relay tag approve exactly `imported` among the CIDRs it approves:
- * add missing ones, drop ones no session imports any more. Other approvers
- * and exit-node entries are untouched.
- */
+/** Makes the relay tag approve exactly `imported`. Other approvers and exit-node entries stay. */
 export function reconcileFederatedAutoApprovers(
   current: CoordinatorAutoApprovers,
   imported: string[],
@@ -1043,11 +989,7 @@ async function loadControlTenant(tenantId: string): Promise<ControlTenantRow | n
   return tenant ?? null;
 }
 
-/**
- * Apply a change to the tenant's federated-route approvals: the Headscale
- * policy in Headscale mode, the coordinator's auto-approvers in coordinator
- * mode. False when the tenant's control plane is not running.
- */
+/** Returns false when the tenant's control plane is not running. */
 async function updateRouteApprovals(
   tenantId: string,
   cidrs: string[],
@@ -1095,10 +1037,7 @@ export async function installFederatedRoutes(
   }
 }
 
-/**
- * Remove federated CIDRs from the tenant's route approvals, keeping any that
- * another of its sessions still imports.
- */
+/** Keeps CIDRs that another session of the tenant still imports. */
 export async function withdrawFederatedRoutes(
   tenantId: string,
   cidrsToRemove: string[],
@@ -1120,10 +1059,8 @@ export async function withdrawFederatedRoutes(
 }
 
 /**
- * Coordinator mode: auto-approvers are in-memory on the coordinator, so a
- * restart (or another writer replacing the set) loses federated entries.
- * Re-assert, per tenant with federation sessions, that the relay tag approves
- * exactly the prefixes its live sessions import.
+ * A coordinator restart or another writer can lose federated auto-approvers.
+ * This re-asserts that the relay tag approves exactly what live sessions import.
  */
 async function reconcileCoordinatorAutoApprovers(): Promise<void> {
   if (!useCoordinator) return;
@@ -1159,12 +1096,10 @@ async function reconcileCoordinatorAutoApprovers(): Promise<void> {
   }
 }
 
-// ── CIDR validation against a tenant (ADR-0019 §6) ──────────────────────
 
 /**
- * Subnet routes the tenant's devices advertise and that are approved, minus
- * anything imported over federation (those belong to a peer, not to us).
- * Best-effort: an unreachable control plane yields no subnets.
+ * Approved subnet routes, minus federated imports, which belong to a peer.
+ * An unreachable control plane gives no subnets.
  */
 async function approvedSubnetRoutes(tenantId: string): Promise<string[]> {
   try {
@@ -1193,8 +1128,8 @@ async function approvedSubnetRoutes(tenantId: string): Promise<string[]> {
 }
 
 /**
- * Validate CIDRs `tenantId` offers to share: inside its own tailnet range or
- * an approved subnet route, no default routes. Returns normalised prefixes.
+ * Offered CIDRs must be inside the tenant range or an approved subnet route (ADR-0019 §6).
+ * Default routes are refused.
  */
 export async function validateLocalCidrsForTenant(
   tenantId: string,
@@ -1207,16 +1142,14 @@ export async function validateLocalCidrsForTenant(
     .where(eq(tenants.id, tenantId))
     .limit(1);
   if (!tenant) return { cidrs: [], errors: ["Unknown tenant"] };
-  // Only ask the control plane when the tenant range alone does not cover the offer.
   const direct = validateLocalOffer(cidrs, tenant.ipv4Prefix, tenant.ipv6Prefix);
   if (direct.errors.length === 0) return direct;
   return validateLocalOffer(cidrs, tenant.ipv4Prefix, tenant.ipv6Prefix, await approvedSubnetRoutes(tenantId));
 }
 
 /**
- * Validate CIDRs a peer offers to `tenantId`: no default routes, no overlap
- * with the tenant's own range or with what its other active links import.
- * `excludeLinkId` is the link being negotiated. Returns normalised prefixes.
+ * Refuses default routes and overlap with the tenant range or other active imports.
+ * `excludeLinkId` is the link under negotiation.
  */
 export async function validatePeerCidrsForTenant(
   tenantId: string,
@@ -1245,7 +1178,6 @@ export async function validatePeerCidrsForTenant(
   return validatePeerOffer(cidrs, tenant.ipv4Prefix, tenant.ipv6Prefix, otherPeerCidrs);
 }
 
-// ── Read models for the API / dashboard ──────────────────────────────────
 
 export async function getRouteTable(
   tenantId: string,

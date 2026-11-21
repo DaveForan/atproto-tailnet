@@ -38,7 +38,6 @@ import { primaryHostname } from "../orchestrator/hostnames.js";
 import { stepUpForSession } from "../auth/step-up.js";
 import { parseBody } from "./validation.js";
 
-/** Router for /api/operator/* (all routes behind requireOperator). */
 export const operatorRouter = Router({ caseSensitive: true });
 
 /** Public instance descriptor — mount before agent-token resolution. */
@@ -50,12 +49,10 @@ operatorRouter.use("/api/operator", requireOperator);
 // Every change by an operator in a dashboard session needs a fresh device proof (ADR-0035)
 operatorRouter.use("/api/operator", (req, res, next) => (req.method === "GET" ? next() : stepUpForSession(req, res, next)));
 
-// ── Public: instance descriptor ─────────────────────────────────────
 
 /**
- * What a signed-out or no-access visitor needs: the default tailnet (if any,
- * with `id` so the client can use the existing join-request API) and whether
- * it accepts join requests. The instance is always invite-only.
+ * What a signed-out or no-access visitor needs: the default tailnet, if any, and whether it accepts join requests.
+ * The `id` lets the client use the join-request API. The instance is always invite-only.
  */
 instanceRouter.get("/api/instance", async (_req, res) => {
   const settings = await getInstanceSettings();
@@ -91,7 +88,6 @@ instanceRouter.get("/api/instance", async (_req, res) => {
   res.json({ defaultTailnet, inviteOnly: true });
 });
 
-// ── Overview ────────────────────────────────────────────────────────
 
 operatorRouter.get("/api/operator/overview", async (_req, res) => {
   const tenantRows = await db
@@ -177,7 +173,6 @@ operatorRouter.get("/api/operator/overview", async (_req, res) => {
   });
 });
 
-// ── Settings ────────────────────────────────────────────────────────
 
 operatorRouter.get("/api/operator/settings", async (_req, res) => {
   res.json(await getInstanceSettings());
@@ -250,7 +245,6 @@ async function defaultAcceptsJoins(id: string): Promise<boolean> {
   return Boolean(t?.a);
 }
 
-// ── Tailnet creators ────────────────────────────────────────────────
 
 operatorRouter.get("/api/operator/tailnet-creators", async (_req, res) => {
   const rows = await db
@@ -354,7 +348,6 @@ operatorRouter.delete("/api/operator/tailnet-creators/:id", async (req, res) => 
   res.json({ status: "removed" });
 });
 
-// ── Tenants ─────────────────────────────────────────────────────────
 
 async function loadTenant(id: string) {
   if (!UUID_RE.test(id)) return null;
@@ -452,7 +445,6 @@ operatorRouter.delete("/api/operator/tenants/:id", async (req, res) => {
   }
 });
 
-// ── Instance activity (audit) ───────────────────────────────────────
 
 /** Tenant-scoped audit actions that are operator actions (shown with instance rows). */
 const OPERATOR_TENANT_ACTIONS = ["tenant_suspended", "tenant_unsuspended", "tenant_deleted_by_operator"] as const;
@@ -463,9 +455,7 @@ const auditQuery = z.object({
 });
 
 /**
- * Instance activity: every instance-level audit row (tenant_id NULL —
- * operator settings/creators/user actions, MCP grants) plus operator actions
- * logged under a tenant. Newest first, paginated.
+ * Instance activity, newest first: instance-level audit rows (tenant_id NULL) plus operator actions under a tenant.
  */
 operatorRouter.get("/api/operator/audit", async (req, res) => {
   const parsed = auditQuery.safeParse(req.query);
@@ -506,7 +496,6 @@ operatorRouter.get("/api/operator/audit", async (req, res) => {
   });
 });
 
-// ── Users ───────────────────────────────────────────────────────────
 
 operatorRouter.post("/api/operator/users/:id/disable", async (req, res) => {
   const targetId = param(req, "id");

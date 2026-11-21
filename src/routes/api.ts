@@ -36,10 +36,6 @@ import { provisionTenant } from "../orchestrator/tenant-provisioning.js";
 import { deleteTenantInstance } from "../orchestrator/tenant-deletion.js";
 import { parseBody } from "./validation.js";
 
-/**
- * Router for /health, /api/me, /api/tenants (list, detail, delete,
- * start, stop) and public tenant lookup by slug.
- */
 export const apiRouter = Router({ caseSensitive: true });
 
 apiRouter.get("/health", async (_req, res) => {
@@ -92,11 +88,8 @@ const createTenantBody = z.object({
 });
 
 /**
- * Create the signed-in user's own top-level tailnet via the normal
- * provisioning path — for operators / designated creators who weren't given
- * one at sign-in (e.g. designated after joining another tailnet). Gated by
- * canCreateTailnet; one originated top-level tailnet per user. Interactive
- * credentials only — never agent tokens.
+ * Create the caller's own top-level tailnet, for operators and designated creators who got none at sign-in.
+ * Gated by canCreateTailnet; one originated top-level tailnet per user. Never agent tokens.
  */
 apiRouter.post("/api/tenants/mine", requireAuth, async (req, res) => {
   if (req.agentToken) {
@@ -216,10 +209,8 @@ apiRouter.get("/api/tenants/:id", requireAuth, tenantGuard({ param: "id" }), asy
 });
 
 /**
- * Public tenant info — no auth required. Only answers for tailnets that are
- * accepting join requests (and are not suspended, deleted or locked down);
- * everything else is 404 so the endpoint can't be used to probe which slugs
- * exist.
+ * Public tenant info, no auth. Only open tailnets answer (not suspended, deleted or locked down).
+ * All others get 404, so the endpoint cannot probe which slugs exist.
  */
 apiRouter.get("/api/tenants/by-slug/:slug/public", async (req, res) => {
   const tenantId = await tenantIdForPublicLink(param(req, "slug"));
@@ -256,11 +247,7 @@ apiRouter.get("/api/tenants/by-slug/:slug/public", async (req, res) => {
   });
 });
 
-/**
- * Whether the TLS on-demand ask endpoint (`/internal/tls-check`) may issue a
- * certificate for `<slug>.<BASE_DOMAIN>`: only live tenants — never deleted
- * or suspended ones.
- */
+/** True when `/internal/tls-check` may issue a certificate for `<slug>.<BASE_DOMAIN>`: live tenants only. */
 export async function tlsCertAllowedForSlug(slug: string): Promise<boolean> {
   // Live public names only (primary or alias) — never retired or internal-only names
   const tenantId = await tenantIdForHostname(slug);

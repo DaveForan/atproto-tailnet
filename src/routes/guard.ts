@@ -1,30 +1,12 @@
 /**
  * @module routes/guard
- *
- * One tenant guard for every `/api/tenants/:tenantId/...` handler.
- *
- * {@link tenantGuard} runs the guard clauses in the order CLAUDE.md fixes —
- * param extraction → getTenantForUser → (originator / agent-token refusals) →
- * hasPermission → lockdown — and stores the result on `res.locals.tenantCtx`.
- * Handlers read it with {@link tenantCtx}. Body validation and business logic
- * stay in the handler, after the guard.
- *
- * Mount it after `requireAuth` / `requireSession` and after `stepUpForSession`
- * or rate limiters that already ran before the inline lookup, so the effective
- * order of a route does not change.
- *
- * Responses are the ones the inline guards returned:
- * - non-member / deleted tenant: 404 `{ error: "Tenant not found" }` (never 403)
- * - `originatorOnly`: 403 `{ error: <message> }`
- * - `noAgentToken`: 403 `{ error: <message> }`
- * - `permission`: 403 `{ error: "Insufficient permissions" }` (or `permissionError`)
- * - `notLockedDown`: 403 `{ error: "Tenant is in lockdown mode" }` (or the given message)
+ * {@link tenantGuard} applies the tenant guard clauses in CLAUDE.md order; handlers read the result with {@link tenantCtx}.
+ * Mount it after auth, step-up and rate limiters. Non-members get 404 "Tenant not found", never 403.
  */
 
 import type { Request, Response, NextFunction, RequestHandler } from "express";
 import type { Permission } from "../members/permissions.js";
-// authUserId comes straight from its home module: some route tests mock
-// ./helpers.js with only the members a route used before the guard existed.
+// Import authUserId from its home module: some route tests mock ./helpers.js without it.
 import { authUserId } from "../auth/request-user.js";
 import { param, getTenantForUser, hasPermission, isLockedDown, type TenantForUser } from "./helpers.js";
 

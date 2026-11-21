@@ -1,12 +1,6 @@
 /**
- * @module notifications/service
- * Dashboard notifications + per-tenant webhook fan-out.
- *
- * {@link createNotification} resolves recipients at creation time — the
- * originator plus every member whose role holds the permission that lets
- * them act on the event — stores one row per recipient, and fires the
- * tenant's webhook in the background. It never throws: notification failures
- * must not break the request that triggered them.
+ * Dashboard notifications and per-tenant webhook fan-out.
+ * Notification failures must never break the request that caused them.
  */
 
 import { and, eq, gt, inArray, isNull, sql } from "drizzle-orm";
@@ -26,7 +20,7 @@ export const NOTIFICATION_TYPES = [
 
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 
-/** Permission a member needs (at creation time) to receive each type. */
+/** Permission a member needs, at creation time, to receive each type. */
 export const NOTIFICATION_PERMISSION: Record<NotificationType, string> = {
   device_approval_requested: "approve_devices",
   join_request: "approve_joins",
@@ -41,14 +35,13 @@ export interface NotificationContent {
   link?: string | null;
 }
 
-/** Minimal member view used to pick recipients. */
 export interface RecipientCandidate {
   userId: string;
   isOriginator: boolean;
   permissions: string[] | null;
 }
 
-/** Originator + members whose role has the matching permission (deduplicated). */
+/** Originator and members whose role has the matching permission, without duplicates. */
 export function selectRecipients(
   members: RecipientCandidate[],
   type: NotificationType,
@@ -61,7 +54,6 @@ export function selectRecipients(
   return [...out];
 }
 
-/** Fire-and-forget webhook delivery with logging. */
 export function fireWebhook(
   url: string,
   secret: string | null,
@@ -79,11 +71,8 @@ export function fireWebhook(
 }
 
 /**
- * Create a notification for every eligible member of the tenant and fire
- * the tenant webhook. Returns the number of recipients (0 on error).
- *
- * @param opts.dedupeWindowMs - skip if the same type was already raised for
- *   this tenant within the window (used for noisy events like limit hits).
+ * Notifies every eligible member and fires the tenant webhook. Returns the recipient count (0 on error).
+ * @param opts.dedupeWindowMs - skips the event when the same type occurred in this window.
  */
 export async function createNotification(
   tenantId: string,
@@ -156,7 +145,6 @@ export async function createNotification(
   }
 }
 
-/** Types of notifications addressed to one member. */
 export const USER_NOTIFICATION_TYPES = [
   "device_trust",
   "friend_request",
@@ -179,10 +167,7 @@ function clip(content: NotificationContent): { title: string; body: string; link
   return { title: content.title.slice(0, 200), body: (content.body ?? "").slice(0, 2000), link: content.link ?? null };
 }
 
-/**
- * Notifies one member (friend requests, shares, review outcomes). Fire and
- * forget: a failed notification never fails the action that caused it.
- */
+/** Notifies one member. A failed notification never fails the action that caused it. */
 export function notifyUser(
   tenantId: string,
   userId: string,
@@ -195,7 +180,7 @@ export function notifyUser(
     .catch((err: unknown) => logger.warn({ tenantId, type, err }, "failed to create notification"));
 }
 
-/** Fire-and-forget wrapper for route handlers; never blocks or throws. */
+/** Wrapper for route handlers. It never blocks or throws. */
 export function notify(
   tenantId: string,
   type: NotificationType,
@@ -205,7 +190,6 @@ export function notify(
   void createNotification(tenantId, type, content, opts);
 }
 
-/** Unread count for one member in one tenant. */
 export async function unreadCount(tenantId: string, userId: string): Promise<number> {
   const [row] = await db
     .select({ n: sql<number>`count(*)::int` })
@@ -220,7 +204,7 @@ export async function unreadCount(tenantId: string, userId: string): Promise<num
   return row?.n ?? 0;
 }
 
-/** Mark notifications read (own rows only); `ids` undefined = all. */
+/** Marks the member's own notifications read. Undefined `ids` marks all. */
 export async function markRead(
   tenantId: string,
   userId: string,

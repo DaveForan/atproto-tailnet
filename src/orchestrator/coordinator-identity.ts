@@ -1,12 +1,7 @@
 /**
  * @module orchestrator/coordinator-identity
- * Names the Rust coordinator shows to Tailscale clients: the tailnet name
- * (netmap Domain — the profile name in the Tailscale apps) and, per node
- * owner (our user id), the member's Bluesky handle and display name.
- *
- * The coordinator keeps this in memory only, so it is pushed when a key is
- * issued, on every coordinator (re)start (monitor resync), and periodically
- * so new members and renamed handles show up.
+ * Tailnet name (netmap Domain) and member handles that the coordinator shows to Tailscale clients.
+ * The coordinator keeps them in memory only, so we push them on key issue, restart, and periodically.
  */
 
 import { and, eq, inArray, isNotNull } from "drizzle-orm";
@@ -28,7 +23,6 @@ export interface TenantIdentity {
 
 const clip = (s: string) => s.slice(0, MAX_TEXT);
 
-/** Build the identity document for one tenant from the DB. */
 export async function buildTenantIdentity(tenantId: string): Promise<TenantIdentity | null> {
   const [tenant] = await db
     .select({ name: tenants.name, slug: tenants.slug })
@@ -54,7 +48,7 @@ export async function buildTenantIdentity(tenantId: string): Promise<TenantIdent
   return out;
 }
 
-/** Push one tenant's identity to the coordinator (no-op outside coordinator mode). */
+/** Does nothing outside coordinator mode. */
 export async function pushTenantIdentity(tenantId: string, coordinatorTenantId: string): Promise<void> {
   if (!config.coordinatorUrl) return;
   const identity = await buildTenantIdentity(tenantId);
@@ -63,7 +57,7 @@ export async function pushTenantIdentity(tenantId: string, coordinatorTenantId: 
   await client.setIdentity(identity);
 }
 
-/** Push identity for every running coordinator tenant. Returns false if any push failed. */
+/** Returns false if any push fails. */
 export async function syncAllTenantIdentities(): Promise<boolean> {
   if (!config.coordinatorUrl) return true;
   const rows = await db

@@ -1,9 +1,7 @@
 /**
  * @module mcp/tools
- * MCP tool catalogue. Every tool is a thin wrapper over an existing REST
- * endpoint called with the user's own bearer token (see mcp/api-client.ts):
- * permissions, validation and business rules all stay in the route handlers,
- * and API error messages are surfaced as tool errors.
+ * MCP tool catalogue: thin wrappers over REST endpoints, called with the user's token (see mcp/api-client.ts).
+ * Permissions, validation and business rules stay in the route handlers.
  */
 import { z } from "zod";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -23,13 +21,9 @@ export interface ToolDef {
   run(api: ApiClient, args: Record<string, unknown>): Promise<unknown>;
 }
 
-// ── Path-segment arguments ──
-// Every id interpolated into a REST path is validated twice: by the tool's
-// input schema (the SDK rejects bad arguments before the handler runs) and by
-// No format here allows '.', '/', '%' or a backslash, so an argument can never add,
-// No format here allows '.', '/', '%' or '\\', so an argument can never add,
-// remove or climb path segments; api-client.ts additionally refuses any
-// request whose normalized URL path differs from the constructed one.
+// Security: each id in a REST path is checked twice, by the tool's input schema and by seg().
+// No format allows '.', '/', '%' or a backslash, so an argument cannot add, remove or climb path segments.
+// api-client.ts also refuses a request whose normalized URL path differs from the constructed one.
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** Opaque control-plane ids: numeric node ids, `cp:<id>` / UUID auth key ids. */
 export const SEGMENT_ID_RE = /^[A-Za-z0-9_:-]{1,128}$/;
@@ -71,7 +65,6 @@ const DESTRUCTIVE: ToolAnnotations = { readOnlyHint: false, destructiveHint: tru
 const DESTRUCTIVE_NOTE = " DESTRUCTIVE: this cannot be undone from here — confirm with the user first.";
 
 export const TOOL_DEFS: ToolDef[] = [
-  // ── Identity ──
   {
     name: "whoami",
     title: "Who am I",
@@ -81,7 +74,6 @@ export const TOOL_DEFS: ToolDef[] = [
     run: (api) => api.call("GET", "/api/me"),
   },
 
-  // ── Tailnets ──
   {
     name: "list_tailnets",
     title: "List tailnets",
@@ -116,7 +108,6 @@ export const TOOL_DEFS: ToolDef[] = [
     },
   },
 
-  // ── Devices ──
   {
     name: "list_devices",
     title: "List devices",
@@ -134,7 +125,6 @@ export const TOOL_DEFS: ToolDef[] = [
     run: (api, a) => api.call("DELETE", `${t(a)}/devices/${seg(a.device_id, "id", "device_id")}`),
   },
 
-  // ── Members ──
   {
     name: "list_members",
     title: "List members",
@@ -153,7 +143,6 @@ export const TOOL_DEFS: ToolDef[] = [
     run: (api, a) => api.call("DELETE", `${t(a)}/members/${seg(a.user_id, "uuid", "user_id")}`),
   },
 
-  // ── Invitations ──
   {
     name: "invite",
     title: "Invite",
@@ -189,7 +178,6 @@ export const TOOL_DEFS: ToolDef[] = [
     run: (api, a) => api.call("DELETE", `${t(a)}/invitations/${seg(a.invitation_id, "uuid", "invitation_id")}`),
   },
 
-  // ── Join requests ──
   {
     name: "list_join_requests",
     title: "List join requests",
@@ -215,7 +203,6 @@ export const TOOL_DEFS: ToolDef[] = [
     run: (api, a) => api.call("POST", `${t(a)}/join-requests/${seg(a.request_id, "uuid", "request_id")}/reject`),
   },
 
-  // ── Device approvals ──
   {
     name: "list_device_approvals",
     title: "List device approvals",
@@ -241,7 +228,6 @@ export const TOOL_DEFS: ToolDef[] = [
     run: (api, a) => api.call("POST", `${t(a)}/device-approvals/${seg(a.approval_id, "uuid", "approval_id")}/reject`),
   },
 
-  // ── Auth keys ──
   {
     name: "list_auth_keys",
     title: "List auth keys",
@@ -284,7 +270,6 @@ export const TOOL_DEFS: ToolDef[] = [
     run: (api, a) => api.call("DELETE", `${t(a)}/auth-keys/${seg(a.key_id, "id", "key_id")}`),
   },
 
-  // ── ACL ──
   {
     name: "get_acl",
     title: "Get ACL policy",
@@ -306,7 +291,6 @@ export const TOOL_DEFS: ToolDef[] = [
     run: (api, a) => api.call("PUT", `${t(a)}/acl`, a.policy),
   },
 
-  // ── Routes ──
   {
     name: "list_routes",
     title: "List routes",
@@ -332,7 +316,6 @@ export const TOOL_DEFS: ToolDef[] = [
     run: (api, a) => api.call("POST", `${t(a)}/routes/${seg(a.route_id, "route", "route_id")}/disable`),
   },
 
-  // ── Settings / limits / notifications ──
   {
     name: "get_settings",
     title: "Get settings",
@@ -394,7 +377,6 @@ export const TOOL_DEFS: ToolDef[] = [
     run: (api, a) => api.call("GET", `${t(a)}/notifications`),
   },
 
-  // ── Instance operator ──
   {
     name: "instance_overview",
     title: "Instance overview",

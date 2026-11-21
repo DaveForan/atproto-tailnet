@@ -77,7 +77,6 @@ function settingsView(
   };
 }
 
-// ── Tenant settings ─────────────────────────────────────────────────
 
 settingsRouter.get(
   "/api/tenants/:tenantId/settings",

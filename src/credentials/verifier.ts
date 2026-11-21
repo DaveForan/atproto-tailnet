@@ -1,7 +1,4 @@
-/**
- * @module credentials/verifier
- * Verify VC-JWT credentials and holder binding proofs (ADR-0012).
- */
+/** Verifies VC-JWT credentials and holder binding proofs (ADR-0012). */
 
 import * as jose from "jose";
 import type {
@@ -92,11 +89,9 @@ export async function verifyHolderBinding(
     return { valid: false, error: "Challenge expired" };
   }
 
-  // Holder-binding proofs are a detached EdDSA JWS over the bare nonce, the
-  // same primitive collective keys use for CFP messages. Accept only nonces in
-  // the exact format generateHolderChallenge() mints (32 random bytes,
-  // base64url) so a signature over any other payload — a CFP message or a
-  // CFP challenge response (typed JSON) — can never pass as a binding proof.
+  // Security: a binding proof is a detached EdDSA JWS over the bare nonce.
+  // CFP messages use the same primitive. Only the exact challenge nonce format is accepted.
+  // Then a signature over a CFP message or challenge response cannot pass as a proof.
   if (!HOLDER_NONCE_RE.test(proof.nonce)) {
     return { valid: false, error: "Malformed nonce" };
   }

@@ -1,8 +1,7 @@
 /**
  * @module operator/policy
- * Instance-level policy: who may create a tailnet, the instance settings
- * singleton (single-tailnet mode, default tailnet) and designated tailnet
- * creators. Every tailnet-creation path goes through {@link canCreateTailnet}.
+ * Instance policy: tailnet creation rights, the instance settings singleton and designated creators.
+ * Every tailnet-creation path goes through {@link canCreateTailnet}.
  */
 
 import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
@@ -99,10 +98,9 @@ export function decideCanCreateTailnet(input: {
 let creationQueue: Promise<unknown> = Promise.resolve();
 
 /**
- * Serializes check-then-create for tailnets so single-tailnet mode can't be
- * raced by concurrent sign-ins. Two layers: a queue in this process (so one
- * process holds one lock connection at most) and a PostgreSQL advisory lock
- * across all replicas (ADR-0034). The tenant row is inserted before fn resolves.
+ * Serializes check-then-create so concurrent sign-ins cannot race single-tailnet mode.
+ * An in-process queue keeps one lock connection per process; a PostgreSQL advisory lock covers replicas (ADR-0034).
+ * The tenant row is inserted before fn resolves.
  */
 export function withTailnetCreationLock<T>(fn: () => Promise<T>): Promise<T> {
   const locked = () => withAdvisoryLock(pool, LOCK_TAILNET_CREATION, fn);
@@ -121,9 +119,8 @@ export async function canCreateTailnet(user: { did: string }): Promise<boolean> 
 }
 
 /**
- * Called when a new top-level tenant is provisioned. If its owner is an
- * operator and no default tailnet is set yet, it becomes the default and
- * starts accepting join requests (so no-access users can ask to join).
+ * Makes a new top-level tenant the default tailnet when its owner is an operator and no default exists.
+ * The default accepts join requests, so no-access users can ask to join.
  * The conditional update makes the claim race-free.
  */
 export async function claimDefaultTailnet(tenantId: string, ownerDid: string): Promise<boolean> {
@@ -154,10 +151,8 @@ export async function clearDefaultTailnetIf(tenantId: string): Promise<void> {
 }
 
 /**
- * `/api/me` `access`: "member" only when the user belongs to at least one
- * live tailnet that is not suspended; memberships solely in suspended
- * tailnets count as "no_access" (operators still get the Instance tab via
- * `isOperator`, which is independent of this).
+ * `/api/me` `access`: "member" only when the user belongs to a live, unsuspended tailnet.
+ * Memberships only in suspended tailnets count as "no_access"; `isOperator` is independent.
  */
 export async function memberAccess(userId: string): Promise<"member" | "no_access"> {
   const [row] = await db

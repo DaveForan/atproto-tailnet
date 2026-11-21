@@ -103,7 +103,6 @@ async function handles(ids: string[]): Promise<Map<string, { handle: string; dis
   return out;
 }
 
-// ── Friends ─────────────────────────────────────────────────────────────
 
 sharingRouter.get("/api/tenants/:tenantId/friends", requireAuth, member, async (req, res) => {
   const m = tenantCtx(res);
@@ -254,7 +253,6 @@ sharingRouter.delete("/api/tenants/:tenantId/friends/:friendshipId", requireAuth
   res.json({ status: "removed", sharesEnded: ended });
 });
 
-// ── Blocks ──────────────────────────────────────────────────────────────
 
 sharingRouter.post("/api/tenants/:tenantId/blocks", requireAuth, member, async (req, res) => {
   const m = tenantCtx(res);
@@ -286,7 +284,6 @@ sharingRouter.delete("/api/tenants/:tenantId/blocks/:userId", requireAuth, membe
   res.json({ status: "unblocked" });
 });
 
-// ── A friend's devices (names only, to ask for one) ─────────────────────
 
 sharingRouter.get("/api/tenants/:tenantId/friends/:userId/devices", requireAuth, member, async (req, res) => {
   const m = tenantCtx(res);
@@ -300,7 +297,6 @@ sharingRouter.get("/api/tenants/:tenantId/friends/:userId/devices", requireAuth,
   res.json({ devices: devices.map((d) => ({ id: d.id, name: d.name })) });
 });
 
-// ── Shares ──────────────────────────────────────────────────────────────
 
 sharingRouter.get("/api/tenants/:tenantId/shares", requireAuth, member, async (req, res) => {
   const m = tenantCtx(res);

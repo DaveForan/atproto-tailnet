@@ -1,12 +1,10 @@
 /**
- * @module config
- * Zod-validated configuration; nothing else reads process.env.
+ * Zod-validated configuration. No other module reads process.env.
  * Startup fails when a production rule is broken (weak secrets, missing keys).
  */
 import { z } from "zod";
 import { logger } from "./logger.js";
 
-/** Zod schema defining every config knob and its default. */
 const configSchema = z.object({
   port: z.coerce.number().default(3000),
   publicUrl: z.string().default("http://localhost:3000"),
@@ -18,14 +16,12 @@ const configSchema = z.object({
   sessionSecret: z.string().default("dev-secret-change-me"),
   baseDomain: z.string().default("ts.localhost"),
   /**
-   * Hostname of the shared control URL every tailnet's devices use in
-   * coordinator mode (ADR-0026). Must NOT be under baseDomain: the
-   * coordinator's split DNS for baseDomain could stop it resolving on devices.
+   * Shared control URL hostname for all tailnets in coordinator mode (ADR-0026).
+   * It must not be under baseDomain. Split DNS for baseDomain can stop it resolving on devices.
    */
   /**
-   * Resolvers that tailnet devices use for names under baseDomain that have
-   * no record (ADR-0028), as IP addresses. Empty (default): devices use their
-   * own resolvers through the client's built-in forwarder.
+   * Resolver IPs that devices use for baseDomain names with no record (ADR-0028).
+   * When empty, devices use their own resolvers through the client forwarder.
    */
   tailnetDnsUpstream: z.array(z.string().ip()).max(4).default([]),
   controlDomain: z
@@ -34,16 +30,12 @@ const configSchema = z.object({
     .optional(),
   caddyAdminUrl: z.string().url().default("http://localhost:2019"),
   /**
-   * False when `CADDY_ADMIN_URL=off`: another proxy with static routes is in
-   * front (for example a Kubernetes Ingress), so the service writes no Caddy
-   * routes and does not answer Caddy's certificate question. Needs the shared
-   * control URL (`CONTROL_DOMAIN`): per-tailnet hostnames are not routed.
+   * False when `CADDY_ADMIN_URL=off`. Another proxy with static routes is in front (for example an Ingress).
+   * The service then writes no Caddy routes and does not answer Caddy certificate checks.
+   * Requires `CONTROL_DOMAIN`, because per-tailnet hostnames are not routed.
    */
   caddyEnabled: z.boolean().default(true),
-  /**
-   * Port devices use to reach tenant URLs, when the proxy is not published on
-   * the scheme's default port (local development: Caddy is on 8180).
-   */
+  /** Port for tenant URLs when the proxy is not on the default port (local development uses 8180). */
   tenantPublicPort: z.coerce.number().int().min(1).max(65535).optional(),
   atprotoPrivateKey: z.string().optional(),
   /** 32-byte hex key (AES-256-GCM) encrypting collective DID private keys at rest. */
@@ -51,28 +43,22 @@ const configSchema = z.object({
     .string()
     .regex(/^[0-9a-fA-F]{64}$/, "must be 64 hex characters (32 bytes)")
     .optional(),
-  /**
-   * URL of the Rust mesh coordinator (ADR-0023). When set, tenant control-plane
-   * operations go to the coordinator instead of per-tenant Headscale containers.
-   */
+  /** Rust mesh coordinator URL (ADR-0023). When set, it replaces per-tenant Headscale containers. */
   coordinatorUrl: z.string().url().optional(),
   coordinatorApiKey: z.string().min(1).optional(),
   /**
-   * Allow notification webhooks to target private/loopback addresses and plain
-   * http. Only for single-organisation self-hosting where the webhook receiver
-   * (ntfy, Gotify, a Matrix bridge…) lives on the same private network. Never
-   * enable on a multi-tenant instance: any tenant admin could then make the
-   * service POST to internal hosts.
+   * Lets notification webhooks target private or loopback addresses over plain http.
+   * Use it only for single-organisation self-hosting.
+   * Security: never enable it on a multi-tenant instance. Any tenant admin can then make the service POST to internal hosts.
    */
   webhookAllowPrivate: z.boolean().default(false),
-  /** Federation (links between tailnets) is off until its data plane works without Docker. */
+  /** Federation stays off until its data plane works without Docker. */
   federationEnabled: z.boolean().default(false),
   /** Reverse-proxy hops to trust for X-Forwarded-* (1 behind Caddy). 0 = direct exposure. */
   trustProxy: z.coerce.number().int().min(0).max(5).default(0),
   /**
-   * Instance operators (OPERATOR_DIDS, comma-separated `did:` values). Only
-   * operators (and the tailnet creators they designate) may create tailnets,
-   * and only operators can reach /api/operator/*. Empty is allowed (dev).
+   * Instance operator DIDs (OPERATOR_DIDS, comma-separated).
+   * Only operators and their designated creators can create tailnets. Only operators can reach /api/operator/*.
    */
   operatorDids: z
     .array(z.string().regex(/^did:[a-z0-9]+:\S+$/, 'each OPERATOR_DIDS entry must be a DID ("did:…")'))
@@ -83,21 +69,19 @@ const configSchema = z.object({
     portRangeEnd: z.coerce.number().default(10100),
     dataDir: z.string().default("./data/headscale"),
     /**
-     * Docker network shared by Caddy and the tenant containers. When set,
-     * tenant containers join it and Caddy reaches them by container name;
-     * when unset, Caddy must run on the host and dials localhost:<port>.
+     * Docker network for Caddy and tenant containers. When set, Caddy reaches tenants by container name.
+     * When unset, Caddy must run on the host and dial localhost:<port>.
      */
     network: z.string().min(1).optional(),
   }),
 });
 
-/** Splits a comma-separated DID list (OPERATOR_DIDS), trimming blanks. */
 export function parseDidList(raw: string | undefined): string[] {
   if (!raw) return [];
   return [...new Set(raw.split(",").map((d) => d.trim()).filter(Boolean))];
 }
 
-/** Parsed and validated application config. Importing this triggers validation at module load. */
+/** Validated application config. Importing this module runs validation. */
 export const config = configSchema.parse({
   port: process.env.PORT,
   publicUrl: process.env.PUBLIC_URL,
@@ -126,10 +110,8 @@ export const config = configSchema.parse({
   },
 });
 
-// ── Coordinator URL validation ──
-// COORDINATOR_URL is operator-set infrastructure config, not user input —
-// private/Docker-internal addresses (172.x, 10.x) are expected. SSRF
-// protection for user-supplied URLs lives in identity/resolver.ts.
+// COORDINATOR_URL is operator config, not user input, so private addresses are expected.
+// SSRF protection for user-supplied URLs is in identity/resolver.ts.
 if (config.coordinatorUrl) {
   const coordUrl = new URL(config.coordinatorUrl);
   if (!["http:", "https:"].includes(coordUrl.protocol)) {
@@ -145,7 +127,7 @@ if (config.coordinatorUrl) {
   }
 }
 
-/** True when the service is served from a loopback address, i.e. local development. */
+/** True when the service runs on a loopback address (local development). */
 export const isLoopbackDeployment = ["localhost", "127.0.0.1", "[::1]"].includes(
   new URL(config.publicUrl).hostname,
 );
@@ -174,8 +156,8 @@ if (
 }
 
 /**
- * Error for a federating production instance without key encryption, else null.
- * Security: collective private keys would otherwise be stored as plain base64.
+ * Returns an error for a federating production instance without key encryption, else null.
+ * Security: without encryption, collective private keys are stored as plain base64.
  */
 export function federationKeyProblem(
   cfg: { federationEnabled: boolean; federationKeyEncryptionKey?: string },
@@ -188,8 +170,8 @@ export function federationKeyProblem(
 const federationKeyError = federationKeyProblem(config, isLoopbackDeployment);
 if (federationKeyError) throw new Error(federationKeyError);
 
-// Without operators nobody can create a tailnet (or administer the instance).
-// Loud, but not fatal: the first deploy may set OPERATOR_DIDS afterwards.
+// Without operators, nobody can create a tailnet. This is a warning, not fatal:
+// the first deploy can set OPERATOR_DIDS later.
 if (!isLoopbackDeployment && config.operatorDids.length === 0) {
   logger.warn(
     "*** OPERATOR_DIDS IS EMPTY — this instance has no operator: nobody can create a tailnet " +
@@ -197,20 +179,14 @@ if (!isLoopbackDeployment && config.operatorDids.length === 0) {
   );
 }
 
-/**
- * Public URL of a tenant's Headscale (`<proto>://<slug>.<baseDomain>[:port]`):
- * the login server devices are given, and the instance's own `server_url`.
- */
+/** Public tenant Headscale URL (`<proto>://<slug>.<baseDomain>[:port]`), used as the device login server. */
 export function tenantPublicUrl(slug: string): string {
   const proto = config.publicUrl.startsWith("https") ? "https" : "http";
   const port = config.tenantPublicPort ? `:${config.tenantPublicPort}` : "";
   return `${proto}://${slug}.${config.baseDomain}${port}`;
 }
 
-/**
- * The shared control URL (`<proto>://<CONTROL_DOMAIN>[:port]`), or null when
- * no CONTROL_DOMAIN is configured (per-tailnet URLs are used instead).
- */
+/** Shared control URL (`<proto>://<CONTROL_DOMAIN>[:port]`), or null when CONTROL_DOMAIN is not set. */
 export function sharedControlUrl(): string | null {
   if (!config.controlDomain) return null;
   const proto = config.publicUrl.startsWith("https") ? "https" : "http";
@@ -230,15 +206,12 @@ if (config.controlDomain) {
 }
 
 /**
- * Name of the dashboard session cookie. Over HTTPS it carries the `__Host-`
- * prefix: browsers then only accept it from this exact host, with `Secure`,
- * `Path=/` and no `Domain`, so content on another subdomain (for example a
- * member's service) can never set or replace it. Plain-HTTP development
- * cannot use the prefix.
+ * Dashboard session cookie name.
+ * Security: over HTTPS it uses the `__Host-` prefix. Then no other subdomain can set or replace it.
+ * Plain-HTTP development cannot use the prefix.
  */
 export function sessionCookieName(publicUrl: string = config.publicUrl): string {
   return publicUrl.startsWith("https") ? "__Host-tailnet-session" : "tailnet-session";
 }
 
-/** TypeScript type inferred from the validated config object. */
 export type Config = typeof config;

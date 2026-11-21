@@ -111,10 +111,6 @@ export function loginNonceMatches(expected: string | undefined, actual: string |
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-/**
- * Router for authentication routes: login initiation, OAuth callback,
- * logout, and AT Proto .well-known metadata/JWKS endpoints.
- */
 export const authRouter = Router({ caseSensitive: true });
 
 authRouter.get("/auth/login", async (req, res) => {
@@ -227,11 +223,9 @@ authRouter.get("/auth/callback", async (req, res) => {
         .where(eq(users.id, user.id));
     }
 
-    // A user with no membership gets their own tailnet only if they may create
-    // one (operator / designated creator, single-tailnet rule). Everyone else
-    // lands on the dashboard's no-access view (invitations, join request).
-    // Also covers a first-login provisioning failure after the user row was
-    // inserted. Users with any membership are left alone.
+    // A user with no membership gets their own tailnet only if they may create one.
+    // Everyone else lands on the dashboard's no-access view (invitations, join request).
+    // This also recovers a first-login provisioning failure after the user row insert.
     await withTailnetCreationLock(async () => {
       const [anyMembership] = await db
         .select({ id: memberships.id })

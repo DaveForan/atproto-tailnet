@@ -108,7 +108,6 @@ async function loadPost(tenantId: string, postId: string): Promise<Post | null> 
   return post && post.status !== "removed" ? post : null;
 }
 
-// ── A member's own devices ──────────────────────────────────────────────
 
 boardsRouter.get("/api/tenants/:tenantId/my-devices", requireAuth, tenantGuard(), async (req, res) => {
   const result = tenantCtx(res);
@@ -119,7 +118,6 @@ boardsRouter.get("/api/tenants/:tenantId/my-devices", requireAuth, tenantGuard()
   }
 });
 
-// ── Public board ────────────────────────────────────────────────────────
 
 boardsRouter.get("/api/tenants/:tenantId/boards/public", requireAuth, tenantGuard(), async (req, res) => {
   const userId = authUserId(req);
@@ -228,7 +226,6 @@ boardsRouter.get("/api/tenants/:tenantId/boards/pending", requireAuth, reviewGua
   res.json({ posts: posts.map(({ post, authorHandle }) => ({ ...post, authorHandle })) });
 });
 
-// ── Create / change / remove a post ─────────────────────────────────────
 
 boardsRouter.post("/api/tenants/:tenantId/boards/posts", requireAuth, tenantGuard({ notLockedDown: true }), async (req, res) => {
   const userId = authUserId(req);
@@ -466,7 +463,6 @@ boardsRouter.delete("/api/tenants/:tenantId/boards/posts/:postId", requireAuth, 
   res.json({ status: "removed" });
 });
 
-// ── Review ──────────────────────────────────────────────────────────────
 
 /** Approve or reject a public post. Runs after {@link reviewGuard}. */
 async function review(req: Request, res: Response, approve: boolean) {
@@ -523,7 +519,6 @@ async function review(req: Request, res: Response, approve: boolean) {
 boardsRouter.post("/api/tenants/:tenantId/boards/posts/:postId/approve", requireAuth, reviewGuard, (req, res) => review(req, res, true));
 boardsRouter.post("/api/tenants/:tenantId/boards/posts/:postId/reject", requireAuth, reviewGuard, (req, res) => review(req, res, false));
 
-// ── Connect ─────────────────────────────────────────────────────────────
 
 /**
  * Set which of the caller's devices are connected to a post (an empty list
@@ -589,7 +584,6 @@ boardsRouter.delete("/api/tenants/:tenantId/boards/posts/:postId/connections/:us
   res.json({ status: "disconnected" });
 });
 
-// ── Access mode of the tailnet ──────────────────────────────────────────
 
 boardsRouter.get("/api/tenants/:tenantId/access-mode", requireAuth, tenantGuard(), async (req, res) => {
   const result = tenantCtx(res);
@@ -633,7 +627,6 @@ boardsRouter.put("/api/tenants/:tenantId/access-mode", requireAuth, tenantGuard(
   res.json({ mode: parsed.data.mode, applied });
 });
 
-// ── Controller board ────────────────────────────────────────────────────
 
 boardsRouter.get("/api/tenants/:tenantId/controller-board", requireAuth, tenantGuard(), async (req, res) => {
   const result = tenantCtx(res);

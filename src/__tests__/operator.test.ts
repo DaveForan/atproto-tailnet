@@ -1,11 +1,7 @@
 /**
- * Instance-operator features: tailnet-creation gating, no-access sign-in,
- * default tailnet claim, operator guard, suspension/disable enforcement,
- * disable cascade, invitations by DID with invite links.
- *
- * The DB is a chainable mock: every query (select/insert/update/delete chain)
- * resolves, when awaited, to the next entry of `results`; `.set()`/`.values()`
- * payloads are recorded in `writes`.
+ * Instance-operator features: creation gating, sign-in, default tailnet, guard, suspension, disable, invitations.
+ * The DB is a chainable mock: each awaited query resolves to the next `results` entry.
+ * `.set()`/`.values()` payloads are recorded in `writes`.
  */
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import type { AddressInfo } from "node:net";
@@ -111,7 +107,7 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-// ── Test HTTP app with a fake session (x-user: "<userId>|<did>") ──
+// Test HTTP app with a fake session: the x-user header is "<userId>|<did>".
 type FakeSession = Record<string, unknown> & { destroyed?: boolean };
 const app = express();
 app.use(express.json());
@@ -174,7 +170,6 @@ async function call(
 const OP = "u-op|did:plc:operator";
 const BOB = "u-bob|did:plc:bob";
 
-// ── canCreateTailnet ──
 describe("canCreateTailnet", () => {
   const who = {
     operator: { isOperator: true, isCreator: false },
@@ -214,7 +209,6 @@ describe("canCreateTailnet", () => {
   });
 });
 
-// ── Sign-in ──
 describe("auth callback", () => {
   const signOut = vi.fn().mockResolvedValue(undefined);
 
@@ -294,7 +288,6 @@ describe("auth callback", () => {
   });
 });
 
-// ── Default tailnet ──
 describe("claimDefaultTailnet", () => {
   it("first operator tailnet becomes default and accepts join requests", async () => {
     results.push([], [{ id: 1 }], []);
@@ -315,7 +308,6 @@ describe("claimDefaultTailnet", () => {
   });
 });
 
-// ── requireOperator ──
 describe("requireOperator", () => {
   function run(req: Partial<Request>) {
     const res = { code: 0, body: null as unknown, status(c: number) { this.code = c; return this; }, json(b: unknown) { this.body = b; return this; } };
@@ -351,7 +343,6 @@ describe("requireOperator", () => {
   });
 });
 
-// ── Request-time enforcement ──
 describe("enforceOperatorState", () => {
   const TENANT = "11111111-2222-3333-4444-555555555555";
 
@@ -386,7 +377,6 @@ describe("enforceOperatorState", () => {
   });
 });
 
-// ── Disable user ──
 describe("disable user", () => {
   it("runs the kick cascade for every membership; originated tenants keep the membership but lose access", async () => {
     const t1 = { id: "t1", status: "running", apiKey: "k", port: 1 };
@@ -433,7 +423,6 @@ describe("disable user", () => {
   });
 });
 
-// ── Invitations ──
 describe("invitations", () => {
   const TENANT = "11111111-2222-3333-4444-555555555555";
   const INV = "99999999-8888-7777-6666-555555555555";
@@ -536,7 +525,6 @@ describe("withTailnetCreationLock", () => {
   });
 });
 
-// ── Security fixes ──
 import { setTenantSuspendedCascade, OperatorActionError } from "../operator/lifecycle.js";
 import { memberAccess } from "../operator/policy.js";
 import { tenantIdFromPath } from "../operator/access.js";

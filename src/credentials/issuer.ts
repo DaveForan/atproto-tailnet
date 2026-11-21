@@ -1,7 +1,4 @@
-/**
- * @module credentials/issuer
- * Issue VC-JWT credentials signed by a collective's Ed25519 key (ADR-0012).
- */
+/** Issues VC-JWT credentials signed by a collective Ed25519 key (ADR-0012). */
 
 import * as jose from "jose";
 import { randomBytes } from "node:crypto";

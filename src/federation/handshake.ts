@@ -263,8 +263,8 @@ export async function handleChallenge(
   );
   const routes = callbacks.getLocalRoutes();
 
-  // Signed over JCS of every transmitted member except `signature` — the
-  // same bytes the receiver rebuilds from the wire message.
+  // Signed over JCS of every transmitted member except `signature`.
+  // The receiver rebuilds the same bytes from the wire message.
   const unsigned: Omit<CommitMessage, "signature"> = {
     type: "COMMIT",
     collectiveDid: state.localDid,
@@ -331,8 +331,7 @@ export async function handleCommit(
     };
   }
 
-  // The COMMIT itself (its routes, timestamp) must be signed by the peer,
-  // over the message as received.
+  // The peer must sign the COMMIT itself (routes, timestamp), over the message as received.
   const commitValid = await verifySigned(callbacks, commit.collectiveDid, commit);
   if (!commitValid) {
     return {

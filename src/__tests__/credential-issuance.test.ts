@@ -2,9 +2,7 @@
  * Credential issuance is bounded: only members are subjects, a role
  * attestation never states more than the subject's role grants or the caller
  * holds, and a capability only delegates permissions both hold.
- *
- * DB is a chainable mock: each awaited query resolves to the next `results`
- * entry (same pattern as operator.test.ts).
+ * The DB is a chainable mock: each awaited query resolves to the next `results` entry.
  */
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import type { AddressInfo } from "node:net";

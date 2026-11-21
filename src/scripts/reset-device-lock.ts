@@ -1,12 +1,7 @@
 /**
- * Last-resort recovery for the device lock (ADR-0035): removes a user's
- * trusted devices, recovery codes and open sessions, so that the next
- * AT Protocol sign-in works from any device again.
- *
- * Needs access to the server and its database, which is the proof of
- * authority here. Usage, inside the app container:
- *
- *   node dist/scripts/reset-device-lock.js <handle-or-did>
+ * Last-resort device lock recovery (ADR-0035). It removes trusted devices, recovery codes and sessions.
+ * Security: server and database access is the proof of authority.
+ * Usage in the app container: node dist/scripts/reset-device-lock.js <handle-or-did>
  */
 import { eq, or } from "drizzle-orm";
 import { db, pool } from "../db/index.js";

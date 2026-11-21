@@ -15,19 +15,9 @@ import { sameResource } from "../oauth/provider.js";
 import { isInternalMcpCall } from "../mcp/internal.js";
 
 /**
- * Express middleware that resolves a Bearer token from the `Authorization`
- * header. If present and valid, populates `req.agentToken` so downstream
- * handlers work transparently via {@link authUserId}.
- *
- * Does NOT write to `req.session` — agent auth is stateless and must not
- * persist a session cookie. Also verifies the tenant's `allowAgentTokens`
- * and `allowMemberAgentTokens` settings at runtime.
- *
- * A Bearer header that does not resolve to a credential is refused with 401.
- * It never falls back to the session cookie: the CSRF middleware exempts
- * Bearer requests, so a cookie fallback would be a CSRF bypass.
- *
- * Must be mounted **before** `requireAuth` in the middleware chain.
+ * Resolves an `Authorization: Bearer` token into `req.agentToken` or `req.mcpAuth`. Mount before `requireAuth`.
+ * Stateless: it never writes `req.session`. It checks the tenant's agent-token settings at runtime.
+ * Security: an unresolved Bearer header gets 401, never a cookie fallback. CSRF exempts Bearer, so a fallback bypasses it.
  */
 export async function resolveAgentToken(
   req: Request,
@@ -60,15 +50,10 @@ async function resolveBearer(
 ): Promise<void> {
   const raw = req.headers.authorization!.slice(7);
 
-  // MCP OAuth access tokens (`mcp_…`) authenticate the request AS THE USER:
-  // req.mcpAuth is set, req.agentToken stays unset, so agent-token scope and
-  // restrictions never apply. Invalid/expired/revoked tokens (or a disabled
-  // user) leave the request unauthenticated.
-  //
-  // They are honoured ONLY on the loopback calls our /mcp tools make (the
-  // per-process secret header, see mcp/internal.ts), so a token's power is
-  // exactly the curated /mcp tool surface. Presented anywhere else on the
-  // REST API, an MCP token is refused with 401.
+  // MCP tokens (`mcp_…`) act AS THE USER: req.mcpAuth is set, so agent-token scope never applies.
+  // Invalid, expired or revoked tokens, or a disabled user, leave the request unauthenticated.
+  // Security: only loopback calls from our /mcp tools may use them (secret header, see mcp/internal.ts).
+  // Elsewhere on the REST API they get 401, so a token's power is exactly the /mcp tool surface.
   if (isMcpToken(raw)) {
     if (!isInternalMcpCall(req)) {
       res
@@ -113,7 +98,6 @@ async function resolveBearer(
     return;
   }
 
-  // Verify the tenant still allows agent tokens
   const [tenant] = await db
     .select({
       allowAgentTokens: tenants.allowAgentTokens,
@@ -128,7 +112,6 @@ async function resolveBearer(
     return;
   }
 
-  // Check member token toggle for non-originator tokens
   const [membership] = await db
     .select({ isOriginator: memberships.isOriginator })
     .from(memberships)
@@ -149,7 +132,6 @@ async function resolveBearer(
     return;
   }
 
-  // Touch lastUsedAt (fire-and-forget)
   db.update(agentTokens)
     .set({ lastUsedAt: new Date() })
     .where(eq(agentTokens.id, token.id))
@@ -166,12 +148,8 @@ async function resolveBearer(
 }
 
 /**
- * Express middleware that enforces agent token tenant scoping.
- *
- * If the request carries an agent token and the URL contains a tenant UUID
- * (the standard `/api/tenants/:uuid/...` pattern), the token's tenantId
- * must match. Rejects with 403 on mismatch. Mount after
- * {@link resolveAgentToken} in the middleware chain.
+ * Rejects with 403 an agent token whose tenant differs from the `/api/tenants/:uuid/...` path.
+ * Mount after {@link resolveAgentToken}.
  */
 export function enforceAgentScope(
   req: Request,
@@ -242,12 +220,7 @@ export function csrfProtection(req: Request, res: Response, next: NextFunction):
   next();
 }
 
-/**
- * Rejects unauthenticated requests with 401.
- *
- * Works with both session-based auth (cookie) and agent token auth
- * (Bearer header resolved by {@link resolveAgentToken}).
- */
+/** Rejects with 401 a request that has neither a session nor a resolved Bearer credential. */
 export function requireAuth(req: Request, res: Response, next: NextFunction) {
   if (!req.session.userId && !req.agentToken && !req.mcpAuth) {
     res.status(401).json({ error: "Not authenticated" });

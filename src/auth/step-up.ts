@@ -34,9 +34,8 @@ export function stepUpMissing(req: Request): boolean {
 }
 
 /**
- * Middleware for sensitive routes. Requests without a dashboard session
- * (agent tokens, MCP tokens) pass: they have their own limits, and making
- * them needs a step-up.
+ * Middleware for sensitive routes. Agent and MCP token requests pass.
+ * They have their own limits, and creating them needs a step-up.
  */
 export function stepUpForSession(req: Request, res: Response, next: NextFunction): void {
   if (stepUpMissing(req)) {

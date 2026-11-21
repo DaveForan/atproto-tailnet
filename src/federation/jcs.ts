@@ -1,14 +1,7 @@
 /**
  * @module federation/jcs
- * RFC 8785 JSON Canonicalization Scheme (JCS) — the single signing
- * canonicalization of CFP messages, shared with the Rust coordinator
- * (`coord-federation::canonical`). Both implementations are checked against
- * the same vectors in `coordinator/crates/coord-federation/tests/fixtures/cfp_vectors.json`.
- *
- * - object members sorted by their names' UTF-16 code units, no whitespace
- * - strings serialised as ECMAScript `JSON.stringify` does (lone surrogates rejected)
- * - numbers serialised as ECMAScript `Number.prototype.toString` (non-finite rejected)
- * - members whose value is `undefined` are omitted, as `JSON.stringify` does
+ * RFC 8785 JSON Canonicalization Scheme: the signing form of CFP messages, shared with the Rust coordinator.
+ * Both implementations pass the vectors in `coordinator/crates/coord-federation/tests/fixtures/cfp_vectors.json`.
  */
 
 export class JcsError extends Error {}
@@ -28,8 +21,7 @@ function serialize(value: unknown, depth: number): string {
       return value ? "true" : "false";
     case "number":
       if (!Number.isFinite(value)) throw new JcsError("JCS: non-finite number");
-      // ECMAScript Number::toString is exactly what RFC 8785 §3.2.2.3 requires
-      // (and -0 serialises as "0").
+      // ECMAScript Number::toString matches RFC 8785 §3.2.2.3 exactly (-0 serialises as "0").
       return JSON.stringify(value);
     case "string":
       return serializeString(value);

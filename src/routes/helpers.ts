@@ -130,14 +130,12 @@ export function permissionsAbove(
   return missingPermissions(membership, role, target.filter((p) => known.includes(p)), req);
 }
 
-/** Returns true when the tenant is in lockdown mode. */
 export function isLockedDown(
   tenant: typeof tenants.$inferSelect,
 ): boolean {
   return tenant.lockdownMode;
 }
 
-/** Re-exported for route handlers; lives in identity/handles.ts. */
 export { toHsUsername } from "../identity/handles.js";
 
 /** Builds the login-server URL for a tenant slug (e.g. `https://my-tenant.ts.example.com`). */

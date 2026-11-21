@@ -12,7 +12,6 @@ import { tenantGuard } from "./guard.js";
 
 export const auditLogRouter = Router({ caseSensitive: true });
 
-// ── Audit log ───────────────────────────────────────────────────────
 
 auditLogRouter.get(
   "/api/tenants/:tenantId/audit-log",

@@ -1,9 +1,4 @@
-/**
- * Tests for the permission constants and types.
- *
- * Ensures ALL_PERMISSIONS stays at the documented count, PERMISSION_LABELS
- * covers every entry, and ORIGINATOR_PERMISSIONS mirrors the full set.
- */
+/** ALL_PERMISSIONS keeps its documented count, every entry has a label, and originators hold the full set. */
 
 import { describe, it, expect } from "vitest";
 import {

@@ -1,11 +1,4 @@
-/**
- * Tests for pure helper functions from routes/helpers.ts.
- *
- * Only tests the stateless/pure functions that don't require DB or Express:
- * - toHsUsername() — AT Proto handle to Headscale username
- * - tenantLoginServer() — build login server URL from slug
- * - param() — normalise Express 5 params
- */
+/** Pure helpers from routes/helpers.ts: toHsUsername, tenantLoginServer and param. */
 
 import { describe, it, expect } from "vitest";
 import { toHsUsername, tenantLoginServer, param } from "../routes/helpers.js";

@@ -1,7 +1,4 @@
-/**
- * MCP OAuth + /mcp endpoint tests against a real Express app on an ephemeral
- * port, with the DB-backed store swapped for MemoryOAuthStore.
- */
+/** MCP OAuth and /mcp against a real Express app on an ephemeral port, with MemoryOAuthStore. */
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import express from "express";
 import session from "express-session";
@@ -98,7 +95,6 @@ afterAll(() => {
   server?.close();
 });
 
-// ── helpers ─────────────────────────────────────────────────────────────
 
 function pkce() {
   const verifier = randomBytes(32).toString("base64url");
@@ -198,7 +194,6 @@ async function me(token: string) {
   });
 }
 
-// ── tests ───────────────────────────────────────────────────────────────
 
 describe("discovery metadata", () => {
   it("serves authorization server metadata with /oauth endpoints and S256", async () => {
@@ -622,7 +617,6 @@ describe("api client + internal-call marker", () => {
   });
 });
 
-// ── Security fixes ──────────────────────────────────────────────────────
 
 describe("MCP tokens are only honoured on internal /mcp tool calls", () => {
   it("external /api call with a valid MCP token is 401; the internal tool call is accepted", async () => {

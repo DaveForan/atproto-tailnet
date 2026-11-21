@@ -1,10 +1,6 @@
 /**
- * Access sync (ADR-0036): a device that registered again under another member
- * keeps its node id; the push closes what was tied to the old owner and
- * persists that, so access does not come back.
- *
- * DB is a chainable mock: each awaited query resolves to the next `results`
- * entry; writes are recorded.
+ * Access sync (ADR-0036): a re-registered device keeps its node id, so the push closes the old owner's access.
+ * The DB is a chainable mock: each awaited query resolves to the next `results` entry.
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 

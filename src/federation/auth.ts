@@ -1,8 +1,7 @@
 /**
  * @module federation/auth
- * Message authentication for CFP over HTTP (ADR-0016): what gets signed, how a
- * peer's signature is checked, and which announced routes may be imported.
- * Pure — the DB-backed pieces (keys, link lookup) are injected by the broker.
+ * CFP message authentication over HTTP (ADR-0016): signing payload, signature check, route import filter.
+ * Pure: the broker injects the DB-backed parts (keys, link lookup).
  */
 
 import type { PublicKeyResolver } from "../credentials/verifier.js";
@@ -16,12 +15,9 @@ import { canonicalize } from "./jcs.js";
 export const MAX_MESSAGE_SKEW_MS = 5 * 60 * 1000;
 
 /**
- * The exact bytes a CFP message's signature covers: the RFC 8785 (JCS)
- * canonical form of the message without its `signature` member. Key order
- * on the wire is irrelevant; every other transmitted member (including ones
- * this service does not know) is covered. The Rust coordinator computes the
- * same bytes (`coord_federation::auth::message_signing_payload`); both are
- * pinned by `coordinator/crates/coord-federation/tests/fixtures/cfp_vectors.json`.
+ * Bytes a CFP signature covers: the RFC 8785 (JCS) form of the message without `signature`.
+ * It covers every transmitted member, unknown ones too. Wire key order is irrelevant.
+ * Rust computes the same bytes; `coordinator/crates/coord-federation/tests/fixtures/cfp_vectors.json` pins both.
  */
 export function signedPayload(message: object): string {
   const { signature: _omit, ...rest } = message as Record<string, unknown>;
@@ -38,9 +34,8 @@ export async function signMessage<T extends object>(
 }
 
 /**
- * True when `message.signature` is `did`'s signature over the rest of the
- * message (see {@link signedPayload}). Pass the message as received (e.g.
- * `req.body`), never a schema-parsed copy that may have dropped members.
+ * True when `message.signature` is `did`'s signature over the rest of the message.
+ * Pass the message as received (`req.body`), never a schema-parsed copy that may drop members.
  */
 export async function verifyMessage(
   resolver: PublicKeyResolver,
@@ -71,12 +66,8 @@ export function isFresh(timestamp: string, now = Date.now()): boolean {
 }
 
 /**
- * Prefixes we accept from a peer's announcements: only prefixes contained in a
- * CIDR the link's operators agreed to share (equal or more specific), and only
- * when the peer claims to originate them. Anything else (a wider prefix, a
- * default route, someone else's network) is dropped — a peer must not be able
- * to attract traffic it wasn't granted. An empty agreed list imports nothing.
- * Returned prefixes are normalised.
+ * Normalised prefixes we import from a peer: only peer-originated ones inside a CIDR agreed for the link.
+ * Security: a peer must not attract traffic it was not granted. An empty agreed list imports nothing.
  */
 export function filterImportedPrefixes(
   announcements: RouteAnnouncement[] | undefined,

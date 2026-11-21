@@ -1,9 +1,5 @@
 /**
- * @module audit/log
- * Fire-and-forget audit log writer (domain layer; the audit log read API is in
- * routes/security.ts). Every security-relevant action across
- * the app calls {@link logAudit} to append a row to the audit_logs table;
- * failures are logged to stderr but never block the caller.
+ * Audit log writer. The read API is in routes/security.ts.
  */
 
 import { db } from "../db/index.js";
@@ -12,10 +8,7 @@ import { logger } from "../logger.js";
 
 type AuditAction = (typeof auditActionEnum.enumValues)[number];
 
-/**
- * Records a security-relevant action in the append-only audit log.
- * Fire-and-forget — never blocks the caller on failure.
- */
+/** Appends a security-relevant action to the audit log. A failure is logged and never blocks the caller. */
 export function logAudit(params: {
   /** NULL for instance-level operator actions not tied to one tenant. */
   tenantId: string | null;

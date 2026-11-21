@@ -32,8 +32,8 @@ async function setWatermark(at: Date): Promise<void> {
 }
 
 /**
- * One round. Returns the number of notifications written. `list` is the
- * coordinator call (a parameter so that tests need no coordinator).
+ * Runs one round and returns the number of notifications written.
+ * `list` is a parameter so that tests need no coordinator.
  */
 export async function notifyRefusedMachines(
   list: (since: Date) => Promise<RefusedMachine[]> = (since) =>

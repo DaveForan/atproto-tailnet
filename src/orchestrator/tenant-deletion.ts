@@ -14,10 +14,8 @@ import { clearDefaultTailnetIf } from "../operator/policy.js";
 import { logger } from "../logger.js";
 
 /**
- * Tears down the control plane, soft-deletes the tenant, revokes pending
- * invitations, releases the port, resyncs Caddy and clears the default tailnet.
- * Callers do authorization and audit.
- * Errors: throws when the control plane refuses; the row is then unchanged.
+ * Tears down a tailnet and soft-deletes its row. Callers do authorization and audit.
+ * Errors: throws when the control plane refuses; the row then stays unchanged.
  */
 export async function deleteTenantInstance(tenant: typeof tenants.$inferSelect): Promise<void> {
   const tenantId = tenant.id;
@@ -41,7 +39,7 @@ export async function deleteTenantInstance(tenant: typeof tenants.$inferSelect):
     .where(and(eq(invitations.tenantId, tenantId), eq(invitations.status, "pending")))
     .catch((err: unknown) => logger.warn({ tenantId, err }, "failed to revoke pending invitations"));
 
-  // Give the real Headscale port back (tenants.port is UNIQUE across all rows)
+  // tenants.port is UNIQUE across all rows, so a deleted row must free it
   await releaseTenantPort(tenantId).catch((err) =>
     logger.warn({ tenantId, err }, "failed to release tenant port"),
   );

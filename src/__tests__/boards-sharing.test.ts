@@ -1,9 +1,7 @@
 /**
  * Boards and sharing routes (ADR-0036): who may post, review, connect and
  * share, and what each action is allowed to open.
- *
- * DB is a chainable mock: each awaited query resolves to the next `results`
- * entry; writes are recorded.
+ * The DB is a chainable mock: each awaited query resolves to the next `results` entry.
  */
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import type { AddressInfo } from "node:net";

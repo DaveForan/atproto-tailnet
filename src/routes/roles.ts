@@ -38,7 +38,6 @@ const defaultRoleBody = z.object({
   roleId: z.string().uuid(),
 });
 
-// ── Roles CRUD ──────────────────────────────────────────────────────
 
 rolesRouter.get(
   "/api/tenants/:tenantId/roles",
@@ -129,7 +128,6 @@ rolesRouter.patch(
       return;
     }
 
-    // System originator role's permissions cannot be changed
     if (targetRole.isSystem && targetRole.name === "originator") {
       res.status(403).json({ error: "Cannot modify the originator role" });
       return;
@@ -138,7 +136,6 @@ rolesRouter.patch(
     const parsed = parseBody(roleUpdateBody, req, res);
     if (!parsed) return;
 
-    // System roles cannot be renamed
     if (targetRole.isSystem && parsed.data.name && parsed.data.name !== targetRole.name) {
       res.status(403).json({ error: "Cannot rename a system role" });
       return;
@@ -227,7 +224,6 @@ rolesRouter.delete(
       return;
     }
 
-    // If this role is the default role, block deletion
     const [tenant] = await db
       .select()
       .from(tenants)
@@ -281,7 +277,6 @@ rolesRouter.delete(
   },
 );
 
-// ── Role assignment ─────────────────────────────────────────────────
 
 rolesRouter.put(
   "/api/tenants/:tenantId/members/:userId/role",
@@ -327,7 +322,6 @@ rolesRouter.put(
       return;
     }
 
-    // Verify the role belongs to this tenant
     const [targetRole] = await db
       .select()
       .from(roles)
@@ -338,7 +332,6 @@ rolesRouter.put(
       return;
     }
 
-    // Don't allow assigning the originator role to non-originators
     if (targetRole.isSystem && targetRole.name === "originator") {
       res.status(403).json({ error: "The originator role cannot be assigned" });
       return;
@@ -374,7 +367,6 @@ rolesRouter.put(
   },
 );
 
-// ── Default role ────────────────────────────────────────────────────
 
 rolesRouter.patch(
   "/api/tenants/:tenantId/default-role",

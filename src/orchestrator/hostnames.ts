@@ -1,18 +1,8 @@
 /**
  * @module orchestrator/hostnames
- * Public tailnet addresses (`<name>.<BASE_DOMAIN>`).
- *
- * `tenants.slug` is the permanent internal id (coordinator tenant slug,
- * collective DID, dashboard identity). The `tenant_hostnames` table holds the
- * names a tailnet answers to publicly:
- *
- * - exactly one live **primary** name — what new devices are told to use
- *   (login server) and what join/board links show;
- * - older names stay as **aliases**, still routed, so devices enrolled under
- *   them keep working;
- * - a **retired** name is no longer routed and stays reserved for
- *   {@link RETIRED_QUARANTINE_MS} so nobody can take over a name that devices
- *   or shared links may still point at.
+ * Public tailnet addresses (`<name>.<BASE_DOMAIN>`): one primary, routed aliases, and retired names.
+ * `tenants.slug` is the permanent internal id and never resolves publicly.
+ * Security: retired names stay reserved, so nobody takes over a name that devices or links still use.
  */
 
 import { randomInt } from "node:crypto";
@@ -51,7 +41,7 @@ export type HostnameError =
   | "taken"
   | "too_many";
 
-/** Normalises and validates a requested name; returns it or an error code. */
+/** Normalises and validates a requested name. */
 export function validateHostname(input: unknown): { ok: true; name: string } | { ok: false; error: HostnameError } {
   if (typeof input !== "string") return { ok: false, error: "invalid" };
   const name = input.trim().toLowerCase();
@@ -60,7 +50,7 @@ export function validateHostname(input: unknown): { ok: true; name: string } | {
   return { ok: true, name };
 }
 
-/** The tailnet's primary public name (falls back to its internal slug). */
+/** Falls back to the internal slug when no primary exists. */
 export async function primaryHostname(tenantId: string, fallbackSlug?: string): Promise<string> {
   const [row] = await db
     .select({ slug: tenantHostnames.slug })
@@ -85,16 +75,14 @@ export function usesSharedControlUrl(): boolean {
 }
 
 /**
- * Login server URL new devices of this tailnet should use: the shared control
- * URL in coordinator mode (the pre-auth key alone selects the tailnet), else
- * the tailnet's own primary address (Headscale mode: one server per tailnet).
+ * Login server URL for new devices. In coordinator mode the pre-auth key alone selects the tailnet.
+ * Headscale mode has one server per tailnet, so it uses the primary address.
  */
 export async function tenantLoginServerFor(tenant: { id: string; slug: string }): Promise<string> {
   if (usesSharedControlUrl()) return sharedControlUrl()!;
   return tenantPublicUrl(await primaryHostname(tenant.id, tenant.slug));
 }
 
-/** Live (routed) names per tenant id. */
 export async function liveHostnamesByTenant(tenantIds: string[]): Promise<Map<string, string[]>> {
   const out = new Map<string, string[]>();
   if (tenantIds.length === 0) return out;
@@ -112,7 +100,7 @@ export async function liveHostnamesByTenant(tenantIds: string[]): Promise<Map<st
   return out;
 }
 
-/** Tenant id a live public name (primary or alias) belongs to, or null. */
+/** Resolves live names (primary or alias) only. */
 export async function tenantIdForHostname(name: string): Promise<string | null> {
   const v = validateHostname(name);
   // Reserved names were never assignable, but an internal slug may predate the list
@@ -126,16 +114,11 @@ export async function tenantIdForHostname(name: string): Promise<string | null> 
   return row?.tenantId ?? null;
 }
 
-/**
- * Tenant id for a name in a public link (`/join/:name`, `/board/:name`):
- * live public names only (primary or alias). The internal slug never resolves
- * publicly — aliases keep links shared before a rename working until retired.
- */
+/** Security: public links resolve live names only, never the internal slug. */
 export async function tenantIdForPublicLink(name: string): Promise<string | null> {
   return tenantIdForHostname(name);
 }
 
-// ── Generated names ─────────────────────────────────────────────────────
 
 const ID_ALPHABET = "abcdefghijkmnpqrstuvwxyz23456789"; // no 0/o/1/l
 const ADJECTIVES = [
@@ -157,21 +140,20 @@ const NOUNS = [
   "tide", "trail", "valley", "willow",
 ];
 
-/** Opaque internal id for a new tailnet (`t-` + 10 chars, ~50 bits). Never shown publicly. */
+/** Opaque internal id (`t-` + 10 chars, ~50 bits). Never shown publicly. */
 export function generateInternalSlug(): string {
   let s = "t-";
   for (let i = 0; i < 10; i++) s += ID_ALPHABET[randomInt(ID_ALPHABET.length)];
   return s;
 }
 
-/** Random friendly public name, e.g. `quiet-harbor-4821` — says nothing about the owner. */
+/** Random public name, e.g. `quiet-harbor-4821`. It reveals nothing about the owner. */
 export function generateFriendlyName(): string {
   const a = ADJECTIVES[randomInt(ADJECTIVES.length)];
   const n = NOUNS[randomInt(NOUNS.length)];
   return `${a}-${n}-${randomInt(1000, 10000)}`;
 }
 
-/** A free friendly public name for a new tailnet. */
 export async function generateAvailableFriendlyName(): Promise<string> {
   for (let i = 0; i < 20; i++) {
     const candidate = generateFriendlyName();
@@ -181,10 +163,8 @@ export async function generateAvailableFriendlyName(): Promise<string> {
 }
 
 /**
- * Whether `name` can be claimed by `tenantId`: not a live name of another
- * tailnet, not another tailnet's internal slug, and not retired by another
- * tailnet within the quarantine window. A tailnet may always re-claim its own
- * names.
+ * False for another tailnet's live name, internal slug, or quarantined retired name.
+ * A tailnet can always re-claim its own names.
  */
 export async function hostnameAvailableFor(name: string, tenantId: string, now = new Date()): Promise<boolean> {
   const [row] = await db
@@ -204,7 +184,6 @@ export async function hostnameAvailableFor(name: string, tenantId: string, now =
   return !internal || internal.id === tenantId;
 }
 
-/** Record a new tenant's first primary public name. */
 export async function registerInitialHostname(
   tenantId: string,
   name: string,
@@ -216,10 +195,7 @@ export async function registerInitialHostname(
     .onConflictDoNothing();
 }
 
-/**
- * Make `name` the tailnet's primary address. The previous primary stays as a
- * live alias. Returns an error code when refused.
- */
+/** The previous primary stays as a live alias. */
 export async function setPrimaryHostname(
   tenantId: string,
   requested: unknown,
@@ -246,7 +222,6 @@ export async function setPrimaryHostname(
       if (live >= MAX_LIVE_HOSTNAMES) return { ok: false as const, error: "too_many" as const };
     }
 
-    // Demote the current primary (it stays routed as an alias)
     await tx
       .update(tenantHostnames)
       .set({ isPrimary: false })
@@ -266,10 +241,7 @@ export async function setPrimaryHostname(
   });
 }
 
-/**
- * Stop routing an alias. The primary cannot be retired (set another primary
- * first). Returns false when the name is not a live alias of this tailnet.
- */
+/** Stops routing an alias. Returns false for the primary or a name that is not a live alias. */
 export async function retireHostname(tenantId: string, name: string, now = new Date()): Promise<boolean> {
   const updated = await db
     .update(tenantHostnames)

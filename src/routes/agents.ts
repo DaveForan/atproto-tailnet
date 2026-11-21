@@ -35,14 +35,8 @@ const createTokenBody = z.object({
 });
 
 /**
- * `POST /api/tenants/:tenantId/agent-tokens`
- *
- * Creates a new agent API token. The raw token is returned **once** in the
- * response body — it cannot be retrieved later.
- *
- * @permission `create_agent_tokens` (or originator)
- * @setting `allowAgentTokens` must be enabled
- * @setting `allowMemberAgentTokens` must be enabled for non-originators
+ * `POST /api/tenants/:tenantId/agent-tokens`: create a token. Only this response holds the raw token.
+ * Needs `create_agent_tokens` and `allowAgentTokens`; non-originators also need `allowMemberAgentTokens`.
  */
 agentsRouter.post(
   "/api/tenants/:tenantId/agent-tokens",
@@ -140,12 +134,7 @@ agentsRouter.post(
   },
 );
 
-/**
- * `GET /api/tenants/:tenantId/agent-tokens`
- *
- * Lists agent tokens. Members see only their own tokens unless they have
- * the `manage_agent_tokens` permission.
- */
+/** `GET /api/tenants/:tenantId/agent-tokens`: list tokens. Without `manage_agent_tokens` a member sees only their own. */
 agentsRouter.get(
   "/api/tenants/:tenantId/agent-tokens",
   requireAuth,
@@ -192,12 +181,7 @@ agentsRouter.get(
   },
 );
 
-/**
- * `DELETE /api/tenants/:tenantId/agent-tokens/:tokenId`
- *
- * Revokes an agent token. Members can revoke their own tokens; the
- * `manage_agent_tokens` permission is required to revoke others' tokens.
- */
+/** `DELETE /api/tenants/:tenantId/agent-tokens/:tokenId`: revoke a token. Another member's token needs `manage_agent_tokens`. */
 agentsRouter.delete(
   "/api/tenants/:tenantId/agent-tokens/:tokenId",
   requireAuth,

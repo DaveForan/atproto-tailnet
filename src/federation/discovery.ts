@@ -22,9 +22,8 @@ export interface PeerInfo {
 }
 
 /**
- * Fetch `slug@host`'s federation descriptor and check it: signed by the DID it
- * names (detached JWS over the JCS form without `signature`), not closed, and
- * pointing at an allowed broker URL.
+ * Fetches and checks `slug@host`'s federation descriptor.
+ * It must be signed by the DID it names (detached JWS over JCS), not closed, and name an allowed broker URL.
  */
 export async function discoverPeer(
   peerAddress: string,
@@ -158,9 +157,8 @@ export function isOwnOrigin(url: string): boolean {
 }
 
 /**
- * Whether a peer-supplied broker URL may be stored and dialled: https to public addresses only,
- * no credentials, query or fragment. This instance's exact origin is exempt (dev may use http).
- * The address check runs at acceptance; transport repeats it at connect time.
+ * Whether a peer-supplied broker URL may be stored and dialled: https to public addresses, no credentials, query or fragment.
+ * This instance's exact origin is exempt (dev may use http). Transport repeats the address check at connect time.
  */
 export async function isAllowedBrokerUrl(url: string): Promise<boolean> {
   let parsed: URL;

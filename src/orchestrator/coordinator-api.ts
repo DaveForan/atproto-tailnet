@@ -1,7 +1,7 @@
 /**
  * @module orchestrator/coordinator-api
- * REST client for the Rust mesh coordinator (ADR-0023). It has the method
- * signatures of HeadscaleApiClient, backed by the coordinator's admin API.
+ * REST client for the Rust mesh coordinator's admin API (ADR-0023).
+ * It keeps the method signatures of HeadscaleApiClient.
  */
 
 import {
@@ -21,16 +21,14 @@ import {
   type HeadscaleAclPolicy,
 } from "./coordinator-acl.js";
 
-/** Default key lifetime when the caller gives none (coordinator keys otherwise never expire). */
+/** Coordinator keys without an expiry never expire, so we always send one. */
 const DEFAULT_KEY_EXPIRY_SECONDS = 24 * 60 * 60;
 
-/** Timeout of every admin API request. */
 const REQUEST_TIMEOUT_MS = 15_000;
 
-/** Timeout of the health probes. */
 const HEALTH_TIMEOUT_MS = 10_000;
 
-/** Tag of the gateway node that the coordinator puts in a tailnet with HTTPS services. */
+/** The coordinator adds a node with this tag to tailnets with HTTPS services. */
 export const GATEWAY_TAG = "tag:gateway";
 
 /** A non-2xx answer from the coordinator admin API. */
@@ -46,12 +44,10 @@ export class CoordinatorError extends Error {
   }
 }
 
-/** True when `err` is a coordinator answer with this HTTP status. */
 export function isCoordinatorStatus(err: unknown, status: number): boolean {
   return err instanceof CoordinatorError && err.status === status;
 }
 
-/** Node summary as returned by the coordinator admin API. */
 interface CoordinatorNode {
   id: number;
   tenant_id: string;
@@ -67,10 +63,7 @@ interface CoordinatorNode {
   approved_routes?: string[];
 }
 
-/**
- * Map a coordinator node to the Headscale node shape. The node's `user` is
- * its owner (our user id), or `null` for unowned and tagged nodes.
- */
+/** `user` is the owner (our user id), or null for unowned and tagged nodes. */
 export function toHeadscaleNode(n: CoordinatorNode): HeadscaleNode {
   const owner = n.owner ?? null;
   return {
@@ -96,12 +89,11 @@ export interface OwnerLockView {
   node_ids: number[];
   allow_one_until: string | null;
   refused: Array<{ at: string; hostname: string; os: string; fingerprint: string }>;
-  /** Most machines the lock may hold; null = the system limit. */
+  /** Null means the system limit. */
   max_machines?: number | null;
   removed_nodes?: number;
 }
 
-/** One machine that a machine lock refused. */
 export interface RefusedMachine {
   tenant_id: string;
   owner: string;
@@ -135,10 +127,7 @@ export class CoordinatorApiClient {
     this.apiKey = apiKey;
   }
 
-  /**
-   * The coordinator tenant id of a tenant-scoped call.
-   * Errors: throws on an instance-level client, so a call never addresses an empty tenant.
-   */
+  /** Throws on an instance-level client, so a call never addresses an empty tenant. */
   private get tenant(): string {
     if (!this.tenantId) throw new Error("Tenant-scoped coordinator call on an instance-level client");
     return this.tenantId;
@@ -164,9 +153,8 @@ export class CoordinatorApiClient {
     return res.json();
   }
 
-  // ── Instance: health ──
 
-  /** The coordinator's health: its boot id, and whether it serves named HTTPS services. */
+  /** Returns null when the coordinator is unreachable or unhealthy. */
   async probeHealth(timeoutMs = HEALTH_TIMEOUT_MS): Promise<{ bootId: string; gateway: boolean } | null> {
     try {
       const res = await fetch(`${this.baseUrl}/health`, { signal: AbortSignal.timeout(timeoutMs) });
@@ -178,7 +166,7 @@ export class CoordinatorApiClient {
     }
   }
 
-  /** The per-process boot id (changes on every restart), or null when unhealthy. */
+  /** The boot id changes on every restart. */
   async probeBootId(timeoutMs = HEALTH_TIMEOUT_MS): Promise<string | null> {
     return (await this.probeHealth(timeoutMs))?.bootId ?? null;
   }
@@ -195,7 +183,6 @@ export class CoordinatorApiClient {
     }
   }
 
-  // ── Instance: interactive device sign-in (ADR-0032) ──
 
   async getDeviceAuth(id: string): Promise<PendingDeviceAuth> {
     return (await this.request("GET", `/api/device-auth/${encodeURIComponent(id)}`)) as PendingDeviceAuth;
@@ -212,19 +199,15 @@ export class CoordinatorApiClient {
     await this.request("POST", `/api/device-auth/${encodeURIComponent(id)}/deny`, {});
   }
 
-  /** Machines refused by any machine lock after `since` (all tenants), oldest first. */
+  /** Covers all tenants, oldest first. */
   async listRefusedMachines(since?: Date): Promise<RefusedMachine[]> {
     const query = since ? `?since=${encodeURIComponent(since.toISOString())}` : "";
     const res = (await this.request("GET", `/api/owner-locks/refused${query}`)) as { refused?: RefusedMachine[] };
     return res.refused ?? [];
   }
 
-  // ── Tenant lifecycle ──
 
-  /**
-   * Creates a tenant (instance-level call). Sub-collectives pass the parent's
-   * coordinator tenant id. Returns the coordinator-side tenant id.
-   */
+  /** Instance-level call. Sub-collectives pass the parent's coordinator tenant id. */
   async createTenant(slug: string, parentId?: string | null): Promise<{ id: string }> {
     return (await this.request("POST", "/api/tenants", parentId ? { slug, parent_id: parentId } : { slug })) as {
       id: string;
@@ -235,7 +218,7 @@ export class CoordinatorApiClient {
     await this.request("DELETE", this.tenantPath());
   }
 
-  /** True if the coordinator knows this tenant, false on 404. Other failures throw. */
+  /** Returns false on 404. Other failures throw. */
   async tenantExists(): Promise<boolean> {
     try {
       await this.request("GET", this.tenantPath());
@@ -251,18 +234,17 @@ export class CoordinatorApiClient {
     await this.request("PUT", this.tenantPath("/suspended"), { suspended });
   }
 
-  /** Move the tenant under another coordinator tenant; null makes it top-level (detach/eject). */
+  /** Null makes the tenant top-level. */
   async setParent(parentId: string | null): Promise<void> {
     await this.request("PUT", this.tenantPath("/parent"), { parent_id: parentId });
   }
 
-  // ── Tenant configuration ──
 
   async setPosture(posture: string): Promise<void> {
     await this.request("PUT", this.tenantPath("/posture"), { posture });
   }
 
-  /** Tailnet + member names shown in Tailscale clients (see coordinator-identity.ts). */
+  /** Names shown in Tailscale clients (see coordinator-identity.ts). */
   async setIdentity(identity: {
     tailnet_name: string | null;
     users: Record<string, { login_name: string; display_name: string }>;
@@ -270,12 +252,12 @@ export class CoordinatorApiClient {
     await this.request("PUT", this.tenantPath("/identity"), identity);
   }
 
-  /** Device and service names (ADR-0028); stored by the coordinator and sent to devices. */
+  /** Device and service names (ADR-0028). */
   async setDns(dns: { base_domain: string | null; tailnet_label: string | null; upstream: string[]; records: unknown[] }): Promise<void> {
     await this.request("PUT", this.tenantPath("/dns"), dns);
   }
 
-  /** Device access mode and rules (ADR-0036); stored and enforced by the coordinator. */
+  /** Device access mode and rules (ADR-0036). The coordinator enforces them. */
   async setAccess(access: { mode: "open" | "member"; rules: unknown[] }): Promise<void> {
     await this.request("PUT", this.tenantPath("/access"), access);
   }
@@ -307,7 +289,6 @@ export class CoordinatorApiClient {
     await this.request("PUT", this.tenantPath("/derp"), { regions: coordRegions, include_default: includeDefault });
   }
 
-  // ── ACL policy ──
 
   async getPolicy(): Promise<object> {
     return (await this.request("GET", this.tenantPath("/acl"))) as object;
@@ -317,43 +298,33 @@ export class CoordinatorApiClient {
     await this.request("POST", this.tenantPath("/acl"), policy);
   }
 
-  /** Reads the tenant's coordinator policy rendered in Headscale format. */
   async getHeadscalePolicy(): Promise<ReturnType<typeof coordinatorToHeadscalePolicy>> {
     return coordinatorToHeadscalePolicy(await this.request("GET", this.tenantPath("/acl")));
   }
 
-  /**
-   * Pushes a Headscale-format policy translated to `{default_deny, rules}`.
-   * Errors: {@link AclTranslationError} when the policy cannot be expressed faithfully.
-   */
+  /** Errors: throws `AclTranslationError` when the coordinator cannot represent the policy. */
   async setHeadscalePolicy(policy: HeadscaleAclPolicy): Promise<void> {
     await this.request("POST", this.tenantPath("/acl"), headscaleToCoordinatorPolicy(policy));
   }
 
-  // ── Auto-approvers ──
 
   async getAutoApprovers(): Promise<AutoApproversConfig> {
     const data = (await this.request("GET", this.tenantPath("/auto-approvers"))) as Partial<AutoApproversConfig> | null;
     return { routes: data?.routes ?? {}, exit_node: data?.exit_node ?? [] };
   }
 
-  /** Pushes auto-approvers; the caller stores them in `tenants.coordinatorAutoApprovers`. */
+  /** The caller stores them in `tenants.coordinatorAutoApprovers`. */
   async setAutoApprovers(aa: AutoApproversConfig): Promise<void> {
     await this.request("PUT", this.tenantPath("/auto-approvers"), { routes: aa.routes ?? {}, exit_node: aa.exit_node ?? [] });
   }
 
-  // ── Pre-auth keys ──
 
-  /**
-   * Creates a pre-auth key. Nodes that register with it get `owner` (our user
-   * id), which is how device ownership works in coordinator mode.
-   */
+  /** Nodes that register with the key get `owner`. This is device ownership in coordinator mode. */
   async createPreAuthKey(_userName: string, opts?: PreAuthKeyOptions): Promise<HeadscalePreAuthKey & { id: string }> {
     const data = (await this.request("POST", "/api/preauth-keys", {
       tenant_id: this.tenant,
       reusable: opts?.reusable ?? false,
       ephemeral: opts?.ephemeral ?? false,
-      // Keys without an expiry never expire on the coordinator
       expiration_seconds: opts?.expirationSeconds ?? DEFAULT_KEY_EXPIRY_SECONDS,
       ...(opts?.owner ? { owner: opts.owner } : {}),
       ...(opts?.tags?.length ? { tags: opts.tags } : {}),
@@ -369,7 +340,7 @@ export class CoordinatorApiClient {
     };
   }
 
-  /** Creates a key whose nodes carry the given ACL tags and belong to no member. */
+  /** Nodes that register with the key belong to no member. */
   async createTaggedPreAuthKey(
     aclTags: string[],
     opts?: { expirationSeconds?: number; ephemeral?: boolean },
@@ -382,7 +353,7 @@ export class CoordinatorApiClient {
     });
   }
 
-  /** Lists the tenant's pre-auth keys (prefix only, never the secret). */
+  /** Returns the prefix only, never the secret. */
   async listPreAuthKeys(): Promise<ControlPreAuthKeyInfo[]> {
     const data = (await this.request("GET", this.tenantPath("/preauth-keys"))) as {
       keys: Array<{
@@ -412,7 +383,7 @@ export class CoordinatorApiClient {
     }));
   }
 
-  /** Revokes one key. A 404 (already gone, or not in this tenant) counts as done. */
+  /** A 404 (already gone, or not in this tenant) counts as done. */
   async revokePreAuthKey(keyId: string): Promise<void> {
     try {
       await this.request("DELETE", this.tenantPath(`/preauth-keys/${encodeURIComponent(keyId)}`));
@@ -422,7 +393,7 @@ export class CoordinatorApiClient {
     }
   }
 
-  /** Revokes every key issued to `owner`; returns how many were revoked. */
+  /** Returns the number of revoked keys. */
   async revokePreAuthKeysByOwner(owner: string): Promise<number> {
     const data = (await this.request("DELETE", this.tenantPath(`/preauth-keys?owner=${encodeURIComponent(owner)}`))) as {
       revoked?: number;
@@ -430,7 +401,6 @@ export class CoordinatorApiClient {
     return data?.revoked ?? 0;
   }
 
-  // ── Nodes ──
 
   async listNodes(): Promise<HeadscaleNode[]> {
     const data = (await this.request("GET", this.tenantPath("/nodes"))) as { nodes: CoordinatorNode[] };
@@ -449,7 +419,7 @@ export class CoordinatorApiClient {
     await this.request("DELETE", `/api/nodes/${encodeURIComponent(nodeId)}?tenant_id=${this.tenant}`);
   }
 
-  /** Deletes every node owned by `owner` (ends their map streams); returns the count. */
+  /** Ends the owner's map streams and returns the number of deleted nodes. */
   async deleteNodesByOwner(owner: string): Promise<number> {
     const data = (await this.request("DELETE", this.tenantPath(`/nodes?owner=${encodeURIComponent(owner)}`))) as {
       deleted?: number;
@@ -464,9 +434,8 @@ export class CoordinatorApiClient {
     return toHeadscaleNode(data);
   }
 
-  // ── Routes ──
 
-  /** Every node's routes, with the route ids of Headscale mode (`routeId(nodeId, prefix)`). */
+  /** Uses the same route ids as Headscale mode. */
   async listRoutes(): Promise<HeadscaleRoute[]> {
     return (await this.listNodes()).flatMap(routesOfNode);
   }
@@ -491,12 +460,11 @@ export class CoordinatorApiClient {
     await this.setRouteApproval(id, false);
   }
 
-  /** Routes exist while advertised; "delete" withdraws approval (as in Headscale mode). */
+  /** A route exists while advertised, so this withdraws approval. */
   async deleteRoute(id: string): Promise<void> {
     await this.setRouteApproval(id, false);
   }
 
-  // ── Owner machine locks (ADR-0035) ──
 
   private ownerLockPath(owner: string): string {
     return this.tenantPath(`/owner-locks/${encodeURIComponent(owner)}`);
@@ -506,13 +474,13 @@ export class CoordinatorApiClient {
     return (await this.request("GET", this.ownerLockPath(owner))) as OwnerLockView;
   }
 
-  /** Locks the owner to these nodes; the coordinator removes the owner's other nodes. */
+  /** The coordinator removes the owner's other nodes (ADR-0035). */
   async setOwnerLock(owner: string, nodeIds: number[], maxMachines?: number): Promise<OwnerLockView> {
     const body = { node_ids: nodeIds, ...(maxMachines ? { max_machines: maxMachines } : {}) };
     return (await this.request("PUT", this.ownerLockPath(owner), body)) as OwnerLockView;
   }
 
-  /** Opens the one-new-machine window; null when the owner has no lock, "full" at the device limit. */
+  /** Opens the one-new-machine window. Returns null without a lock and "full" at the limit. */
   async allowOneMachine(owner: string, seconds: number): Promise<OwnerLockView | null | "full"> {
     try {
       return (await this.request("POST", `${this.ownerLockPath(owner)}/allow-one`, { seconds })) as OwnerLockView;

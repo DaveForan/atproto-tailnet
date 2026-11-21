@@ -95,7 +95,7 @@ export interface OAuthStore {
   }): void;
 }
 
-/** `users.disabledAt` is read defensively so this works before/after that column lands. */
+/** Reads `users.disabledAt` defensively, so a schema without that column still works. */
 function disabledAtOf(row: object): Date | null {
   const v = (row as { disabledAt?: Date | null }).disabledAt;
   return v ?? null;
@@ -289,7 +289,7 @@ export class DbOAuthStore implements OAuthStore {
     grantId: string;
     metadata?: Record<string, unknown>;
   }) {
-    // Instance-level audit row (tenant_id NULL, migration 0026).
+    // Instance-level audit row (tenant_id NULL).
     db.insert(auditLogs)
       .values({
         tenantId: null,

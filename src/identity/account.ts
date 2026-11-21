@@ -1,8 +1,7 @@
 /**
  * @module identity/account
- * Public profile of an AT Proto account, read without any access to the
- * account: sign-in requests the `atproto` scope only (identification), so the
- * handle and display details come from public sources.
+ * Public profile of an AT Proto account from public sources only.
+ * Sign-in requests only the `atproto` scope, so the service has no access to the account.
  */
 
 import { lookupVerifiedHandle } from "./handles.js";

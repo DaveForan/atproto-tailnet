@@ -166,7 +166,6 @@ federationRouter.post(
     const targetTenantId = target.id;
     const targetTenantName = target.name;
 
-    // Look up the collective DIDs for both sides
     const [requesterDidRows, targetDidRows] = await Promise.all([
       db
         .select({ did: collectiveDids.did })
@@ -192,7 +191,6 @@ federationRouter.post(
     const requesterDid = requesterDidRows[0].did;
     const targetDid = targetDidRows[0].did;
 
-    // Check for existing active/pending link with this peer
     const existing = await db
       .select({ id: federationLinks.id })
       .from(federationLinks)
@@ -229,7 +227,6 @@ federationRouter.post(
     }
     const offeredCidrs = localCheck.cidrs;
 
-    // Create the outgoing row for the requester
     const [link] = await db
       .insert(federationLinks)
       .values({
@@ -243,7 +240,6 @@ federationRouter.post(
       })
       .returning();
 
-    // Create the mirror incoming row for the target
     await db.insert(federationLinks).values({
       localTenantId: targetTenantId,
       peerDid: requesterDid,
@@ -431,7 +427,6 @@ federationRouter.post(
       }
     }
 
-    // Update local row: active + set what we share
     await db
       .update(federationLinks)
       .set({
@@ -442,7 +437,6 @@ federationRouter.post(
       })
       .where(eq(federationLinks.id, linkId));
 
-    // Update the requester's (outgoing) mirror row.
     if (ourDidRows.length > 0 && peerDidRows.length > 0) {
       await db
         .update(federationLinks)
@@ -539,7 +533,6 @@ federationRouter.post(
       })
       .where(eq(federationLinks.id, linkId));
 
-    // Update the mirror row
     const [ourDidRows, peerDidRows] = await Promise.all([
       db
         .select({ did: collectiveDids.did })
@@ -639,7 +632,6 @@ federationRouter.post(
       })
       .where(eq(federationLinks.id, linkId));
 
-    // Update the mirror row
     const [ourDidRows, peerDidRows] = await Promise.all([
       db
         .select({ did: collectiveDids.did })
@@ -707,7 +699,7 @@ federationRouter.post(
   },
 );
 
-/** Get or create the collective DID for this tenant. */
+/** Get or create the tenant's collective DID. */
 federationRouter.get(
   "/api/tenants/:tenantId/federation/did",
   requireAuth,
@@ -996,7 +988,6 @@ federationRouter.put(
   },
 );
 
-// ── Federation posture management ───────────────────────────────────────
 
 const postureBody = z.object({
   posture: z.enum(["closed", "open"]),

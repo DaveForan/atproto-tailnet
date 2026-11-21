@@ -1,8 +1,7 @@
 /**
  * @module access/sync
- * Loads a tailnet's access state from the database, compiles it and sends it
- * to the coordinator, which stores and enforces it (ADR-0036). Call after
- * every change to posts, connections, shares or the access mode.
+ * Compiles a tailnet's access state and pushes it to the coordinator (ADR-0036).
+ * Call after every change to posts, connections, shares or the access mode.
  */
 
 import { and, eq, inArray, lt, ne } from "drizzle-orm";
@@ -27,10 +26,8 @@ import { notifyUser } from "../notifications/service.js";
 export const OWNER_CHANGED_REASON = "The device now belongs to another member";
 
 /**
- * Close what a device's change of owner made stale (see `findStaleAccess`):
- * shares end, posts are withdrawn with a reason the author sees, connections
- * are removed, and lost guest devices leave the share. Persisted, so access
- * does not come back if the device later returns to its first owner.
+ * Closes what a device's change of owner made stale (see `findStaleAccess`).
+ * The result is persisted, so access stays closed if the device returns to its first owner.
  */
 export async function closeStaleAccess(tenantId: string, nodeOwners: ReadonlyMap<string, string>): Promise<StaleAccess> {
   const posts = await db
@@ -143,9 +140,9 @@ export async function loadTenantDns(
 }
 
 /**
- * Push a tailnet's access rules and names to the coordinator. Returns false when the
- * push failed (the caller's change is saved; the monitor retries). No-op
- * outside coordinator mode, where per-device rules cannot be enforced.
+ * Pushes a tailnet's access rules and names to the coordinator.
+ * Returns false on failure; the caller's change is saved and the monitor retries.
+ * No-op outside coordinator mode, where per-device rules cannot be enforced.
  */
 export async function syncTenantAccess(tenantId: string): Promise<boolean> {
   if (!config.coordinatorUrl) return true;
@@ -175,10 +172,8 @@ export async function syncTenantAccess(tenantId: string): Promise<boolean> {
 }
 
 /**
- * End shares whose expiry passed and push the affected tailnets' rules, so
- * access closes on time. The compiler already treats an expired share as
- * inactive, so any push after the expiry closes it; this marks it ended and
- * forces that push. Called by the monitor.
+ * Ends expired shares and pushes the affected tailnets' rules, so access closes on time.
+ * Called by the monitor.
  */
 export async function endExpiredShares(now = new Date()): Promise<number> {
   const ended = await db

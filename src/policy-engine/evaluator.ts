@@ -1,7 +1,6 @@
 /**
- * @module policy-engine/evaluator
- * Core evaluation engine for traversal policies (ADR-0011).
- * Evaluates rules top-to-bottom, first match wins, implicit deny default.
+ * Traversal policy evaluator (ADR-0011).
+ * Rules run top to bottom. The first match wins. The default is deny.
  */
 
 import type {
@@ -63,7 +62,7 @@ async function evaluateRule(
     case "reputation-gate":
       return "reputation gate: always passes (stub)";
     case "bandwidth-cap":
-      return null; // enforced at relay layer, not at policy evaluation
+      return null; // The relay layer enforces this
     case "mutual-requirement":
       return evaluateMutualRequirement(rule, request, context);
     case "collective-identity":
@@ -293,8 +292,8 @@ function applyInheritance(compiled: CompiledPolicy): TraversalPolicy {
   const ceilingRules = compiled.ceilings;
   const ownRules = compiled.policy.rules;
 
-  // Floors prepend (cannot be weakened by child rules)
-  // Ceilings append (most restrictive wins — acts as hard limits)
+  // Floors go first, so child rules cannot weaken them.
+  // Ceilings go last and act as hard limits.
   const merged = [...floorRules, ...ownRules, ...ceilingRules];
 
   return {

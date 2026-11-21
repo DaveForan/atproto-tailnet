@@ -32,7 +32,6 @@ function instanceAvailable(tenant: {
   return Boolean(tenant.apiKey && tenant.port > 0);
 }
 
-/** Router for ACL policy CRUD: get and update. */
 export const aclRouter = Router({ caseSensitive: true });
 
 const aclRuleSchema = z.object({

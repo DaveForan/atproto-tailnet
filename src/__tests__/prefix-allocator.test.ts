@@ -39,9 +39,7 @@ describe("allocateIpv4Prefix", () => {
         { prefix: "100.64.0.0/10" },
       ]),
     } as any);
-    // 100.64.0.0/10 overlaps all candidates — but the allocator just looks
-    // for non-overlapping ones. Since /10 covers all /24s in the range,
-    // this should throw.
+    // The /10 overlaps every candidate /24, so no prefix is free.
     await expect(allocateIpv4Prefix()).rejects.toThrow("No free IPv4");
   });
 });

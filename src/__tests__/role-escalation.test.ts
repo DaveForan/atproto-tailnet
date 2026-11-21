@@ -1,9 +1,7 @@
 /**
  * Role escalation and hierarchy: a member with manage_roles must not make a broader role the default,
  * move holders onto a broader default role, or demote, kick or delete what outranks them.
- *
- * DB is a chainable mock (same pattern as operator.test.ts): each awaited
- * query resolves to the next entry of `results`; writes are recorded.
+ * The DB is a chainable mock: each awaited query resolves to the next `results` entry.
  */
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import type { AddressInfo } from "node:net";

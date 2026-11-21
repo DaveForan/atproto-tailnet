@@ -1,8 +1,6 @@
 /**
  * @module orchestrator/headscale-api
- * REST client for the Headscale gRPC-gateway API (v1).
- * Used for all runtime operations after initial bootstrap (users, nodes,
- * pre-auth keys, ACL policy, health). Responses are Zod-validated.
+ * REST client for the Headscale gRPC-gateway API (v1). Zod validates every response.
  */
 
 import { z } from "zod";
@@ -13,7 +11,7 @@ const headscaleNodeSchema = z.object({
   nodeKey: z.string().optional(),
   name: z.string(),
   givenName: z.string().optional(),
-  // null for tagged nodes (which belong to no user) when fetched singly.
+  // A single-node fetch returns null for tagged nodes, which belong to no user
   user: z
     .object({
       id: z.string().optional(),
@@ -22,15 +20,14 @@ const headscaleNodeSchema = z.object({
     .nullish(),
   ipAddresses: z.array(z.string()).optional(),
   online: z.boolean().optional(),
-  // Headscale sends explicit nulls: `expiry` for nodes that never expire,
-  // `lastSeen` for nodes that have not connected yet.
+  // Headscale sends null `expiry` for nodes that never expire.
+  // It sends null `lastSeen` for nodes that have not connected yet.
   lastSeen: z.string().nullish(),
   expiry: z.string().nullish(),
-  /** Routes the device advertises (Headscale ≥ 0.26 reports routes on the node). */
+  /** Headscale 0.26+ reports routes on the node. */
   availableRoutes: z.array(z.string()).optional(),
-  /** Advertised routes an admin or auto-approver has approved. */
   approvedRoutes: z.array(z.string()).optional(),
-  /** Approved routes this node is currently the primary router for. */
+  /** Approved routes for which this node is the primary router. */
   subnetRoutes: z.array(z.string()).optional(),
 });
 
@@ -43,7 +40,7 @@ const headscaleUserSchema = z.object({
 const headscalePreAuthKeySchema = z.object({
   id: z.string().optional(),
   key: z.string(),
-  // An object since Headscale 0.26; older versions returned the user name.
+  // Headscale 0.26+ returns an object; older versions return the user name
   user: z.union([z.string(), headscaleUserSchema]).nullish(),
   reusable: z.boolean().optional(),
   ephemeral: z.boolean().optional(),
@@ -52,17 +49,10 @@ const headscalePreAuthKeySchema = z.object({
   createdAt: z.string().optional(),
 });
 
-/** A registered node (machine) in the tailnet. */
 export type HeadscaleNode = z.infer<typeof headscaleNodeSchema>;
-/** A Headscale user (namespace) that owns nodes. */
 export type HeadscaleUser = z.infer<typeof headscaleUserSchema>;
-/** A pre-authentication key used to register nodes without interactive login. */
 export type HeadscalePreAuthKey = z.infer<typeof headscalePreAuthKeySchema>;
-/**
- * An advertised route (subnet or exit node) from a device. Headscale no longer
- * has route objects — routes are properties of a node — so `id` is synthesized
- * from the node id and prefix (see {@link routeId}).
- */
+/** Headscale has no route objects, so `id` comes from the node id and prefix (see {@link routeId}). */
 export interface HeadscaleRoute {
   id: string;
   node: { id: string; name: string; givenName?: string; online?: boolean };
@@ -74,18 +64,16 @@ export interface HeadscaleRoute {
 
 const EXIT_ROUTES = ["0.0.0.0/0", "::/0"];
 
-/** Options accepted by every control client's `createPreAuthKey`. */
 export interface PreAuthKeyOptions {
   reusable?: boolean;
   ephemeral?: boolean;
   expirationSeconds?: number;
-  /** Opaque owner (our user id). Recorded by the coordinator; Headscale uses the user instead. */
+  /** Our user id. The coordinator records it; Headscale ignores it. */
   owner?: string;
-  /** ACL tags (`tag:x`) the registered node receives. */
   tags?: string[];
 }
 
-/** A pre-auth key as listed by the control plane (never includes the secret). */
+/** Never includes the secret. */
 export interface ControlPreAuthKeyInfo {
   id: string;
   prefix: string;
@@ -110,10 +98,7 @@ export function routeId(nodeId: string, prefix: string): string {
   return `${nodeId}-${Buffer.from(prefix).toString("base64url")}`;
 }
 
-/**
- * Inverse of {@link routeId}; null when the id is malformed. Also accepts the
- * readable `<nodeId>:<cidr>` form (the `/` must then be percent-encoded in URLs).
- */
+/** Also accepts `<nodeId>:<cidr>`, with the `/` percent-encoded in URLs. Returns null when malformed. */
 export function parseRouteId(id: string): { nodeId: string; prefix: string } | null {
   const plain = /^(\d+):([0-9A-Fa-f.:]+\/\d{1,3})$/.exec(id);
   if (plain) return { nodeId: plain[1], prefix: plain[2] };
@@ -124,7 +109,7 @@ export function parseRouteId(id: string): { nodeId: string; prefix: string } | n
   return { nodeId: m[1], prefix };
 }
 
-/** The routes of one node: everything it advertises plus anything still approved. */
+/** Everything the node advertises plus anything still approved. */
 export function routesOfNode(node: HeadscaleNode): HeadscaleRoute[] {
   const available = node.availableRoutes ?? [];
   const approved = node.approvedRoutes ?? [];
@@ -144,10 +129,7 @@ export function routesOfNode(node: HeadscaleNode): HeadscaleRoute[] {
   }));
 }
 
-/**
- * The approved-route list after approving or withdrawing one prefix. The two
- * exit routes (`0.0.0.0/0`, `::/0`) are one decision and always move together.
- */
+/** The two exit routes (`0.0.0.0/0`, `::/0`) are one decision and always move together. */
 export function withRouteApproval(
   approved: string[],
   prefix: string,
@@ -158,19 +140,13 @@ export function withRouteApproval(
   return enable ? [...rest, ...affected] : rest;
 }
 
-/** Per-request timeout for Headscale REST calls. */
 const HEADSCALE_REQUEST_TIMEOUT_MS = 10_000;
 
-/**
- * Authenticated REST client for a single Headscale instance.
- * Connects to the container's localhost-bound port using the API key
- * generated during bootstrap.
- */
+/** Client for one Headscale container on its localhost-bound port. */
 export class HeadscaleApiClient {
   private baseUrl: string;
   private apiKey: string;
 
-  /** @param port - Localhost port the Headscale container is bound to. */
   constructor(port: number, apiKey: string) {
     this.baseUrl = `http://localhost:${port}`;
     this.apiKey = apiKey;
@@ -203,7 +179,6 @@ export class HeadscaleApiClient {
     return res.json();
   }
 
-  /** Create a new user (namespace) in the Headscale instance. */
   async createUser(name: string): Promise<HeadscaleUser> {
     const data = (await this.request("POST", "/api/v1/user", {
       name,
@@ -211,7 +186,6 @@ export class HeadscaleApiClient {
     return headscaleUserSchema.parse(data.user);
   }
 
-  /** List all users in the Headscale instance. */
   async listUsers(): Promise<HeadscaleUser[]> {
     const data = (await this.request("GET", "/api/v1/user")) as {
       users: unknown[];
@@ -219,7 +193,6 @@ export class HeadscaleApiClient {
     return data.users.map((u) => headscaleUserSchema.parse(u));
   }
 
-  /** Look a user up by exact name; null when there is no such user. */
   async getUserByName(name: string): Promise<HeadscaleUser | null> {
     const data = (await this.request(
       "GET",
@@ -229,18 +202,14 @@ export class HeadscaleApiClient {
     return users.find((u) => u.name === name) ?? null;
   }
 
-  /** Delete a user by name (the API addresses users by numeric id). No-op if absent. */
+  /** The API addresses users by numeric id, so this resolves the name first. */
   async deleteUser(name: string): Promise<void> {
     const user = await this.getUserByName(name);
     if (!user) return;
     await this.request("DELETE", `/api/v1/user/${encodeURIComponent(user.id)}`);
   }
 
-  /**
-   * Create a pre-auth key for the named user. Defaults to single-use,
-   * non-ephemeral, 24h expiry. The API takes the user's numeric id, so the name
-   * is resolved first.
-   */
+  /** Defaults to a single-use, non-ephemeral key that expires in 24h. */
   async createPreAuthKey(
     userName: string,
     opts?: PreAuthKeyOptions,
@@ -261,15 +230,11 @@ export class HeadscaleApiClient {
     return headscalePreAuthKeySchema.parse(data.preAuthKey);
   }
 
-  /**
-   * Expire (revoke) a pre-auth key by its numeric id. Headscale 0.28+ addresses
-   * keys by id; an expired key is rejected at registration, even if reusable.
-   */
+  /** Headscale 0.28+ addresses keys by id and rejects expired keys, even reusable ones. */
   async expirePreAuthKey(id: string): Promise<void> {
     await this.request("POST", "/api/v1/preauthkey/expire", { id });
   }
 
-  /** List all pre-auth keys (the secret is reduced to its prefix). */
   async listPreAuthKeys(): Promise<ControlPreAuthKeyInfo[]> {
     const data = (await this.request("GET", "/api/v1/preauthkey")) as {
       preAuthKeys?: unknown[];
@@ -294,7 +259,6 @@ export class HeadscaleApiClient {
     });
   }
 
-  /** Route auto-approvers from the ACL policy, in the coordinator's shape. */
   async getAutoApprovers(): Promise<AutoApproversConfig> {
     const policy = (await this.getPolicy()) as {
       autoApprovers?: { routes?: Record<string, string[]>; exitNode?: string[] };
@@ -305,7 +269,7 @@ export class HeadscaleApiClient {
     };
   }
 
-  /** Replace the policy's route auto-approvers, keeping the rest of the policy. */
+  /** Keeps the rest of the policy. */
   async setAutoApprovers(aa: AutoApproversConfig): Promise<void> {
     const policy = (await this.getPolicy()) as Record<string, unknown>;
     await this.setPolicy({
@@ -314,17 +278,14 @@ export class HeadscaleApiClient {
     });
   }
 
-  /** Delete every node belonging to the named Headscale user; returns how many. */
+  /** Returns the number of nodes deleted. */
   async deleteNodesByUser(userName: string): Promise<number> {
     const nodes = (await this.listNodes()).filter((n) => n.user?.name === userName);
     for (const n of nodes) await this.deleteNode(n.id);
     return nodes.length;
   }
 
-  /**
-   * Create a tagged pre-auth key (no user). Used for relay nodes that belong
-   * to no member — they register as tagged devices governed only by ACL.
-   */
+  /** For relay nodes, which belong to no member and are governed only by ACL. */
   async createTaggedPreAuthKey(
     aclTags: string[],
     opts?: { expirationSeconds?: number; ephemeral?: boolean },
@@ -342,7 +303,6 @@ export class HeadscaleApiClient {
     return headscalePreAuthKeySchema.parse(data.preAuthKey);
   }
 
-  /** List all registered nodes across all users. */
   async listNodes(): Promise<HeadscaleNode[]> {
     const data = (await this.request("GET", "/api/v1/node")) as {
       nodes: unknown[];
@@ -350,7 +310,6 @@ export class HeadscaleApiClient {
     return data.nodes.map((n) => headscaleNodeSchema.parse(n));
   }
 
-  /** Get a single node by its Headscale-assigned ID. */
   async getNode(nodeId: string): Promise<HeadscaleNode> {
     const data = (await this.request(
       "GET",
@@ -359,7 +318,6 @@ export class HeadscaleApiClient {
     return headscaleNodeSchema.parse(data.node);
   }
 
-  /** Remove a node from the tailnet. */
   async deleteNode(nodeId: string): Promise<void> {
     await this.request(
       "DELETE",
@@ -367,7 +325,6 @@ export class HeadscaleApiClient {
     );
   }
 
-  /** Rename a node's given name. */
   async renameNode(nodeId: string, newName: string): Promise<HeadscaleNode> {
     const data = (await this.request(
       "POST",
@@ -376,7 +333,6 @@ export class HeadscaleApiClient {
     return headscaleNodeSchema.parse(data.node);
   }
 
-  /** Retrieve the current ACL policy document from the Headscale instance. */
   async getPolicy(): Promise<object> {
     const data = (await this.request("GET", "/api/v1/policy")) as {
       policy: string;
@@ -385,14 +341,12 @@ export class HeadscaleApiClient {
     return JSON.parse(data.policy);
   }
 
-  /** Replace the ACL policy document (serialized as JSON string in the request body). */
   async setPolicy(policy: object): Promise<void> {
     await this.request("PUT", "/api/v1/policy", {
       policy: JSON.stringify(policy),
     });
   }
 
-  /** List all routes across all nodes (derived from each node's route fields). */
   async listRoutes(): Promise<HeadscaleRoute[]> {
     return (await this.listNodes()).flatMap(routesOfNode);
   }
@@ -408,25 +362,20 @@ export class HeadscaleApiClient {
     );
   }
 
-  /** Enable (approve) an advertised route. */
   async enableRoute(id: string): Promise<void> {
     await this.setRouteApproval(id, true);
   }
 
-  /** Disable (withdraw approval of) a route. */
   async disableRoute(id: string): Promise<void> {
     await this.setRouteApproval(id, false);
   }
 
-  /**
-   * Routes cannot be deleted in current Headscale — they exist for as long as
-   * the device advertises them — so this withdraws approval.
-   */
+  /** Headscale cannot delete a route while the device advertises it, so this withdraws approval. */
   async deleteRoute(id: string): Promise<void> {
     await this.setRouteApproval(id, false);
   }
 
-  /** Returns true if the Headscale API is reachable and authenticated. */
+  /** True when the API is reachable and accepts the key. */
   async healthcheck(): Promise<boolean> {
     try {
       await this.request("GET", "/api/v1/apikey");

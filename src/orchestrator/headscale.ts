@@ -1,8 +1,7 @@
 /**
  * @module orchestrator/headscale
- * Docker lifecycle management for per-tenant Headscale containers.
- * Handles container creation with generated config, bootstrap via `docker exec`
- * (API key + initial user), and start/stop/destroy operations.
+ * Docker lifecycle for per-tenant Headscale containers.
+ * Bootstrap (API key and first user) runs through `docker exec`.
  */
 
 import Docker from "dockerode";
@@ -16,12 +15,10 @@ const docker = new Docker();
 /** Port Headscale listens on inside its container. */
 export const HEADSCALE_CONTAINER_PORT = 8080;
 
-/** Docker container name of a tenant's Headscale instance. */
 export function tenantContainerName(slug: string): string {
   return `headscale-${slug}`;
 }
 
-/** Result of provisioning a new Headscale container for a tenant. */
 export interface TenantInstance {
   slug: string;
   port: number;
@@ -103,7 +100,7 @@ function yamlStr(value: string): string {
   return JSON.stringify(String(value));
 }
 
-/** Emits a non-negative integer, refusing anything that isn't one. */
+/** Throws for anything that is not a non-negative integer. */
 function yamlInt(value: number): string {
   if (!Number.isInteger(value) || value < 0) {
     throw new Error(`Invalid DERP numeric field: ${String(value)}`);
@@ -155,10 +152,8 @@ export async function updateInstanceConfig(
 }
 
 /**
- * Split a non-TTY `docker exec` stream into stdout and stderr. Docker
- * multiplexes both onto one connection as frames with an 8-byte header
- * (stream id, three zero bytes, big-endian payload length). Read as text
- * without this, the header bytes — including NULs — end up in the output.
+ * Splits a non-TTY `docker exec` stream into stdout and stderr.
+ * Each frame has an 8-byte header: stream id, three zero bytes, big-endian payload length.
  */
 export function demuxDockerStream(raw: Buffer): { stdout: string; stderr: string } {
   const out: Buffer[] = [];
@@ -171,7 +166,7 @@ export function demuxDockerStream(raw: Buffer): { stdout: string; stderr: string
       type <= 2 && raw[offset + 1] === 0 && raw[offset + 2] === 0 && raw[offset + 3] === 0;
     const size = framed ? raw.readUInt32BE(offset + 4) : -1;
     if (!framed || offset + 8 + size > raw.length) {
-      // Not a multiplexed stream (e.g. the exec was started with a TTY).
+      // Not a multiplexed stream, for example a TTY exec
       return { stdout: raw.toString(), stderr: "" };
     }
     (type === 2 ? err : out).push(raw.subarray(offset + 8, offset + 8 + size));
@@ -184,7 +179,6 @@ export function demuxDockerStream(raw: Buffer): { stdout: string; stderr: string
   return { stdout: Buffer.concat(out).toString(), stderr: Buffer.concat(err).toString() };
 }
 
-/** Run a command in a container and return its stdout/stderr and exit code. */
 async function execInContainer(
   container: Docker.Container,
   cmd: string[],
@@ -223,7 +217,7 @@ async function waitForReady(
     }
     await new Promise((r) => setTimeout(r, 1000));
   }
-  // Give it one more second and proceed anyway — some versions don't have health
+  // Some Headscale versions have no health command, so continue after a short wait
   await new Promise((r) => setTimeout(r, 2000));
 }
 
@@ -231,9 +225,8 @@ async function waitForReady(
 const API_KEY_RE = /^[A-Za-z0-9._-]{16,}$/;
 
 /**
- * Create an API key inside a running Headscale container and return it.
- * Throws rather than returning something that is not a key — a bad key is
- * stored on the tenant and every later API call fails with 401.
+ * Errors: throws when the output is not a key.
+ * A bad stored key makes every later API call fail with 401.
  */
 export async function createApiKeyInContainer(containerId: string): Promise<string> {
   const { stdout, stderr, exitCode } = await execInContainer(
@@ -251,11 +244,6 @@ export async function createApiKeyInContainer(containerId: string): Promise<stri
   return apiKey;
 }
 
-/**
- * Provision a new Headscale container for a tenant.
- * Writes config to the data directory, creates and starts the container,
- * waits for readiness, then bootstraps an API key and default "owner" user via CLI exec.
- */
 export async function createInstance(
   slug: string,
   port: number,
@@ -293,7 +281,6 @@ export async function createInstance(
 
   const apiKey = await createApiKeyInContainer(container.id);
 
-  // Create a default user for the tenant owner
   await execInContainer(container, ["headscale", "users", "create", "owner"]);
 
   return {
@@ -305,10 +292,8 @@ export async function createInstance(
 }
 
 /**
- * Take over the tenant's existing Headscale container, if there is one —
- * left by a provisioning attempt that failed after the container started.
- * Starts it if stopped and issues a fresh API key. Returns null when the
- * tenant has no container yet.
+ * Takes over a container left by a failed provisioning attempt and issues a fresh API key.
+ * Returns null when the tenant has no container.
  */
 export async function adoptInstance(
   slug: string,
@@ -327,17 +312,13 @@ export async function adoptInstance(
   await waitForReady(container);
 
   const apiKey = await createApiKeyInContainer(info.Id);
-  // No-op if the first attempt got as far as creating it.
+  // Does nothing if the first attempt already created the user
   await execInContainer(container, ["headscale", "users", "create", "owner"]);
 
   return { slug, port, apiKey, containerId: info.Id };
 }
 
-/**
- * Attach a tenant container to the shared tenant network if it is not on it
- * already (containers created before `HEADSCALE_NETWORK` was configured).
- * No-op when no network is configured.
- */
+/** Containers created before `HEADSCALE_NETWORK` was set are not on the shared network. */
 export async function ensureOnTenantNetwork(containerId: string): Promise<void> {
   const network = config.headscale.network;
   if (!network) return;
@@ -346,7 +327,7 @@ export async function ensureOnTenantNetwork(containerId: string): Promise<void> 
   await docker.getNetwork(network).connect({ Container: info.Id });
 }
 
-/** Stop and remove a Headscale container. Safe to call if already stopped. */
+/** Safe to call when the container is already stopped. */
 export async function destroyInstance(containerId: string): Promise<void> {
   const container = docker.getContainer(containerId);
   try {
@@ -357,31 +338,28 @@ export async function destroyInstance(containerId: string): Promise<void> {
   await container.remove();
 }
 
-/** Start a previously stopped Headscale container. */
 export async function startInstance(containerId: string): Promise<void> {
   const container = docker.getContainer(containerId);
   try {
     await container.start();
   } catch (err) {
-    // Docker answers 304 "container already started" — not a failure
+    // Docker answers 304 when the container already runs
     if (isNotModified(err)) return;
     throw err;
   }
 }
 
-/** Stop a running Headscale container. */
 export async function stopInstance(containerId: string): Promise<void> {
   const container = docker.getContainer(containerId);
   try {
     await container.stop();
   } catch (err) {
-    // Docker answers 304 "container already stopped" — not a failure
+    // Docker answers 304 when the container is already stopped
     if (isNotModified(err)) return;
     throw err;
   }
 }
 
-/** True for dockerode's 304 Not Modified (already started / already stopped). */
 function isNotModified(err: unknown): boolean {
   return (err as { statusCode?: number } | null)?.statusCode === 304;
 }

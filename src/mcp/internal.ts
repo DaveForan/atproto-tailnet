@@ -1,12 +1,7 @@
 /**
  * @module mcp/internal
- * Marks in-process REST calls made by MCP tools so the API rate limiter can
- * skip them. The /mcp endpoint has its own per-user limit, and each tool makes
- * at most a few API calls, so the loopback calls are already bounded — without
- * this, every MCP user would share the single 127.0.0.1 bucket of the API limiter.
- *
- * The marker is a random per-process secret: it never leaves the process, so
- * external callers cannot forge it (even when a proxy makes them look loopback).
+ * Marks loopback REST calls from MCP tools so the API limiter skips them; /mcp has its own per-user limit.
+ * Security: the marker is a per-process secret, so external callers cannot forge it, even through a proxy.
  */
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { Request } from "express";

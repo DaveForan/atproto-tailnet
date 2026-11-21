@@ -35,7 +35,6 @@ import {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/** Router for invitation CRUD: create, list, accept, decline, and revoke. */
 export const invitationsRouter = Router({ caseSensitive: true });
 
 invitationsRouter.get(
@@ -316,7 +315,7 @@ invitationsRouter.post(
       const client = getControlClient(tenant);
       await client.createUser?.(hsUsername);
     } catch {
-      // User might already exist if they were previously a member
+      // The user may exist from an earlier membership.
     }
 
     await db.insert(memberships).values({

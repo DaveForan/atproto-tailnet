@@ -1,7 +1,6 @@
 /**
  * @module access/devices
- * A member's devices as the control plane knows them, and the cleanup of a
- * removed member's access state (ADR-0036).
+ * Device ownership from the control plane and cleanup of a removed member's access state (ADR-0036).
  */
 
 import { and, eq, or } from "drizzle-orm";

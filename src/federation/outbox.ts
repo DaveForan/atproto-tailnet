@@ -1,16 +1,7 @@
 /**
  * @module federation/outbox
- * Delivery bookkeeping for cross-instance link messages (ADR-0019 §2):
- * LINK_REQUEST / LINK_ACCEPT / LINK_REJECT / LINK_REVOKE. The local write
- * happens first; the message then sits in the link row's `outbox` column until
- * the peer's broker acknowledges it, retried with exponential backoff.
- *
- * The message is stored unsigned and without a timestamp: every attempt is
- * re-signed with a fresh timestamp (peers reject stale ones) under the same
- * `messageId`, so a retry of a message that did arrive is answered 409 by the
- * peer's replay guard — which counts as delivered.
- *
- * Pure: the broker (orchestrator/federation-broker.ts) does the I/O.
+ * Retry bookkeeping for cross-instance link messages (ADR-0019 §2). Pure: orchestrator/federation-broker.ts does the I/O.
+ * Entries are stored unsigned. Each attempt re-signs with a fresh timestamp under the same `messageId`.
  */
 
 import type {
@@ -108,7 +99,6 @@ export function parseOutboxEntry(raw: unknown): OutboxEntry | null {
   };
 }
 
-/** Whether the entry should be attempted now. */
 export function isDue(entry: OutboxEntry, now: number = Date.now()): boolean {
   return entry.failedAt === null && Date.parse(entry.nextAttemptAt) <= now;
 }
@@ -116,14 +106,10 @@ export function isDue(entry: OutboxEntry, now: number = Date.now()): boolean {
 export type DeliveryOutcome = "delivered" | "retry" | "failed";
 
 /**
- * What a send result means for a queued message.
- * - 2xx: delivered.
- * - 409: the peer already has it (replay guard / existing link) — delivered.
- * - 404 for LINK_REVOKE: the peer has no live link with us — nothing left to revoke.
- * - no status (network error, timeout), 408, 425, 429, 5xx: transient — retry.
- * - 403: retried as well (the peer may have failed to resolve our DID document);
- *   the attempt cap bounds it.
- * - any other 4xx: the peer refused the message — failed.
+ * Maps a send result to an outcome.
+ * Delivered: 2xx, 409 (peer already has it), 404 on LINK_REVOKE (no live link left).
+ * Retry: no status, 403 (peer may not resolve our DID yet), 408, 425, 429, 5xx.
+ * Failed: any other 4xx.
  */
 export function classifyDelivery(
   type: LinkMessageType,

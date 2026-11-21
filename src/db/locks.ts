@@ -1,8 +1,7 @@
 /**
  * @module db/locks
- * Locks that hold across every replica of the service (ADR-0034, stage A),
- * built on PostgreSQL session advisory locks. A lock belongs to one database
- * connection: when the process that holds it stops, PostgreSQL releases it.
+ * Cross-replica locks on PostgreSQL session advisory locks (ADR-0034, stage A).
+ * A lock belongs to one connection: PostgreSQL releases it when the holder stops.
  */
 
 import { logger } from "../logger.js";
@@ -46,10 +45,8 @@ export async function withAdvisoryLock<T>(pool: LockPool, key: number, fn: () =>
 }
 
 /**
- * Leader election: at most one replica holds the lock. Work that must happen
- * once per instance (monitor, broker, sweeps) runs only on the leader. When
- * the leader stops or loses its connection, another replica takes over at its
- * next attempt.
+ * Leader election: at most one replica holds the lock and runs once-per-instance work (monitor, broker, sweeps).
+ * When the leader loses its connection, another replica takes over at its next attempt.
  */
 export class LeaderLock {
   private client: LockClient | null = null;

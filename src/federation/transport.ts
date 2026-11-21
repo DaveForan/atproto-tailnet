@@ -76,7 +76,7 @@ export async function sendMessage(
     }
 
     if (status < 200 || status >= 300) {
-      // The remote body is never read into logs or errors: only the status
+      // Security: only the status goes into logs and errors, never the remote body.
       logger.warn({ url, status }, "federation message send failed");
       return { ok: false, status, error: `HTTP ${status}` };
     }

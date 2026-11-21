@@ -1,8 +1,7 @@
 /**
  * @module operator/lifecycle
- * Operator actions with side effects on the control plane: suspend/unsuspend
- * a tenant and disable/enable a user. Route handlers in routes/operator.ts do
- * the guard + audit; these functions do the work.
+ * Operator actions with control-plane side effects: tenant suspension and user disablement.
+ * Route handlers in routes/operator.ts do the guard and the audit.
  */
 
 import { and, eq, inArray, ne } from "drizzle-orm";
@@ -31,17 +30,11 @@ export class OperatorActionError extends Error {
 }
 
 /**
- * Suspends or unsuspends ONE tenant. Control plane first, then the DB flag, so
- * a control-plane failure leaves nothing half-applied.
- *
- * - coordinator mode: `PUT /api/tenants/{id}/suspended` (the coordinator
- *   persists it, rejects the tenant's nodes and refuses new keys).
- * - Headscale mode: stop / start the tenant's container; `status` follows
- *   ("stopped" / "running") so the monitor neither probes nor restarts it.
- *
+ * Suspends or unsuspends one tenant: control plane first, then the DB flag, so a failure leaves nothing half-applied.
+ * - Coordinator mode: the coordinator rejects the tenant's nodes and refuses new keys.
+ * - Headscale mode: the container stops or starts; `status` follows, so the monitor leaves it alone.
  * `suspendedByParentId` records a cascade (see {@link setTenantSuspendedCascade}).
- * `lenient` (cascade only): a tenant not yet provisioned on the coordinator
- * has no nodes, so only the DB flag is set instead of failing.
+ * `lenient` (cascade only): a tenant not yet on the coordinator has no nodes, so only the DB flag changes.
  */
 export async function setTenantSuspended(
   tenant: Tenant,
@@ -112,12 +105,10 @@ export interface SuspensionCascadeResult {
 }
 
 /**
- * Suspends a tenant and every descendant that isn't already suspended
- * (descendants record `suspendedByParentId = tenant.id`); unsuspending the
- * tenant restores exactly the descendants its suspension cascaded to —
- * tenants suspended on their own stay suspended. Idempotent: re-running a
- * suspend retries descendants that failed. A tenant whose parent is
- * suspended cannot be unsuspended on its own (409 `parent_suspended`).
+ * Suspends a tenant and every descendant not already suspended, or reverses that cascade.
+ * Unsuspend restores only the descendants this suspension reached; independently suspended ones stay.
+ * Idempotent: a repeated suspend retries failed descendants.
+ * A tenant with a suspended parent cannot be unsuspended alone (409 `parent_suspended`).
  */
 export async function setTenantSuspendedCascade(
   tenant: Tenant,
@@ -193,11 +184,8 @@ export interface DisableUserResult {
 }
 
 /**
- * Disables a user: marks them disabled (sign-in and every credential refused
- * from now on), revokes their agent tokens, and runs the kick cascade for
- * every membership. Tenants they originate keep the originator membership
- * (it can never be deleted) but their devices and keys are still removed —
- * the operator can suspend or delete such tenants separately.
+ * Disables a user, revokes their agent tokens, and kicks them from every membership.
+ * Originator memberships cannot be deleted, so they stay, but their devices and keys go.
  */
 export async function disableUser(targetUserId: string, actorUserId: string): Promise<DisableUserResult> {
   const now = new Date();

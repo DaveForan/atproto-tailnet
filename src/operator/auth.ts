@@ -1,11 +1,8 @@
 /**
  * @module operator/auth
- * Operator request guard. An operator request is authenticated as a user
- * (dashboard session or MCP OAuth token — whatever `authUserId` resolves),
- * the user's DID is in OPERATOR_DIDS, and it is NOT an agent token (agent
- * tokens are tenant-scoped and never carry instance powers). An MCP token
- * only carries operator powers when its grant includes the operator scope
- * (explicit opt-in checkbox on the consent page).
+ * Operator guard: a session or MCP OAuth user whose DID is in OPERATOR_DIDS.
+ * Agent tokens are tenant-scoped and never carry instance powers.
+ * An MCP token carries operator powers only when its grant includes the operator scope.
  */
 
 import type { Request, Response, NextFunction } from "express";

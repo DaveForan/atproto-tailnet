@@ -1,7 +1,6 @@
 /**
- * @module notifications/webhook
- * Outbound notification webhooks: https to public addresses (re-checked at connect time), no redirects, 5 s timeout.
- * `WEBHOOK_ALLOW_PRIVATE=true` lifts the address and https rules (single-organisation self-hosting only).
+ * Outbound webhooks: https to public addresses only, checked again at connect time.
+ * No redirects. 5 s timeout. `WEBHOOK_ALLOW_PRIVATE=true` removes the address and https rules.
  */
 
 import { createHmac } from "node:crypto";
@@ -11,15 +10,14 @@ import https from "node:https";
 import net from "node:net";
 import { guardedLookup, isPublicAddress, resolvesToPublicAddresses } from "../identity/resolver.js";
 
-/** Delivery timeout (connect + response headers). */
+/** Delivery timeout for connect plus response headers. */
 export const WEBHOOK_TIMEOUT_MS = 5_000;
 export const WEBHOOK_MAX_URL_LENGTH = 2048;
 export const EVENT_HEADER = "X-Atproto-Tailnet-Event";
 export const SIGNATURE_HEADER = "X-Atproto-Tailnet-Signature";
-/** Unix seconds of the delivery; part of the signed text so receivers can refuse replays. */
+/** Delivery time in Unix seconds. It is signed so that receivers can refuse replays. */
 export const TIMESTAMP_HEADER = "X-Atproto-Tailnet-Timestamp";
 
-/** JSON body POSTed to the webhook. */
 export interface WebhookPayload {
   type: string;
   tenantId: string;
@@ -36,7 +34,7 @@ export interface WebhookResult {
   error?: string;
 }
 
-/** Syntactic + scheme checks only (no DNS). Returns an error message or null. */
+/** Syntax and scheme checks only, with no DNS. Returns an error message or null. */
 export function checkWebhookUrlSyntax(
   raw: string,
   allowPrivate: boolean,
@@ -58,10 +56,8 @@ export function checkWebhookUrlSyntax(
 }
 
 /**
- * Full validation: syntax, scheme, and (unless private targets are allowed)
- * that the host resolves only to public addresses.
- *
- * @returns null when acceptable, otherwise a user-facing error message.
+ * Checks syntax, scheme, and that the host resolves only to public addresses (unless private is allowed).
+ * Returns null when valid, else a user-facing error message.
  */
 export async function validateWebhookUrl(
   raw: string,
@@ -82,7 +78,7 @@ export function signWebhookBody(rawBody: string, secret: string, timestamp: stri
   return `sha256=${createHmac("sha256", secret).update(`${timestamp}.${rawBody}`).digest("hex")}`;
 }
 
-/** Headers for one delivery; the signature header is present only with a secret. */
+/** The signature header is present only when a secret is set. */
 export function buildWebhookHeaders(
   rawBody: string,
   type: string,
@@ -99,7 +95,7 @@ export function buildWebhookHeaders(
   return headers;
 }
 
-/** Sends one POST; injectable for tests. Must not follow redirects. */
+/** Sends one POST. Injectable for tests. It must not follow redirects. */
 export type WebhookTransport = (
   url: URL,
   headers: Record<string, string>,
@@ -107,7 +103,7 @@ export type WebhookTransport = (
   opts: { allowPrivate: boolean; timeoutMs: number },
 ) => Promise<{ status: number }>;
 
-/** Default transport: node:http(s), no redirect following, guarded DNS. */
+/** Default transport: node:http(s) with guarded DNS and no redirects. */
 export const nodeTransport: WebhookTransport = (url, headers, body, opts) =>
   new Promise((resolve, reject) => {
     const host = url.hostname.replace(/^\[|\]$/g, "");
@@ -126,7 +122,7 @@ export const nodeTransport: WebhookTransport = (url, headers, body, opts) =>
         timeout: opts.timeoutMs,
       },
       (res) => {
-        res.resume(); // discard the body; 3xx is reported, never followed
+        res.resume(); // Discards the body. A 3xx is reported, never followed.
         resolve({ status: res.statusCode ?? 0 });
       },
     );
@@ -136,8 +132,8 @@ export const nodeTransport: WebhookTransport = (url, headers, body, opts) =>
   });
 
 /**
- * Deliver one webhook. Never throws — failures are reported in the result.
- * Re-validates the URL at send time (the stored URL may predate a DNS change).
+ * Delivers one webhook. It never throws; the result reports failures.
+ * It validates the URL again, because DNS can change after the URL is stored.
  */
 export async function deliverWebhook(
   rawUrl: string,

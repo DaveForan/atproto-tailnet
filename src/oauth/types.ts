@@ -1,13 +1,7 @@
 /**
  * @module oauth/types
- * Request/session augmentations for MCP OAuth.
- *
- * - `req.mcpAuth` — set by `resolveAgentToken` (routes/helpers.ts) when an
- *   internal /mcp tool call carries a valid MCP access token (`Authorization:
- *   Bearer mcp_…` plus the per-process secret header; external use is a 401).
- *   It authenticates the request AS THE USER; it is never an agent token, so
- *   `req.agentToken` stays unset.
- * - `session.mcpPendingAuthz` — consent requests awaiting Allow/Deny.
+ * Request/session augmentations for MCP OAuth. `req.mcpAuth` acts AS THE USER and is never an agent token.
+ * `session.mcpPendingAuthz` holds consent requests awaiting Allow/Deny.
  */
 import "express-session";
 
