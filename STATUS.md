@@ -50,6 +50,8 @@ After the first start: sign in yourself before you share the URL, then connect C
    - Sharing: device choice and fewer ports on accept; "Who can reach my devices".
    - Boards: add a device from inside the add-service form; a public service for some roles only (migration 0040); a parent sees the public services of Open child tailnets (view only).
    - MCP tools for services.
+   - Gateway: an ACL policy no longer blocks a published HTTPS service.
+   - Gateway direct paths (ADR-0029 phase 2): built, off unless `GATEWAY_UDP_LISTEN` is set. No real Tailscale client has confirmed it. It needs one UDP port open on the server.
    - These were checked on a local stack (real coordinator and service, PostgreSQL, a browser), not with real devices.
 4. Resume federation when a second collective needs access (resume criteria in ADR-0033): gateway data plane, protocol version on CFP messages, replica-safe handshake state, traversal policy enforcement.
 5. Optional: the @atproto packages still bundle zod 3 (advisory flagged by `npm audit`); it clears when they release.
