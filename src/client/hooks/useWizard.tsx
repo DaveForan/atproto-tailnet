@@ -41,7 +41,7 @@ export function WizardProvider({ children }: { children: ReactNode }) {
   const [wizardStep, setWizardStep] = useState(1);
   const [dismissed, setDismissed] = useState(false);
 
-  // Stats are loaded only with the tailnet (null while switching), so this follows each load
+  // Stats load only with the tailnet and are null during a switch. So this follows each load.
   const showWizard = useMemo(
     () =>
       !dismissed &&

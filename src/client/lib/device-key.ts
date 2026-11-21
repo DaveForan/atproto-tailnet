@@ -1,8 +1,6 @@
 /**
- * This browser's device key (ADR-0035): an ECDSA P-256 key pair created with
- * WebCrypto as *non-extractable* and kept in IndexedDB. Pages can ask the
- * browser to sign with it, but cannot read the private key, so it cannot be
- * copied out by a script or sent to a server.
+ * This browser's device key (ADR-0035): a non-extractable ECDSA P-256 key in IndexedDB.
+ * Pages can sign with it. No script can read or copy the private key.
  */
 
 const DB_NAME = "tailnet-device";
@@ -114,9 +112,8 @@ export function suggestedDeviceName(ua: string = navigator.userAgent): string {
 }
 
 /**
- * Coarse traits of this browser, sent with a device proof. The service only
- * uses them to warn when a trusted key appears on a machine that looks
- * different; they never decide access.
+ * Coarse browser traits, sent with a device proof.
+ * The service uses them only for warnings. They never decide access.
  */
 export function deviceTraits(): Record<string, string | number | boolean> {
   const traits: Record<string, string | number | boolean> = {
@@ -128,7 +125,7 @@ export function deviceTraits(): Record<string, string | number | boolean> {
   try {
     traits.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   } catch {
-    // not available: left out
+    // not available: leave it out
   }
   return traits;
 }

@@ -14,10 +14,7 @@ export const deviceService = {
   getDevices: (tid: string) =>
     tenantApi<DevicesData>(tid, "/devices"),
 
-  /**
-   * Device and member counts for the header. Fetches the whole device list
-   * because there is no count endpoint yet.
-   */
+  /** Device and member counts for the header. No count endpoint exists, so it fetches all devices. */
   getStats: async (tid: string): Promise<Stats | null> => {
     const devices = await deviceService.getDevices(tid);
     if (!devices) return null;

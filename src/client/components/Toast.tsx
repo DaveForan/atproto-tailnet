@@ -26,9 +26,8 @@ const INFO_MS = 5000;
 let nextId = 0;
 
 /**
- * Toasts are shown visually in a stack and announced through two live regions
- * that are mounted once, so screen readers hear each message (a region created
- * together with its text is often not announced).
+ * Two live regions, mounted once, announce the toasts.
+ * Screen readers often skip a region that appears together with its text.
  */
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [items, setItems] = useState<ToastItem[]>([]);

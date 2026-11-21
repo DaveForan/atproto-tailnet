@@ -5,15 +5,13 @@ export function safeUrl(url?: string | null): string {
   try {
     const u = new URL(url);
     if (u.protocol === "https:" || u.protocol === "http:") return url;
-  } catch { /* ignore */ }
+  } catch { /* not a valid URL */ }
   return "";
 }
 
 /**
- * A redirect that stays on this site. Mirrors the server's `/auth/login`
- * rule (`^\/[a-z0-9]`), so `//host` and `/\host` (which browsers treat as
- * `//host`) are refused; a backslash anywhere is refused. "/" and our own
- * "/#tab" links are allowed.
+ * A redirect that stays on this site. It mirrors the server's `/auth/login` rule (`^\/[a-z0-9]`).
+ * It refuses `//host`, `/\host` and any backslash. It allows "/" and "/#tab".
  */
 export function localRedirect(redirect: string | null | undefined): string {
   if (!redirect || redirect.includes("\\")) return "/";

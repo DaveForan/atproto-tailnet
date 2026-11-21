@@ -61,7 +61,7 @@ export const deviceTrustService = {
   deny: (id: string) => api(`/api/trusted-devices/requests/${id}/deny`, post()),
   newRecoveryCodes: () => api<{ recoveryCodes: string[] }>("/api/trusted-devices/recovery-codes", post()),
 
-  // ── Pending sign-in (no dashboard session yet: a 401 means "nothing pending") ──
+  // Pending sign-in: no dashboard session exists yet, so a 401 means "nothing pending".
   pending: () => apiOrNull<{ handle: string | null; challenge: string }>("/api/device-trust/pending"),
   verify: (deviceId: string, signature: string) =>
     apiOrNull<{ redirect: string }>("/api/device-trust/pending/verify", post({ deviceId, signature, profile: deviceTraits() })),

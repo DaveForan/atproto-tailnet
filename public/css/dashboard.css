@@ -1,6 +1,5 @@
-/* ── Themes ───────────────────────────────────────────────────────────────
-   Every colour is a variable. The default is "paper": light green paper with
-   dark green ink. A theme is chosen with <html data-theme="…"> (lib/theme.ts). */
+/* Themes. Every colour is a variable. The default "paper" theme is dark green ink on light green paper.
+   <html data-theme="…"> selects a theme (lib/theme.ts). */
 :root {
   color-scheme: light;
   --bg: #e9f0e1;
@@ -123,7 +122,7 @@ body {
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
-/* ── Header ───────────────────────────────────────────────────────────── */
+/* Header */
 
 header {
   display: flex;
@@ -173,7 +172,7 @@ header h1 {
 
 .user-info span { color: var(--text-dim); font-size: 14px; }
 
-/* ── Layout ───────────────────────────────────────────────────────────── */
+/* Layout */
 
 main {
   flex: 1;
@@ -210,11 +209,11 @@ main {
 /* One tab's worth of cards; capped so long lines stay readable on wide screens */
 .tab-content { max-width: 1080px; min-width: 0; }
 
-/* Page heading; takes focus on a tab change, so it needs no focus ring of its own */
+/* Page heading. It takes focus on a tab change, so it needs no focus ring. */
 .tab-title { font-size: 22px; font-weight: 600; margin-bottom: 16px; }
 .tab-title:focus { outline: none; }
 
-/* ── Sidebar ──────────────────────────────────────────────────────────── */
+/* Sidebar */
 
 .sidebar {
   width: 240px;
@@ -280,7 +279,7 @@ main {
 
 .nav-item[aria-current="page"] { font-weight: 600; }
 
-/* Menu button, drawer header and overlay only exist at drawer widths (see Responsive) */
+/* Menu button, drawer header and overlay show only at drawer widths (see Responsive). */
 .hamburger-btn {
   display: none;
   background: transparent;
@@ -298,7 +297,7 @@ main {
 .sidebar-drawer-head { display: none; }
 .sidebar-overlay { display: none; }
 
-/* ── Sections & Cards ─────────────────────────────────────────────────── */
+/* Sections & Cards */
 
 .section { margin-bottom: 32px; }
 
@@ -328,7 +327,7 @@ main {
 
 .card-header h3 { font-size: 16px; font-weight: 600; }
 
-/* ── Stats ────────────────────────────────────────────────────────────── */
+/* Stats */
 
 .stats-row {
   display: flex;
@@ -356,7 +355,7 @@ main {
 
 .stat-value { font-size: 22px; font-weight: 600; }
 
-/* ── Badges ───────────────────────────────────────────────────────────── */
+/* Badges */
 
 .badge {
   display: inline-block;
@@ -372,7 +371,7 @@ main {
 .badge-role { background: color-mix(in srgb, var(--text-dim) 14%, transparent); color: var(--text-dim); }
 .badge-warning { background: color-mix(in srgb, var(--warning) 16%, transparent); color: var(--warning); }
 
-/* ── Buttons ──────────────────────────────────────────────────────────── */
+/* Buttons */
 
 button, .btn {
   background: var(--accent);
@@ -414,7 +413,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 /* Pushes a destructive action away from the primary ones in the same row */
 .btn-group .btn-apart { margin-left: auto; }
 
-/* ── Forms ────────────────────────────────────────────────────────────── */
+/* Forms */
 
 input[type="text"], input[type="number"], input[type="url"], input[type="password"], input[type="email"], input[type="search"], select {
   background: var(--bg);
@@ -509,7 +508,7 @@ textarea.code-input { font-family: var(--font-mono); font-size: 13px; min-height
 
 .form-stack > button { align-self: flex-start; }
 
-/* ── Toggle ───────────────────────────────────────────────────────────── */
+/* Toggle */
 
 .toggle-row {
   display: flex;
@@ -567,7 +566,7 @@ textarea.code-input { font-family: var(--font-mono); font-size: 13px; min-height
 .toggle input:checked + .slider { background: var(--accent); }
 .toggle input:checked + .slider::before { transform: translateX(20px); }
 
-/* ── Status dots & avatars ────────────────────────────────────────────── */
+/* Status dots & avatars */
 
 .online-dot {
   display: inline-block;
@@ -583,7 +582,7 @@ textarea.code-input { font-family: var(--font-mono); font-size: 13px; min-height
 .avatar { width: 32px; height: 32px; border-radius: 50%; flex-shrink: 0; object-fit: cover; }
 .avatar-placeholder { background: color-mix(in srgb, var(--text-dim) 22%, transparent); }
 
-/* ── Code blocks ──────────────────────────────────────────────────────── */
+/* Code blocks */
 
 .code-block {
   background: var(--code-bg);
@@ -620,7 +619,7 @@ pre {
   white-space: pre-wrap;
 }
 
-/* ── Empty state ──────────────────────────────────────────────────────── */
+/* Empty state */
 
 .empty-state {
   text-align: center;
@@ -630,7 +629,7 @@ pre {
 
 .hidden { display: none; }
 
-/* ── Toast ────────────────────────────────────────────────────────────── */
+/* Toast */
 
 .toast-container {
   position: fixed;
@@ -714,7 +713,7 @@ pre {
 
 @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } }
 
-/* ── Lockdown banner ──────────────────────────────────────────────────── */
+/* Lockdown banner */
 
 .lockdown-banner {
   background: color-mix(in srgb, var(--warning) 16%, transparent);
@@ -732,7 +731,7 @@ pre {
 .lockdown-banner button { flex-shrink: 0; }
 main .lockdown-banner { border-radius: 8px; margin-bottom: 12px; }
 
-/* ── Wizard ───────────────────────────────────────────────────────────── */
+/* Wizard */
 
 .wizard-overlay {
   position: fixed;
@@ -769,7 +768,7 @@ main .lockdown-banner { border-radius: 8px; margin-bottom: 12px; }
 
 .wizard-step { font-size: 13px; color: var(--text-dim); margin-bottom: 4px; }
 
-/* ── Login page ───────────────────────────────────────────────────────── */
+/* Login page */
 
 #login-page {
   display: flex;
@@ -793,7 +792,7 @@ main .lockdown-banner { border-radius: 8px; margin-bottom: 12px; }
 
 #login-page form input { flex: 1; }
 
-/* ── Join page ────────────────────────────────────────────────────────── */
+/* Join page */
 
 .join-container {
   display: flex;
@@ -813,7 +812,7 @@ main .lockdown-banner { border-radius: 8px; margin-bottom: 12px; }
 .join-card h1 { font-size: 24px; overflow-wrap: anywhere; }
 .join-card form { width: 100%; text-align: left; }
 
-/* ── Lists & tables ───────────────────────────────────────────────────── */
+/* Lists & tables */
 
 .item-list { list-style: none; }
 
@@ -949,7 +948,7 @@ button.chip:disabled { cursor: default; opacity: 0.75; }
   .data-table.stack .cell-badges:has(.badge-stack:empty) { display: none; }
 }
 
-/* ── Access / operator ────────────────────────────────────────────────── */
+/* Access / operator */
 
 .access-main {
   display: flex;
@@ -1104,7 +1103,7 @@ button.chip:disabled { cursor: default; opacity: 0.75; }
   border: 0;
 }
 
-/* ── Utility classes ──────────────────────────────────────────────────── */
+/* Utility classes */
 
 .text-dim { color: var(--text-dim); }
 .text-sm { font-size: 13px; }
@@ -1120,7 +1119,7 @@ button.chip:disabled { cursor: default; opacity: 0.75; }
 .text-center { text-align: center; }
 .inline-block { display: inline-block; }
 
-/* ── Responsive ───────────────────────────────────────────────────────── */
+/* Responsive */
 
 /* Phones and small tablets: the sidebar becomes an off-canvas drawer opened by the menu button */
 @media (max-width: 768px) {
@@ -1165,7 +1164,7 @@ button.chip:disabled { cursor: default; opacity: 0.75; }
   .stat-card { min-width: 0; }
 }
 
-/* ── Boards, services and sharing (ADR-0036) ───────────────────────────── */
+/* Boards, services and sharing (ADR-0036) */
 .card-description { color: var(--text-dim); font-size: 14px; margin-bottom: 12px; max-width: 70ch; }
 .list-heading { font-size: 13px; font-weight: 600; color: var(--text-dim); margin: 16px 0 6px; }
 
@@ -1224,7 +1223,7 @@ button.chip:disabled { cursor: default; opacity: 0.75; }
 .detail-list dt { color: var(--text-dim); font-size: 14px; }
 .detail-list dd { overflow-wrap: anywhere; }
 
-/* ── Paper and ink ─────────────────────────────────────────────────────── */
+/* Paper and ink */
 h1, h2, header h1, .card-header h3, .wizard-card h2, .post-head h4 {
   font-family: var(--font-heading);
   letter-spacing: 0.005em;
@@ -1250,7 +1249,7 @@ table { width: 100%; }
 .card { overflow-x: auto; }
 img, svg { max-width: 100%; }
 
-/* ── Account: themes and trusted devices (ADR-0035) ────────────────────── */
+/* Account: themes and trusted devices (ADR-0035) */
 .theme-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
 .theme-option {
   display: grid;
@@ -1289,7 +1288,7 @@ img, svg { max-width: 100%; }
 .notice { border-left: 3px solid var(--warning); padding: 8px 12px; background: color-mix(in srgb, var(--warning) 10%, transparent); border-radius: 0 6px 6px 0; }
 .notice-ok { border-left-color: var(--success); background: color-mix(in srgb, var(--success) 10%, transparent); }
 
-/* ── Tablet and phone ──────────────────────────────────────────────────── */
+/* Tablet and phone */
 @media (max-width: 1024px) {
   .sidebar { width: 200px; }
   main { padding: 18px; }

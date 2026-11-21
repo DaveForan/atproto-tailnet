@@ -406,7 +406,6 @@ export interface Stats {
   totalMembers: number;
 }
 
-// Federation sub-types
 export interface PostureData {
   posture: string;
 }
@@ -442,7 +441,6 @@ export interface BrokerData {
   exportedRoutes: number;
 }
 
-// Collectives sub-types
 export interface Ancestor {
   id: string;
   name: string;
@@ -468,26 +466,22 @@ export interface ComplianceData {
   violations: ComplianceViolation[];
 }
 
-// Status sub-types
 export interface HealthData {
   status: string;
   message?: string;
 }
 
-// Traversal sub-types
 export interface TraversalEvalResult {
   allowed: boolean;
   matchedRule?: string;
   detail?: string;
 }
 
-// Device lock info
 export interface DeviceLockInfo {
   memberId: string;
   locked: boolean;
 }
 
-// Connect tab response
 export type AuthKeyResponse =
   | { key: string; command: string; loginServer: string }
   | { approvalId: string; status: "pending_approval" };
@@ -497,7 +491,7 @@ export interface AuthKeyOptions {
   expiresInHours?: number;
 }
 
-// ACL data (flattened policy)
+// The ACL policy in flattened form.
 export interface AclData {
   acls: AclRule[];
   groups: Record<string, string[]>;
@@ -506,13 +500,11 @@ export interface AclData {
   autoApprovers?: Record<string, string[]>;
 }
 
-// ACL API response
 export interface AclGetResponse {
   policy: AclData;
   users: string[];
 }
 
-// Credential service types
 export interface CredentialResult {
   jwt?: string;
   bundle?: string;

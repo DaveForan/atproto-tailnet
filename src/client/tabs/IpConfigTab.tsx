@@ -46,7 +46,6 @@ function IpConfigForm() {
     "sequential",
   );
 
-  // Sync form fields when loaded data changes
   useEffect(() => {
     if (ipConfig) {
       setIpv4Prefix(ipConfig.ipv4Prefix);

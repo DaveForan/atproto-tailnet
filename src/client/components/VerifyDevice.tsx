@@ -13,9 +13,8 @@ type View =
   | { kind: "ended"; message: string };
 
 /**
- * Second step of sign-in for an account with trusted devices (ADR-0035). A
- * trusted browser passes without a prompt. Another browser can ask to be
- * added (confirmed with a code on a trusted device) or use a recovery code.
+ * Second sign-in step for an account with trusted devices (ADR-0035). A trusted browser passes silently.
+ * Another browser asks a trusted device to approve it, or uses a recovery code.
  */
 export function VerifyDevicePage() {
   const [view, setView] = useState<View>({ kind: "checking" });

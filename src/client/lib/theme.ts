@@ -1,6 +1,6 @@
 /**
- * Colour themes. The choice is kept in this browser and applied as
- * `<html data-theme="…">`; the colours themselves live in dashboard.css.
+ * Colour themes. This browser stores the choice and applies it as `<html data-theme="…">`.
+ * The colours live in dashboard.css.
  */
 
 export const THEMES = [

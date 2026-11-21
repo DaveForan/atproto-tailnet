@@ -19,9 +19,8 @@ export function useConfirm(): ConfirmFn {
 }
 
 /**
- * One modal confirmation for the whole app, on the native <dialog> element:
- * focus is trapped by the browser, Escape and the backdrop cancel, and focus
- * starts on Cancel so Enter never confirms a destructive action by accident.
+ * The native <dialog> traps focus. Escape and the backdrop cancel.
+ * Focus starts on Cancel, so Enter never confirms a destructive action.
  */
 export function ConfirmProvider({ children }: { children: ReactNode }) {
   const dialogRef = useRef<HTMLDialogElement>(null);

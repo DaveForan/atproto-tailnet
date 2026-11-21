@@ -68,7 +68,7 @@ function readStoredTenant(): string | null {
 function storeTenant(tenantId: string): void {
   try {
     localStorage.setItem(TENANT_KEY, tenantId);
-  } catch { /* ignore */ }
+  } catch { /* storage blocked: the next visit does not remember the choice */ }
 }
 
 /** `prev` when `next` has the same fields, so context consumers do not re-render for an equal object. */

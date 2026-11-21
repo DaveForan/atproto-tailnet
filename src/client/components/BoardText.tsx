@@ -19,10 +19,7 @@ function InlineText({ inline }: { inline: Inline[] }) {
   );
 }
 
-/**
- * Renders controller board text. The text is parsed into blocks and drawn as
- * plain elements; nothing in it is ever interpreted as HTML.
- */
+/** Renders controller board text as plain elements. It never interprets the text as HTML. */
 export function BoardText({ text }: { text: string }) {
   const blocks = parseBoardText(text);
   if (blocks.length === 0) return null;

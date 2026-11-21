@@ -18,10 +18,7 @@ export function addressProblem(name: string): string | null {
   return null;
 }
 
-/**
- * Form for choosing the tailnet's primary address. Used by the setup wizard
- * and the Tailnet address card. Calls `onSaved` after a successful change.
- */
+/** Form for the tailnet's primary address. Calls `onSaved` after a successful change. */
 export function AddressForm({
   tenantId,
   initial,
