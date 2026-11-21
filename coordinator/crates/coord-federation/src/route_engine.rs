@@ -8,7 +8,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::protocol::RouteAnnouncement;
 
-// ── Types ──────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -29,7 +28,6 @@ pub struct RouteTable {
     routes: HashMap<String, InstalledRoute>,
 }
 
-// ── Implementation ─────────────────────────────────────────────────────────────
 
 impl RouteTable {
     pub fn new() -> Self {
@@ -38,9 +36,8 @@ impl RouteTable {
         }
     }
 
-    /// Process a route update: install announcements (rejecting loops and
-    /// out-of-scope prefixes), remove withdrawals. Returns the list of newly
-    /// installed prefixes.
+    /// Applies withdrawals, then installs announcements that are loop-free and in scope.
+    /// Returns the newly installed prefixes.
     pub fn process_update(
         &mut self,
         announcements: &[RouteAnnouncement],
@@ -49,7 +46,6 @@ impl RouteTable {
         local_did: &str,
         agreed_cidrs: &[String],
     ) -> Vec<String> {
-        // Process withdrawals first.
         for prefix in withdrawals {
             self.routes.remove(prefix);
         }
@@ -57,17 +53,16 @@ impl RouteTable {
         let mut installed = Vec::new();
 
         for ann in announcements {
-            // Loop detection: reject if our DID is already in the path vector.
+            // Loop detection: reject a path vector that already contains our DID.
             if ann.path_vector.iter().any(|did| did == local_did) {
                 continue;
             }
 
-            // Scope validation: prefix must fall within the agreed CIDRs.
             if !prefix_within_scope(&ann.prefix, agreed_cidrs) {
                 continue;
             }
 
-            // Best-path: only install if preference is strictly higher than existing.
+            // Install only if preference is strictly higher than the existing route.
             if let Some(existing) = self.routes.get(&ann.prefix)
                 && existing.preference >= ann.preference {
                     continue;
@@ -91,8 +86,8 @@ impl RouteTable {
         installed
     }
 
-    /// Returns routes suitable for export to a peer, excluding routes learned
-    /// from `exclude_session`, with `local_did` appended to the path vector.
+    /// Returns routes to export to a peer, with `local_did` appended to each path vector.
+    /// It skips routes learned from `exclude_session`.
     pub fn get_exportable_routes(
         &self,
         exclude_session: &str,
@@ -155,12 +150,11 @@ impl Default for RouteTable {
     }
 }
 
-// ── CIDR helpers ───────────────────────────────────────────────────────────────
 
-/// Checks whether a prefix falls within at least one of the allowed CIDRs.
-/// An empty list of allowed CIDRs allows nothing (deny by default): a link on
-/// which no CIDRs were agreed must not import anything. Default routes
-/// (`/0`) are never in scope, and unparseable prefixes or scopes never match.
+/// Checks whether a prefix falls within at least one allowed CIDR.
+/// # Security
+/// An empty list allows nothing, so a link with no agreed CIDRs imports nothing.
+/// Default routes (`/0`) and unparseable inputs never match.
 pub fn prefix_within_scope(prefix: &str, allowed_cidrs: &[String]) -> bool {
     if allowed_cidrs.is_empty() {
         return false;
@@ -170,9 +164,7 @@ pub fn prefix_within_scope(prefix: &str, allowed_cidrs: &[String]) -> bool {
         .any(|cidr| cidr_contains_prefix(cidr, prefix))
 }
 
-/// Returns true if `scope` (a CIDR) fully contains `prefix` (also a CIDR).
-/// Both the network address and mask length are checked: the prefix network bits
-/// must fall within the scope, and the prefix mask must be at least as specific.
+/// Returns true if `scope` contains the network bits of `prefix` and `prefix` has an equal or longer mask.
 fn cidr_contains_prefix(scope: &str, prefix: &str) -> bool {
     let Ok(scope_net) = scope.parse::<IpNetwork>() else {
         return false;
@@ -186,7 +178,6 @@ fn cidr_contains_prefix(scope: &str, prefix: &str) -> bool {
         return false;
     }
 
-    // The prefix mask must be at least as specific (equal or longer).
     if prefix_net.prefix() < scope_net.prefix() {
         return false;
     }
@@ -198,7 +189,6 @@ fn cidr_contains_prefix(scope: &str, prefix: &str) -> bool {
     }
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -237,7 +227,7 @@ mod tests {
     #[test]
     fn reject_loop() {
         let mut table = RouteTable::new();
-        // Path vector includes our local DID — should be rejected.
+        // The path vector contains our local DID.
         let announcements = vec![ann(
             "10.1.0.0/24",
             "did:web:origin",
@@ -274,7 +264,6 @@ mod tests {
     fn prefer_higher_preference() {
         let mut table = RouteTable::new();
 
-        // Install low-preference route.
         table.process_update(
             &[ann("10.1.0.0/24", "did:web:a", &[], 50)],
             &[],
@@ -284,7 +273,6 @@ mod tests {
         );
         assert_eq!(table.get_route("10.1.0.0/24").unwrap().preference, 50);
 
-        // Higher preference replaces it.
         table.process_update(
             &[ann("10.1.0.0/24", "did:web:b", &[], 100)],
             &[],
@@ -295,7 +283,7 @@ mod tests {
         assert_eq!(table.get_route("10.1.0.0/24").unwrap().preference, 100);
         assert_eq!(table.get_route("10.1.0.0/24").unwrap().received_from, "sess-2");
 
-        // Equal or lower preference does NOT replace.
+        // Equal or lower preference does not replace.
         table.process_update(
             &[ann("10.1.0.0/24", "did:web:c", &[], 80)],
             &[],
@@ -368,11 +356,10 @@ mod tests {
             &scope(),
         );
 
-        // Export for sess-1: should only include the route from sess-2.
+        // Export for sess-1 includes only the route from sess-2.
         let exported = table.get_exportable_routes("sess-1", "did:web:local");
         assert_eq!(exported.len(), 1);
         assert_eq!(exported[0].prefix, "10.2.0.0/24");
-        // Local DID should be appended to path vector.
         assert!(exported[0].path_vector.contains(&"did:web:local".to_string()));
     }
 
@@ -400,13 +387,9 @@ mod tests {
 
     #[test]
     fn cidr_containment_checks() {
-        // 10.1.0.0/24 is within 10.0.0.0/8
         assert!(cidr_contains_prefix("10.0.0.0/8", "10.1.0.0/24"));
-        // 192.168.1.0/24 is NOT within 10.0.0.0/8
         assert!(!cidr_contains_prefix("10.0.0.0/8", "192.168.1.0/24"));
-        // A less-specific prefix is NOT within a more-specific scope.
         assert!(!cidr_contains_prefix("10.1.0.0/24", "10.0.0.0/8"));
-        // Exact match.
         assert!(cidr_contains_prefix("10.1.0.0/24", "10.1.0.0/24"));
     }
 }

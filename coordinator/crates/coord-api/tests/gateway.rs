@@ -1,7 +1,6 @@
-//! The gateway inside the coordinator (ADR-0029, ADR-0030): publishing an
-//! HTTPS service brings a gateway node into the tailnet, devices that may
-//! see the service get its name and a path to the gateway, and a request
-//! reaches the application with the caller's identity.
+//! The coordinator's built-in gateway (ADR-0029, ADR-0030).
+//! A published HTTPS service adds a gateway node, and permitted devices get its name and route.
+//! A request reaches the application with the caller's identity.
 
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::Arc;
@@ -199,7 +198,7 @@ async fn publishing_an_https_service_brings_the_gateway_and_serves_it_with_ident
     // Bob's laptop is not opened to anything by this
     assert_eq!(viewer_map["PacketFilter"], serde_json::json!([]));
 
-    // Alice's server accepts the gateway on port 3000 only (and her own devices: none here)
+    // Alice's server accepts the gateway on port 3000 only
     let app_map = netmap(&state, &app_dev).await;
     assert_eq!(peer_names(&app_map), vec!["gateway"]);
     let filter = app_map["PacketFilter"].as_array().unwrap();
@@ -213,7 +212,7 @@ async fn publishing_an_https_service_brings_the_gateway_and_serves_it_with_ident
     assert_eq!(peer_names(&outsider_map), Vec::<String>::new());
     assert_eq!(record(&outsider_map, "food-app.ts.example.com"), None);
 
-    // Now the data path, with the three devices online
+    // Data path, with the three devices online
     let gateway_key: [u8; 32] = hex::decode(gateway_peer["Key"].as_str().unwrap().trim_start_matches("nodekey:")).unwrap().try_into().unwrap();
     let known = [(gateway_key, gateway_addr)];
     let app_stack = online(&state, &tenant, &app_dev, &known);

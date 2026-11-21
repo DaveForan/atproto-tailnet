@@ -19,9 +19,8 @@ pub async fn get_tenant_identity(
 }
 
 /// PUT /api/tenants/{id}/identity — replaces the tenant's tailnet name and
-/// owner -> user names shown in Tailscale clients. Live map streams get a
-/// fresh snapshot only when something actually changed (the TS service
-/// re-pushes this on every monitor sweep).
+/// owner-to-user names shown in Tailscale clients. Live streams resend only on a real change:
+/// the TS service re-pushes this on every monitor sweep.
 pub async fn set_tenant_identity(
     State(state): State<Arc<CoordinatorState>>,
     Path(id): Path<String>,

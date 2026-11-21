@@ -3,8 +3,7 @@ use coord_proto::map::{DnsConfig, DnsExtraRecord, DnsResolver};
 /// Suffix of device names without a tenant DNS configuration.
 pub const LEGACY_DEVICE_SUFFIX: &str = "mesh.local";
 
-/// Fully-qualified name of a device: `<label>.<tailnet>.<base_domain>.` when
-/// the tenant has DNS configured, else `<label>.mesh.local.`.
+/// Device FQDN: `<label>.<tailnet>.<base_domain>.` with tenant DNS, else `<label>.mesh.local.`.
 pub fn device_fqdn(label: &str, dns: &coord_core::TenantDns) -> String {
     match dns.device_suffix() {
         Some(suffix) => format!("{label}.{suffix}."),
@@ -13,12 +12,7 @@ pub fn device_fqdn(label: &str, dns: &coord_core::TenantDns) -> String {
 }
 
 /// The DNS configuration one device receives (ADR-0028).
-///
-/// - A split-DNS route for the base domain, only when upstream resolvers are
-///   set: a route without resolvers makes the client answer NXDOMAIN for
-///   every name under the domain that has no record.
-/// - The service records this device may see, pointing at devices it can see.
-/// - A search domain and MagicDNS for device names.
+/// The split-DNS route needs upstreams. Without them, clients answer NXDOMAIN for every unrecorded name.
 pub fn dns_view(
     self_id: i64,
     self_owner: Option<&str>,
@@ -41,8 +35,7 @@ pub fn dns_view(
         .records
         .iter()
         .filter(|r| r.visible_to(self_id, self_owner))
-        // An HTTPS service resolves to the gateway, which passes the request
-        // on; every other name resolves to its device.
+        // An HTTPS service resolves to the gateway. Every other name resolves to its device.
         .filter_map(|r| {
             let node = match (r.port, gateway) {
                 (Some(_), Some(gw)) => gw,

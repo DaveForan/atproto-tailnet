@@ -11,9 +11,7 @@ pub struct TenantDerp {
 }
 
 /// Operator-wide default DERP map plus per-tenant overrides.
-///
-/// The default map is the configured base map plus one region for each live
-/// relay process that control replicas discover in the store (ADR-0034).
+/// The default map is the base map plus one region per live relay in the store (ADR-0034).
 pub struct DerpRegistry {
     base: DerpMap,
     default: RwLock<DerpMap>,
@@ -29,8 +27,8 @@ impl DerpRegistry {
         self.default.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
-    /// Set the regions of the discovered relays. A discovered region replaces
-    /// a base region with the same id. Returns true when the default map changed.
+    /// Set the discovered relay regions. They replace base regions with the same id.
+    /// Returns true when the default map changed.
     pub fn set_relay_regions(&self, regions: Vec<DerpRegion>) -> bool {
         let mut next = self.base.clone();
         for region in regions {

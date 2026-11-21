@@ -1,8 +1,6 @@
-//! PgFederationStore integration tests — run against a real PostgreSQL instance.
-//!
-//! Skipped unless TEST_DATABASE_URL is set (a failure when env CI is set). To run:
-//!   TEST_DATABASE_URL=postgresql://atproto_tailnet:atproto_tailnet@localhost:5432/coord_test \
-//!     cargo test -p coord-federation --test pg_federation_store
+//! PgFederationStore integration tests against a real PostgreSQL instance.
+//! They skip unless TEST_DATABASE_URL is set. With `CI` set, a missing URL fails instead.
+//! Example: TEST_DATABASE_URL=postgresql://atproto_tailnet:atproto_tailnet@localhost:5432/coord_test cargo test -p coord-federation --test pg_federation_store
 
 use chrono::Utc;
 use coord_core::types::{
@@ -13,8 +11,8 @@ use coord_federation::{FederationStore, PgFederationStore};
 use rand::RngCore;
 use sqlx::PgPool;
 
-/// TEST_DATABASE_URL, or `None` to skip. In CI (env `CI` set) a missing URL
-/// is a failure, so these PostgreSQL tests cannot silently skip.
+/// Returns TEST_DATABASE_URL, or `None` to skip.
+/// With `CI` set, a missing URL fails so these tests cannot skip silently.
 fn test_database_url() -> Option<String> {
     match std::env::var("TEST_DATABASE_URL") {
         Ok(url) if !url.is_empty() => Some(url),
@@ -47,7 +45,7 @@ fn unique(prefix: &str) -> String {
     format!("{}-{}", prefix, hex::encode(buf))
 }
 
-/// Insert a tenant row directly — federation tables FK to coord_tenants.
+/// Inserts a tenant row directly, because federation tables reference coord_tenants.
 async fn insert_tenant(pool: &PgPool, tenant_id: TenantId) {
     sqlx::query("INSERT INTO coord_tenants (id, slug) VALUES ($1, $2)")
         .bind(tenant_id.as_uuid())
@@ -105,7 +103,6 @@ macro_rules! skip_without_db {
     };
 }
 
-// ── Link CRUD ─────────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn create_and_get_link() {
@@ -256,7 +253,6 @@ async fn revoke_link() {
     assert!(active.is_none());
 }
 
-// ── Session CRUD ──────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn create_and_list_sessions() {
@@ -440,7 +436,6 @@ async fn delete_session() {
     assert!(sessions.is_empty());
 }
 
-// ── Collective DIDs ───────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn create_and_get_collective_did() {
@@ -511,7 +506,6 @@ async fn delete_collective_did() {
     assert!(fetched.is_none());
 }
 
-// ── Pending link counts ───────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn count_and_expire_pending_incoming() {
@@ -538,7 +532,6 @@ async fn count_and_expire_pending_incoming() {
     assert_eq!(remaining, 3);
 }
 
-// ── FK cascade behavior ──────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn cascade_delete_tenant_removes_links_and_sessions() {

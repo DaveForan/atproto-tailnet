@@ -8,9 +8,8 @@ pub mod proxy;
 
 use blake2::digest::Mac;
 
-/// A key of the gateway in one tailnet, derived from the gateway's secret.
-/// The gateway then has the same keys after a restart and on every replica
-/// that has the secret, and no key is kept in the database.
+/// Derives the gateway's key for one tenant and purpose from the gateway secret.
+/// Restarts and replicas get the same keys, so the database stores no key.
 pub fn derive_key(secret: &[u8; 32], tenant: &[u8; 16], purpose: &str) -> [u8; 32] {
     let mut mac = <blake2::Blake2sMac256 as Mac>::new_from_slice(secret).expect("a 32-byte key is valid");
     mac.update(b"atproto-tailnet gateway v1\0");

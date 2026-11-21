@@ -1,20 +1,18 @@
-//! Bounds and normalisation for client-supplied (pre-auth or node-controlled)
-//! fields before they are stored or sent to peers.
+//! Bounds and normalisation for client-supplied fields before storage or peer fan-out.
 
 /// Max entries kept from a client's Endpoints list.
 pub const MAX_ENDPOINTS: usize = 32;
-/// Max length of one endpoint string ("[v6]:port" is at most 47 chars).
+/// Max length of one endpoint string (`[v6]:port` is at most 47 chars).
 pub const MAX_ENDPOINT_LEN: usize = 64;
 /// Max length of a stored OS string.
 pub const MAX_OS_LEN: usize = 64;
 /// Max length of a DNS label.
 pub const MAX_DNS_LABEL_LEN: usize = 63;
 
-/// Reduce a client-supplied hostname to a single DNS label: lowercase
-/// `a-z0-9-`, every other character (dots, spaces, underscores, unicode) folded
-/// to '-', runs of '-' collapsed, no leading/trailing '-', at most 63 bytes.
-/// Returns `None` if nothing usable remains. Because dots never survive, the
-/// result can't spoof another FQDN (`foo.other-tailnet` becomes one label).
+/// Reduce a client hostname to one DNS label of lowercase `a-z0-9-`, at most 63 bytes.
+/// Other characters fold to one '-'. `None` if nothing usable remains.
+/// # Security
+/// Dots never survive, so the result cannot spoof another FQDN.
 pub fn dns_label(raw: &str) -> Option<String> {
     let mut out = String::with_capacity(raw.len().min(MAX_DNS_LABEL_LEN));
     let mut last_dash = true; // suppress leading '-'
@@ -42,8 +40,7 @@ pub fn node_dns_label(raw: &str, node_id: i64) -> String {
     dns_label(raw).unwrap_or_else(|| format!("node-{node_id}"))
 }
 
-/// Keep at most `MAX_ENDPOINTS` endpoints that parse as `ip:port` and are
-/// short; everything else is dropped.
+/// Keep at most [`MAX_ENDPOINTS`] short endpoints that parse as `ip:port`.
 pub fn endpoints(raw: &[String]) -> Vec<String> {
     raw.iter()
         .filter(|e| e.len() <= MAX_ENDPOINT_LEN && e.parse::<std::net::SocketAddr>().is_ok())
@@ -58,7 +55,7 @@ pub fn disco_key(raw: &str) -> Option<String> {
     (hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit())).then(|| raw.to_ascii_lowercase())
 }
 
-/// OS string: printable ASCII only, truncated to `MAX_OS_LEN`.
+/// Keep printable ASCII only and truncate to [`MAX_OS_LEN`].
 pub fn os(raw: Option<&str>) -> String {
     let s: String = raw
         .unwrap_or("")

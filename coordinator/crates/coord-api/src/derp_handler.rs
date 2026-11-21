@@ -13,10 +13,7 @@ use tracing::{debug, warn};
 
 use crate::state::CoordinatorState;
 
-/// Admits nodes registered with this coordinator whose tenant is not
-/// suspended. The scope is the node's tenant, plus the link to its parent
-/// only while the netmap would show the child to the parent (see
-/// [`relay_scope`]).
+/// Admits registered nodes of unsuspended tenants, scoped as in [`relay_scope`].
 pub struct StoreAdmission {
     pub(crate) store: Arc<Store>,
 }
@@ -36,11 +33,8 @@ impl Admission for StoreAdmission {
     }
 }
 
-/// The relay scope of a tenant's nodes, or `None` when the tenant is missing
-/// or suspended. Cross-tenant relaying follows the same rule as peers in the
-/// netmap: a child is linked to its parent only when its posture is not
-/// Closed and neither the child nor the parent is suspended. Without the
-/// link, neither side reaches the other (`Scope::can_reach`).
+/// The relay scope of a tenant's nodes, or `None` when the tenant is missing or suspended.
+/// A child links to its parent as in the netmap: posture not Closed, neither side suspended.
 pub async fn relay_scope(store: &Store, tenant_id: coord_core::TenantId) -> Option<Scope> {
     let tenant = store.get_tenant(tenant_id).await?;
     if tenant.suspended {

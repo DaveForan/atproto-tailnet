@@ -109,7 +109,6 @@ impl Store {
         }
     }
 
-    /// True when the tenant exists and is suspended by the instance operator.
     /// The tenant's device access mode and rules (ADR-0036). Defaults to open.
     pub async fn get_tenant_access(&self, tenant_id: TenantId) -> coord_core::TenantAccess {
         match self {
@@ -196,7 +195,7 @@ impl Store {
         }
     }
 
-    /// Start a pending sign-in unless a cap in `limits` is reached; drops the machine's older pending sign-in.
+    /// Starts a pending sign-in unless a cap in `limits` is reached. Drops the machine's older pending sign-in.
     pub async fn sign_in_start(
         &self,
         id: &str,
@@ -260,8 +259,8 @@ impl Store {
         relays
     }
 
-    /// Record the relay region a node reports as its home. True when it
-    /// changed (peers are then told with a node-updated event).
+    /// Records the relay region a node reports as its home.
+    /// Returns true when it changed, so peers get a node-updated event.
     pub async fn set_home_relay(&self, node_id: NodeId, region: i32) -> Result<bool, CoordError> {
         match self {
             Store::Memory(m) => m.set_home_relay(node_id, region),
@@ -282,9 +281,9 @@ impl Store {
         }
     }
 
-    /// The machine lock of an owner in a tenant (ADR-0035). A storage error
-    /// is an error (callers refuse: fail closed); an undecodable row is
-    /// `LockRead::Malformed`, which counts as locked.
+    /// The machine lock of an owner in a tenant (ADR-0035).
+    /// A storage error returns an error, so callers fail closed.
+    /// An undecodable row is `LockRead::Malformed`, which counts as locked.
     pub async fn get_owner_lock(&self, tenant_id: TenantId, owner: &str) -> Result<coord_core::LockRead, CoordError> {
         match self {
             Store::Memory(m) => Ok(m.get_owner_lock(tenant_id, owner)),
@@ -302,10 +301,9 @@ impl Store {
         }
     }
 
-    /// Read-modify-write one owner's lock atomically: `f` sees the current
-    /// lock and decides what to write, and no other update of the same
-    /// (tenant, owner) — on this or another replica — can interleave. A
-    /// storage error means nothing was written.
+    /// Atomic read-modify-write of one owner's lock: `f` sees the current lock and returns the write.
+    /// No other update of the same (tenant, owner) can interleave, on any replica.
+    /// A storage error means nothing was written.
     pub async fn update_owner_lock<R, F>(&self, tenant_id: TenantId, owner: &str, f: F) -> Result<R, CoordError>
     where
         F: FnOnce(coord_core::LockRead) -> (coord_core::LockWrite, R) + Send,
@@ -332,9 +330,9 @@ impl Store {
         self.update_owner_lock(tenant_id, owner, move |_| (write, ())).await
     }
 
-    /// Decide whether `machine_key` may register for `owner`, recording the
-    /// decision in the lock in the same atomic step (a consumed "allow one"
-    /// window, a refused attempt). `Ok(None)` = the owner has no lock.
+    /// Decides whether `machine_key` may register for `owner`.
+    /// The same atomic step records the decision in the lock (a consumed "allow one" window, a refused attempt).
+    /// `Ok(None)` means the owner has no lock.
     pub async fn check_owner_lock(
         &self,
         tenant_id: TenantId,

@@ -44,10 +44,8 @@ impl PolicyEngine {
 }
 
 impl AclEngine for PolicyEngine {
-    // Server-side packet evaluation is not used in the Tailscale model — filter
-    // rules are pushed to clients via netmap (see filter_rules_for_node). This
-    // method provides a conservative fallback: if default_deny is set and the
-    // policy has no rules, deny; otherwise defer to the rules on the client.
+    // Tailscale clients enforce the filter rules from the netmap, not the server.
+    // This is a coarse fallback: default_deny gives Deny, else the client rules decide.
     fn evaluate(&self, tenant: TenantId, _src: NodeId, _dst: NodeId, _port: u16) -> AclVerdict {
         let policies = self.policies.read().unwrap_or_else(|e| e.into_inner());
         match policies.get(&tenant) {

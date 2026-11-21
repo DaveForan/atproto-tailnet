@@ -1,11 +1,6 @@
-//! Owner machine locks (ADR-0035 §2): a member's devices in a tenant are
-//! limited to a fixed set of machines.
-//!
-//! While a lock exists, the coordinator refuses to register any machine of
-//! that owner whose machine key is not in the set, even with a valid pre-auth
-//! key or an approved sign-in. The machine key is held by the device's
-//! Tailscale client and proven in the Noise handshake, so it identifies the
-//! machine, not the account.
+//! Owner machine locks (ADR-0035 §2): limit a member's devices to a fixed set of machines.
+//! A lock refuses unlisted machine keys, even with a valid pre-auth key or approved sign-in.
+//! The Noise handshake proves the machine key, so it identifies the machine, not the account.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -30,12 +25,12 @@ pub struct RefusedMachine {
 pub struct OwnerLock {
     /// Machine keys (lowercase hex) that may register.
     pub machines: Vec<String>,
-    /// Until this time, the next new machine is added to the set (then the window closes).
+    /// Until this time, the next new machine joins the set and the window closes.
     #[serde(default)]
     pub allow_one_until: Option<DateTime<Utc>>,
     #[serde(default)]
     pub refused: Vec<RefusedMachine>,
-    /// Most machines the owner allows in this lock (`None` = the system limit).
+    /// Owner-set machine limit. `None` means [`MAX_LOCK_MACHINES`].
     #[serde(default)]
     pub max_machines: Option<u32>,
 }
@@ -44,9 +39,9 @@ pub struct OwnerLock {
 pub enum LockOutcome {
     /// The machine is in the set.
     Allowed,
-    /// The machine was new and the one-time window let it in; the lock changed.
+    /// The one-time window let a new machine in. The lock changed.
     AllowedNew,
-    /// The machine is not in the set; the attempt was recorded and the lock changed.
+    /// The machine is not in the set. The lock records the attempt.
     Refused,
 }
 
@@ -56,13 +51,11 @@ pub enum LockRead {
     /// No lock: the owner may register any machine.
     Unlocked,
     Locked(OwnerLock),
-    /// A row exists but cannot be decoded. Treated as locked with no machine
-    /// allowed (fail closed) until an admin sets or removes the lock.
+    /// The row does not decode. It fails closed: no machine may register until an admin resets it.
     Malformed,
 }
 
 impl LockRead {
-    /// The decoded lock, if there is a well-formed one.
     pub fn lock(&self) -> Option<&OwnerLock> {
         match self {
             LockRead::Locked(l) => Some(l),
@@ -83,8 +76,7 @@ pub enum LockWrite {
     Remove,
 }
 
-/// The registration decision for one machine, as one atomic read-modify-write
-/// step of the store (see `Store::update_owner_lock`). `None` = no lock.
+/// Registration decision for one machine, run inside `Store::update_owner_lock`. `None` means no lock.
 pub fn registration_check(
     read: LockRead,
     machine_key_hex: &str,
@@ -95,7 +87,7 @@ pub fn registration_check(
 ) -> (LockWrite, Option<LockOutcome>) {
     match read {
         LockRead::Unlocked => (LockWrite::Keep, None),
-        // Cannot be read, so it cannot be updated either: refuse and leave it.
+        // An unreadable row cannot be updated, so refuse and leave it.
         LockRead::Malformed => (LockWrite::Keep, Some(LockOutcome::Refused)),
         LockRead::Locked(mut lock) => {
             let outcome = lock.check(machine_key_hex, now, hostname, os, fingerprint);
@@ -106,7 +98,6 @@ pub fn registration_check(
 }
 
 impl OwnerLock {
-    /// The number of machines this lock can hold.
     pub fn capacity(&self) -> usize {
         self.max_machines.map_or(MAX_LOCK_MACHINES, |m| (m as usize).min(MAX_LOCK_MACHINES))
     }
@@ -119,8 +110,7 @@ impl OwnerLock {
         self.machines.iter().any(|m| m == machine_key_hex)
     }
 
-    /// Decide whether a machine may register, updating the lock when the
-    /// decision changes it (a consumed window, a recorded refusal).
+    /// Decides whether a machine may register. Consumes the window or records a refusal.
     pub fn check(
         &mut self,
         machine_key_hex: &str,

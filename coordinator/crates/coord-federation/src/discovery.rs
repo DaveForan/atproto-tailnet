@@ -1,6 +1,4 @@
 //! Peer discovery for cross-instance federation (ADR-0019 section 3).
-//!
-//! Ported from `src/federation/discovery.ts` (148 lines).
 //! Fetches and validates a remote collective's federation descriptor.
 
 use std::net::IpAddr;
@@ -12,12 +10,10 @@ use coord_core::CoordError;
 
 use crate::protocol::{Capability, FederationDescriptor};
 
-// ── Constants ──────────────────────────────────────────────────────────────────
 
 /// HTTP request timeout for discovery fetches.
 pub const DISCOVERY_TIMEOUT: Duration = Duration::from_secs(10);
 
-// ── Types ──────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct DiscoveredPeer {
@@ -28,12 +24,10 @@ pub struct DiscoveredPeer {
     pub federation_policy: String,
 }
 
-// ── Functions ──────────────────────────────────────────────────────────────────
 
-/// Discover a remote collective by its `slug@host` address.
-///
-/// Fetches `https://{host}/.well-known/collective-federation?collective={slug}`,
-/// validates the response, and checks the federation policy is not closed.
+/// Discovers a remote collective by its `slug@host` address.
+/// Fetches `https://{host}/.well-known/collective-federation?collective={slug}`.
+/// It validates the response and rejects a closed federation policy.
 pub async fn discover_peer(
     client: &reqwest::Client,
     peer_address: &str,
@@ -134,11 +128,7 @@ fn urlencoding_encode(s: &str) -> String {
     out
 }
 
-/// Check whether a broker URL is safe (not pointing at private/loopback addresses).
-///
-/// Rejects:
-/// - Non-HTTPS schemes (except localhost for dev)
-/// - Hosts that resolve to private or loopback IP ranges
+/// Returns `true` only for an HTTPS URL whose host is not private or loopback.
 pub async fn is_allowed_broker_url(url: &str) -> bool {
     let Ok(parsed) = url::Url::parse(url) else {
         return false;
@@ -156,32 +146,27 @@ pub async fn is_allowed_broker_url(url: &str) -> bool {
     !is_private_or_loopback_host(host_str).await
 }
 
-/// Check if a hostname string refers to localhost.
 fn is_localhost(host: &str) -> bool {
     host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]"
 }
 
-/// SSRF protection: reject private, loopback, and link-local addresses.
-///
-/// Resolves hostnames via DNS to prevent rebinding attacks where a hostname
-/// passes the string check but resolves to a private IP.
+/// SSRF guard: returns `true` for private, loopback, or link-local hosts, and on DNS failure.
+/// It resolves hostnames so a public-looking name cannot point at a private IP.
 async fn is_private_or_loopback_host(host: &str) -> bool {
     if is_localhost(host) {
         return true;
     }
 
-    // Try to parse as an IP address directly.
     if let Ok(ip) = host.parse::<IpAddr>() {
         return is_private_ip(&ip);
     }
 
-    // Strip brackets for IPv6 literals like [::1].
+    // IPv6 literals can arrive bracketed, e.g. `[::1]`.
     let stripped = host.trim_start_matches('[').trim_end_matches(']');
     if let Ok(ip) = stripped.parse::<IpAddr>() {
         return is_private_ip(&ip);
     }
 
-    // Resolve hostname and check all resulting IPs.
     match tokio::net::lookup_host((host, 443)).await {
         Ok(addrs) => {
             for addr in addrs {
@@ -199,10 +184,8 @@ async fn is_private_or_loopback_host(host: &str) -> bool {
     }
 }
 
-/// Check if an IP address is anything but a public unicast address: private,
-/// loopback, link-local, CGNAT (100.64.0.0/10), unspecified, multicast,
-/// broadcast, benchmarking/IETF ranges, ULA (fc00::/7), NAT64, or an
-/// IPv4-mapped/compatible IPv6 address of any of those.
+/// Returns `true` for any address that is not public unicast.
+/// This covers CGNAT, ULA, NAT64, benchmarking ranges, and IPv4-mapped or -compatible forms.
 fn is_private_ip(ip: &IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
@@ -230,13 +213,12 @@ fn is_private_ip(ip: &IpAddr) -> bool {
                 || (seg[0] & 0xfe00) == 0xfc00 // fc00::/7 ULA
                 || (seg[0] & 0xffc0) == 0xfe80 // fe80::/10 link-local
                 || (seg[0] == 0x64 && seg[1] == 0xff9b) // 64:ff9b::/96 NAT64
-                // ::/96 IPv4-compatible (deprecated) — never a real peer
+                // ::/96 IPv4-compatible (deprecated) is never a real peer.
                 || seg[..6].iter().all(|&s| s == 0)
         }
     }
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -265,7 +247,7 @@ mod tests {
 
     #[test]
     fn is_allowed_broker_url_rejects_invalid() {
-        // These fail URL parsing synchronously, no async needed
+        // These inputs fail URL parsing before any DNS lookup.
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         rt.block_on(async {
             assert!(!is_allowed_broker_url("").await);

@@ -1,8 +1,5 @@
 //! HTTP transport for inter-instance CFP messages (ADR-0016).
-//!
-//! Ported from `src/federation/transport.ts` (88 lines).
-//! Sends handshake, keepalive, and revoke messages between federation broker
-//! instances over HTTPS.
+//! Sends handshake, keepalive, and revoke messages between brokers over HTTPS.
 
 use std::time::Duration;
 
@@ -10,17 +7,14 @@ use tracing::warn;
 
 use crate::protocol::{CfpMessage, KeepaliveMessage, RevokeMessage};
 
-// ── Constants ──────────────────────────────────────────────────────────────────
 
 /// HTTP request timeout for outbound federation messages.
 pub const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Header naming the collective DID a message is addressed to. One instance
-/// hosts many collectives behind the same broker URL, so the receiver needs it
-/// to pick the tenant (and key) that should answer.
+/// Header that names the collective DID a message addresses.
+/// One broker URL hosts many collectives, so the receiver uses it to pick the tenant and key.
 pub const RECIPIENT_HEADER: &str = "CFP-Recipient";
 
-// ── Types ──────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct SendResult {
@@ -29,9 +23,8 @@ pub struct SendResult {
     pub error: Option<String>,
 }
 
-// ── Functions ──────────────────────────────────────────────────────────────────
 
-/// Derive the message type slug from a `CfpMessage` for the URL path.
+/// Maps a `CfpMessage` to its URL path slug.
 fn message_type_slug(message: &CfpMessage) -> &'static str {
     match message {
         CfpMessage::Hello(_) => "hello",
@@ -48,10 +41,7 @@ fn message_type_slug(message: &CfpMessage) -> &'static str {
     }
 }
 
-/// Send a CFP message to a remote broker endpoint.
-///
-/// The URL is formed as `{remote_endpoint}/api/federation/messages/{type}`.
-/// The `CFP-Recipient` header identifies the target collective DID.
+/// Sends a CFP message to `{remote_endpoint}/api/federation/messages/{type}`.
 pub async fn send_message(
     client: &reqwest::Client,
     remote_endpoint: &str,
@@ -118,7 +108,7 @@ pub async fn send_message(
     }
 }
 
-/// Send a keepalive message. Returns `true` if the remote acknowledged it.
+/// Sends a keepalive. Returns `true` if the remote acknowledges it.
 pub async fn send_keepalive(
     client: &reqwest::Client,
     endpoint: &str,
@@ -131,7 +121,7 @@ pub async fn send_keepalive(
         .ok
 }
 
-/// Send a revoke message. Returns `true` if the remote acknowledged it.
+/// Sends a revoke. Returns `true` if the remote acknowledges it.
 pub async fn send_revoke(
     client: &reqwest::Client,
     endpoint: &str,
@@ -144,7 +134,6 @@ pub async fn send_revoke(
         .ok
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

@@ -1,9 +1,6 @@
 //! Minimal STUN server (RFC 5389 binding requests only).
-//!
-//! Tailscale clients use it to learn their public address and port, which is
-//! what lets two nodes find a direct path and stop using the relay. The
-//! response is about the size of the request, so the server cannot be used
-//! for traffic amplification.
+//! Tailscale clients use it to learn their public address and find direct paths.
+//! The response is about the request size, so the server cannot amplify traffic.
 
 use std::net::{IpAddr, SocketAddr};
 use tokio::net::UdpSocket;
@@ -13,7 +10,7 @@ const HEADER_LEN: usize = 20;
 const BINDING_REQUEST: [u8; 2] = [0x00, 0x01];
 const BINDING_SUCCESS: [u8; 2] = [0x01, 0x01];
 const ATTR_XOR_MAPPED_ADDRESS: [u8; 2] = [0x00, 0x20];
-/// Largest request accepted (a binding request with SOFTWARE and FINGERPRINT is far smaller).
+/// Largest request accepted. A binding request with SOFTWARE and FINGERPRINT is far smaller.
 const MAX_REQUEST_LEN: usize = 512;
 
 /// Build the binding-success response for `request` received from `src`, or

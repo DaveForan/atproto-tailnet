@@ -1,7 +1,6 @@
-//! Golden JSON: the field names on the wire must be Tailscale's (tailcfg).
-//! Each golden document uses tailcfg's exact names; it must decode into our
-//! types and encode back to the same document, so a renamed or mis-cased
-//! field fails here instead of in a real client.
+//! Golden JSON: wire field names must match Tailscale's tailcfg exactly.
+//! Each document must decode into our types and encode back unchanged.
+//! A renamed or mis-cased field then fails here, not in a real client.
 
 use coord_proto::map::{FilterRule, MapNode, NetPortRange, PortRange};
 use coord_proto::{MapRequest, MapResponse, RegisterRequest, RegisterResponse};
@@ -154,11 +153,9 @@ fn map_response_uses_tailcfg_names() {
         json!([{ "SrcIPs": ["100.64.0.1"], "DstPorts": [{ "IP": "100.64.0.7", "Ports": { "First": 22, "Last": 22 } }], "IPProto": [6] }])
     );
     assert_eq!(v["Node"]["PrimaryRoutes"], json!(["10.0.0.0/24"]));
-    // A Hostinfo that advertises routes keeps tailcfg's name for them
     let mut n = node();
     n.hostinfo = serde_json::from_value(json!({ "Hostname": "router", "RoutableIPs": ["10.0.0.0/24"] })).unwrap();
     assert_eq!(serde_json::to_value(n).unwrap()["Hostinfo"]["RoutableIPs"], json!(["10.0.0.0/24"]));
-    // And the response decodes back
     let back: MapResponse = serde_json::from_value(v).unwrap();
     assert_eq!(back.peers_removed, Some(vec![3, 4]));
     assert_eq!(back.packet_filter.unwrap()[0].dst_ports[0].ports.last, 22);
@@ -166,7 +163,7 @@ fn map_response_uses_tailcfg_names() {
 
 #[test]
 fn an_empty_packet_filter_is_sent_as_an_empty_list() {
-    // tailscaled treats a missing PacketFilter as "unchanged" and [] as "deny all"
+    // tailscaled treats a missing PacketFilter as "unchanged" and [] as "deny all".
     let v = serde_json::to_value(MapResponse { packet_filter: Some(vec![]), ..Default::default() }).unwrap();
     assert_eq!(v["PacketFilter"], json!([]));
 }

@@ -60,7 +60,7 @@ pub struct MapResponse {
     pub control_time: Option<String>,
 }
 
-/// Matches tailcfg.Node
+/// Matches tailcfg.Node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct MapNode {

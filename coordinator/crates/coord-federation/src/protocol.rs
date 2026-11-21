@@ -3,7 +3,6 @@
 use serde::{Deserialize, Serialize};
 use std::ops::RangeInclusive;
 
-// ── Constants ──────────────────────────────────────────────────────────────────
 
 pub const CFP_VERSION: &str = "1.0.0";
 pub const DEFAULT_KEEPALIVE_SECONDS: u32 = 60;
@@ -13,7 +12,6 @@ pub const CHALLENGE_EXPIRY_DEFAULT_SECONDS: u32 = 120;
 pub const CHALLENGE_EXPIRY_MAX_SECONDS: u32 = 600;
 pub const DRAIN_PERIOD_SECONDS: u32 = 30;
 
-// ── Enums ──────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -62,7 +60,6 @@ impl FederationPolicy {
     }
 }
 
-// ── Descriptor ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -76,7 +73,6 @@ pub struct FederationDescriptor {
     pub signature: String,
 }
 
-// ── Messages ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -227,11 +223,10 @@ pub struct LinkRevokeMessage {
     pub timestamp: String,
 }
 
-// ── Signed message types ───────────────────────────────────────────────────────
 
-/// A CFP message that carries a detached signature. The wire `type` tag is not
-/// a struct field (it comes from [`CfpMessage`]'s internal tag), so signer and
-/// verifier both re-insert it via [`crate::auth::message_signing_payload`].
+/// A CFP message that carries a detached signature.
+/// The wire `type` tag comes from [`CfpMessage`]'s internal tag, not from a struct field.
+/// Signer and verifier both re-insert it via [`crate::auth::message_signing_payload`].
 pub trait CfpSigned: Serialize {
     const MESSAGE_TYPE: &'static str;
 }
@@ -256,7 +251,6 @@ cfp_signed! {
     LinkRevokeMessage => "LINK_REVOKE",
 }
 
-// ── Tagged union ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -285,7 +279,6 @@ pub enum CfpMessage {
     LinkRevoke(LinkRevokeMessage),
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

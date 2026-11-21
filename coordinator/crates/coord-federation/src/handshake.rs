@@ -1,8 +1,5 @@
 //! CFP 4-phase handshake state machine (ADR-0014).
-//!
-//! Ported from `src/federation/handshake.ts` (365 lines).
-//! Async state machine with injected callbacks — each function takes owned state
-//! and returns the next state plus any outbound message.
+//! Each function takes owned state and returns the next state plus any outbound message.
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -17,7 +14,6 @@ use crate::protocol::{
     CHALLENGE_EXPIRY_DEFAULT_SECONDS, DEFAULT_KEEPALIVE_SECONDS, KEEPALIVE_RANGE,
 };
 
-// ── Types ──────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct HandshakeState {
@@ -37,14 +33,12 @@ pub struct HandshakeState {
     pub updated_at: DateTime<Utc>,
 }
 
-// ── Callbacks trait ────────────────────────────────────────────────────────────
 
 #[async_trait]
 pub trait HandshakeCallbacks: Send + Sync {
-    /// Sign a payload and return the signature string.
     async fn sign(&self, payload: &str) -> Result<String, CoordError>;
 
-    /// Verify that `signature` is a valid signature by `did` over `payload`.
+    /// Verifies that `signature` is a valid signature by `did` over `payload`.
     async fn verify_signature(
         &self,
         did: &str,
@@ -52,20 +46,19 @@ pub trait HandshakeCallbacks: Send + Sync {
         signature: &str,
     ) -> Result<bool, CoordError>;
 
-    /// Evaluate whether federation with `remote_did` of the given type is allowed.
+    /// Decides whether federation with `remote_did` of this type is allowed.
     async fn evaluate_policy(
         &self,
         remote_did: &str,
         federation_type: &FederationType,
     ) -> Result<bool, CoordError>;
 
-    /// Return the local route announcements to include in COMMIT/ESTABLISHED.
+    /// Returns the local route announcements for COMMIT/ESTABLISHED.
     fn get_local_routes(&self) -> Vec<RouteAnnouncement>;
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────────────
 
-/// Negotiate the minimum of two semver version strings.
+/// Returns the lower of two semver version strings.
 fn negotiate_version(remote: &str, local: &str) -> String {
     let r_parts: Vec<u32> = remote.split('.').map(|s| s.parse().unwrap_or(0)).collect();
     let l_parts: Vec<u32> = local.split('.').map(|s| s.parse().unwrap_or(0)).collect();
@@ -83,8 +76,7 @@ fn negotiate_version(remote: &str, local: &str) -> String {
     local.to_string()
 }
 
-/// Mark `state` failed with `error` and return the `Err` pair the state
-/// machine functions use.
+/// Marks `state` failed with `error` and returns the state machine's `Err` pair.
 fn fail(mut state: HandshakeState, error: &str) -> (HandshakeState, String) {
     state.phase = HandshakePhase::Failed;
     state.error = Some(error.to_string());
@@ -92,8 +84,7 @@ fn fail(mut state: HandshakeState, error: &str) -> (HandshakeState, String) {
     (state, error.to_string())
 }
 
-/// Verify `message`'s own detached signature by `did`, over
-/// [`message_signing_payload`] — the same bytes the sender signed.
+/// Verifies `message`'s detached signature by `did` over [`message_signing_payload`], the bytes the sender signed.
 async fn verify_signed<T: crate::protocol::CfpSigned>(
     did: &str,
     message: &T,
@@ -112,16 +103,14 @@ async fn verify_signed<T: crate::protocol::CfpSigned>(
         .unwrap_or(false)
 }
 
-/// Generate `n` random bytes and return them as a hex string.
+/// Returns `n` random bytes as a hex string.
 fn random_hex(n: usize) -> String {
     let mut buf = vec![0u8; n];
     rand::rng().fill(&mut buf[..]);
     hex::encode(&buf)
 }
 
-// ── State machine functions ────────────────────────────────────────────────────
 
-/// Create a new idle handshake state for the given local DID.
 pub fn create_handshake(local_did: &str) -> HandshakeState {
     let now = Utc::now();
     HandshakeState {
@@ -142,7 +131,7 @@ pub fn create_handshake(local_did: &str) -> HandshakeState {
     }
 }
 
-/// Initiate a HELLO: transitions Idle -> HelloSent and produces a HelloMessage.
+/// Starts a HELLO: moves Idle to HelloSent and returns the HelloMessage.
 pub async fn initiate_hello(
     mut state: HandshakeState,
     remote_did: &str,
@@ -174,8 +163,8 @@ pub async fn initiate_hello(
     Ok((state, message))
 }
 
-/// Handle an incoming HELLO: verify signature, evaluate policy, compute
-/// intersections, generate challenge nonce. Transitions to ChallengeSent.
+/// Handles a HELLO: verifies it, checks policy, intersects CIDRs and capabilities, and issues a challenge.
+/// Moves to ChallengeSent.
 pub async fn handle_hello(
     mut state: HandshakeState,
     hello: &HelloMessage,
@@ -200,7 +189,6 @@ pub async fn handle_hello(
 
     let negotiated_version = negotiate_version(&hello.protocol_version, CFP_VERSION);
 
-    // Intersection of CIDRs.
     let accepted_cidrs = if local_cidrs.is_empty() && hello.offered_cidrs.is_empty() {
         vec![]
     } else {
@@ -213,14 +201,12 @@ pub async fn handle_hello(
             .collect()
     };
 
-    // Intersection of capabilities.
     let accepted_capabilities: Vec<Capability> = local_capabilities
         .iter()
         .filter(|c| hello.capabilities.contains(c))
         .cloned()
         .collect();
 
-    // Generate 32-byte nonce (hex-encoded).
     let nonce = random_hex(32);
 
     let expires_at =
@@ -266,8 +252,8 @@ pub async fn handle_hello(
     Ok((state, message))
 }
 
-/// Handle an incoming CHALLENGE: verify we are in HelloSent, check expiry,
-/// sign the nonce, build COMMIT with local routes. Transitions to CommitSent.
+/// Handles a CHALLENGE in HelloSent: checks expiry, signs the nonce, and builds COMMIT.
+/// Moves to CommitSent.
 pub async fn handle_challenge(
     mut state: HandshakeState,
     challenge: &ChallengeMessage,
@@ -281,8 +267,7 @@ pub async fn handle_challenge(
         return Err((state, err));
     }
 
-    // The CHALLENGE must come from the collective we said HELLO to, and be
-    // signed by it.
+    // The CHALLENGE must come from, and be signed by, the collective we said HELLO to.
     let Some(remote_did) = state.remote_did.clone() else {
         return Err(fail(state, "No remote DID for CHALLENGE"));
     };
@@ -293,7 +278,7 @@ pub async fn handle_challenge(
         return Err(fail(state, "Invalid CHALLENGE signature"));
     }
 
-    // Check expiry; an unparseable expiry is treated as expired.
+    // An unparseable expiry counts as expired.
     match challenge.expires_at.parse::<DateTime<Utc>>() {
         Ok(expires) if expires >= Utc::now() => {}
         _ => return Err(fail(state, "Challenge expired")),
@@ -341,8 +326,7 @@ pub async fn handle_challenge(
     Ok((state, message))
 }
 
-/// Handle an incoming COMMIT: verify ChallengeSent phase, check expiry and
-/// nonce match, verify nonce signature, generate session ID, build ESTABLISHED.
+/// Handles a COMMIT in ChallengeSent: checks expiry, nonce, and signatures, then builds ESTABLISHED.
 pub async fn handle_commit(
     mut state: HandshakeState,
     commit: &CommitMessage,
@@ -356,7 +340,6 @@ pub async fn handle_commit(
         return Err((state, err));
     }
 
-    // Check challenge expiry.
     if let Some(expires_at) = &state.challenge_expires_at
         && *expires_at < Utc::now() {
             state.phase = HandshakePhase::Failed;
@@ -373,20 +356,18 @@ pub async fn handle_commit(
         return Err(fail(state, "COMMIT from unexpected sender"));
     }
 
-    // Nonce must be well-formed and match.
     if !is_valid_challenge_nonce(&commit.challenge_nonce)
         || state.challenge_nonce.as_deref() != Some(&commit.challenge_nonce)
     {
         return Err(fail(state, "Challenge nonce mismatch"));
     }
 
-    // The COMMIT itself (routes, timestamp, challenge response) must be
-    // signed by the peer.
+    // The peer must sign the COMMIT itself: routes, timestamp, and challenge response.
     if !verify_signed(&remote_did, commit, &commit.signature, callbacks).await {
         return Err(fail(state, "Invalid COMMIT signature"));
     }
 
-    // Verify the challenge response: the typed wrapper, addressed to us.
+    // The challenge response must be the typed wrapper addressed to us.
     let response =
         challenge_response_payload(&commit.challenge_nonce, &remote_did, &state.local_did);
     let nonce_valid = !commit.challenge_signature.is_empty()
@@ -398,7 +379,6 @@ pub async fn handle_commit(
         return Err(fail(state, "Invalid challenge nonce signature"));
     }
 
-    // Generate session ID (16 random bytes as hex = 32 hex chars).
     let session_id = random_hex(16);
     let routes = callbacks.get_local_routes();
 
@@ -429,9 +409,7 @@ pub async fn handle_commit(
     Ok((state, message))
 }
 
-/// Handle an incoming ESTABLISHED: verify CommitSent phase, that it comes
-/// from (and is signed by) the collective we committed to, and transition to
-/// Established.
+/// Handles an ESTABLISHED in CommitSent from, and signed by, the collective we committed to.
 pub async fn handle_established(
     state: HandshakeState,
     established: &EstablishedMessage,
@@ -461,14 +439,12 @@ pub async fn handle_established(
     state
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Mock callbacks: sign returns "mock-sig", verify always returns true,
-    /// policy always allows, no local routes.
+    /// Accepts every signature and policy, signs as "mock-sig", and has no local routes.
     struct MockCallbacks;
 
     #[async_trait]
@@ -519,7 +495,6 @@ mod tests {
     async fn full_four_phase_handshake() {
         let cb = MockCallbacks;
 
-        // --- Phase 1: HELLO ---
         let initiator_state = create_handshake("did:web:initiator");
         let (initiator_state, hello) = initiate_hello(
             initiator_state,
@@ -536,7 +511,6 @@ mod tests {
         assert_eq!(hello.collective_did, "did:web:initiator");
         assert_eq!(hello.federation_type, FederationType::Peer);
 
-        // --- Phase 2: CHALLENGE ---
         let responder_state = create_handshake("did:web:responder");
         let (responder_state, challenge) = handle_hello(
             responder_state,
@@ -559,7 +533,6 @@ mod tests {
             Some(&["10.0.0.0/24".to_string()][..])
         );
 
-        // --- Phase 3: COMMIT ---
         let (initiator_state, commit) =
             handle_challenge(initiator_state, &challenge, &cb).await.unwrap();
 
@@ -568,7 +541,6 @@ mod tests {
         assert_eq!(commit.challenge_nonce, challenge.nonce);
         assert!(!commit.initial_routes.is_empty());
 
-        // --- Phase 4: ESTABLISHED ---
         let (responder_state, established) =
             handle_commit(responder_state, &commit, &cb).await.unwrap();
 
@@ -577,7 +549,6 @@ mod tests {
         assert!(!established.session_id.is_empty());
         assert!(!established.initial_routes.is_empty());
 
-        // --- Initiator receives ESTABLISHED ---
         let initiator_state = handle_established(initiator_state, &established, &cb).await;
         assert_eq!(initiator_state.phase, HandshakePhase::Established);
         assert_eq!(initiator_state.session_id, Some(established.session_id));
@@ -652,7 +623,6 @@ mod tests {
 
     #[tokio::test]
     async fn handle_hello_policy_rejection() {
-        /// Callbacks that deny policy.
         struct DenyCallbacks;
 
         #[async_trait]
@@ -706,14 +676,9 @@ mod tests {
         assert!(err_msg.contains("Policy denied"));
     }
 
-    // ── Real signatures ─────────────────────────────────────────────────────
-    //
-    // The mocks above accept any signature, which is how a HELLO whose signed
-    // bytes differed from the verified bytes went unnoticed. These tests use a
-    // real keyed MAC (HMAC-SHA256, one key per DID): a signature verifies only
-    // over the exact bytes it was made over, so any sign/verify payload
-    // mismatch fails. (The crate has no asymmetric signer of its own; real key
-    // material is injected by the embedding service.)
+    // The mocks above accept any signature, so they miss sign/verify payload mismatches.
+    // These tests use HMAC-SHA256 with one key per DID, so a signature verifies only over its exact bytes.
+    // The crate has no asymmetric signer. The embedding service injects real keys.
 
     use hmac::{Hmac, Mac};
     use sha2::Sha256;

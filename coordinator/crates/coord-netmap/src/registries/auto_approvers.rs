@@ -4,10 +4,10 @@ use std::sync::RwLock;
 use coord_core::routes::Cidr;
 use coord_core::TenantId;
 
-/// Per-tenant route auto-approval policy (in-memory; the TS service replays it).
+/// Per-tenant route auto-approval policy.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AutoApprovers {
-    /// CIDR -> tags whose nodes get advertised routes inside that CIDR approved.
+    /// CIDR -> tags. Nodes with a listed tag get their routes inside that CIDR approved.
     #[serde(default)]
     pub routes: std::collections::BTreeMap<String, Vec<String>>,
     /// Tags whose nodes get exit routes (0.0.0.0/0, ::/0) approved.
@@ -16,8 +16,8 @@ pub struct AutoApprovers {
 }
 
 impl AutoApprovers {
-    /// The subset of `advertised` that a node carrying `tags` gets approved automatically.
-    /// Untagged nodes never match. Exit routes are only approved via `exit_node`.
+    /// The subset of `advertised` that a node with `tags` gets approved automatically.
+    /// Untagged nodes never match. Only `exit_node` approves exit routes.
     pub fn approvable(&self, tags: &[String], advertised: &[String]) -> Vec<String> {
         if tags.is_empty() {
             return vec![];

@@ -1,5 +1,4 @@
-//! In-memory per-tenant registries. Each is a cache of tenant configuration
-//! the coordinator persists in the store (ADR-0034).
+//! In-memory per-tenant registries that cache tenant configuration from the store (ADR-0034).
 
 mod auto_approvers;
 mod derp;

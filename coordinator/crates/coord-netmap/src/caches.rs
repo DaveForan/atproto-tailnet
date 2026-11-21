@@ -59,10 +59,8 @@ impl TenantCaches {
     }
 
     /// Make the cached configuration of one tenant equal `stored`.
-    ///
-    /// Every value is parsed first. Then each entry is set or removed in one step,
-    /// so a concurrent netmap sees the old or the new entry, never a gap.
-    /// A value that cannot be read keeps the cached entry. Unknown kinds are ignored.
+    /// Each entry swaps in one step, so a concurrent netmap never sees a gap.
+    /// An unreadable value keeps the cached entry. Unknown kinds are ignored.
     pub fn replace(&self, tenant: TenantId, stored: Vec<(String, Value)>) {
         let mut by_kind: HashMap<String, Value> = stored.into_iter().collect();
         let acl = parse::<AclPolicy>(tenant, CONFIG_ACL, by_kind.remove(CONFIG_ACL));

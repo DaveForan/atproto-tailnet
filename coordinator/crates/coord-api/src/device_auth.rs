@@ -12,8 +12,7 @@ use tokio::sync::Notify;
 
 /// Longest a device's follow-up request waits before it is told to ask again.
 pub const FOLLOWUP_WAIT: Duration = Duration::from_secs(120);
-/// A waiting request looks at the store at least this often, in case the
-/// notification of a decision made on another replica was lost.
+/// A waiting request re-reads the store this often, in case another replica's notification was lost.
 const RECHECK: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,9 +102,8 @@ impl DeviceAuthRegistry {
         self.changed.notify_waiters();
     }
 
-    /// Wait until the sign-in of `machine_key` with this id is decided, or the
-    /// wait ends. A decided sign-in is consumed. `None` = unknown, expired, or
-    /// the id belongs to another machine.
+    /// Waits until the sign-in is decided or the wait ends, and consumes a decided sign-in.
+    /// `None` means unknown, expired, or owned by another machine.
     pub async fn wait(&self, store: &Store, id: &str, machine_key: &[u8; 32], max_wait: Duration) -> Option<Decision> {
         let deadline = tokio::time::Instant::now() + max_wait;
         loop {
@@ -115,7 +113,7 @@ impl DeviceAuthRegistry {
                 return None;
             }
             if p.decision.is_some() {
-                // One waiting request wins; a loser reports "unknown" and the device starts again
+                // One waiting request wins. A loser reports "unknown" and the device starts again.
                 return store.sign_in_take(id).await.map(Decision::from);
             }
             let now = tokio::time::Instant::now();

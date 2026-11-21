@@ -103,7 +103,7 @@ pub struct PeerInfo {
     pub derp_region: Option<i32>,
     pub online: bool,
     pub last_seen: Option<chrono::DateTime<chrono::Utc>>,
-    /// Owner of the node (the TS service's user id), inherited from its pre-auth key.
+    /// The TS service's user id, inherited from the node's pre-auth key.
     pub owner: Option<String>,
 }
 
@@ -152,15 +152,14 @@ pub struct Tenant {
     pub ipv4_prefix: String,
     pub ipv6_prefix: String,
     pub created_at: chrono::DateTime<chrono::Utc>,
-    /// Instance-operator suspension: while true, the tenant's nodes may not
-    /// register, poll the map, or receive new pre-auth keys.
+    /// Operator suspension. A suspended tenant cannot register nodes, poll the map, or mint pre-auth keys.
     #[serde(default)]
     pub suspended: bool,
 }
 
 impl Tenant {
-    /// Whether a parent tenant's nodes may see this (child) tenant's nodes.
-    /// Only Open shares: Selective is not implemented, so it fails safe as Closed.
+    /// Whether a parent tenant's nodes may see this child tenant's nodes.
+    /// Only Open shares. Selective is not implemented, so it fails safe as Closed.
     pub fn visible_to_parent(&self) -> bool {
         self.federation_posture == FederationPosture::Open && !self.suspended
     }
@@ -173,7 +172,6 @@ pub enum AclVerdict {
     Deny,
 }
 
-// ── Federation types (Tier 3) ─────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -323,11 +321,9 @@ pub struct NodeDetail {
     pub attrs: NodeAttrs,
 }
 
-/// Grant-derived attributes applied by `register_node_with`. Re-registering a
-/// known machine (i.e. re-authenticating it with a pre-auth key) replaces
-/// owner/tags/ephemeral with these values, and clears the approved routes when
-/// owner or tags change (approvals belong to the old identity);
-/// `advertised_routes` (if `Some`) replaces the advertised set.
+/// Grant-derived attributes for `register_node_with`. They replace a known machine's values.
+/// `advertised_routes: None` keeps the advertised set.
+/// A changed owner or tag set clears approved routes, because approvals belong to the old identity.
 #[derive(Debug, Clone, Default)]
 pub struct NodeRegistration {
     pub owner: Option<String>,
@@ -346,7 +342,6 @@ pub fn is_gateway_identity(owner: Option<&str>, tags: &[String]) -> bool {
     owner.is_none() && tags.iter().any(|t| t == GATEWAY_TAG)
 }
 
-// ── Pre-auth keys ──
 
 #[derive(Debug, Clone, Default)]
 pub struct PreAuthKeyOptions {
@@ -365,7 +360,7 @@ pub struct CreatedPreAuthKey {
     pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
-/// Listing view of a pre-auth key — never carries the full secret.
+/// Listing view of a pre-auth key. It never carries the full secret.
 #[derive(Debug, Clone)]
 pub struct PreAuthKeyInfo {
     pub id: Uuid,

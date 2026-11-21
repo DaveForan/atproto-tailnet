@@ -8,9 +8,7 @@ use coord_store::PeerEvent;
 
 use crate::state::CoordinatorState;
 
-/// `client_ip` is the address the Noise connection came from (see
-/// `client_ip::TrustedProxies`); it is only recorded on a new interactive
-/// sign-in, for the approval page.
+/// Handles `/machine/register`. `client_ip` is recorded only on a new interactive sign-in, for the approval page.
 pub async fn handle_register(
     state: &Arc<CoordinatorState>,
     machine_key: &[u8; 32],
@@ -46,23 +44,16 @@ pub async fn handle_register(
             }
             let suspended = state.store.is_tenant_suspended(detail.tenant_id).await;
             let current = detail.info.node_key.as_slice();
-            // Same node key: nothing to re-authorize. An auth key sent alongside
-            // (tailscaled re-sends its configured --authkey / TS_AUTHKEY on restart)
-            // is deliberately ignored and NOT consumed — burning a single-use key
-            // here would change nothing and break the key's next legitimate use.
-            // A real re-auth (`tailscale up --force-reauth`) generates a new node
-            // key and takes the key path below.
+            // Same node key: nothing to re-authorize. tailscaled re-sends its --authkey on restart.
+            // That key is not consumed: burning a single-use key here breaks its next real use.
+            // A real re-auth (`tailscale up --force-reauth`) sends a new node key and takes the key path.
             let identity_resp = authorized_response(state, detail.tenant_id, detail.attrs.owner.as_deref());
             let same_key = !suspended && current == node_key_bytes.as_slice();
-            // Key rotation without an auth key keeps the node's identity. With an
-            // auth key the machine is re-authenticating: fall through so the new
-            // key's owner/tags/ephemeral replace the old ones (the key path
-            // checks the machine lock of the key's owner).
+            // Key rotation without an auth key keeps the node's identity.
+            // With an auth key, fall through: the key's owner, tags and ephemeral flag replace the old ones.
             let rotation = old_key.filter(|k| auth_key.is_none() && !suspended && current == k.as_slice());
             if same_key || rotation.is_some() {
-                // ADR-0035 §2: a locked owner's machine outside the lock is refused
-                // also when it was registered before (a node that survived the lock
-                // being set, or one whose machine was taken out of the set).
+                // ADR-0035 §2: a locked owner's machine outside the lock is refused, even if registered before.
                 if let Err(resp) = enforce_owner_lock(
                     state,
                     detail.tenant_id,
@@ -88,8 +79,7 @@ pub async fn handle_register(
             }
         }
 
-    // Check suspension (and tenant mismatch) before validating so a single-use
-    // key isn't consumed by a registration that is going to be refused.
+    // Check suspension and tenant mismatch before validation, so a refused registration does not consume a single-use key.
     if let Some(key) = auth_key
         && let Some(tid) = state.store.preauth_key_tenant(key).await {
             if state.store.is_tenant_suspended(tid).await {
@@ -131,8 +121,8 @@ pub async fn handle_register(
                 );
             }
 
-    // Client-supplied hostname, reduced to one DNS label (never a dotted name
-    // that could spoof another node's FQDN). Unusable names become node-<id>.
+    // Reduce the client hostname to one DNS label: a dotted name could spoof another node's FQDN.
+    // Unusable names become node-<id>.
     let hostname = req
         .hostinfo
         .as_ref()
@@ -152,8 +142,7 @@ pub async fn handle_register(
     let tenant_id = grant.tenant_id;
     let owner = grant.owner.clone();
 
-    // Machine lock (ADR-0035): an owner locked to a set of machines cannot add
-    // another one, whatever credential it presents.
+    // ADR-0035: a locked owner cannot add another machine, whatever credential it presents.
     if let Err(resp) = enforce_owner_lock(state, tenant_id, owner.as_deref(), machine_key, &node_info.hostname, &node_info.os).await {
         return Ok((serde_json::to_string(&resp)?, None));
     }
@@ -177,13 +166,11 @@ pub async fn handle_register(
             warn!(error = %e, node_id = node_id.as_i64(), "fallback hostname failed");
         }
     }
-    // Advertised routes were stored with the node; apply auto-approvers now
-    // (re-evaluated against the new key's tags on re-auth; the store already
-    // dropped approvals if owner/tags changed).
+    // Apply auto-approvers to the stored routes. On re-auth the store already dropped approvals if owner or tags changed.
     sync_node_routes(state, node_id, None).await;
     if known_tenant.is_some() {
-        // Re-auth may have changed tags/owner, which feed ACLs and auto-approval;
-        // the node's own stream ignores its own events, so push fresh snapshots.
+        // Re-auth can change tags or owner, which feed ACLs and auto-approval.
+        // The node's own stream ignores its own events, so push fresh snapshots.
         state.notify_tenant_changed(tenant_id);
     }
 
@@ -199,10 +186,9 @@ pub async fn handle_register(
     Ok((serde_json::to_string(&resp)?, Some(generation)))
 }
 
-/// Apply the owner's machine lock (ADR-0035 §2) to a registering machine, in
-/// one atomic store step (the "allow one" window admits exactly one machine,
-/// and a refusal is recorded). Fails closed: a store error or a malformed lock
-/// refuses the registration with a clean error.
+/// Applies the owner's machine lock (ADR-0035 §2) in one atomic store step.
+/// The step lets "allow one" admit exactly one machine and records refusals.
+/// Fails closed: a store error or a malformed lock refuses the registration.
 async fn enforce_owner_lock(
     state: &Arc<CoordinatorState>,
     tenant_id: TenantId,
@@ -232,8 +218,7 @@ async fn enforce_owner_lock(
     }
 }
 
-/// Interactive sign-in: the device gets a URL, the user approves it on the
-/// dashboard, and the device's follow-up request then receives the grant.
+/// Interactive sign-in: the device gets a URL, and a follow-up request gets the grant after approval.
 /// `Err` carries the response to send while there is no grant yet.
 async fn interactive_sign_in(
     state: &Arc<CoordinatorState>,
@@ -305,8 +290,7 @@ pub(crate) const SIGN_INS_FULL_MSG: &str = "too many device sign-ins are waiting
 
 pub(crate) const TENANT_SUSPENDED_MSG: &str = "this tailnet is suspended by the instance operator";
 
-/// Unauthorized RegisterResponse carrying a user-visible error (tailscaled
-/// surfaces `Error` to the user and stops the login attempt).
+/// Unauthorized RegisterResponse with a user-visible error. tailscaled shows `Error` and stops the login.
 fn error_response(msg: &str) -> RegisterResponse {
     RegisterResponse {
         user: User::default(),
@@ -318,8 +302,7 @@ fn error_response(msg: &str) -> RegisterResponse {
     }
 }
 
-/// Authorized RegisterResponse naming the node's owner as the TS service
-/// pushed it (Bluesky handle), or the legacy placeholder user when unknown.
+/// Authorized RegisterResponse naming the owner's Bluesky handle, or the placeholder user when unknown.
 fn authorized_response(state: &CoordinatorState, tenant: TenantId, owner: Option<&str>) -> RegisterResponse {
     let profile = state.caches.identity.profile(tenant, owner);
     RegisterResponse {
@@ -351,7 +334,7 @@ pub async fn handle_map(
         if req.hostinfo.is_some() {
             sync_node_routes(state, node_id, advertised_routes_from(req.hostinfo.as_ref())).await;
         }
-        // The relay region the device chose as its home; peers reach it there
+        // Peers reach the device through the home relay region it chose.
         let preferred = req.hostinfo.as_ref().and_then(|h| h.net_info.as_ref()).map(|n| n.preferred_derp);
         if let Some(region) = preferred.filter(|r| (1..=999).contains(r))
             && let Err(e) = state.store.set_home_relay(node_id, region).await {
@@ -377,9 +360,8 @@ pub async fn build_map_snapshot(
     Ok(serde_json::to_string(&resp)?)
 }
 
-/// A full snapshot for a streaming session. `last_peers` holds the peer ids
-/// of the previous snapshot: a client treats a snapshot without peers as "no
-/// change", so when the list becomes empty the old peers are removed by id.
+/// A full snapshot for a streaming session. `last_peers` holds the previous snapshot's peer ids.
+/// A client reads an empty peer list as "no change", so old peers are removed by id.
 pub async fn build_map_update(
     state: &Arc<CoordinatorState>,
     machine_key: &[u8; 32],
@@ -413,16 +395,14 @@ pub async fn build_delta_response(
     serde_json::to_string(&resp).ok()
 }
 
-/// Normalised advertised routes from a client's Hostinfo. `None` when the request
-/// carried no Hostinfo (leave stored routes alone); a Hostinfo without
-/// RoutableIPs means "advertises nothing".
+/// Normalised advertised routes from a client's Hostinfo, or `None` without Hostinfo (keep stored routes).
+/// A Hostinfo without RoutableIPs advertises nothing.
 fn advertised_routes_from(hostinfo: Option<&coord_proto::register::Hostinfo>) -> Option<Vec<String>> {
     hostinfo.map(|h| coord_core::routes::normalize_routes_lossy(h.routable_ips.as_deref().unwrap_or(&[])))
 }
 
-/// Persist a node's advertised routes (if given), apply the tenant's
-/// auto-approvers, and push a fresh netmap to the tenant if anything changed.
-/// Nodes can only *advertise*; approval comes from the admin API or auto-approvers.
+/// Stores advertised routes, applies auto-approvers, and pushes a fresh netmap on change.
+/// Nodes only *advertise*. Approval comes from the admin API or auto-approvers.
 pub(crate) async fn sync_node_routes(
     state: &Arc<CoordinatorState>,
     node_id: NodeId,
@@ -442,8 +422,8 @@ pub(crate) async fn sync_node_routes(
     if !changed {
         return;
     }
-    // Peers already get a NodeUpdated delta from the store; the node's own stream
-    // ignores its own events, so push a full snapshot when its served routes change.
+    // Peers get a NodeUpdated delta from the store. The node's own stream ignores its own events,
+    // so push a full snapshot when its served routes change.
     let Some(after) = state.store.get_node_info(node_id).await else {
         return;
     };
@@ -453,8 +433,8 @@ pub(crate) async fn sync_node_routes(
     }
 }
 
-/// Add any advertised routes the tenant's auto-approvers cover to the node's
-/// approved set. Never removes approvals. Returns true if the set changed.
+/// Approves the advertised routes that auto-approvers cover. Never removes approvals.
+/// Returns true if the approved set changed.
 pub(crate) async fn apply_auto_approvers(state: &Arc<CoordinatorState>, node_id: NodeId) -> bool {
     let Some(detail) = state.store.get_node_info(node_id).await else {
         return false;

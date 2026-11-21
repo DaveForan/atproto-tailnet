@@ -39,7 +39,7 @@ pub struct Hostinfo {
     pub backend_log_id: Option<String>,
     #[serde(default)]
     pub request_tags: Option<Vec<String>>,
-    /// Subnet routes / exit routes the node wants to advertise.
+    /// Subnet and exit routes that the node advertises.
     #[serde(rename = "RoutableIPs", default, skip_serializing_if = "Option::is_none")]
     pub routable_ips: Option<Vec<String>>,
     /// Network facts the client measured; only the home relay is used.
@@ -55,7 +55,7 @@ pub struct NetInfo {
     pub preferred_derp: i32,
 }
 
-/// Matches tailcfg.RegisterResponse
+/// Matches tailcfg.RegisterResponse.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct RegisterResponse {
@@ -70,7 +70,7 @@ pub struct RegisterResponse {
     pub error: String,
 }
 
-/// Matches tailcfg.User
+/// Matches tailcfg.User.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct User {
@@ -80,7 +80,7 @@ pub struct User {
     pub display_name: String,
 }
 
-/// Matches tailcfg.Login
+/// Matches tailcfg.Login.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct Login {

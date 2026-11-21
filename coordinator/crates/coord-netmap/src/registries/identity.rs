@@ -4,12 +4,12 @@ use std::sync::RwLock;
 use coord_core::TenantId;
 use coord_proto::map::UserProfile;
 
-/// Fallback names when the TS service has not pushed identity for a tenant/owner.
+/// Fallback names when a tenant or owner has no stored identity.
 pub const DEFAULT_DOMAIN: &str = "mesh.local";
 pub const DEFAULT_LOGIN_NAME: &str = "mesh@coordinator.local";
 pub const DEFAULT_DISPLAY_NAME: &str = "Mesh User";
 
-/// Upper bounds on pushed identity (in-memory, admin-only input).
+/// Upper bounds on identity input from the admin API.
 pub const MAX_IDENTITY_USERS: usize = 10_000;
 pub const MAX_IDENTITY_TEXT: usize = 256;
 
@@ -22,14 +22,13 @@ pub struct UserIdentity {
     pub display_name: String,
 }
 
-/// Per-tenant names shown in Tailscale clients (in-memory; the TS service
-/// pushes and replays it). `tailnet_name` becomes the netmap `Domain`, which
-/// clients show as the tailnet / profile name.
+/// Per-tenant names shown in Tailscale clients.
+/// `tailnet_name` becomes the netmap `Domain`, which clients show as the tailnet name.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TenantIdentity {
     #[serde(default)]
     pub tailnet_name: Option<String>,
-    /// owner id -> identity
+    /// Keyed by owner id.
     #[serde(default)]
     pub users: std::collections::BTreeMap<String, UserIdentity>,
 }
@@ -67,8 +66,8 @@ impl TenantIdentity {
     }
 }
 
-/// Stable Tailscale user id for an owner. Unowned nodes share id 1 (the
-/// legacy single user); owners hash to a positive id that never collides with 1.
+/// Stable Tailscale user id for an owner. Unowned nodes share the legacy id 1.
+/// Owners hash to a positive id that never equals 1.
 pub fn user_id_for(owner: Option<&str>) -> i64 {
     let Some(owner) = owner else { return 1 };
     // FNV-1a 64, kept within JSON-safe integer range (53 bits).
@@ -108,7 +107,7 @@ impl IdentityRegistry {
         self.tenants.write().unwrap_or_else(|e| e.into_inner()).remove(&tenant);
     }
 
-    /// The netmap Domain (tailnet name) for a tenant.
+    /// The netmap `Domain` (tailnet name) for a tenant.
     pub fn domain(&self, tenant: TenantId) -> String {
         self.get_tenant(tenant).tailnet_name.unwrap_or_else(|| DEFAULT_DOMAIN.to_string())
     }

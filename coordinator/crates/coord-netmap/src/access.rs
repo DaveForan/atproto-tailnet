@@ -1,10 +1,8 @@
 use coord_proto::map::{FilterRule, NetPortRange, PortRange};
 
-/// The access rules that HTTPS services need in a `member`-mode tailnet
-/// (ADR-0030): the devices that may see a service reach the gateway on its
-/// web ports, and the gateway reaches the published port of the device.
-/// `everyone` lists all devices of the tailnet except the gateway, for
-/// services that every device may see.
+/// Access rules that HTTPS services need in a `member`-mode tailnet (ADR-0030).
+/// Viewers reach the gateway's web ports, and the gateway reaches the published device port.
+/// `everyone` lists all devices except the gateway, for services that every device sees.
 pub fn service_rules(dns: &coord_core::TenantDns, gateway: i64, everyone: &[i64]) -> Vec<coord_core::AccessRule> {
     use coord_core::{AccessPort, AccessProto, AccessRule};
     let tcp = |port: u16| AccessPort { proto: AccessProto::Tcp, first: port, last: port };
@@ -20,7 +18,7 @@ pub fn service_rules(dns: &coord_core::TenantDns, gateway: i64, everyone: &[i64]
         if record.owner.is_none() && record.nodes.is_empty() {
             rules.push(to_gateway(None, everyone.to_vec()));
         } else {
-            // `visible_to` is "listed device, or device of the owner": one rule for each
+            // `visible_to` means "listed device or owner's device", so emit one rule for each.
             if !record.nodes.is_empty() {
                 rules.push(to_gateway(None, record.nodes.clone()));
             }
@@ -41,10 +39,9 @@ pub struct MemberView<'a> {
     pub filter: Vec<FilterRule>,
 }
 
-/// Compute the peer list and packet filter of device `self_id` in a
-/// `member`-mode tenant: devices of the same owner reach each other on every
-/// port, and each access rule opens the listed ports of its destination
-/// device to its source devices. An unowned device has no "own devices".
+/// Peer list and packet filter of device `self_id` in a `member`-mode tenant.
+/// Same-owner devices reach each other on all ports. Each rule opens its listed destination ports.
+/// An unowned device has no "own devices".
 pub fn member_view<'a>(
     self_id: i64,
     self_owner: Option<&str>,
@@ -71,7 +68,7 @@ pub fn member_view<'a>(
         if sources.is_empty() {
             continue;
         }
-        // One filter rule per protocol (a rule carries one protocol list)
+        // A filter rule carries one protocol list, so emit one rule per protocol.
         let mut by_proto: BTreeMap<coord_core::AccessProto, Vec<NetPortRange>> = BTreeMap::new();
         for port in &rule.ports {
             let range = match port.proto {
@@ -166,10 +163,10 @@ mod member_view_tests {
 
     #[test]
     fn rule_opens_only_the_listed_port_of_the_destination() {
-        // bob's devices may reach alice's device 1 on tcp/3000
+        // bob's devices may reach alice's device 1 on tcp/3000.
         let rules = vec![rule("bob", vec![], 1, vec![(AccessProto::Tcp, 3000, 3000)])];
 
-        // Destination side: device 1 accepts from 3 and 4 on tcp/3000, plus its own devices
+        // Destination side: device 1 accepts 3 and 4 on tcp/3000, plus its own devices.
         let peers = others_of(1);
         let v = member_view(1, Some("alice"), "100.64.0.1", &peers, &rules);
         assert_eq!(ids(&v), vec![2, 3, 4]);
@@ -177,13 +174,13 @@ mod member_view_tests {
         assert_eq!(shared.src_ips, vec!["100.64.0.3/32", "100.64.0.4/32"]);
         assert_eq!((shared.dst_ports[0].ports.first, shared.dst_ports[0].ports.last), (3000, 3000));
 
-        // Source side: device 3 sees device 1 (to connect) but accepts nothing from it
+        // Source side: device 3 sees device 1 to connect, but accepts nothing from it.
         let peers = others_of(3);
         let v = member_view(3, Some("bob"), "100.64.0.3", &peers, &rules);
         assert_eq!(ids(&v), vec![1, 4]);
         assert!(v.filter.iter().all(|f| !f.src_ips.contains(&"100.64.0.1/32".to_string())));
 
-        // alice's other device 2 is not opened by the rule
+        // The rule does not open alice's other device 2.
         let peers = others_of(2);
         let v = member_view(2, Some("alice"), "100.64.0.2", &peers, &rules);
         assert_eq!(ids(&v), vec![1]);
@@ -199,7 +196,7 @@ mod member_view_tests {
         assert_eq!(shared.src_ips, vec!["100.64.0.4/32"]);
         assert_eq!(shared.ip_proto, None);
 
-        // bob's device 3 is not in the rule: it does not even see device 1
+        // bob's device 3 is not in the rule, so it does not see device 1.
         let peers = others_of(3);
         assert_eq!(ids(&member_view(3, Some("bob"), "100.64.0.3", &peers, &rules)), vec![4]);
     }

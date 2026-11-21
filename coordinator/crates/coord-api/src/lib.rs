@@ -188,7 +188,6 @@ pub async fn sweep_ephemeral_nodes(state: &Arc<CoordinatorState>, max_offline: s
     }
 }
 
-/// Spawn the background task that sweeps offline ephemeral nodes every minute.
 pub fn spawn_ephemeral_sweeper(state: Arc<CoordinatorState>) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(EPHEMERAL_SWEEP_INTERVAL);
@@ -252,8 +251,7 @@ pub async fn __test_build_delta(
     control::build_delta_response(state, viewer, event).await
 }
 
-/// Drive `/machine/map` (streaming or not) as the Noise H2 server would; the
-/// body yields length-prefixed zstd frames.
+/// Drives `/machine/map` as the Noise H2 server does. The body yields length-prefixed zstd frames.
 #[cfg(feature = "test-hooks")]
 #[doc(hidden)]
 pub async fn __test_map_request(
@@ -264,8 +262,7 @@ pub async fn __test_map_request(
     noise_handler::handle_map_request(state, machine_key, body).await
 }
 
-/// Serve the Noise-side control HTTP/2 protocol over an arbitrary stream
-/// (tests drive it over an in-memory duplex without the Noise layer).
+/// Serves control HTTP/2 over an in-memory duplex, without the Noise layer.
 #[cfg(feature = "test-hooks")]
 #[doc(hidden)]
 pub async fn __test_serve_control_h2(

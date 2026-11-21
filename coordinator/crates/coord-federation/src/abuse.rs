@@ -4,15 +4,13 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
-// ── Constants ──────────────────────────────────────────────────────────────────
 
-/// Max pending inbound link requests per collective before oldest are expired.
+/// Max pending inbound link requests per collective. The oldest beyond this expire.
 pub const MAX_PENDING_PER_COLLECTIVE: usize = 50;
 
 /// Max body size for federation messages (64 KiB).
 pub const MAX_FEDERATION_BODY_BYTES: usize = 65_536;
 
-// ── Rate limiter ───────────────────────────────────────────────────────────────
 
 /// Sliding-window rate limiter keyed by arbitrary string (DID, IP, etc.).
 #[derive(Debug)]
@@ -33,8 +31,7 @@ impl RateLimiter {
         }
     }
 
-    /// Returns `true` if the request is allowed (under the rate limit).
-    /// Returns `false` if the request should be rejected.
+    /// Returns `true` if the request for `key` is under the rate limit.
     pub fn check(&mut self, key: &str) -> bool {
         self.check_count += 1;
         if self.check_count.is_multiple_of(128) {
@@ -46,7 +43,6 @@ impl RateLimiter {
 
         let timestamps = self.hits.entry(key.to_string()).or_default();
 
-        // Evict expired entries from the front.
         while let Some(&front) = timestamps.front() {
             if front <= cutoff {
                 timestamps.pop_front();
@@ -63,7 +59,7 @@ impl RateLimiter {
         true
     }
 
-    /// Remove stale entries. Call periodically to prevent unbounded growth.
+    /// Removes stale keys. Call it periodically to bound memory.
     pub fn sweep(&mut self) {
         let now = Instant::now();
         let cutoff = now.checked_sub(self.window).unwrap_or(now);
@@ -89,21 +85,15 @@ impl RateLimiter {
     }
 }
 
-// ── Replay guard ───────────────────────────────────────────────────────────────
 
-/// Default cap on remembered message keys.
 pub const DEFAULT_REPLAY_CAPACITY: usize = 100_000;
 
-/// Message replay cache. Callers key entries on the authenticated sender and a
-/// per-message identity (message id or signature) and record them only after
-/// the signature verifies, so forged traffic cannot pre-burn keys.
-///
-/// The window must be at least twice the timestamp freshness skew: a message
-/// stays fresh for ±skew around its timestamp, so a shorter retention lets a
-/// captured message be replayed while it is still fresh.
-///
-/// Expiry is amortised O(1) (entries expire in insertion order from a queue);
-/// memory is bounded by `capacity` — when full, the oldest entries are evicted.
+/// Message replay cache with amortised O(1) expiry.
+/// When full, it evicts the oldest entries to stay within `capacity`.
+/// # Security
+/// Key entries on the authenticated sender plus the message id or signature.
+/// Record a key only after the signature verifies, so forged traffic cannot pre-burn keys.
+/// The window must be at least twice the freshness skew, or a captured message replays while fresh.
 #[derive(Debug)]
 pub struct ReplayGuard {
     window: Duration,
@@ -126,8 +116,7 @@ impl ReplayGuard {
         }
     }
 
-    /// Returns `true` if this is the first time we've seen `id` in the window
-    /// (i.e., NOT a replay) and records it. Returns `false` if it's a duplicate.
+    /// Returns `true` and records `id` if it is not a replay within the window.
     pub fn check(&mut self, id: &str) -> bool {
         let now = Instant::now();
         self.expire(now);
@@ -145,7 +134,6 @@ impl ReplayGuard {
         true
     }
 
-    /// Remove expired entries.
     pub fn sweep(&mut self) {
         self.expire(Instant::now());
     }
@@ -176,7 +164,6 @@ impl ReplayGuard {
     }
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -189,24 +176,19 @@ mod tests {
         assert!(limiter.check("user-a"));
         assert!(limiter.check("user-a"));
         assert!(limiter.check("user-a"));
-        // Fourth hit should be rejected.
         assert!(!limiter.check("user-a"));
-        // Different key is still fine.
         assert!(limiter.check("user-b"));
     }
 
     #[test]
     fn rate_limiter_window_expiry() {
-        // Very short window: 50ms.
         let mut limiter = RateLimiter::new(50, 2);
         assert!(limiter.check("key"));
         assert!(limiter.check("key"));
         assert!(!limiter.check("key"));
 
-        // Wait for window to expire.
         thread::sleep(Duration::from_millis(60));
 
-        // Should be allowed again after expiry.
         assert!(limiter.check("key"));
     }
 
@@ -238,7 +220,6 @@ mod tests {
 
         thread::sleep(Duration::from_millis(60));
 
-        // After window expires, same ID should be allowed again.
         assert!(guard.check("msg-1"));
     }
 

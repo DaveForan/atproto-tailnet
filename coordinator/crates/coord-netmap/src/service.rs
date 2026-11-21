@@ -84,8 +84,7 @@ impl NetmapService {
         let access = self.store.get_tenant_access(tenant_id).await;
         let member_mode = access.mode == coord_core::AccessMode::Member;
         let children = self.store.get_child_tenants(tenant_id).await;
-        // Member mode is scoped to the tenant itself: devices of child
-        // tenants are never visible through it.
+        // Member mode is tenant-scoped: child tenants' devices never show through it.
         let all_peers = if children.is_empty() || member_mode {
             self.store.get_peers(tenant_id, node_id).await
         } else {
@@ -93,8 +92,7 @@ impl NetmapService {
         };
         let gateway = self.gateways.get(tenant_id);
         let member = member_mode.then(|| {
-            // HTTPS services open two paths: viewers to the gateway, and the
-            // gateway to the published port. Nothing else.
+            // HTTPS services open only two paths: viewers to the gateway, and the gateway to the published port.
             let mut rules = access.rules.clone();
             if let Some(gw) = gateway {
                 let everyone: Vec<i64> = all_peers.iter().map(|p| p.node_id.as_i64()).chain([node_id.as_i64()]).filter(|id| *id != gw).collect();
@@ -108,9 +106,8 @@ impl NetmapService {
         };
         let derp_map = self.derp.map_for(tenant_id);
         let default_region = derp_map.regions.keys().min().copied().unwrap_or(1);
-        // Each device's own home relay, when it reported one that is in this map.
-        // A peer sends to a device through the device's home relay, so relays
-        // in different regions need no link between them (ADR-0034).
+        // Each device's reported home relay, when this map has it.
+        // Peers send through the device's home relay, so relays need no inter-region link (ADR-0034).
         let mut ids: Vec<coord_core::NodeId> = peers.iter().map(|p| p.node_id).collect();
         ids.push(node_id);
         let reported = self.store.home_relays(&ids).await;
@@ -159,8 +156,8 @@ impl NetmapService {
             peers_removed: None,
             derp_map: Some(derp_map),
             dns_config: Some(dns_view(node_id.as_i64(), self_owner, &ipv4.to_string(), &peers, &dns, gateway)),
-            // Member mode: per-device filter (an empty list blocks everything).
-            // Otherwise the tenant's ACL policy, or allow-all.
+            // Member mode: per-device filter, where an empty list blocks everything.
+            // Otherwise: the tenant's ACL policy, or allow-all.
             packet_filter: Some(member_filter.unwrap_or_else(|| {
                 self.acl
                     .filter_rules_for_node(tenant_id, node_id, &ipv4.to_string())
@@ -172,8 +169,7 @@ impl NetmapService {
         })
     }
 
-    /// Whether a node of `event_tenant` may appear in a delta sent to a
-    /// device of `viewer`: the same tenant, or a child visible to it.
+    /// Whether a node of `event_tenant` may appear in a delta to `viewer`: same tenant or visible child.
     async fn tenant_visible_to(&self, viewer: TenantId, event_tenant: TenantId) -> bool {
         if event_tenant == viewer {
             return true;
@@ -184,10 +180,9 @@ impl NetmapService {
         }
     }
 
-    /// The delta a device of tenant `viewer` gets for a peer event. Event
-    /// payloads are not trusted (with several replicas they arrive over
-    /// PostgreSQL NOTIFY): the node must really belong to the event's tenant,
-    /// and that tenant must be the viewer's or a child visible to it.
+    /// The delta a device of tenant `viewer` gets for a peer event.
+    /// # Security
+    /// NOTIFY payloads are untrusted. The node must belong to the event tenant, and the viewer must see it.
     pub async fn build_delta(&self, viewer: TenantId, event: &PeerEvent) -> Option<MapResponse> {
         let (event_tenant, event_node) = match event {
             PeerEvent::NodeJoined { tenant_id, node_id }
@@ -248,7 +243,7 @@ impl NetmapService {
 
                 Some(MapResponse {
                     peers_changed: Some(vec![peer]),
-                    // Clients need the profile of a newly seen peer's owner
+                    // Clients need the profile of a newly seen peer's owner.
                     user_profiles: Some(vec![self
                         .identity
                         .profile(detail.tenant_id, detail.attrs.owner.as_deref())]),
@@ -257,8 +252,7 @@ impl NetmapService {
                 })
             }
             PeerEvent::NodeOffline { node_id, .. } => {
-                // A node that still exists must be in the named tenant; a deleted
-                // node can only be removed (which reveals nothing).
+                // A live node must be in the named tenant. Removing a deleted node reveals nothing.
                 if let Some(t) = self.store.get_node_tenant(event_node).await
                     && t != event_tenant {
                         tracing::warn!(node_id = node_id.as_i64(), "peer event names the wrong tenant for its node; ignored");
@@ -274,16 +268,13 @@ impl NetmapService {
     }
 }
 
-/// Names are re-sanitised at render time (defence in depth: covers admin
-/// renames and rows stored before registration-time sanitisation) so a peer
-/// never receives a dotted name that spoofs another FQDN.
+/// Re-sanitise at render time as defence in depth, for admin renames and old rows.
+/// A peer never receives a dotted name that spoofs another FQDN.
 fn node_label(hostname: &str, node_id: i64) -> String {
     coord_core::sanitize::node_dns_label(hostname, node_id)
 }
 
-/// Tailscale clients dereference `Node.Hostinfo` unconditionally (e.g. in
-/// `tailscale status`), so every node we send must carry one — a nil Hostinfo
-/// panics the client's LocalAPI.
+/// Tailscale clients dereference `Node.Hostinfo` unconditionally. A nil Hostinfo panics the LocalAPI.
 fn minimal_hostinfo(hostname: &str) -> Option<coord_proto::register::Hostinfo> {
     Some(coord_proto::register::Hostinfo {
         hostname: Some(hostname.to_string()),
@@ -306,8 +297,7 @@ fn format_key_bytes(key: &[u8]) -> String {
     }
 }
 
-/// The home relay region to tell peers: the one the device reported when it
-/// is a region of this map, otherwise the map's default region.
+/// The home relay region to tell peers: the reported one if this map has it, else the default.
 pub fn home_region_for(reported: Option<i32>, map: &DerpMap, default_region: i32) -> i32 {
     reported.filter(|r| map.regions.contains_key(r)).unwrap_or(default_region)
 }

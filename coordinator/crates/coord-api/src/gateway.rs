@@ -1,10 +1,6 @@
-//! The gateway inside the coordinator (ADR-0029, ADR-0030).
-//!
-//! When a tailnet has an HTTPS service, the coordinator puts a gateway node
-//! in it: a tagged node with no owner, registered directly (no auth key),
-//! attached to the built-in relay in this process. The gateway answers two
-//! questions from the store: which device has this key or address, and which
-//! service may this caller use.
+//! The gateway inside the coordinator (ADR-0029, ADR-0030): a tagged, ownerless node on the built-in relay.
+//! A tailnet with an HTTPS service gets one. It asks the store which device has a key or address,
+//! and which service a caller may use.
 
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddrV4};
@@ -115,14 +111,8 @@ struct StoreServices {
 }
 
 /// The HTTPS service record named `label` that this caller may use.
-///
-/// Several records can have one name: a private-board name is unique only
-/// for its author, a public one in the tailnet. Only records that the caller
-/// may see count (the same rule that decides who gets the DNS record), so a
-/// member's private record cannot hide another member's public service.
-/// Among visible records the order is fixed: a public record (open to
-/// devices beyond the author's, or to everyone) before a private one, then
-/// one that names the calling device, then the lowest node and port.
+// Only records the caller may see count, so a private record cannot hide another member's public one.
+// Order: public before private, then one naming the caller, then the lowest node and port.
 fn pick_record<'a>(records: &'a [DnsRecord], label: &str, node: i64, owner: Option<&str>) -> Option<&'a DnsRecord> {
     records
         .iter()
@@ -187,8 +177,8 @@ impl CoordinatorState {
         let node_secret = coord_gateway::derive_key(&gateways.secret, &tenant_bytes, "node");
         let node_key = public_key(&node_secret);
         let machine_key = public_key(&coord_gateway::derive_key(&gateways.secret, &tenant_bytes, "machine"));
-        // Devices need a disco key to treat the gateway as a peer. The
-        // gateway does not answer disco, so they reach it through the relay.
+        // Devices need a disco key to treat the gateway as a peer.
+        // The gateway does not answer disco, so devices reach it through the relay.
         let disco_key = public_key(&coord_gateway::derive_key(&gateways.secret, &tenant_bytes, "disco"));
 
         let info = NodeInfo {
@@ -207,7 +197,7 @@ impl CoordinatorState {
             .register_node_with(tenant, machine_key, info, registration)
             .await
             .map_err(|e| format!("cannot register the gateway node: {e}"))?;
-        // Devices send to a peer through its home relay: ours is this process
+        // Devices send to a peer through its home relay. The gateway's home relay is this process.
         let region = self.own_relay.as_ref().map(|r| r.region_id).unwrap_or(crate::state::BUILTIN_RELAY_REGION_ID);
         let _ = self.store.set_home_relay(node_id, region).await;
         let _ = self.store.set_node_online(node_id, true).await;
@@ -236,7 +226,6 @@ impl CoordinatorState {
         });
         gateways.running.lock().unwrap_or_else(|e| e.into_inner()).insert(tenant, stack);
         info!(tenant = %tenant, node = node_id.as_i64(), %addr, "gateway joined the tailnet");
-        // Devices learn about the new peer and the service addresses
         self.notify_tenant_changed(tenant);
         Ok(())
     }
@@ -254,8 +243,7 @@ impl CoordinatorState {
 }
 
 impl CoordinatorState {
-    /// Re-check now the relay reach of the devices and the gateway of `tenant`
-    /// and of its children, after a posture, suspension or parent change.
+    /// Re-checks relay reach for `tenant` and its children after a posture, suspension or parent change.
     pub async fn refresh_relay_scopes(&self, tenant: TenantId) {
         let mut tenants = vec![*tenant.as_uuid().as_bytes()];
         tenants.extend(self.store.get_child_tenants(tenant).await.iter().map(|c| *c.id.as_uuid().as_bytes()));
@@ -264,10 +252,8 @@ impl CoordinatorState {
 }
 
 impl CoordinatorState {
-    /// Say clearly at startup that this process serves no HTTPS services,
-    /// when it is the process that should (it runs the relay). Louder when
-    /// tailnets already publish HTTPS services: their names then lead
-    /// nowhere.
+    /// Warns at startup when this relay process serves no HTTPS services.
+    /// Warns louder when tailnets already publish HTTPS services, because their names lead nowhere.
     async fn report_gateway_off(&self) {
         if !self.role.serves_relay() {
             return; // the gateway runs next to the relay only
@@ -302,7 +288,7 @@ mod tests {
     // connected to. Mallory (node 20) publishes a private "wiki" too.
     fn wiki() -> Vec<DnsRecord> {
         let mut records = vec![record("wiki", 20, "mallory", &[], 9999), record("wiki", 10, "alice", &[30, 21], 8080)];
-        // Mallory's record sorts first, as the service sorts records by name, then node
+        // Mallory's record sorts first: the service sorts records by name, then node.
         records.sort_by_key(|r| (r.name.clone(), r.node));
         records
     }
@@ -387,8 +373,7 @@ mod tests {
         assert_eq!(route.user, "bob.example.com");
         assert_eq!(route.device, "bob-laptop");
 
-        // Mallory sees her own record, but the coordinator does not know her name:
-        // no shared placeholder identity, a refusal
+        // Mallory sees her own record, but her name is unknown. No shared placeholder: a refusal.
         assert_eq!(services.route("wiki.ts.example.com", mallory_ip).await, Err(Denied::UnknownUser));
         // A device without an owner has no member identity at all
         assert_eq!(services.route("wiki.ts.example.com", tagged_ip).await, Err(Denied::NoOwner));

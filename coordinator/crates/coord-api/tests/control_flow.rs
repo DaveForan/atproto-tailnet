@@ -71,7 +71,6 @@ fn admin_req() -> axum::http::request::Builder {
     Request::builder().header("authorization", format!("Bearer {}", TEST_ADMIN_KEY))
 }
 
-/// Create a tenant in the store and return its ID (tests need real tenants since R6).
 async fn create_test_tenant(state: &Arc<CoordinatorState>, slug: &str) -> coord_core::TenantId {
     state.store().create_tenant(slug.into(), None, None).await.unwrap().id
 }
@@ -122,7 +121,7 @@ async fn key_endpoint_returns_json() {
 async fn create_preauth_key_requires_tenant_id() {
     let (app, _) = setup();
 
-    // Missing tenant_id should fail (no longer auto-creates tenants)
+    // A missing tenant_id is refused: the server never creates tenants on demand.
     let resp = app.clone()
         .oneshot(
             admin_req()
@@ -136,7 +135,7 @@ async fn create_preauth_key_requires_tenant_id() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
-    // Nonexistent tenant_id should return 404
+    // An unknown tenant_id is 404.
     let resp = app
         .oneshot(
             admin_req()
@@ -279,8 +278,7 @@ async fn map_keepalive() {
         .await
         .unwrap();
     let resp: serde_json::Value = serde_json::from_str(&result).unwrap();
-    // KeepAlive in the request is a preference flag, not a request type —
-    // server returns the full map snapshot regardless
+    // KeepAlive is a preference flag, not a request type: the server still returns the full map.
     assert!(resp["Node"].is_object(), "KeepAlive:true should still return full map");
 }
 
@@ -432,7 +430,7 @@ async fn map_with_endpoints() {
             .unwrap();
     }
 
-    // Node 2 sends endpoints via map request
+    // Node 2 reports its endpoints in a map request.
     let map_body = serde_json::json!({
         "Version": 2,
         "NodeKey": format!("nodekey:{}", hex::encode([122u8; 32])),
@@ -442,7 +440,7 @@ async fn map_with_endpoints() {
         .await
         .unwrap();
 
-    // Node 1 maps and should see node 2's endpoints
+    // Node 1 sees node 2's endpoints.
     let map_body1 = serde_json::json!({
         "Version": 2,
         "NodeKey": format!("nodekey:{}", hex::encode([111u8; 32])),
@@ -468,7 +466,6 @@ async fn node_key_rotation() {
     let old_node_key = [131u8; 32];
     let new_node_key = [132u8; 32];
 
-    // Register with original node key
     let reg_body = serde_json::json!({
         "Version": 2,
         "NodeKey": format!("nodekey:{}", hex::encode(old_node_key)),
@@ -483,7 +480,7 @@ async fn node_key_rotation() {
     let info_before = state.store().get_node_info(node_id).await.unwrap().info;
     assert_eq!(info_before.node_key, old_node_key.to_vec());
 
-    // Re-register with new node key, providing OldNodeKey
+    // Re-register with a new node key and OldNodeKey.
     let rotate_body = serde_json::json!({
         "Version": 2,
         "NodeKey": format!("nodekey:{}", hex::encode(new_node_key)),
@@ -497,11 +494,10 @@ async fn node_key_rotation() {
     let resp: serde_json::Value = serde_json::from_str(&result).unwrap();
     assert_eq!(resp["MachineAuthorized"], true);
 
-    // Verify the node key was updated
     let info_after = state.store().get_node_info(node_id).await.unwrap().info;
     assert_eq!(info_after.node_key, new_node_key.to_vec());
 
-    // Same node ID and IP should be preserved
+    // Key rotation keeps the node ID and IP.
     let same_node_id = state.store().get_node_by_machine_key(&machine_key).await.unwrap();
     assert_eq!(node_id, same_node_id);
 }
@@ -533,19 +529,16 @@ async fn map_includes_home_derp() {
         .unwrap();
     let resp: serde_json::Value = serde_json::from_str(&result).unwrap();
 
-    // Node should have HomeDERP field
     assert!(resp["Node"]["HomeDERP"].as_i64().is_some());
     let home_derp = resp["Node"]["HomeDERP"].as_i64().unwrap();
     assert!(home_derp > 0);
 
-    // Legacy DERP field should match 127.3.3.40:<region>
+    // The legacy DERP field uses the magic address 127.3.3.40:<region>.
     let derp_str = resp["Node"]["DERP"].as_str().unwrap();
     assert_eq!(derp_str, format!("127.3.3.40:{}", home_derp));
 
-    // DERPMap should have OmitDefaultRegions set
     assert_eq!(resp["DERPMap"]["OmitDefaultRegions"], true);
 
-    // DERPMap should have the region matching HomeDERP
     let regions = resp["DERPMap"]["Regions"].as_object().unwrap();
     assert!(regions.contains_key(&home_derp.to_string()));
 }
@@ -574,7 +567,7 @@ async fn disco_key_propagation() {
             .unwrap();
     }
 
-    // Node 2 sends disco key + endpoints
+    // Node 2 reports its disco key and endpoints.
     let map_body = serde_json::json!({
         "Version": 2,
         "NodeKey": format!("nodekey:{}", hex::encode([171u8; 32])),
@@ -585,7 +578,7 @@ async fn disco_key_propagation() {
         .await
         .unwrap();
 
-    // Node 1 should see node 2's disco key
+    // Node 1 sees node 2's disco key.
     let map_body1 = serde_json::json!({
         "Version": 2,
         "NodeKey": format!("nodekey:{}", hex::encode([161u8; 32])),
@@ -617,7 +610,7 @@ async fn acl_policy_restricts_filter() {
         .await
         .unwrap();
 
-    // Without policy: should get allow-all filter
+    // Without a policy, the filter allows all.
     let map_body = serde_json::json!({
         "Version": 2,
         "NodeKey": format!("nodekey:{}", hex::encode([181u8; 32])),
@@ -630,7 +623,7 @@ async fn acl_policy_restricts_filter() {
     assert_eq!(filters.len(), 1);
     assert_eq!(filters[0]["SrcIPs"][0], "*");
 
-    // Set restrictive ACL: only SSH (22) and HTTP (80-443)
+    // Restrictive ACL: SSH (22) and HTTP (80-443) only.
     let policy = coord_acl::AclPolicy {
         default_deny: false,
         rules: vec![
@@ -646,7 +639,7 @@ async fn acl_policy_restricts_filter() {
     };
     state.acl().set_policy(tenant_id, policy);
 
-    // Map again: should get the restricted filter
+    // The next map carries the restricted filter.
     let result2 = coord_api::__test_handle_map(&state, &machine_key, &map_body.to_string())
         .await
         .unwrap();
@@ -716,18 +709,15 @@ async fn custom_derp_map() {
         .unwrap();
     let resp: serde_json::Value = serde_json::from_str(&result).unwrap();
 
-    // Should use the custom DERP region
     let regions = resp["DERPMap"]["Regions"].as_object().unwrap();
     assert!(regions.contains_key("900"));
     assert_eq!(regions["900"]["RegionCode"], "self-hosted");
     assert_eq!(regions["900"]["Nodes"][0]["HostName"], "derp.example.com");
 
-    // Node's HomeDERP should reference region 900
     assert_eq!(resp["Node"]["HomeDERP"], 900);
     assert_eq!(resp["Node"]["DERP"], "127.3.3.40:900");
 }
 
-// ── Tenant CRUD tests ──
 
 async fn json_body(resp: axum::http::Response<Body>) -> serde_json::Value {
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
@@ -738,7 +728,6 @@ async fn json_body(resp: axum::http::Response<Body>) -> serde_json::Value {
 async fn tenant_crud_lifecycle() {
     let (app, _state) = setup();
 
-    // Create a tenant
     let resp = app.clone().oneshot(
         admin_req()
             .method("POST")
@@ -753,7 +742,6 @@ async fn tenant_crud_lifecycle() {
     assert_eq!(body["slug"], "test-collective");
     assert!(body["parent_id"].is_null());
 
-    // List tenants
     let resp = app.clone().oneshot(
         admin_req()
             .uri("/api/tenants")
@@ -764,7 +752,6 @@ async fn tenant_crud_lifecycle() {
     let body = json_body(resp).await;
     assert!(body["count"].as_u64().unwrap() >= 1);
 
-    // Get single tenant
     let resp = app.clone().oneshot(
         admin_req()
             .uri(format!("/api/tenants/{}", tenant_id))
@@ -776,7 +763,6 @@ async fn tenant_crud_lifecycle() {
     assert_eq!(body["tenant"]["slug"], "test-collective");
     assert!(body["children"].as_array().unwrap().is_empty());
 
-    // Delete
     let resp = app.clone().oneshot(
         admin_req()
             .method("DELETE")
@@ -786,7 +772,6 @@ async fn tenant_crud_lifecycle() {
     ).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // Verify deleted
     let resp = app.clone().oneshot(
         admin_req()
             .uri(format!("/api/tenants/{}", tenant_id))
@@ -820,7 +805,6 @@ async fn tenant_duplicate_slug_rejected() {
 async fn tenant_parent_child_creation() {
     let (app, _) = setup();
 
-    // Create parent
     let resp = app.clone().oneshot(
         admin_req()
             .method("POST")
@@ -833,7 +817,6 @@ async fn tenant_parent_child_creation() {
     let parent = json_body(resp).await;
     let parent_id = parent["id"].as_str().unwrap().to_string();
 
-    // Create child
     let resp = app.clone().oneshot(
         admin_req()
             .method("POST")
@@ -846,7 +829,7 @@ async fn tenant_parent_child_creation() {
     let child = json_body(resp).await;
     assert_eq!(child["parent_id"], parent_id);
 
-    // Get parent — should list the child
+    // The parent lists the child.
     let resp = app.clone().oneshot(
         admin_req()
             .uri(format!("/api/tenants/{}", parent_id))
@@ -859,14 +842,12 @@ async fn tenant_parent_child_creation() {
     assert_eq!(children[0]["slug"], "child-team");
 }
 
-// ── ACL, node delete, node rename tests ──
 
 #[tokio::test]
 async fn get_acl_returns_policy() {
     let (app, state) = setup();
     let tenant_id = create_test_tenant(&state, "acl-get-test").await;
 
-    // Set a policy via the existing POST /api/acl endpoint
     let set_body = serde_json::json!({
         "tenant_id": tenant_id.to_string(),
         "policy": {
@@ -888,7 +869,6 @@ async fn get_acl_returns_policy() {
     ).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // Read it back via GET /api/tenants/{id}/acl
     let resp = app.clone().oneshot(
         admin_req()
             .uri(format!("/api/tenants/{}/acl", tenant_id))
@@ -909,7 +889,6 @@ async fn delete_node_removes_from_map() {
     let tenant_id = create_test_tenant(&state, "delete-node-test").await;
     let auth_key = state.store().create_preauth_key(tenant_id, true).await.unwrap();
 
-    // Register two nodes
     let mk1 = [191u8; 32];
     let mk2 = [192u8; 32];
     for (mkey, nkey_byte, hostname) in [
@@ -927,10 +906,8 @@ async fn delete_node_removes_from_map() {
             .unwrap();
     }
 
-    // Get node2 ID
     let node2_id = state.store().get_node_by_machine_key(&mk2).await.unwrap();
 
-    // Verify both nodes appear in the peers list
     let resp = app.clone().oneshot(
         admin_req()
             .uri(format!("/api/tenants/{}/nodes", tenant_id))
@@ -941,7 +918,6 @@ async fn delete_node_removes_from_map() {
     let body = json_body(resp).await;
     assert_eq!(body["count"].as_u64().unwrap(), 2);
 
-    // Delete node2
     let resp = app.clone().oneshot(
         admin_req()
             .method("DELETE")
@@ -953,7 +929,6 @@ async fn delete_node_removes_from_map() {
     let body = json_body(resp).await;
     assert_eq!(body["status"], "deleted");
 
-    // Verify only one node remains
     let resp = app.clone().oneshot(
         admin_req()
             .uri(format!("/api/tenants/{}/nodes", tenant_id))
@@ -986,7 +961,6 @@ async fn rename_node_updates_hostname() {
 
     let node_id = state.store().get_node_by_machine_key(&mk).await.unwrap();
 
-    // Rename it
     let resp = app.clone().oneshot(
         admin_req()
             .method("POST")
@@ -999,7 +973,6 @@ async fn rename_node_updates_hostname() {
     let body = json_body(resp).await;
     assert_eq!(body["hostname"], "new-name");
 
-    // Verify via GET /api/nodes/{id}
     let resp = app.clone().oneshot(
         admin_req()
             .uri(format!("/api/nodes/{}", node_id.as_i64()))
@@ -1011,7 +984,6 @@ async fn rename_node_updates_hostname() {
     assert_eq!(body["hostname"], "new-name");
 }
 
-// ── Hierarchy route aggregation tests ──
 
 async fn register_node_for(
     state: &Arc<CoordinatorState>,
@@ -1036,11 +1008,10 @@ async fn register_node_for(
 async fn hierarchy_parent_sees_child_peers_when_open() {
     let (_, state) = setup();
 
-    // Create parent tenant and child with Open posture
     let parent = state.store().create_tenant("hier-parent".into(), None, None).await.unwrap();
     let child = state.store().create_tenant("hier-child".into(), Some(parent.id), None).await.unwrap();
 
-    // Set child posture to Open (MemoryStore: update in place)
+    // MemoryStore: set the child posture to Open in place.
     {
         let store = state.store();
         if let coord_store::Store::Memory(m) = store.as_ref() {
@@ -1050,11 +1021,10 @@ async fn hierarchy_parent_sees_child_peers_when_open() {
         }
     }
 
-    // Register nodes: one in parent, one in child
     register_node_for(&state, parent.id, [200u8; 32], 201, "parent-node").await;
     register_node_for(&state, child.id, [210u8; 32], 211, "child-node").await;
 
-    // Parent node maps — should see child-node as a peer
+    // The parent node sees child-node as a peer.
     let map_body = serde_json::json!({
         "Version": 2,
         "NodeKey": format!("nodekey:{}", hex::encode([201u8; 32])),
@@ -1075,13 +1045,13 @@ async fn hierarchy_parent_blocked_when_child_closed() {
     let parent = state.store().create_tenant("closed-parent".into(), None, None).await.unwrap();
     let child = state.store().create_tenant("closed-child".into(), Some(parent.id), None).await.unwrap();
 
-    // Child stays Closed (default)
+    // The child keeps the default Closed posture.
     assert_eq!(child.federation_posture, coord_core::FederationPosture::Closed);
 
     register_node_for(&state, parent.id, [220u8; 32], 221, "parent-closed").await;
     register_node_for(&state, child.id, [230u8; 32], 231, "child-closed").await;
 
-    // Parent node maps — should NOT see child node (closed posture)
+    // The parent node does not see the child node (Closed posture).
     let map_body = serde_json::json!({
         "Version": 2,
         "NodeKey": format!("nodekey:{}", hex::encode([221u8; 32])),
@@ -1103,7 +1073,7 @@ async fn hierarchy_child_does_not_see_parent_peers() {
     let parent = state.store().create_tenant("uni-parent".into(), None, None).await.unwrap();
     let child = state.store().create_tenant("uni-child".into(), Some(parent.id), None).await.unwrap();
 
-    // Set child to Open
+    // Set the child to Open.
     if let coord_store::Store::Memory(m) = state.store().as_ref() {
         let mut tenants = m.tenants_for_test().lock().unwrap();
         tenants.get_mut(&child.id).unwrap().federation_posture =
@@ -1113,7 +1083,7 @@ async fn hierarchy_child_does_not_see_parent_peers() {
     register_node_for(&state, parent.id, [240u8; 32], 241, "parent-uni").await;
     register_node_for(&state, child.id, [250u8; 32], 251, "child-uni").await;
 
-    // Child node maps — should NOT see parent node (hierarchy is parent→child only)
+    // The child node does not see the parent node: the hierarchy is parent-to-child only.
     let map_body = serde_json::json!({
         "Version": 2,
         "NodeKey": format!("nodekey:{}", hex::encode([251u8; 32])),
@@ -1135,7 +1105,7 @@ async fn hierarchy_selective_posture_fails_safe_as_closed() {
     let parent = state.store().create_tenant("sel-parent".into(), None, None).await.unwrap();
     let child = state.store().create_tenant("sel-child".into(), Some(parent.id), None).await.unwrap();
 
-    // Set child to Selective
+    // Set the child to Selective.
     if let coord_store::Store::Memory(m) = state.store().as_ref() {
         let mut tenants = m.tenants_for_test().lock().unwrap();
         tenants.get_mut(&child.id).unwrap().federation_posture =
@@ -1164,7 +1134,7 @@ async fn hierarchy_routes_endpoint() {
     let parent = state.store().create_tenant("route-parent".into(), None, None).await.unwrap();
     let child = state.store().create_tenant("route-child".into(), Some(parent.id), None).await.unwrap();
 
-    // Set child to Open
+    // Set the child to Open.
     if let coord_store::Store::Memory(m) = state.store().as_ref() {
         let mut tenants = m.tenants_for_test().lock().unwrap();
         tenants.get_mut(&child.id).unwrap().federation_posture =
@@ -1194,10 +1164,8 @@ async fn update_posture_via_api() {
     let (app, state) = setup();
     let tenant = state.store().create_tenant("posture-test".into(), None, None).await.unwrap();
 
-    // Default posture should be Closed
     assert_eq!(tenant.federation_posture, coord_core::FederationPosture::Closed);
 
-    // Update to Open via API
     let resp = app.clone().oneshot(
         admin_req()
             .method("PUT")
@@ -1210,7 +1178,6 @@ async fn update_posture_via_api() {
     let body = json_body(resp).await;
     assert_eq!(body["federation_posture"], "open");
 
-    // Verify in store
     let updated = state.store().get_tenant(tenant.id).await.unwrap();
     assert_eq!(updated.federation_posture, coord_core::FederationPosture::Open);
 
@@ -1228,7 +1195,7 @@ async fn update_posture_via_api() {
     assert_eq!(body["error"], "selective posture is not implemented");
     assert_eq!(state.store().get_tenant(tenant.id).await.unwrap().federation_posture, coord_core::FederationPosture::Open);
 
-    // Invalid posture rejected
+    // An invalid posture is refused.
     let resp = app.clone().oneshot(
         admin_req()
             .method("PUT")
@@ -1240,24 +1207,20 @@ async fn update_posture_via_api() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
-// ── Cross-tenant node operation guard tests ──
 
 #[tokio::test]
 async fn delete_node_with_wrong_tenant_returns_403() {
     let (app, state) = setup();
 
-    // Create two tenants
     let tenant_a = create_test_tenant(&state, "guard-tenant-a").await;
     let tenant_b = create_test_tenant(&state, "guard-tenant-b").await;
 
-    // Register a node in tenant A
     register_node_for(&state, tenant_a, [201u8; 32], 202, "tenant-a-node").await;
     let node_a_id = state.store().get_node_by_machine_key(&[201u8; 32]).await.unwrap();
 
-    // Register a node in tenant B
     register_node_for(&state, tenant_b, [203u8; 32], 204, "tenant-b-node").await;
 
-    // Try to delete tenant A's node with tenant_id=B -- should get 403
+    // Deleting A's node with tenant_id=B is 403.
     let resp = app.clone().oneshot(
         admin_req()
             .method("DELETE")
@@ -1269,7 +1232,7 @@ async fn delete_node_with_wrong_tenant_returns_403() {
     let body = json_body(resp).await;
     assert!(body["error"].as_str().unwrap().contains("does not belong"));
 
-    // Verify the node still exists
+    // The node still exists.
     let resp = app.clone().oneshot(
         admin_req()
             .uri(format!("/api/nodes/{}", node_a_id.as_i64()))
@@ -1278,7 +1241,7 @@ async fn delete_node_with_wrong_tenant_returns_403() {
     ).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
 
-    // Delete tenant A's node with correct tenant_id=A -- should succeed
+    // The correct tenant_id deletes it.
     let resp = app.clone().oneshot(
         admin_req()
             .method("DELETE")
@@ -1290,7 +1253,6 @@ async fn delete_node_with_wrong_tenant_returns_403() {
     let body = json_body(resp).await;
     assert_eq!(body["status"], "deleted");
 
-    // Verify the node is gone
     let resp = app.clone().oneshot(
         admin_req()
             .uri(format!("/api/nodes/{}", node_a_id.as_i64()))
@@ -1310,7 +1272,7 @@ async fn rename_node_with_wrong_tenant_returns_403() {
     register_node_for(&state, tenant_a, [205u8; 32], 206, "rename-guard-node").await;
     let node_id = state.store().get_node_by_machine_key(&[205u8; 32]).await.unwrap();
 
-    // Try to rename with wrong tenant -- should get 403
+    // Rename with the wrong tenant is 403.
     let resp = app.clone().oneshot(
         admin_req()
             .method("POST")
@@ -1321,7 +1283,7 @@ async fn rename_node_with_wrong_tenant_returns_403() {
     ).await.unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 
-    // Verify name unchanged
+    // The name is unchanged.
     let resp = app.clone().oneshot(
         admin_req()
             .uri(format!("/api/nodes/{}", node_id.as_i64()))
@@ -1332,7 +1294,7 @@ async fn rename_node_with_wrong_tenant_returns_403() {
     let body = json_body(resp).await;
     assert_eq!(body["hostname"], "rename-guard-node");
 
-    // Rename with correct tenant -- should succeed
+    // Rename with the correct tenant succeeds.
     let resp = app.clone().oneshot(
         admin_req()
             .method("POST")
@@ -1346,7 +1308,6 @@ async fn rename_node_with_wrong_tenant_returns_403() {
     assert_eq!(body["hostname"], "properly-renamed");
 }
 
-// ── Federation message route tests ──
 
 async fn register_collective_did(state: &Arc<CoordinatorState>, slug: &str, did: &str) -> coord_core::TenantId {
     let tenant = state.store().create_tenant(slug.into(), None, None).await.unwrap();
@@ -1423,7 +1384,7 @@ async fn federation_hello_valid_returns_challenge() {
     let remote_did = "did:web:remote.mesh:collective:beta";
     let tenant_id = register_collective_did(&state, "fed-hello", local_did).await;
 
-    // Create an active link so the hello is accepted
+    // An active link makes the server accept the hello.
     use coord_core::types::{FederationLink, LinkId, LinkDirection, LinkStatus};
     let link = FederationLink {
         id: LinkId::generate(),
@@ -1511,7 +1472,7 @@ async fn federation_link_request_rejects_when_active_link_exists() {
     let remote_did = "did:web:remote.mesh:collective:dup-src";
     let tenant_id = register_collective_did(&state, "fed-link-dup", local_did).await;
 
-    // Pre-create an active link with the remote peer
+    // An active link with the remote peer already exists.
     use coord_core::types::{FederationLink, LinkId, LinkDirection, LinkStatus};
     let link = FederationLink {
         id: LinkId::generate(),
@@ -1531,7 +1492,7 @@ async fn federation_link_request_rejects_when_active_link_exists() {
     };
     state.federation_inbound().store().create_link(link).await.unwrap();
 
-    // New link request from same peer should be rejected (active link already exists)
+    // A new link request from the same peer is refused.
     let link_req = serde_json::json!({
         "messageId": uuid::Uuid::new_v4().to_string(),
         "collectiveDid": remote_did,
@@ -1607,7 +1568,6 @@ async fn federation_revoke_missing_session_rejected() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }
 
-// ── Admin auth middleware tests ───────────────────────────────────────────────
 
 fn setup_with_admin_key() -> (axum::Router, Arc<CoordinatorState>) {
     let key = coord_noise::generate_control_key();
@@ -1899,7 +1859,6 @@ async fn federation_commit_missing_header_returns_400() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
-// ── Per-tenant DERP ──
 
 async fn register_and_map(
     state: &Arc<CoordinatorState>,
@@ -2029,7 +1988,6 @@ async fn known_machine_reregisters_without_auth_key() {
     assert_ne!(resp["MachineAuthorized"], true, "unknown machine without auth key must not be authorized");
 }
 
-// ── Pre-auth key lifecycle, ownership, routes, ephemeral (contract §A) ──
 
 async fn api_call(
     app: &axum::Router,
@@ -2577,7 +2535,6 @@ async fn federation_bodies_are_capped_below_the_app_limit() {
     assert_ne!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
 }
 
-// ── Tenant suspension ──
 
 async fn set_suspended(app: &axum::Router, t: coord_core::TenantId, suspended: bool) -> serde_json::Value {
     let (status, body) = api_call(
@@ -2764,7 +2721,6 @@ async fn hierarchy_parent_blocked_when_child_suspended() {
     assert_eq!(peers, 0, "parent must not see a suspended child's nodes");
 }
 
-// ── Security hardening: re-auth, client field bounds, Noise limits ──
 
 /// Register `mkey` with an explicit node key byte / old node key / auth key.
 async fn register_raw(
@@ -2939,7 +2895,7 @@ async fn map_bounds_endpoints_and_validates_disco_key() {
     assert_eq!(eps[0], "192.0.2.0:41641");
     assert_eq!(peer["DiscoKey"], good_disco);
 
-    // Oversized / malformed disco keys are ignored (previous value kept).
+    // Oversized or malformed disco keys are ignored, and the previous value stays.
     for bad in [format!("discokey:{}", "a".repeat(10_000)), "discokey:zz".into(), "cd".repeat(32)] {
         coord_api::__test_handle_map(&state, &[92u8; 32], &push(bad, vec![])).await.unwrap();
         assert_eq!(map_of(&state, 90, None).await["Peers"][0]["DiscoKey"], good_disco);
@@ -3040,19 +2996,17 @@ async fn suspension_tells_clients_to_drop_peers_before_cutting_the_stream() {
     assert_eq!(cutoff["PacketFilter"], serde_json::json!([]), "deny-all filter");
 }
 
-// ── Tenant identity: tailnet + user names shown in Tailscale clients ──
 
 #[tokio::test]
 async fn identity_names_register_response_and_netmap() {
     let (app, state) = setup();
     let t = create_test_tenant(&state, "identity").await;
 
-    // Unknown identity: legacy placeholders, unchanged behaviour
+    // No identity yet: legacy placeholders.
     let k0 = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "owner": "u-alice" })).await;
     let before = register_routes(&state, 70, k0["key"].as_str().unwrap(), "alice-laptop", None).await;
     assert_eq!(before["Login"]["LoginName"], "mesh@coordinator.local");
 
-    // Push identity
     let (status, json) = api_call(
         &app,
         "PUT",
@@ -3129,7 +3083,6 @@ async fn identity_rejects_bad_input_and_needs_admin_auth() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
-// ── Built-in DERP relay (ADR-0027) ──
 
 #[tokio::test]
 async fn default_derp_map_has_no_third_party_relays() {
@@ -3211,7 +3164,6 @@ async fn relay_admits_registered_nodes_of_live_tenants_only() {
     assert!(adm.admit(&[203u8; 32]).await.is_none(), "suspended tenant refused");
 }
 
-// ── Device access: member mode (ADR-0036) ──
 
 async fn member_map(state: &Arc<CoordinatorState>, mkey: u8) -> serde_json::Value {
     let body = serde_json::json!({ "Version": 2, "NodeKey": format!("nodekey:{}", hex::encode([mkey.wrapping_add(1); 32])) });
@@ -3320,7 +3272,6 @@ async fn member_mode_stream_removes_peers_when_access_ends() {
     assert_eq!(update["PacketFilter"], serde_json::json!([]));
 }
 
-// ── Tenant DNS: device names and service records (ADR-0028) ──
 
 #[tokio::test]
 async fn dns_gives_devices_names_and_shows_each_device_only_its_records() {
@@ -3417,7 +3368,6 @@ async fn dns_record_is_hidden_when_its_device_is_not_visible() {
     assert!(m["DNSConfig"].get("ExtraRecords").is_none(), "no address is revealed for a device that is not visible");
 }
 
-// ── Interactive device sign-in (ADR-0032) ──
 
 fn sign_in_state() -> (axum::Router, Arc<CoordinatorState>) {
     let key = coord_noise::generate_control_key();
@@ -3547,7 +3497,6 @@ async fn interactive_sign_in_denied_or_stolen_link() {
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
-// ── Owner machine locks (ADR-0035) ──
 
 #[tokio::test]
 async fn machine_lock_refuses_new_machines_even_with_a_valid_key() {
@@ -3651,7 +3600,6 @@ async fn machine_lock_cannot_name_another_owners_device_and_covers_sign_in() {
     assert!(resp["Error"].as_str().unwrap().contains("current devices"));
 }
 
-// ── Roles and relay regions (ADR-0034) ──
 
 async fn status_of(app: &axum::Router, uri: &str) -> StatusCode {
     app.clone().oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap()).await.unwrap().status()
@@ -3797,7 +3745,6 @@ async fn machine_lock_cap_and_refused_listing() {
     assert!(later["refused"].as_array().unwrap().is_empty());
 }
 
-// ── Machine lock: fail closed, known machines (ADR-0035 §2 hardening) ──
 
 /// A coordinator on a temporary SQLite database, plus a raw pool to plant
 /// rows the store would never write.
@@ -3934,7 +3881,6 @@ async fn a_lock_put_keeps_refusals_recorded_meanwhile_and_removes_late_machines(
     assert_eq!(view["max_machines"], 4);
 }
 
-// ── Peer event validation (NOTIFY payloads are not trusted) ──
 
 #[tokio::test]
 async fn deltas_ignore_events_whose_tenant_does_not_match_the_node_or_viewer() {
@@ -3979,7 +3925,6 @@ async fn deltas_from_a_child_need_the_child_to_be_visible() {
     assert!(coord_api::__test_build_delta(&state, parent, &ev).await.is_none());
 }
 
-// ── Resync safety nets (ADR-0034) ──
 
 #[tokio::test]
 async fn streams_send_a_periodic_full_snapshot_without_any_event() {
@@ -3999,7 +3944,7 @@ async fn streams_send_a_periodic_full_snapshot_without_any_event() {
     assert!(f["Node"].is_object(), "a full snapshot, not a keep-alive: {f}");
     assert!(f["PacketFilter"].is_array());
 
-    // And a suspension that no event announced still cuts the stream off
+    // A suspension that no event announced still cuts the stream off.
     state.store().set_tenant_suspended(t, true).await.unwrap();
     let mut cut = false;
     while let Some(f) = next_map_frame(&mut stream).await {
@@ -4068,7 +4013,6 @@ async fn pending_sign_in_reports_requester_ip_and_time() {
     assert!(p["requested_at"].is_string());
 }
 
-// ── MagicDNS names and tenant parents ──
 
 fn peer_dns_names(map: &serde_json::Value) -> Vec<String> {
     let mut names: Vec<String> = map["Peers"].as_array().unwrap().iter().map(|p| p["Name"].as_str().unwrap().to_string()).collect();

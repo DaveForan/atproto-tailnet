@@ -12,17 +12,17 @@ pub use dispatch::Store;
 
 const PEER_EVENT_CHANNEL_CAPACITY: usize = 256;
 
-/// Something that happened on another coordinator replica (ADR-0034). Only
-/// the PostgreSQL backend has other replicas; the others never emit these.
+/// An event from another coordinator replica (ADR-0034).
+/// Only the PostgreSQL backend has other replicas, so only it emits these.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RemoteEvent {
     /// A tenant's configuration, access rules, DNS or suspension changed.
     TenantChanged(coord_core::TenantId),
     /// A pending device sign-in was decided.
     SignInDecided(String),
-    /// Notifications may have been lost (the LISTEN connection dropped and
-    /// came back): every cached tenant and every live stream must resync from
-    /// the store. Raised locally only; never carried in a NOTIFY payload.
+    /// Notifications may be lost because the LISTEN connection reconnected.
+    /// All cached tenants and live streams must resync from the store.
+    /// Raised locally only, never sent in a NOTIFY payload.
     Resync,
 }
 
@@ -55,7 +55,7 @@ pub(crate) type SignInRow = (String, String, String, Option<String>, Option<Stri
 pub(crate) fn sign_in_from_row(row: SignInRow) -> Option<coord_core::PendingSignIn> {
     let (machine_key, hostname, os, decision, requester_ip, requested_at, expires_at) = row;
     let machine_key: [u8; 32] = hex::decode(machine_key).ok()?.try_into().ok()?;
-    // Rows from before requested_at existed: started one TTL before expiry
+    // Legacy rows lack requested_at: assume the request started one TTL before expiry
     let started = requested_at.unwrap_or(expires_at - coord_core::signin::SIGN_IN_TTL_SECS);
     Some(coord_core::PendingSignIn {
         machine_key,
@@ -75,25 +75,22 @@ pub(crate) fn generate_auth_key() -> String {
     format!("tskey-auth-{}", hex::encode(buf))
 }
 
-/// How a pre-auth key is stored and looked up: SHA-256 of the key, lowercase
-/// hex. The key itself is never stored (ADR-0035 hardening).
+/// SHA-256 of a pre-auth key as lowercase hex, used to store and look it up.
+/// The store never keeps the key itself (ADR-0035).
 pub fn hash_preauth_key(key: &str) -> String {
     use sha2::{Digest, Sha256};
     hex::encode(Sha256::digest(key.as_bytes()))
 }
 
-/// A short, non-secret tag of a presented key for logs (first 8 hex digits of
-/// its hash): lets an operator correlate attempts without logging the key.
+/// A non-secret log tag for a key: the first 8 hex digits of its hash.
+/// It lets an operator correlate attempts without logging the key.
 pub fn preauth_key_log_id(key: &str) -> String {
     hash_preauth_key(key)[..8].to_string()
 }
 
-/// A device name whose DNS label no other node of the tenant uses (MagicDNS names must not collide).
-///
-/// `others` are the other nodes of the tenant as (node id, hostname). A taken
-/// label gets the lowest free `-N` suffix. Only the gateway node may use
-/// [`coord_core::GATEWAY_HOSTNAME`]. A name without a usable label is kept: the
-/// netmap shows it as `node-<id>`, which is unique.
+/// A device name whose DNS label no other tenant node uses, so MagicDNS names do not collide.
+/// A taken label gets the lowest free `-N` suffix. Only the gateway may use [`coord_core::GATEWAY_HOSTNAME`].
+/// A name without a usable label stays as is: the netmap shows it as the unique `node-<id>`.
 pub(crate) fn unique_hostname<'a, I>(desired: &str, is_gateway: bool, others: I) -> String
 where
     I: IntoIterator<Item = (i64, &'a str)>,
@@ -122,8 +119,8 @@ where
     unreachable!("a free suffix exists among taken.len() + 1 candidates")
 }
 
-/// Checks that `parent` may become the parent of `tenant`. The hierarchy has one level:
-/// a parent is a root tenant, and a tenant with children cannot get a parent.
+/// Checks that `parent` may become the parent of `tenant`.
+/// The hierarchy has one level: a parent is a root tenant, and a tenant with children gets no parent.
 ///
 /// # Errors
 /// `TenantNotFound(parent)` for a missing parent; `Protocol` for itself, a descendant or a second level.
@@ -157,9 +154,9 @@ pub(crate) fn generate_random_id() -> String {
     hex::encode(buf)
 }
 
-/// First and last addresses of the node IPv4 range (CGNAT 100.64.0.0/10). The
-/// range is instance-global: tenant `ipv4_prefix` is informational today and
-/// `coord_nodes.ipv4` is UNIQUE across all tenants.
+/// First and last node IPv4 addresses (CGNAT 100.64.0.0/10).
+/// The range is instance-global: `coord_nodes.ipv4` is UNIQUE across all tenants.
+/// Tenant `ipv4_prefix` is informational only.
 const IPV4_BASE: u32 = u32::from_be_bytes([100, 64, 0, 0]);
 const IPV4_LAST: u32 = u32::from_be_bytes([100, 127, 255, 255]);
 
@@ -171,10 +168,8 @@ fn is_reserved_ipv4(ip: u32) -> bool {
         || (ip & 0xFFFF_FE00) == u32::from_be_bytes([100, 115, 92, 0])
 }
 
-/// Lowest node address (starting at 100.64.0.1) that no live node holds.
-/// Every backend calls this while holding its allocation lock, so freed
-/// addresses (deleted / swept ephemeral nodes) are reused and all backends
-/// allocate identically.
+/// Lowest node address from 100.64.0.1 up that no live node holds.
+/// Callers hold their allocation lock. Freed addresses get reused, and all backends allocate identically.
 pub(crate) fn lowest_free_ipv4<I>(used: I) -> Result<std::net::Ipv4Addr, coord_core::CoordError>
 where
     I: IntoIterator<Item = std::net::Ipv4Addr>,

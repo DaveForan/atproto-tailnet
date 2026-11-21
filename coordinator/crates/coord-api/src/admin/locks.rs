@@ -85,7 +85,7 @@ async fn owner_lock_json(state: &CoordinatorState, tenant_id: TenantId, owner: &
     };
     serde_json::json!({
         "locked": read.is_locked(),
-        // A stored lock that cannot be read: it refuses every machine until it is set again or removed.
+        // An unreadable stored lock refuses every machine until it is set again or removed.
         "malformed": *read == coord_core::LockRead::Malformed,
         "node_ids": allowed,
         "allow_one_until": lock.and_then(|l| l.allow_one_until),
@@ -144,8 +144,8 @@ pub async fn set_owner_lock(
             return bad_request("max_machines must be at least the number of kept devices and at most 64");
         }
     let max_machines = body.max_machines;
-    // One atomic step: the refused history kept is the one stored now, not a
-    // copy read earlier that a concurrent registration may have extended.
+    // One atomic step keeps the refused history stored now.
+    // An earlier copy can miss entries from a concurrent registration.
     let written = state
         .store
         .update_owner_lock(tenant_id, &owner, move |read| {
@@ -159,8 +159,7 @@ pub async fn set_owner_lock(
         Err(e) => return lock_store_error(e),
     };
     let mut removed = 0;
-    // Remove every node of the owner whose machine is not in the lock — listed
-    // again now, so a machine that registered meanwhile is not left behind.
+    // Remove the owner's nodes outside the lock. List them again now to catch a machine that registered meanwhile.
     for n in state.store.list_tenant_nodes(tenant_id).await.iter().filter(|n| {
         n.owner.as_deref() == Some(owner.as_str()) && !lock.allows(&hex::encode(&n.machine_key))
     }) {

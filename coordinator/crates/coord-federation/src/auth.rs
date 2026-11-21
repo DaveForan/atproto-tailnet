@@ -1,8 +1,5 @@
 //! Message authentication primitives for CFP over HTTP (ADR-0016).
-//!
-//! Ported from `src/federation/auth.ts` (105 lines).
-//! Canonical signing payloads, freshness checks, imported-route filtering,
-//! and route announcement builders.
+//! Signing payloads, freshness checks, imported-route filtering, and announcement builders.
 
 use std::collections::HashSet;
 use std::future::Future;
@@ -16,24 +13,19 @@ use coord_core::CoordError;
 use crate::canonical::canonicalize;
 use crate::protocol::RouteAnnouncement;
 
-// ── Constants ──────────────────────────────────────────────────────────────────
 
 /// Reject signed messages whose timestamp is further than this from now.
 pub const MAX_MESSAGE_SKEW: Duration = Duration::from_secs(300); // 5 minutes
 
-// ── Sign function type ─────────────────────────────────────────────────────────
 
-/// Boxed async signing function: takes a payload string and returns a signature.
+/// Boxed async signing function: payload in, signature out.
 pub type SignFn =
     Box<dyn Fn(&str) -> Pin<Box<dyn Future<Output = Result<String, CoordError>> + Send>> + Send + Sync>;
 
-// ── Functions ──────────────────────────────────────────────────────────────────
 
-/// Canonical signing payload of a CFP message given as raw JSON: RFC 8785
-/// (JCS) canonical form of the message with its `signature` member removed.
-/// Byte-identical to the TypeScript service's `signedPayload`; pinned by
-/// `tests/fixtures/cfp_vectors.json`. Prefer verifying over the received
-/// JSON value — it covers members this crate does not model.
+/// Canonical signing payload of raw CFP JSON: RFC 8785 JCS without the `signature` member.
+/// Byte-identical to the TS `signedPayload`, pinned by `tests/fixtures/cfp_vectors.json`.
+/// Verify over the received JSON, since it covers members this crate does not model.
 pub fn signed_payload(message: &serde_json::Value) -> Result<String, CoordError> {
     let mut clone = message.clone();
     if let Some(obj) = clone.as_object_mut() {
@@ -42,7 +34,7 @@ pub fn signed_payload(message: &serde_json::Value) -> Result<String, CoordError>
     canonicalize(&clone).map_err(|e| CoordError::Protocol(e.to_string()))
 }
 
-/// Sign a message that has no `signature` yet and return it with one appended.
+/// Signs a message that has no `signature` yet and returns it with one.
 pub async fn sign_message(
     message: &serde_json::Value,
     sign_fn: &SignFn,
@@ -56,11 +48,8 @@ pub async fn sign_message(
     Ok(result)
 }
 
-/// Verify that `message.signature` is `did`'s signature over the rest of the message.
-///
-/// This is a high-level check. The actual cryptographic verification depends on
-/// the provided `verify_fn` callback (matching the `HandshakeCallbacks::verify_signature`
-/// contract).
+/// Verifies that `message.signature` is `did`'s signature over the rest of the message.
+/// `verify_fn` does the cryptographic check, per the `HandshakeCallbacks::verify_signature` contract.
 pub async fn verify_message_with_callback<F, Fut>(
     did: &str,
     message: &serde_json::Value,
@@ -80,16 +69,11 @@ where
     verify_fn(did, &payload, signature).await
 }
 
-/// The exact bytes signed for a CFP message: the message serialized to a JSON
-/// object, its `signature` field removed and its wire `type` tag inserted.
-/// Signers and verifiers MUST both use this function — rebuilding the payload
-/// by hand (e.g. a `json!` literal on one side, the struct on the other) is how
-/// HELLO ended up unverifiable. The object is canonicalized with RFC 8785 (JCS),
-/// so the bytes equal what the TypeScript service signs/verifies for the same
-/// message (see `tests/cfp_vectors.rs`). Caveat for verification: a struct
-/// round-trip drops members this crate does not model (and empty optional
-/// arrays it skips), so a peer message carrying such members only verifies via
-/// [`signed_payload`] over the received JSON value.
+/// The exact bytes signed for a CFP message: JCS of the object without `signature`, plus the wire `type` tag.
+/// Signers and verifiers MUST both use this function. A hand-built payload breaks verification.
+/// The bytes equal what the TS service signs for the same message (see `src/cfp_vectors.rs`).
+/// A struct round-trip drops unmodelled members and skipped empty arrays.
+/// Such peer messages verify only via [`signed_payload`] over the received JSON.
 pub fn message_signing_payload<T: crate::protocol::CfpSigned>(
     message: &T,
 ) -> Result<String, CoordError> {
@@ -106,13 +90,13 @@ pub fn message_signing_payload<T: crate::protocol::CfpSigned>(
     canonicalize(&value).map_err(|e| CoordError::Protocol(e.to_string()))
 }
 
-/// Type tag of the challenge-response signing payload. Never a CFP message
-/// type, so the signature cannot be replayed as any CFP message.
+/// Type tag of the challenge-response signing payload.
+/// It is never a CFP message type, so the signature cannot replay as a CFP message.
 pub const CHALLENGE_RESPONSE_TYPE: &str = "CFP_CHALLENGE_RESPONSE";
 
-/// What the initiator signs to answer a CHALLENGE: a typed wrapper binding the
-/// nonce to signer and audience — never the peer-chosen nonce verbatim, which
-/// would turn us into a signing oracle for arbitrary payloads.
+/// What the initiator signs to answer a CHALLENGE: the nonce bound to signer and audience.
+/// # Security
+/// Signing the peer-chosen nonce verbatim would make us a signing oracle.
 pub fn challenge_response_payload(nonce: &str, signer_did: &str, audience_did: &str) -> String {
     jcs_of_strings(&[
         ("type", CHALLENGE_RESPONSE_TYPE),
@@ -122,8 +106,7 @@ pub fn challenge_response_payload(nonce: &str, signer_did: &str, audience_did: &
     ])
 }
 
-/// Signing payload of a route announcement's `originSignature`: JCS of
-/// `{prefix, originDid}` (same bytes as the TypeScript `routeOriginPayload`).
+/// Signing payload of `originSignature`: JCS of `{prefix, originDid}`, as in the TS `routeOriginPayload`.
 pub fn route_origin_payload(prefix: &str, origin_did: &str) -> String {
     jcs_of_strings(&[("prefix", prefix), ("originDid", origin_did)])
 }
@@ -137,9 +120,8 @@ fn jcs_of_strings(members: &[(&str, &str)]) -> String {
     canonicalize(&serde_json::Value::Object(obj)).unwrap_or_default()
 }
 
-/// Challenge nonces are fixed-length random tokens: 32 bytes as 64 lowercase
-/// hex chars (this crate) or 43 base64url chars (TypeScript service). Anything
-/// else is refused before it is signed or looked up.
+/// Accepts only 32-byte nonces: 64 lowercase hex chars (Rust) or 43 base64url chars (TS).
+/// It refuses anything else before signing or lookup.
 pub fn is_valid_challenge_nonce(nonce: &str) -> bool {
     let hex = nonce.len() == 64 && nonce.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'));
     let b64url = nonce.len() == 43
@@ -149,7 +131,7 @@ pub fn is_valid_challenge_nonce(nonce: &str) -> bool {
     hex || b64url
 }
 
-/// Check whether a timestamp string is within `MAX_MESSAGE_SKEW` of now.
+/// Checks whether a timestamp is within `MAX_MESSAGE_SKEW` of now.
 pub fn is_fresh(timestamp: &str) -> bool {
     let parsed = match timestamp.parse::<chrono::DateTime<Utc>>() {
         Ok(dt) => dt,
@@ -160,9 +142,8 @@ pub fn is_fresh(timestamp: &str) -> bool {
     diff <= chrono::Duration::from_std(MAX_MESSAGE_SKEW).unwrap_or(chrono::Duration::seconds(300))
 }
 
-/// Filter route announcements: only accept prefixes that fall within the agreed
-/// CIDRs AND are originated by the peer DID. A peer must not attract traffic
-/// it was not granted.
+/// Keeps only prefixes within the agreed CIDRs that the peer DID originates.
+/// A peer must not attract traffic it was not granted.
 pub fn filter_imported_prefixes(
     announcements: &[RouteAnnouncement],
     agreed_cidrs: &[String],
@@ -202,7 +183,6 @@ pub async fn build_announcements(
     Ok(result)
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -228,7 +208,7 @@ mod tests {
 
     #[test]
     fn is_fresh_within_skew() {
-        // 4 minutes ago should still be fresh (< 5 min skew).
+        // 4 minutes ago is inside the 5-minute skew.
         let recent = (Utc::now() - chrono::Duration::seconds(240)).to_rfc3339();
         assert!(is_fresh(&recent));
     }
@@ -262,7 +242,7 @@ mod tests {
                 preference: 100,
                 origin_signature: "sig".into(),
             },
-            // Different origin -- should be filtered out.
+            // Different origin: filtered out.
             RouteAnnouncement {
                 prefix: "10.0.1.0/24".into(),
                 origin_did: "did:web:other".into(),
@@ -271,7 +251,7 @@ mod tests {
                 preference: 100,
                 origin_signature: "sig".into(),
             },
-            // Not in agreed CIDRs -- should be filtered out.
+            // Outside the agreed CIDRs: filtered out.
             RouteAnnouncement {
                 prefix: "192.168.0.0/16".into(),
                 origin_did: "did:web:peer".into(),

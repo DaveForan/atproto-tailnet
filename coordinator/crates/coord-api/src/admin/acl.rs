@@ -29,7 +29,6 @@ pub async fn set_acl(
         }
     };
 
-    // Verify tenant exists before storing a policy
     if state.store.get_tenant(tenant_id).await.is_none() {
         return (
             StatusCode::NOT_FOUND,
@@ -51,7 +50,6 @@ pub async fn set_acl(
         .into_response()
 }
 
-// ── ACL read/write by tenant path ──
 
 pub async fn get_acl(
     State(state): State<Arc<CoordinatorState>>,
@@ -65,7 +63,7 @@ pub async fn get_acl(
     match state.caches.acl.get_policy(tenant_id) {
         Some(policy) => Json(serde_json::json!(policy)).into_response(),
         None => {
-            // No policy set = allow-all default
+            // No stored policy means the allow-all default.
             Json(serde_json::json!({
                 "default_deny": false,
                 "rules": [{"src": "*", "dst": "*", "ports": ["All"]}]
@@ -83,7 +81,6 @@ pub async fn set_acl_for_tenant(
         Ok(uuid) => TenantId::new(uuid),
         Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "invalid tenant_id"}))).into_response(),
     };
-    // Verify tenant exists before storing a policy
     if state.store.get_tenant(tenant_id).await.is_none() {
         return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "tenant not found"}))).into_response();
     }

@@ -1,27 +1,20 @@
-//! Federation broker — Phase 3
-//!
-//! Ports the TypeScript federation system (CFP protocol, session lifecycle,
-//! route engine, abuse protection, scoping, handshake, auth, transport,
-//! discovery) into the Rust coordinator.
+//! Federation broker for the Collective Federation Protocol (CFP).
 
-// Tier 1: core types and logic
 pub mod abuse;
 pub mod protocol;
 pub mod route_engine;
 pub mod scoping;
 pub mod session;
 
-// Tier 2: I/O adapters and handshake state machine
 pub mod auth;
 pub mod discovery;
 pub mod handshake;
 pub mod transport;
 
-// Signing: RFC 8785 canonicalization + detached-JWS Ed25519 (TS-compatible)
+// RFC 8785 canonicalization and detached-JWS Ed25519, byte-compatible with the TS service.
 pub mod canonical;
 pub mod signing;
 
-// Tier 3: broker orchestration, federation store, inbound handlers
 pub mod broker;
 pub mod federation_store_memory;
 pub mod inbound;
@@ -29,7 +22,6 @@ pub mod pg_store;
 pub mod sqlite_store;
 pub mod store;
 
-// Re-export types used by coord-api and coord-server.
 pub use broker::{BrokerConfig, BrokerService};
 pub use federation_store_memory::FederationMemoryStore;
 pub use handshake::HandshakeCallbacks;

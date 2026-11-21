@@ -9,16 +9,16 @@ struct Config {
     listen: String,
     domain: String,
     derp_map_file: Option<String>,
-    /// Public hostname of the built-in DERP relay (e.g. "derp.example.com").
+    /// Public hostname of the built-in DERP relay, e.g. "derp.example.com".
     /// When set, it is the default DERP region and the STUN server starts.
     derp_hostname: Option<String>,
-    /// UDP address of the STUN server (default "0.0.0.0:3478"; "off" disables).
+    /// UDP address of the STUN server. Default "0.0.0.0:3478"; "off" disables it.
     stun_listen: Option<String>,
-    /// Required — one of: "sqlite", "postgres", "memory"
+    /// Required: "sqlite", "postgres" or "memory".
     store_backend: Option<String>,
-    /// Path to SQLite database file (required when store_backend = "sqlite")
+    /// SQLite database file, used when store_backend = "sqlite".
     sqlite_path: Option<String>,
-    /// PostgreSQL connection URL (required when store_backend = "postgres")
+    /// PostgreSQL connection URL, required when store_backend = "postgres".
     database_url: Option<String>,
 }
 
@@ -55,7 +55,7 @@ async fn main() -> anyhow::Result<()> {
         None => Config::default(),
     };
 
-    // Env vars override config file
+    // Env vars override the config file.
     let listen_addr: SocketAddr = std::env::var("COORD_LISTEN")
         .unwrap_or(config.listen)
         .parse()?;
@@ -72,27 +72,27 @@ async fn main() -> anyhow::Result<()> {
     let control_key_path = std::env::var("COORD_CONTROL_KEY_PATH").ok();
     let mut coordinator = coord_api::CoordinatorState::builder(control_key);
 
-    // Which parts this process serves: all (default), control, or relay (ADR-0034)
+    // Parts this process serves: all (default), control, or relay (ADR-0034).
     let role: coord_api::Role = std::env::var("COORD_ROLE")
         .unwrap_or_default()
         .parse()
         .map_err(|e: String| anyhow::anyhow!("invalid COORD_ROLE: {e}"))?;
     coordinator = coordinator.with_role(role);
-    // The TS service is the federation endpoint. The Rust CFP endpoints need
-    // handshake callbacks, so enabling them here fails before any database work.
+    // The TS service is the federation endpoint. The Rust CFP endpoints need handshake callbacks.
+    // So enabling them here fails before any database work.
     let federation_enabled = std::env::var("COORD_FEDERATION_ENABLED")
         .map(|v| v == "true" || v == "1")
         .unwrap_or(false);
     coordinator = coordinator.with_federation_enabled(federation_enabled);
     coordinator.validate().map_err(|e| anyhow::anyhow!("COORD_FEDERATION_ENABLED: {e}"))?;
 
-    // Built-in DERP relay (ADR-0027): a persistent key keeps the relay's
-    // identity stable across restarts. By default it sits next to the control key.
+    // Built-in DERP relay (ADR-0027): a persistent key keeps its identity across restarts.
+    // The key file defaults to the control key's folder.
     let relay_key_path = std::env::var("COORD_DERP_KEY_PATH").ok().or_else(|| {
         let dir = std::path::Path::new(control_key_path.as_deref()?).parent()?;
         Some(dir.join("derp.key").to_string_lossy().into_owned())
     });
-    // A control-only process has no relay, and its key folder may be read-only
+    // A control-only process has no relay, and its key folder may be read-only.
     if role.serves_relay()
         && let Some(secret) = load_or_create_secret(relay_key_path, "DERP relay key")? {
             coordinator = coordinator.with_relay_secret(secret);
@@ -115,8 +115,8 @@ async fn main() -> anyhow::Result<()> {
         .ok()
         .or(config.derp_map_file);
 
-    // Each relay process has its own DERP region. Region 1 is the default;
-    // further relay replicas set COORD_DERP_REGION_ID (2-899).
+    // Each relay process has its own DERP region. Region 1 is the default.
+    // Other relay replicas set COORD_DERP_REGION_ID (2-899).
     let region_id: i32 = match std::env::var("COORD_DERP_REGION_ID") {
         Ok(v) => v.parse().map_err(|e| anyhow::anyhow!("invalid COORD_DERP_REGION_ID {v:?}: {e}"))?,
         Err(_) => 1,
@@ -142,8 +142,7 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    // An explicit map file replaces the default map (it may list the built-in
-    // relay's hostname itself, next to other regions).
+    // An explicit map file replaces the default map. It may list the built-in relay too.
     if let Some(path) = derp_path {
         let contents = std::fs::read_to_string(&path)?;
         let derp_map: coord_proto::map::DerpMap = serde_json::from_str(&contents)?;
@@ -155,7 +154,7 @@ async fn main() -> anyhow::Result<()> {
         coordinator = coordinator.with_derp_map(derp_map);
     }
 
-    // Store backend selection — must be explicit
+    // The store backend must be explicit.
     let store_backend = std::env::var("COORD_STORE_BACKEND")
         .ok()
         .or(config.store_backend)
@@ -179,9 +178,8 @@ async fn main() -> anyhow::Result<()> {
                 })?;
 
             let pool = coord_store::create_pool(&database_url).await?;
-            // Relays may use a least-privilege role (scripts/relay-db-role.sql)
-            // that cannot create tables: they only check that the schema is
-            // current. Control processes apply the migrations.
+            // Relays may use a least-privilege role (scripts/relay-db-role.sql) that cannot create tables.
+            // So relays only verify the schema. Control processes apply the migrations.
             let pg_store = if role == coord_api::Role::Relay {
                 let s = coord_store::PgStore::new_verified(pool.clone())
                     .await
@@ -234,9 +232,8 @@ async fn main() -> anyhow::Result<()> {
     }
     coordinator = coordinator.with_admin_api_key(admin_key);
 
-    // Interactive device sign-in (ADR-0032): where devices without a key are sent
-    // Gateway (ADR-0029): HTTPS for named services inside tailnets. It needs
-    // the wildcard certificate of the base domain and the relay of this process.
+    // Gateway (ADR-0029): HTTPS for named services inside tailnets.
+    // It needs the base domain's wildcard certificate and this process's relay.
     let gateway_cert = std::env::var("COORD_GATEWAY_CERT").ok().filter(|p| !p.is_empty());
     let gateway_key = std::env::var("COORD_GATEWAY_KEY").ok().filter(|p| !p.is_empty());
     if role.serves_relay() && (gateway_cert.is_none() || gateway_key.is_none()) {
@@ -254,9 +251,8 @@ async fn main() -> anyhow::Result<()> {
         });
         let secret = load_or_create_secret(secret_path, "gateway secret")?
             .ok_or_else(|| anyhow::anyhow!("the gateway needs COORD_GATEWAY_SECRET_PATH or COORD_CONTROL_KEY_PATH for its secret"))?;
-        // The certificate usually arrives after the first start (Caddy obtains
-        // it, then a helper copies it). Start without it and turn the gateway
-        // on when it appears; don't hold up start-up waiting for it.
+        // Caddy usually obtains the certificate after the first start, and a helper copies it.
+        // Start without it and enable the gateway when it appears.
         match coord_gateway::proxy::Certificate::from_files(&cert, &key) {
             Ok(c) => {
                 let certificate = Arc::new(c);
@@ -271,6 +267,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Interactive device sign-in (ADR-0032): where devices without a key are sent.
     let device_auth_url = std::env::var("COORD_DEVICE_AUTH_URL").ok().filter(|u| !u.is_empty());
     match &device_auth_url {
         Some(url) => tracing::info!(url = %url, "interactive device sign-in enabled"),
@@ -278,8 +275,8 @@ async fn main() -> anyhow::Result<()> {
     }
     coordinator = coordinator.with_device_auth_url(device_auth_url);
 
-    // Behind Caddy every connection comes from the proxy: X-Forwarded-For is
-    // believed only from these addresses (CIDRs, comma-separated; default none).
+    // Behind Caddy every connection comes from the proxy.
+    // Only these CIDRs (comma-separated, default none) may set X-Forwarded-For.
     let trusted_proxies = coord_api::client_ip::TrustedProxies::parse(
         &std::env::var("COORD_TRUSTED_PROXIES").unwrap_or_default(),
     )
@@ -298,15 +295,15 @@ async fn main() -> anyhow::Result<()> {
         .with_max_noise_connections_per_ip(max_noise_per_ip);
 
     let state = Arc::new(coordinator.build());
-    // Per-tenant configuration lives in the store; other replicas report changes (ADR-0034)
+    // Per-tenant configuration lives in the store. Other replicas report changes (ADR-0034).
     if role.serves_control() {
         state.load_config().await;
         state.spawn_replica_listener();
     }
-    // Relay discovery: report this relay, and build the DERP map from the live relays
+    // Relay discovery: report this relay and build the DERP map from the live relays.
     state.refresh_relays().await;
     state.spawn_relay_tasks();
-    // Tailnets that already have HTTPS services get their gateway back
+    // Tailnets that already have HTTPS services get their gateway back.
     state.start_gateways().await;
     if let Some((secret, cert, key)) = pending_gateway {
         let state = state.clone();
@@ -336,7 +333,6 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if federation_enabled && role.serves_control() {
-        // Spawn the federation broker background loop.
         let broker = state.federation_broker().clone();
         let tick_interval = broker.config().tick_interval;
         tokio::spawn(async move {
@@ -377,7 +373,7 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!(%listen_addr, domain = %config.domain, "listening");
     let listener = tokio::net::TcpListener::bind(listen_addr).await?;
-    // Peer addresses feed the client address of device sign-ins (ADR-0032)
+    // Peer addresses feed the client address of device sign-ins (ADR-0032).
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
 
     Ok(())
@@ -386,8 +382,6 @@ async fn main() -> anyhow::Result<()> {
 /// Minimum COORD_ADMIN_KEY length (32 chars ~ 128+ bits for a random key).
 const MIN_ADMIN_KEY_LEN: usize = 32;
 
-/// Refuse to start with a guessable admin key. Unset keeps the admin API
-/// disabled (503); set-but-weak is a hard error rather than a silent downgrade.
 /// A positive count from env `name`, or `default` when unset or empty.
 fn env_count(name: &str, default: usize) -> anyhow::Result<usize> {
     parse_count(name, std::env::var(name).ok().as_deref(), default)
@@ -403,6 +397,8 @@ fn parse_count(name: &str, value: Option<&str>, default: usize) -> anyhow::Resul
     }
 }
 
+/// Refuse a guessable admin key. Unset disables the admin API (503).
+/// A weak key is a hard error, not a silent downgrade.
 fn validate_admin_key(key: Option<String>) -> anyhow::Result<Option<String>> {
     let Some(key) = key else { return Ok(None) };
     let lower = key.to_ascii_lowercase();
@@ -435,8 +431,8 @@ fn load_or_create_control_key(path: Option<String>) -> anyhow::Result<coord_core
     }
 }
 
-/// Read a 32-byte hex secret from `path`, creating it (mode 0600) when the
-/// file does not exist. `None` when no path is configured.
+/// Read a 32-byte hex secret from `path`, or create it with mode 0600.
+/// `None` when no path is configured.
 fn load_or_create_secret(path: Option<String>, what: &str) -> anyhow::Result<Option<[u8; 32]>> {
     let Some(path) = path else { return Ok(None) };
     match std::fs::read_to_string(&path) {

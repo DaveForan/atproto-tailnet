@@ -1,15 +1,6 @@
-//! The WireGuard side of the gateway in one tailnet (ADR-0029).
-//!
-//! The gateway is a WireGuard peer of the devices of the tailnet. Its packets
-//! travel through the built-in relay (ADR-0027), which it uses as a client in
-//! the same process. Every tailnet device already connects to that relay, so
-//! the gateway needs no public UDP port and works for devices behind any NAT.
-//!
-//! Each device has its own WireGuard session. The relay names the sender of a
-//! packet by its node key, which is also its WireGuard key, so a packet is
-//! given to the session of its sender. A decrypted packet is accepted only
-//! when its source address is the tailnet address of that device: a device
-//! cannot send as another device.
+//! The gateway's WireGuard side in one tailnet (ADR-0029).
+//! Packets use the in-process relay (ADR-0027), so the gateway needs no public UDP port.
+//! Security: a decrypted packet must carry its sender's tailnet address, so no device can spoof another.
 
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
@@ -26,38 +17,30 @@ use tracing::debug;
 
 use crate::netstack::NetStack;
 
-/// `TS💬` — a disco (path discovery) packet. The gateway does not answer
-/// these: devices then keep using the relay to reach it.
+/// `TS💬` disco packet prefix. The gateway ignores disco, so devices keep using the relay.
 const DISCO_MAGIC: &[u8; 6] = b"TS\xf0\x9f\x92\xac";
 /// WireGuard adds at most 32 bytes to a data packet; handshakes are 148.
 const WG_BUFFER: usize = 2048;
 const TIMER_TICK: Duration = Duration::from_millis(250);
-/// How long an answer of the directory is used before it is asked again.
-/// A directory with [`Devices::changes`] also clears the cache at once when a
-/// device changes; this is the upper bound when a notice is lost (for
-/// example one from another replica).
+/// Lifetime of a cached directory answer.
+/// [`Devices::changes`] clears the cache at once; this bound covers lost notices, for example from another replica.
 pub const DIRECTORY_TTL: Duration = Duration::from_secs(10);
 /// A session with no traffic for this long is forgotten.
 const IDLE_SESSION: Duration = Duration::from_secs(10 * 60);
-/// Sessions of one tailnet at once. A session belongs to one node key, so a
-/// device has at most one: the per-device limit of connections is in the
-/// TCP/IP stack ([`crate::netstack::MAX_CONNECTIONS_PER_PEER`]).
+/// Sessions per tailnet. Each node key has at most one session.
+/// The per-device connection limit is [`crate::netstack::MAX_CONNECTIONS_PER_PEER`].
 pub const MAX_SESSIONS: usize = 4096;
 
-/// What the gateway must know about the devices of its tailnet. The
-/// coordinator answers from its store.
+/// The gateway's directory of its tailnet's devices. The coordinator answers from its store.
 #[async_trait::async_trait]
 pub trait Devices: Send + Sync + 'static {
-    /// The tailnet address of the device with this node key, when it is a
-    /// device of this tailnet.
+    /// The tailnet address for this node key, if the key is a device of this tailnet.
     async fn addr_of(&self, node_key: &[u8; 32]) -> Option<Ipv4Addr>;
     /// The node key of the device with this tailnet address.
     async fn key_of(&self, addr: Ipv4Addr) -> Option<[u8; 32]>;
-    /// Woken when a device of the tailnet was removed, got another key or
-    /// address, or a new device joined. The gateway then forgets every
-    /// cached answer, so a removed device is refused and a reused address
-    /// reaches its new device at once. `None`: answers are kept for
-    /// [`DIRECTORY_TTL`].
+    /// Fires when a device joins, leaves, or changes key or address.
+    /// The gateway then drops cached answers, so the change applies at once.
+    /// `None` keeps answers for [`DIRECTORY_TTL`].
     fn changes(&self) -> Option<Arc<Notify>> {
         None
     }
@@ -74,9 +57,8 @@ struct Cached<T> {
     at: Instant,
 }
 
-/// The gateway's presence in one tailnet: a relay client, WireGuard sessions
-/// and a TCP/IP stack. It stops when the returned stack handle (and every
-/// clone of it) is dropped.
+/// The gateway in one tailnet: a relay client, WireGuard sessions, and a TCP/IP stack.
+/// It stops when every clone of the returned stack handle is dropped.
 pub struct Tailnet {
     secret: StaticSecret,
     relay: LocalClient,
@@ -89,9 +71,8 @@ pub struct Tailnet {
 }
 
 impl Tailnet {
-    /// Join a tailnet. `secret` is the gateway's node key there, `addr` its
-    /// tailnet address, and `relay` its relay client (attached with the
-    /// public half of `secret`).
+    /// Joins a tailnet with node key `secret` and tailnet address `addr`.
+    /// `relay` must be attached with the public half of `secret`.
     pub fn spawn(secret: [u8; 32], addr: Ipv4Addr, relay: LocalClient, devices: Arc<dyn Devices>) -> NetStack {
         let (out, out_rx) = mpsc::channel(1024);
         let stack = NetStack::spawn(addr, out);
@@ -136,9 +117,8 @@ impl Tailnet {
         }
     }
 
-    /// Drop every cached answer of the directory. Sessions stay: each packet
-    /// asks the directory for its sender's address again, and a key that is
-    /// no longer a device gets nothing through.
+    /// Drops all cached directory answers.
+    /// Sessions stay, because each packet re-checks its sender with the directory.
     fn forget_directory(&mut self) {
         self.by_key.clear();
         self.by_addr.clear();
@@ -168,7 +148,7 @@ impl Tailnet {
         value
     }
 
-    /// A packet from the relay: WireGuard from a device of this tailnet.
+    /// Handles a WireGuard packet that a device sent through the relay.
     async fn handle_device_packet(&mut self, from: [u8; 32], data: &[u8], buf: &mut [u8]) {
         if data.starts_with(DISCO_MAGIC) {
             return;
@@ -183,7 +163,7 @@ impl Tailnet {
             match session.tunn.decapsulate(None, input, buf) {
                 TunnResult::WriteToNetwork(reply) => {
                     self.relay.send(from, Bytes::copy_from_slice(reply));
-                    // Ask for packets that waited for the handshake
+                    // Empty input flushes packets that waited for the handshake.
                     input = &[];
                     continue;
                 }
@@ -195,7 +175,7 @@ impl Tailnet {
                         debug!(%source, expected = %session.addr, "dropped a packet with a source address that is not the sender's");
                     }
                 }
-                // No IPv6 inside tailnets yet
+                // Tailnets carry no IPv6.
                 TunnResult::WriteToTunnelV6(..) | TunnResult::Done => {}
                 TunnResult::Err(e) => debug!(error = ?e, "WireGuard packet refused"),
             }
@@ -203,7 +183,7 @@ impl Tailnet {
         }
     }
 
-    /// An IP packet from our stack: encrypt it for the device it is for.
+    /// Encrypts an IP packet from the stack for its destination device.
     async fn send_to_device(&mut self, packet: &[u8], buf: &mut [u8]) {
         if packet.len() < 20 || packet[0] >> 4 != 4 {
             return;
@@ -215,7 +195,7 @@ impl Tailnet {
         let Some(session) = session(&mut self.sessions, &self.secret, &mut self.next_index, key, dst) else { return };
         session.last_used = Instant::now();
         match session.tunn.encapsulate(packet, buf) {
-            // Either the encrypted packet, or a handshake (the packet then waits in the session)
+            // The encrypted packet, or a handshake while the packet waits in the session.
             TunnResult::WriteToNetwork(data) => self.relay.send(key, Bytes::copy_from_slice(data)),
             TunnResult::Err(e) => debug!(error = ?e, "could not encrypt a packet"),
             _ => {}
@@ -242,7 +222,7 @@ impl Tailnet {
     }
 }
 
-/// The session with a device, made when it is the first packet.
+/// Returns the session with a device, and creates it on the first packet.
 fn session<'a>(
     sessions: &'a mut HashMap<[u8; 32], Session>,
     secret: &StaticSecret,
@@ -302,7 +282,7 @@ mod tests {
         let relay = Arc::new(DerpServer::new([9; 32], Arc::new(AllowAll), DerpConfig::default()));
         let (gw_secret, dev_secret) = ([11u8; 32], [22u8; 32]);
         let devices = Arc::new(Fixed(vec![(public_key(&gw_secret), GATEWAY), (public_key(&dev_secret), DEVICE)]));
-        // The "device" is a second instance of the same code: WireGuard is symmetric
+        // The "device" is a second instance of the same code, because WireGuard is symmetric.
         let gateway = Tailnet::spawn(gw_secret, GATEWAY, relay.attach_local(public_key(&gw_secret), scope()), devices.clone());
         let device = Tailnet::spawn(dev_secret, DEVICE, relay.attach_local(public_key(&dev_secret), scope()), devices);
 
@@ -384,19 +364,17 @@ mod tests {
         let mut b = [0u8; 1];
         s.read_exact(&mut b).await.unwrap();
 
-        // The device is removed and its address given to a new device, well
-        // within the cache's lifetime
+        // The device is removed and a new device gets its address, well within the cache TTL.
         *directory.0.lock().unwrap() = vec![(public_key(&gw_secret), GATEWAY), (public_key(&new_secret), DEVICE)];
         changed.notify_one();
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        // The old device's packets no longer get through
         let attempt = tokio::time::timeout(Duration::from_secs(2), old.connect(SocketAddrV4::new(GATEWAY, 443))).await;
         assert!(attempt.is_err() || attempt.unwrap().is_err(), "a removed device must not reach the gateway");
         // The new device at the same address does, both ways
         let new = Tailnet::spawn(new_secret, DEVICE, relay.attach_local(public_key(&new_secret), scope()), both(new_secret));
-        // Both emulated stacks pick the same first local port, and the gateway
-        // still holds the old device's connection on it: use the next port
+        // Both emulated stacks pick the same first local port.
+        // The gateway still holds the old connection on it, so use the next port.
         let refused = tokio::time::timeout(Duration::from_secs(5), new.connect(SocketAddrV4::new(GATEWAY, 9))).await.unwrap();
         assert!(refused.is_err(), "the new device reaches the gateway (a closed port answers)");
         let mut s = tokio::time::timeout(Duration::from_secs(5), new.connect(SocketAddrV4::new(GATEWAY, 443))).await.unwrap().unwrap();

@@ -27,7 +27,7 @@ pub async fn get_device_auth(
             // Where and when the sign-in was started (ADR-0032 approval page)
             "requester_ip": p.requester_ip,
             "requested_at": p.requested_at.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
-            // Set when this machine is already registered (to refuse moving it between tailnets)
+            // Set when the machine is already registered. A machine cannot move between tailnets.
             "registered_tenant_id": match state.store.get_node_by_machine_key(&p.machine_key).await {
                 Some(n) => state.store.get_node_tenant(n).await.map(|t| t.to_string()),
                 None => None,

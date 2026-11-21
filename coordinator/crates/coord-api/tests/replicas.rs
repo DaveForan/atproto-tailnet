@@ -164,7 +164,7 @@ async fn a_device_registered_at_one_replica_is_a_peer_at_the_other() {
     .await;
     assert!(joined.is_ok(), "replica B never saw the join event");
 
-    // And the netmap that B builds for device one contains device two
+    // The netmap that B builds for device one contains device two
     let mut node_key = one;
     node_key[0] ^= 0xff;
     let body = serde_json::json!({ "Version": 2, "NodeKey": format!("nodekey:{}", hex::encode(node_key)) });

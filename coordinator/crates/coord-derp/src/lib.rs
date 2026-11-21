@@ -1,14 +1,6 @@
-//! DERP relay and STUN servers for the coordinator stack (ADR-0027).
-//!
-//! DERP relays WireGuard packets between nodes that cannot reach each other
-//! directly. Packets are addressed by node public key and stay end-to-end
-//! encrypted; the relay never sees plaintext. The wire protocol matches what
-//! stock Tailscale clients speak (protocol version 2). Mesh frames between
-//! relays are not implemented.
-//!
-//! Unlike an open relay, [`DerpServer`] only serves nodes its [`Admission`]
-//! policy admits, and only relays between nodes whose [`Scope`]s can reach
-//! each other.
+//! DERP relay and STUN servers (ADR-0027), wire-compatible with Tailscale DERP protocol v2.
+//! The relay forwards end-to-end encrypted WireGuard packets by node key. It has no mesh frames.
+//! [`DerpServer`] serves only nodes that [`Admission`] admits, between [`Scope`]s that can reach each other.
 
 pub mod frame;
 pub mod server;

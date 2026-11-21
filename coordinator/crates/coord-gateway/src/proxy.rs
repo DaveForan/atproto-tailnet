@@ -1,10 +1,6 @@
 //! HTTPS for named services (ADR-0030).
-//!
-//! The gateway listens on its tailnet address. It ends TLS with the wildcard
-//! certificate of the base domain, finds the service from the TLS server
-//! name, and passes the request to the device and port of that service over
-//! the tailnet. It tells the application who is calling, in headers that a
-//! caller cannot set.
+//! The gateway ends TLS with the wildcard certificate and routes by TLS server name to the service's device and port.
+//! It tells the application who is calling, in headers that a caller cannot set.
 
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::path::PathBuf;
@@ -37,12 +33,11 @@ const HEADER_TIMEOUT: Duration = Duration::from_secs(15);
 pub const USER_HEADER: &str = "x-tailnet-user";
 pub const DEVICE_HEADER: &str = "x-tailnet-device";
 const IDENTITY_PREFIX: &str = "x-tailnet-";
-/// How often an open connection checks that its caller may still use the
-/// service. Access ends when the viewer disconnects from a post, the post is
-/// withdrawn, the device is removed or the tailnet is suspended.
+/// How often an open connection re-checks that its caller may still use the service.
+/// Access ends when the viewer leaves a post, the post is withdrawn, the device is removed, or the tailnet is suspended.
 pub const RECHECK_EVERY: Duration = Duration::from_secs(30);
-/// The longest life of one caller connection, upgraded (WebSocket) or not.
-/// The browser then opens a new one, which is checked like any other.
+/// Maximum life of one caller connection, upgraded (WebSocket) or not.
+/// The browser then opens a new connection, which gets a full check.
 pub const MAX_CONNECTION_LIFETIME: Duration = Duration::from_secs(12 * 3600);
 
 /// Limits of caller connections. [`Limits::default`] is what production uses.
@@ -72,32 +67,26 @@ pub struct Route {
 /// Why a caller does not get a service.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Denied {
-    /// No such service, or one this caller may not see. Both look the same
-    /// to the caller.
+    /// No such service, or one this caller may not see. Both look the same to the caller.
     NotFound,
-    /// The caller may see the service, but the gateway does not know the
-    /// sign-in name of the device's owner (yet). The request is refused
-    /// rather than sent with a shared placeholder identity, which two
-    /// different members would then present alike.
+    /// The gateway does not yet know the sign-in name of the device's owner.
+    /// A shared placeholder identity would let two members look alike, so the request is refused.
     UnknownUser,
-    /// The calling device has no owner (for example a tagged device), so
-    /// there is no member identity to give the application.
+    /// The calling device has no owner (for example a tagged device), so no member identity exists.
     NoOwner,
 }
 
 /// The services of one tailnet. The coordinator answers from its store.
 #[async_trait::async_trait]
 pub trait Services: Send + Sync + 'static {
-    /// The service with this full name, as the device at `caller` may use
-    /// it. [`Denied::NotFound`] when there is no such service or this device
-    /// may not see it: the two cases must look the same to the caller.
+    /// Resolves the service with this full name for the device at `caller`.
+    /// # Security
+    /// Return [`Denied::NotFound`] both for a missing service and a hidden one, so the caller cannot tell them apart.
     async fn route(&self, server_name: &str, caller: Ipv4Addr) -> Result<Route, Denied>;
 }
 
-// ── Certificate ─────────────────────────────────────────────────────────
 
-/// The TLS certificate of the gateway. It can be loaded again while
-/// connections are open (the certificate is renewed every few weeks).
+/// The gateway's TLS certificate. It reloads while connections are open, because renewal happens every few weeks.
 pub struct Certificate {
     config: RwLock<Arc<ServerConfig>>,
     files: Option<(PathBuf, PathBuf)>,
@@ -116,7 +105,7 @@ pub enum CertificateError {
 }
 
 fn server_config(chain: Vec<CertificateDer<'static>>, key: PrivateKeyDer<'static>) -> Result<Arc<ServerConfig>, CertificateError> {
-    // The provider is named here: other crates in the process bring their own
+    // Name the provider explicitly, because other crates in the process bring their own.
     let provider = Arc::new(tokio_rustls::rustls::crypto::ring::default_provider());
     let mut config = ServerConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()?
@@ -141,7 +130,7 @@ fn read_files(cert: &PathBuf, key: &PathBuf) -> Result<Arc<ServerConfig>, Certif
 }
 
 impl Certificate {
-    /// Load a PEM certificate chain and its PEM private key.
+    /// Loads a PEM certificate chain and its PEM private key.
     pub fn from_files(cert: impl Into<PathBuf>, key: impl Into<PathBuf>) -> Result<Self, CertificateError> {
         let (cert, key) = (cert.into(), key.into());
         Ok(Self { config: RwLock::new(read_files(&cert, &key)?), files: Some((cert, key)) })
@@ -151,7 +140,7 @@ impl Certificate {
         Ok(Self { config: RwLock::new(server_config(chain, key)?), files: None })
     }
 
-    /// Read the files again. On an error the old certificate stays in use.
+    /// Reads the files again. On an error, the old certificate stays in use.
     pub fn reload(&self) -> Result<(), CertificateError> {
         if let Some((cert, key)) = &self.files {
             let fresh = read_files(cert, key)?;
@@ -165,7 +154,6 @@ impl Certificate {
     }
 }
 
-// ── Serving ─────────────────────────────────────────────────────────────
 
 type Body = BoxBody<Bytes, hyper::Error>;
 
@@ -176,7 +164,6 @@ fn text(status: StatusCode, message: &'static str) -> Response<Body> {
     response
 }
 
-/// The answer for a name that is not a service, or not one for this caller.
 fn not_found() -> Response<Body> {
     text(StatusCode::NOT_FOUND, "Not found\n")
 }
@@ -193,10 +180,8 @@ fn denied(why: Denied) -> Response<Body> {
     }
 }
 
-/// Resolves when `caller` may no longer use the service (checked every
-/// `recheck_every`), or when the connection reached its longest life. With
-/// `granted`, the service must also still lead to the same application for
-/// the same member.
+/// Resolves when `caller` loses access to the service or the connection reaches its maximum life.
+/// With `granted`, the service must also still lead to the same application for the same member.
 async fn access_ends(services: &dyn Services, server_name: &str, caller: Ipv4Addr, granted: Option<&Route>, limits: Limits) {
     let deadline = tokio::time::Instant::now() + limits.max_lifetime;
     loop {
@@ -214,12 +199,12 @@ async fn access_ends(services: &dyn Services, server_name: &str, caller: Ipv4Add
     }
 }
 
-/// Serve the named services of one tailnet until the stack stops.
+/// Serves the named services of one tailnet until the stack stops.
 pub async fn serve(stack: NetStack, certificate: Arc<Certificate>, services: Arc<dyn Services>) -> std::io::Result<()> {
     serve_with(stack, certificate, services, Limits::default()).await
 }
 
-/// [`serve`] with other connection limits (tests use short ones).
+/// [`serve`] with custom connection limits, for tests.
 pub async fn serve_with(stack: NetStack, certificate: Arc<Certificate>, services: Arc<dyn Services>, limits: Limits) -> std::io::Result<()> {
     let mut https = stack.listen(HTTPS_PORT).await?;
     let mut http = stack.listen(HTTP_PORT).await?;
@@ -242,7 +227,7 @@ pub async fn serve_with(stack: NetStack, certificate: Arc<Certificate>, services
     }
 }
 
-/// Plain HTTP only sends the browser to HTTPS.
+/// Plain HTTP only redirects the browser to HTTPS.
 async fn redirect_connection(accepted: Accepted) {
     let service = service_fn(|req: Request<Incoming>| async move {
         let host = req.headers().get(HOST).and_then(|h| h.to_str().ok()).unwrap_or("");
@@ -277,8 +262,8 @@ async fn https_connection(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let caller = *accepted.peer.ip();
     let tls = tokio::time::timeout(TLS_HANDSHAKE_TIMEOUT, certificate.acceptor().accept(accepted.stream)).await??;
-    // The service is chosen by the name in the TLS handshake. A request for
-    // another name on the same connection is refused below.
+    // The TLS server name picks the service.
+    // `handle` refuses a request for another name on the same connection.
     let Some(server_name) = tls.get_ref().1.server_name().map(|s| s.to_ascii_lowercase()) else {
         return Ok(()); // no name: nothing to serve
     };
@@ -293,9 +278,8 @@ async fn https_connection(
         .header_read_timeout(HEADER_TIMEOUT)
         .serve_connection(TokioIo::new(tls), service)
         .with_upgrades();
-    // A keep-alive connection or a long response (for example server-sent
-    // events) ends when the caller loses access. Dropping the connection
-    // closes it. An upgraded connection is watched by its own task.
+    // A keep-alive connection or a long response (for example SSE) ends when the caller loses access.
+    // An upgraded connection has its own watcher task.
     tokio::select! {
         served = connection => served?,
         _ = access_ends(&*watch_services, &watch_name, caller, None, limits) => {}
@@ -311,10 +295,8 @@ fn host_of(req: &Request<Incoming>) -> Option<String> {
 /// Headers that belong to one hop and are not passed on.
 const HOP_HEADERS: [&str; 7] = ["connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "transfer-encoding"];
 
-/// True for a header that only the gateway may set: identity headers and
-/// what proxies say about the client. Names are compared after mapping `_`
-/// to `-`, because many servers (CGI, PHP, Rack, WSGI) treat `X-Tailnet_User`
-/// and `X-Tailnet-User` as the same header.
+/// True for a header that only the gateway may set: identity and forwarding headers.
+/// The check maps `_` to `-`, because CGI, PHP, Rack, and WSGI treat `X-Tailnet_User` as `X-Tailnet-User`.
 fn gateway_only(name: &HeaderName) -> bool {
     let name = name.as_str().replace('_', "-"); // header names are lowercase already
     name.starts_with(IDENTITY_PREFIX) || name.starts_with("x-forwarded-") || name == "forwarded" || name == "x-real-ip"
@@ -337,8 +319,8 @@ async fn handle(
         Err(why) => return denied(why),
     };
 
-    // Identity and forwarding headers come from the gateway only: remove
-    // what the caller sent, including lookalike names
+    // Security: only the gateway sets identity and forwarding headers.
+    // Remove the caller's copies, including lookalike names.
     let forged: Vec<HeaderName> = req.headers().keys().filter(|k| gateway_only(k)).cloned().collect();
     for name in forged {
         req.headers_mut().remove(name);
@@ -357,7 +339,7 @@ async fn handle(
         }
     }
     let set = |req: &mut Request<Incoming>, name: &'static str, value: &str| {
-        // A value that is not a legal header value is left out, never passed on raw
+        // Omit an illegal header value; never pass it on raw.
         if let Ok(v) = HeaderValue::from_str(value) {
             req.headers_mut().insert(HeaderName::from_static(name), v);
         }
@@ -371,7 +353,7 @@ async fn handle(
 
     let client_upgrade = upgrade.is_some().then(|| hyper::upgrade::on(&mut req));
 
-    // An upgraded connection (for example a WebSocket) gets its own upstream
+    // An upgraded connection (for example a WebSocket) gets its own upstream.
     let mut sender = if upgrade.is_some() {
         match connect(&stack, route.target).await {
             Ok(s) => s,
@@ -408,8 +390,8 @@ async fn handle(
             let route = route.clone();
             tokio::spawn(async move {
                 if let (Ok(client), Ok(app)) = (client_upgrade.await, app_upgrade.await) {
-                    // Piped until either side closes, the caller loses access
-                    // or the connection is too old; dropping both ends closes them
+                    // Pipe until either side closes, the caller loses access, or the connection is too old.
+                    // Dropping both ends closes them.
                     let (mut client, mut app) = (TokioIo::new(client), TokioIo::new(app));
                     tokio::select! {
                         _ = tokio::io::copy_bidirectional(&mut client, &mut app) => {}
@@ -424,7 +406,6 @@ async fn handle(
     response.map(|body| body.boxed())
 }
 
-/// Open a connection to the application over the tailnet.
 async fn connect(stack: &NetStack, target: SocketAddrV4) -> Result<SendRequest<Incoming>, Response<Body>> {
     let stream = stack.connect(target).await.map_err(|e| {
         debug!(error = %e, %target, "cannot reach the application");
@@ -448,8 +429,7 @@ where
     Ok(sender)
 }
 
-/// Load the certificate again from time to time, so a renewed certificate
-/// is used without a restart.
+/// Reloads the certificate periodically, so a renewed certificate applies without a restart.
 pub fn spawn_reload(certificate: Arc<Certificate>, every: Duration) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(every);

@@ -1,6 +1,4 @@
-//! Smoke test — starts a real TCP server and exercises key HTTP endpoints.
-//!
-//! Verifies end-to-end: TCP bind → axum routing → middleware → handler → JSON response.
+//! Smoke test over a real TCP server: bind, routing, middleware, handler, JSON response.
 
 use std::sync::Arc;
 use coord_api::CoordinatorState;
@@ -93,7 +91,6 @@ async fn tenant_lifecycle_over_tcp() {
     let client = reqwest::Client::new();
     let auth = "Bearer smoke-test-key";
 
-    // Create tenant
     let resp = client
         .post(format!("{}/api/tenants", base))
         .header("Authorization", auth)
@@ -106,7 +103,6 @@ async fn tenant_lifecycle_over_tcp() {
     let tenant_id = tenant["id"].as_str().unwrap().to_string();
     assert_eq!(tenant["slug"], "smoke-tenant");
 
-    // Get tenant
     let resp = client
         .get(format!("{}/api/tenants/{}", base, tenant_id))
         .header("Authorization", auth)
@@ -117,7 +113,6 @@ async fn tenant_lifecycle_over_tcp() {
     let fetched: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(fetched["tenant"]["slug"], "smoke-tenant");
 
-    // List tenants
     let resp = client
         .get(format!("{}/api/tenants", base))
         .header("Authorization", auth)
@@ -129,7 +124,6 @@ async fn tenant_lifecycle_over_tcp() {
     let list = body["tenants"].as_array().unwrap();
     assert!(list.iter().any(|t| t["slug"] == "smoke-tenant"));
 
-    // Create preauth key
     let resp = client
         .post(format!("{}/api/preauth-keys", base))
         .header("Authorization", auth)
@@ -141,7 +135,6 @@ async fn tenant_lifecycle_over_tcp() {
     let key_resp: serde_json::Value = resp.json().await.unwrap();
     assert!(key_resp["key"].as_str().unwrap().starts_with("tskey-auth-"));
 
-    // Delete tenant
     let resp = client
         .delete(format!("{}/api/tenants/{}", base, tenant_id))
         .header("Authorization", auth)
@@ -150,7 +143,6 @@ async fn tenant_lifecycle_over_tcp() {
         .unwrap();
     assert_eq!(resp.status(), 200);
 
-    // Verify deleted
     let resp = client
         .get(format!("{}/api/tenants/{}", base, tenant_id))
         .header("Authorization", auth)
@@ -167,7 +159,7 @@ async fn body_limit_enforced_over_tcp() {
     let (base, handle) = start_server().await;
     let client = reqwest::Client::new();
 
-    // 3 MiB body should be rejected (limit is 2 MiB)
+    // The body limit is 2 MiB.
     let big_body = vec![b'x'; 3 * 1024 * 1024];
     let result = client
         .post(format!("{}/api/tenants", base))
@@ -176,9 +168,8 @@ async fn body_limit_enforced_over_tcp() {
         .body(big_body)
         .send()
         .await;
-    // The server answers 413 and closes. When it closes before the client has
-    // written the whole body, the client sees a reset in place of the answer.
-    // The two outcomes both mean that the body was refused.
+    // The server answers 413 and closes. If it closes before the client sends the whole body,
+    // the client sees a reset. Both outcomes mean the server refused the body.
     match result {
         Ok(resp) => assert_eq!(resp.status(), 413),
         Err(e) => assert!(e.is_request() || e.is_body() || e.is_connect(), "unexpected error: {e:?}"),
@@ -187,7 +178,7 @@ async fn body_limit_enforced_over_tcp() {
     handle.abort();
 }
 
-// ── Built-in DERP relay over a real TCP connection (ADR-0027) ──
+// The built-in DERP relay over a real TCP connection (ADR-0027).
 
 mod derp_e2e {
     use super::*;

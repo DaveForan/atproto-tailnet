@@ -1,10 +1,6 @@
-//! The client address of a request, for display (ADR-0032: the approval page
-//! shows where a device sign-in came from).
-//!
-//! Behind a reverse proxy (Caddy) the TCP peer is the proxy, so
-//! `X-Forwarded-For` is read, but only when the peer is a configured trusted
-//! proxy (`COORD_TRUSTED_PROXIES`, comma-separated CIDRs or addresses).
-//! Anyone else could write any value into that header.
+//! The client address of a request, shown on the sign-in approval page (ADR-0032).
+//! `X-Forwarded-For` counts only when the peer is a trusted proxy (`COORD_TRUSTED_PROXIES`).
+//! Any other peer could write any value into that header.
 
 use std::net::IpAddr;
 
@@ -17,8 +13,7 @@ pub struct TrustedProxies {
 }
 
 impl TrustedProxies {
-    /// Parse a comma-separated list of CIDRs or single addresses. Empty
-    /// input = no trusted proxy (the peer address is always used).
+    /// Parses comma-separated CIDRs or addresses. Empty input trusts no proxy.
     pub fn parse(list: &str) -> Result<Self, String> {
         let mut nets = Vec::new();
         for item in list.split(',').map(str::trim).filter(|s| !s.is_empty()) {
@@ -43,11 +38,8 @@ impl TrustedProxies {
         self.nets.iter().any(|n| n.contains(ip))
     }
 
-    /// The client address: the peer itself, unless the peer is a trusted
-    /// proxy. Then `X-Forwarded-For` is walked from the right (the entry the
-    /// nearest proxy appended) past further trusted proxies; the first
-    /// untrusted address is the client. An unusable header falls back to the
-    /// peer.
+    /// The peer, or behind a trusted proxy the rightmost untrusted `X-Forwarded-For` hop.
+    /// An unusable header gives the peer.
     pub fn client_ip(&self, peer: Option<IpAddr>, headers: &HeaderMap) -> Option<IpAddr> {
         let peer = canonical(peer?);
         if !self.contains(peer) {

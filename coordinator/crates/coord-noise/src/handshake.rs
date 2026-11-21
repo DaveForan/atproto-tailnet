@@ -24,9 +24,8 @@ pub const AEAD_OVERHEAD: usize = 16;
 pub const MAX_CIPHERTEXT_SIZE: usize = MAX_MESSAGE_SIZE - HEADER_LEN;
 pub const MAX_PLAINTEXT_SIZE: usize = MAX_CIPHERTEXT_SIZE - AEAD_OVERHEAD;
 
-/// Raw symmetric keys from Noise Split().
-/// initiator_key: encrypts initiator→responder (client→server).
-/// responder_key: encrypts responder→initiator (server→client).
+/// Raw symmetric keys from Noise `Split()`.
+/// `initiator_key` encrypts client-to-server traffic; `responder_key` encrypts server-to-client traffic.
 pub struct SplitKeys {
     pub initiator_key: [u8; 32],
     pub responder_key: [u8; 32],
@@ -45,8 +44,8 @@ impl NoiseResponder {
         &self.control_key.public
     }
 
-    /// Accept a Tailscale wire-format initiation message (101 bytes).
-    /// Returns (split_keys, wire-format response (51 bytes), machine_key, protocol_version).
+    /// Accepts a 101-byte Tailscale wire-format initiation message.
+    /// Returns the split keys, the 51-byte wire response, the machine key, and the protocol version.
     pub fn accept_initiation(
         &self,
         initiation: &[u8],
@@ -91,7 +90,7 @@ impl NoiseResponder {
         Ok((keys, response, machine_key, version))
     }
 
-    /// Accept raw Noise IK payload (96 bytes) — for snow-to-snow testing.
+    /// Accepts a raw 96-byte Noise IK payload, for snow-to-snow tests.
     pub fn accept_raw(
         &self,
         noise_payload: &[u8],
@@ -299,10 +298,10 @@ mod tests {
         let mut m = msg.clone();
         m[3..5].copy_from_slice(&95u16.to_be_bytes());
         assert!(responder.accept_initiation(&m).is_err(), "payload length");
-        // Encrypted to another server key
+        // Encrypted to another server key.
         let other = crate::generate_control_key();
         assert!(responder.accept_initiation(&initiation(&other.public, 1)).is_err());
-        // A flipped ciphertext byte fails authentication
+        // A flipped ciphertext byte fails AEAD authentication.
         let mut m = msg;
         m[INITIATION_MESSAGE_LEN - 1] ^= 1;
         assert!(responder.accept_initiation(&m).is_err());

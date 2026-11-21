@@ -38,9 +38,9 @@ pub struct SqliteStore {
     remote_tx: broadcast::Sender<crate::RemoteEvent>,
 }
 
-/// Finish migration 010: SQLite has no SHA-256 function, so keys stored in
-/// plain text before it are hashed here, in one transaction, before the store
-/// is used. Idempotent: a hex digest never starts with "tskey-".
+/// Finishes migration 010: SQLite has no SHA-256 function, so plain-text keys get hashed here.
+/// It runs in one transaction before the store is used.
+/// Idempotent: a hex digest never starts with "tskey-".
 async fn hash_plain_preauth_keys(pool: &SqlitePool) -> Result<(), StorageError> {
     let mut tx = pool.begin_with("BEGIN IMMEDIATE").await.map_err(db)?;
     let plain: Vec<String> = sqlx::query_scalar("SELECT key FROM coord_preauth_keys WHERE key LIKE 'tskey-%'")
@@ -214,8 +214,8 @@ impl SqliteStore {
         Ok(())
     }
 
-    /// A value that is not valid JSON comes back as `null` (the kind is still
-    /// listed, so a reader can tell "unreadable" from "absent").
+    /// A value that is not valid JSON comes back as `null`.
+    /// The kind stays listed, so a reader can tell "unreadable" from "absent".
     pub async fn get_tenant_configs(&self, tenant_id: TenantId) -> Result<Vec<(String, serde_json::Value)>, CoordError> {
         let rows: Vec<(String, String)> = sqlx::query_as("SELECT kind, value FROM coord_tenant_config WHERE tenant_id = ?1")
             .bind(tenant_id.as_uuid().to_string())
@@ -748,8 +748,6 @@ impl SqliteStore {
         Ok(result.rows_affected())
     }
 
-    /// Atomically consume a key: the conditional UPDATE means two registrations
-    /// racing on a single-use key cannot both succeed.
     /// Tenant a pre-auth key belongs to, without validating or consuming it.
     pub async fn preauth_key_tenant(&self, key: &str) -> Option<TenantId> {
         let tid: String = sqlx::query_scalar("SELECT tenant_id FROM coord_preauth_keys WHERE key = ?1")
@@ -760,6 +758,7 @@ impl SqliteStore {
         uuid::Uuid::parse_str(&tid).ok().map(TenantId::new)
     }
 
+    /// Atomically consumes a key: two registrations racing on a single-use key cannot both succeed.
     pub async fn validate_preauth_key(&self, key: &str) -> Option<PreAuthGrant> {
         let row: Option<(String, Option<String>, String, bool)> = sqlx::query_as(
             "UPDATE coord_preauth_keys SET used = 1 \

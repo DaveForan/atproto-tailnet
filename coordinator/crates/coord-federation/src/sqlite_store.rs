@@ -16,21 +16,19 @@ fn db(e: sqlx::Error) -> StorageError {
     StorageError::new(e)
 }
 
-// ── Public store struct ──────────────────────────────────────────────────────
 
 pub struct SqliteFederationStore {
     pool: SqlitePool,
 }
 
 impl SqliteFederationStore {
-    /// Wrap an existing SQLite pool. Assumes migrations have already been
-    /// applied by `SqliteStore::new` (shared `migrations_sqlite/` directory).
+    /// Wraps an existing SQLite pool.
+    /// The caller must apply the shared `migrations_sqlite/` migrations first.
     pub fn new(pool: SqlitePool) -> Self {
         Self { pool }
     }
 }
 
-// ── Parsing helpers ──────────────────────────────────────────────────────────
 
 fn parse_direction(s: &str) -> LinkDirection {
     match s {
@@ -100,7 +98,6 @@ fn encode_string_array(v: &[String]) -> String {
     serde_json::to_string(v).unwrap_or_else(|_| "[]".into())
 }
 
-// ── Row → domain conversions ─────────────────────────────────────────────────
 
 type LinkTuple = (
     String, String, String, Option<String>, Option<String>,
@@ -163,7 +160,6 @@ fn did_from_tuple(r: DidTuple) -> CollectiveDid {
     }
 }
 
-// ── SQL column lists ─────────────────────────────────────────────────────────
 
 const LINK_COLS: &str = "id, local_tenant_id, peer_did, peer_broker_url, peer_name, \
     direction, status, local_cidrs, peer_cidrs, protocol_version, \
@@ -176,11 +172,9 @@ const SESSION_COLS: &str = "id, federation_link_id, local_tenant_id, peer_did, s
 
 const DID_COLS: &str = "tenant_id, did, public_key_jwk, encrypted_private_key, created_at";
 
-// ── FederationStore implementation ───────────────────────────────────────────
 
 #[async_trait]
 impl FederationStore for SqliteFederationStore {
-    // ── Links ────────────────────────────────────────────────────────────
 
     async fn list_active_links(&self) -> Result<Vec<FederationLink>, CoordError> {
         let sql = format!(
@@ -311,7 +305,6 @@ impl FederationStore for SqliteFederationStore {
         Ok(())
     }
 
-    // ── Sessions ─────────────────────────────────────────────────────────
 
     async fn list_sessions(&self) -> Result<Vec<BrokerSession>, CoordError> {
         let sql = format!(
@@ -468,7 +461,6 @@ impl FederationStore for SqliteFederationStore {
         Ok(())
     }
 
-    // ── Collective DIDs ──────────────────────────────────────────────────
 
     async fn get_collective_did(
         &self,
@@ -523,7 +515,6 @@ impl FederationStore for SqliteFederationStore {
         Ok(())
     }
 
-    // ── Federation link counts ───────────────────────────────────────────
 
     async fn count_pending_incoming(&self, tenant_id: TenantId) -> Result<usize, CoordError> {
         let count: i64 = sqlx::query_scalar(

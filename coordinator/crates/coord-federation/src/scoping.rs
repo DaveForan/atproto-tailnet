@@ -2,7 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 
-// ── Types ──────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -13,7 +12,7 @@ pub enum FederationScope {
 }
 
 impl FederationScope {
-    /// Priority value — higher means more specific / preferred.
+    /// Higher values mean a more specific, preferred scope.
     pub fn priority(self) -> u32 {
         match self {
             FederationScope::Local => 300,
@@ -34,13 +33,9 @@ pub struct ScopedRoute {
     pub preference: u32,
 }
 
-// ── Functions ──────────────────────────────────────────────────────────────────
 
-/// Negotiate the narrowest common scope between two peers.
-/// Returns the most specific (highest priority) scope that both sides support.
+/// Negotiates the narrowest common scope. The higher-priority side wins.
 pub fn negotiate_scope(local: FederationScope, remote: FederationScope) -> FederationScope {
-    // The narrowest (highest priority) scope wins. If they differ, pick the
-    // one with the higher priority (i.e., the more restrictive one).
     if local.priority() >= remote.priority() {
         local
     } else {
@@ -48,17 +43,12 @@ pub fn negotiate_scope(local: FederationScope, remote: FederationScope) -> Feder
     }
 }
 
-/// Select the best route from a set of candidates.
-///
-/// Selection strategy:
-/// 1. If any routes have measured latency, pick the lowest-latency one.
-/// 2. Otherwise, rank by (scope priority + preference), highest wins.
+/// Selects the lowest measured latency first, else the highest scope priority plus preference.
 pub fn select_best_route(routes: &[ScopedRoute]) -> Option<&ScopedRoute> {
     if routes.is_empty() {
         return None;
     }
 
-    // Prefer routes with measured latency.
     let with_latency: Vec<&ScopedRoute> = routes.iter().filter(|r| r.latency_ms.is_some()).collect();
     if !with_latency.is_empty() {
         return with_latency
@@ -71,7 +61,6 @@ pub fn select_best_route(routes: &[ScopedRoute]) -> Option<&ScopedRoute> {
             });
     }
 
-    // Fall back to scope priority + preference.
     routes.iter().max_by_key(|r| r.scope.priority().saturating_add(r.preference))
 }
 
@@ -85,12 +74,11 @@ pub fn haversine_distance_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 
     R * 2.0 * a.sqrt().atan2((1.0 - a).sqrt())
 }
 
-/// Returns `true` if the given distance (in km) qualifies as "local" (within 50 km).
+/// Returns `true` if the distance qualifies as local (within 50 km).
 pub fn is_local_candidate(distance_km: f64) -> bool {
     distance_km <= 50.0
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

@@ -38,7 +38,6 @@ impl Default for FederationMemoryStore {
 
 #[async_trait]
 impl FederationStore for FederationMemoryStore {
-    // ── Links ─────────────────────────────────────────────────────────────
 
     async fn list_active_links(&self) -> Result<Vec<FederationLink>, CoordError> {
         let guard = self.links.read().unwrap_or_else(|e| e.into_inner());
@@ -118,7 +117,6 @@ impl FederationStore for FederationMemoryStore {
         Ok(())
     }
 
-    // ── Sessions ──────────────────────────────────────────────────────────
 
     async fn list_sessions(&self) -> Result<Vec<BrokerSession>, CoordError> {
         let guard = self.sessions.read().unwrap_or_else(|e| e.into_inner());
@@ -154,7 +152,6 @@ impl FederationStore for FederationMemoryStore {
         session: BrokerSession,
     ) -> Result<Option<BrokerSession>, CoordError> {
         let mut guard = self.sessions.write().unwrap_or_else(|e| e.into_inner());
-        // Check if a session already exists for this link + tenant.
         let exists = guard.values().any(|s| {
             s.federation_link_id == session.federation_link_id
                 && s.local_tenant_id == session.local_tenant_id
@@ -218,7 +215,6 @@ impl FederationStore for FederationMemoryStore {
         Ok(())
     }
 
-    // ── Collective DIDs ───────────────────────────────────────────────────
 
     async fn get_collective_did(
         &self,
@@ -248,7 +244,6 @@ impl FederationStore for FederationMemoryStore {
         Ok(())
     }
 
-    // ── Federation link counts ────────────────────────────────────────────
 
     async fn count_pending_incoming(&self, tenant_id: TenantId) -> Result<usize, CoordError> {
         let guard = self.links.read().unwrap_or_else(|e| e.into_inner());
@@ -278,11 +273,9 @@ impl FederationStore for FederationMemoryStore {
             .map(|l| (l.id, l.created_at))
             .collect::<Vec<_>>()
             .into_iter()
-            // Sort oldest first.
             .map(|(id, _created)| id)
             .collect();
 
-        // Sort by created_at ascending (oldest first).
         pending.sort_by(|a, b| {
             let a_t = guard.get(a).map(|l| l.created_at);
             let b_t = guard.get(b).map(|l| l.created_at);

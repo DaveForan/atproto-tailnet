@@ -1,10 +1,6 @@
-//! Per-tenant DNS (ADR-0028): device names and service names that resolve
-//! only inside the tailnet.
-//!
-//! The coordinator sends each device a split-DNS route for the base domain
-//! (always with upstream resolvers, so names without a record still resolve
-//! publicly), the records that device may see, and a search domain for short
-//! device names.
+//! Per-tenant DNS (ADR-0028): device and service names that resolve only inside the tailnet.
+//! Each device gets a split-DNS route with upstreams, so names without a record still resolve.
+//! It also gets the records it may see and a search domain for short device names.
 
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
@@ -16,9 +12,7 @@ pub const MAX_RECORD_NODES: usize = 256;
 /// Ports that the gateway serves on its tailnet address.
 pub const GATEWAY_PORTS: [u16; 2] = [80, 443];
 
-/// One service name. It resolves to the address of `node`, for the devices of
-/// `owner` and the devices listed in `nodes`. With neither, every device of
-/// the tenant sees it.
+/// A service name for `node`. Only `owner`'s devices and `nodes` see it; with neither, all devices do.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DnsRecord {
@@ -29,9 +23,8 @@ pub struct DnsRecord {
     pub owner: Option<String>,
     #[serde(default)]
     pub nodes: Vec<i64>,
-    /// With a port, the name is an HTTPS service (ADR-0030): it resolves to
-    /// the gateway of the tailnet, which passes requests to this TCP port of
-    /// `node`. Without a gateway the name resolves to `node` itself.
+    /// With a port, the name is an HTTPS service (ADR-0030) behind the tailnet gateway.
+    /// The gateway proxies to this TCP port of `node`. Without a gateway, the name resolves to `node`.
     #[serde(default)]
     pub port: Option<u16>,
 }
@@ -48,8 +41,7 @@ impl DnsRecord {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TenantDns {
-    /// Domain that service and device names live under (e.g. `ts.example.com`).
-    /// `None` turns tailnet DNS off.
+    /// Parent domain of service and device names, e.g. `ts.example.com`. `None` turns tailnet DNS off.
     #[serde(default)]
     pub base_domain: Option<String>,
     /// The tailnet's public name; device names are `<device>.<label>.<base_domain>`.
@@ -100,7 +92,7 @@ impl TenantDns {
             if r.nodes.len() > MAX_RECORD_NODES || r.owner.as_ref().is_some_and(|o| o.len() > 128) {
                 return Err("record visibility list too large");
             }
-            // A service name must not shadow the tailnet's device namespace
+            // A service name must not shadow the tailnet's device namespace.
             if self.tailnet_label.as_deref() == Some(r.name.as_str()) {
                 return Err("record name collides with the tailnet name");
             }

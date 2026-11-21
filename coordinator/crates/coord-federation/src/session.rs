@@ -8,7 +8,6 @@ use crate::protocol::{
     DEFAULT_KEEPALIVE_SECONDS, DRAIN_PERIOD_SECONDS,
 };
 
-// ── Types ──────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -40,7 +39,6 @@ pub struct FederationSession {
     pub updated_at: DateTime<Utc>,
 }
 
-// ── Implementation ─────────────────────────────────────────────────────────────
 
 impl FederationSession {
     pub fn new(
@@ -97,8 +95,8 @@ impl FederationSession {
         self.updated_at = now;
     }
 
-    /// Checks keepalive health based on elapsed time since last received keepalive.
-    /// Updates status to Degraded (3+ missed) or Down (5+ missed).
+    /// Checks keepalive health from the time since the last received keepalive.
+    /// Sets status to Degraded at 3+ missed intervals and Down at 5+.
     pub fn check_keepalive_health(&mut self) -> SessionStatus {
         let now = Utc::now();
         let interval_secs = if self.keepalive_interval_seconds > 0 {
@@ -109,7 +107,6 @@ impl FederationSession {
         let interval = Duration::seconds(i64::from(interval_secs));
         let elapsed = now - self.last_keepalive_received;
 
-        // Calculate how many keepalive intervals have been missed.
         let missed_count = if interval.num_milliseconds() > 0 {
             (elapsed.num_milliseconds() / interval.num_milliseconds()) as u32
         } else {
@@ -131,8 +128,8 @@ impl FederationSession {
         self.status.clone()
     }
 
-    /// Initiates a revoke, transitioning to Draining. Returns the revoke message
-    /// and the drain deadline (after which finalize_revoke should be called).
+    /// Starts a revoke and moves the session to Draining.
+    /// Returns the revoke message and the drain deadline for `finalize_revoke`.
     pub fn initiate_revoke(
         &mut self,
         reason: Option<String>,
@@ -167,7 +164,6 @@ impl FederationSession {
     }
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -227,7 +223,7 @@ mod tests {
     #[test]
     fn check_health_degraded_after_3_missed() {
         let mut session = test_session();
-        // Simulate 3 missed keepalives (3 * 60s = 180s ago).
+        // 3 missed keepalives at 60 s each.
         session.last_keepalive_received = Utc::now() - Duration::seconds(180);
         let status = session.check_keepalive_health();
         assert_eq!(status, SessionStatus::Degraded);
@@ -236,7 +232,7 @@ mod tests {
     #[test]
     fn check_health_down_after_5_missed() {
         let mut session = test_session();
-        // Simulate 5 missed keepalives (5 * 60s = 300s ago).
+        // 5 missed keepalives at 60 s each.
         session.last_keepalive_received = Utc::now() - Duration::seconds(300);
         let status = session.check_keepalive_health();
         assert_eq!(status, SessionStatus::Down);
@@ -246,14 +242,12 @@ mod tests {
     fn revoke_lifecycle() {
         let mut session = test_session();
 
-        // Initiate revoke.
         let (msg, deadline) = session.initiate_revoke(Some("maintenance".into()), false);
         assert_eq!(session.status, SessionStatus::Draining);
         assert_eq!(msg.session_id, "sess-test");
         assert!(!msg.permanent);
         assert!(deadline > Utc::now());
 
-        // Finalize revoke.
         session.finalize_revoke();
         assert_eq!(session.status, SessionStatus::Revoked);
     }

@@ -327,11 +327,10 @@ impl MemoryStore {
     }
 
     pub fn delete_tenant(&self, tenant_id: TenantId) -> Result<(), CoordError> {
-        // Hold tenants lock through the entire operation to prevent TOCTOU orphan nodes.
+        // Hold the tenants lock throughout, so no node is orphaned (TOCTOU).
         // Lock ordering: tenants → machine_key_index → nodes → preauth_keys
         let mut tenants = self.tenants.lock().unwrap_or_else(|e| e.into_inner());
 
-        // Check for children first
         let has_children = tenants.values().any(|t| t.parent_id == Some(tenant_id));
         if has_children {
             return Err(CoordError::Protocol(
@@ -343,7 +342,7 @@ impl MemoryStore {
             return Err(CoordError::TenantNotFound(tenant_id));
         }
 
-        // Remove all nodes belonging to this tenant under the same lock scope.
+        // Remove the tenant's nodes in the same lock scope.
         let mut machine_index = self.machine_key_index.lock().unwrap_or_else(|e| e.into_inner());
         let mut nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner());
 
@@ -352,7 +351,6 @@ impl MemoryStore {
             .filter(|(_, n)| n.tenant_id == tenant_id)
             .map(|(nid, _)| {
                 let nid = *nid;
-                // find the machine key for this node
                 let mkey = machine_index
                     .iter()
                     .find(|(_, v)| **v == nid)
@@ -372,17 +370,15 @@ impl MemoryStore {
         self.owner_locks.lock().unwrap_or_else(|e| e.into_inner()).retain(|(t, _), _| *t != tenant_id);
         self.tenant_config.lock().unwrap_or_else(|e| e.into_inner()).retain(|(t, _), _| *t != tenant_id);
 
-        // Remove preauth keys for this tenant
         let mut keys = self.preauth_keys.lock().unwrap_or_else(|e| e.into_inner());
         keys.retain(|_, v| v.tenant_id != tenant_id);
 
-        // Drop all locks before broadcasting events
+        // Release all locks before broadcasting.
         drop(keys);
         drop(nodes);
         drop(machine_index);
         drop(tenants);
 
-        // Broadcast NodeOffline for each removed node
         for (nid, _) in removed_node_ids {
             let _ = self.peer_tx.send(PeerEvent::NodeOffline {
                 tenant_id,
@@ -751,7 +747,7 @@ impl MemoryStore {
         tenant_id: TenantId,
         exclude_node: NodeId,
     ) -> Vec<PeerInfo> {
-        // Hold both locks simultaneously to prevent TOCTOU races on posture changes.
+        // Hold both locks, so a posture change cannot race this read (TOCTOU).
         // Lock ordering: always tenants before nodes.
         let tenants = self.tenants.lock().unwrap_or_else(|e| e.into_inner());
         let nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner());
@@ -839,7 +835,6 @@ impl MemoryStore {
             .ok_or(CoordError::Protocol("node not found".into()))?;
         let tid = node.tenant_id;
 
-        // Remove from machine key index
         let mkey: Vec<u8> = node.info.machine_key.clone();
         if mkey.len() == 32 {
             let mut key = [0u8; 32];
@@ -988,8 +983,8 @@ impl MemoryStore {
         removed
     }
 
-    /// Atomically snapshot a tenant's routes: own nodes + children + visible child
-    /// nodes, all under a single lock scope to prevent posture/nodes interleaving.
+    /// Atomically snapshots a tenant's routes: own nodes, children and visible child nodes.
+    /// One lock scope stops posture and node changes from interleaving.
     pub fn get_tenant_route_snapshot(
         &self,
         tenant_id: TenantId,
@@ -1272,10 +1267,8 @@ mod tests {
             ipv6: None,
         };
 
-        // First registration succeeds
         store.register_node(t1, mkey, info.clone()).unwrap();
 
-        // Re-registration with different tenant must fail
         let result = store.register_node(t2, mkey, info);
         assert!(result.is_err());
         let err = result.unwrap_err();

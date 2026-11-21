@@ -9,7 +9,6 @@ use coord_core::TenantId;
 use crate::state::CoordinatorState;
 use super::{bad_request, existing_tenant, internal_error, not_found, required_owner, validate_owner, OwnerQuery};
 
-// ── Preauth key management ──
 
 /// Upper bound for `expiration_seconds` (one year).
 const MAX_KEY_EXPIRATION_SECS: u64 = 31_536_000;
@@ -39,7 +38,7 @@ fn validate_tags(tags: Vec<String>) -> Result<Vec<String>, String> {
     if let Some(bad) = tags.iter().find(|t| !coord_core::routes::is_valid_tag(t)) {
         return Err(format!("invalid tag {bad:?}: must match ^tag:[a-z0-9-]{{1,63}}$"));
     }
-    // The gateway tag marks the coordinator's own node: it reserves the gateway name and hides the node from device lists.
+    // The gateway tag is reserved: it claims the gateway name and hides the node from device lists.
     if tags.iter().any(|t| t == coord_core::GATEWAY_TAG) {
         return Err(format!("{} is reserved for the coordinator", coord_core::GATEWAY_TAG));
     }

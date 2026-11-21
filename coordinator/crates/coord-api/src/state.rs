@@ -414,8 +414,7 @@ impl CoordinatorState {
         tokio::spawn(async move { store.publish(coord_store::RemoteEvent::TenantChanged(tenant)).await });
     }
 
-    /// Persist one configuration value of a tenant (ADR-0034). The registries
-    /// in this process are caches of what the store holds.
+    /// Persists one tenant configuration value (ADR-0034). The registries in this process only cache the store.
     pub(crate) async fn save_config<T: serde::Serialize>(
         &self,
         tenant: TenantId,
@@ -438,9 +437,8 @@ impl CoordinatorState {
         self.caches.forget(tenant);
     }
 
-    /// Fill the caches from the store. Call once at startup, and after
-    /// notifications may have been lost: every tenant with stored
-    /// configuration is replaced, and cached tenants with none are cleared.
+    /// Fills the caches from the store. Call at startup and after notifications may have been lost.
+    /// Cached tenants without stored configuration are cleared.
     pub async fn load_config(&self) {
         let all = match self.store.list_tenant_configs().await {
             Ok(all) => all,
@@ -472,9 +470,8 @@ impl CoordinatorState {
         }
     }
 
-    /// Everything may be stale (missed notifications): reload every tenant's
-    /// configuration and make every live stream re-check its node, tenant,
-    /// suspension and machine lock and send a full snapshot.
+    /// Recovers from missed notifications: reloads all configuration.
+    /// Every live stream re-checks its node, tenant, suspension and machine lock, then sends a full snapshot.
     pub async fn resync_all(self: &Arc<Self>) {
         self.load_config().await;
         for tenant in self.store.list_tenants().await {

@@ -3,8 +3,7 @@ use std::sync::RwLock;
 
 use coord_core::TenantId;
 
-/// The gateway node of each tenant that has one (ADR-0029). A cache of the
-/// `gateway` tenant configuration in the store.
+/// The gateway node of each tenant that has one (ADR-0029), cached from tenant configuration.
 #[derive(Default)]
 pub struct GatewayRegistry {
     tenants: RwLock<HashMap<TenantId, i64>>,

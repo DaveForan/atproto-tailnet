@@ -1,7 +1,4 @@
-//! Broker orchestration — reconciliation loop, outbound handshake,
-//! session teardown, and ACL route management (Tier 3).
-//!
-//! Ported from `src/orchestrator/federation-broker.ts` (914 lines).
+//! Broker orchestration: reconciliation loop, outbound handshake, session teardown, and ACL routes.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -20,18 +17,16 @@ use crate::handshake::HandshakeCallbacks;
 use crate::protocol::Capability;
 use crate::store::FederationStore;
 
-// ── Constants ──────────────────────────────────────────────────────────────────
 
 /// Tag used in Headscale ACL auto-approvers for federation relay routes.
 pub const FEDERATION_RELAY_TAG: &str = "tag:federation-relay";
 
-// ── Config ─────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 pub struct BrokerConfig {
     /// How often the reconciliation loop runs.
     pub tick_interval: Duration,
-    /// A session is "stale" if its last keepalive is older than this.
+    /// A session is stale when its last keepalive is older than this.
     pub keepalive_stale: Duration,
     /// Capabilities this instance advertises during handshake.
     pub local_capabilities: Vec<Capability>,
@@ -50,13 +45,11 @@ impl Default for BrokerConfig {
     }
 }
 
-// ── BrokerService ──────────────────────────────────────────────────────────────
 
 pub struct BrokerService<S: FederationStore + ?Sized> {
     store: Arc<S>,
     config: BrokerConfig,
-    /// Links currently being handshaked (prevents concurrent handshakes for
-    /// the same link).
+    /// Links with a handshake in progress. Prevents concurrent handshakes for one link.
     handshakes_in_flight: Mutex<HashSet<LinkId>>,
 }
 
@@ -73,12 +66,7 @@ impl<S: FederationStore + ?Sized> BrokerService<S> {
         &self.config
     }
 
-    /// Single tick of the reconciliation loop.
-    ///
-    /// Called every `tick_interval` by the runtime. Performs three jobs:
-    /// 1. Reconcile sessions against active links.
-    /// 2. Send keepalives for established/degraded sessions.
-    /// 3. Check session health (mark stale sessions as degraded).
+    /// Runs one reconciliation pass: reconcile sessions, report due keepalives, and degrade stale sessions.
     pub async fn tick(&self) -> Result<(), CoordError> {
         self.reconcile_active_sessions().await?;
         self.send_keepalives().await?;
@@ -86,22 +74,18 @@ impl<S: FederationStore + ?Sized> BrokerService<S> {
         Ok(())
     }
 
-    /// Ensure every active link has a session, tear down orphan sessions,
-    /// and retry sessions stuck in connecting.
+    /// Creates sessions for active links, tears down orphans, and retries sessions stuck in connecting.
     async fn reconcile_active_sessions(&self) -> Result<(), CoordError> {
         let active_links = self.store.list_active_links().await?;
         let all_sessions = self.store.list_sessions().await?;
 
-        // Build a set of link IDs that have sessions.
         let links_with_sessions: HashSet<LinkId> = all_sessions
             .iter()
             .map(|s| s.federation_link_id)
             .collect();
 
-        // Active link IDs.
         let active_link_ids: HashSet<LinkId> = active_links.iter().map(|l| l.id).collect();
 
-        // 1. Create sessions for active links that don't have one.
         for link in &active_links {
             if !links_with_sessions.contains(&link.id) {
                 let session = BrokerSession {
@@ -130,7 +114,6 @@ impl<S: FederationStore + ?Sized> BrokerService<S> {
             }
         }
 
-        // 2. Tear down sessions whose link is no longer active.
         for session in &all_sessions {
             if !active_link_ids.contains(&session.federation_link_id) {
                 debug!(
@@ -145,15 +128,9 @@ impl<S: FederationStore + ?Sized> BrokerService<S> {
         Ok(())
     }
 
-    /// Report sessions due a keepalive.
-    ///
-    /// Real HTTP sends are done by the caller's transport layer, which reads
-    /// sessions and calls `transport::send_keepalive`. This method must NOT
-    /// touch `last_keepalive`: that field records liveness evidence from the
-    /// PEER — a keepalive received from it (`InboundHandler::handle_keepalive`)
-    /// or its acknowledgment of ours ([`Self::record_keepalive_ack`]). Bumping
-    /// it locally on every tick meant `check_session_health` could never see a
-    /// stale session.
+    /// Logs sessions due a keepalive. The caller's transport sends them.
+    /// It must NOT touch `last_keepalive`, which records liveness evidence from the peer.
+    /// Only a peer keepalive or [`Self::record_keepalive_ack`] may update it, or stale sessions go undetected.
     async fn send_keepalives(&self) -> Result<(), CoordError> {
         let sessions = self.store.list_sessions().await?;
         for session in &sessions {
@@ -167,8 +144,7 @@ impl<S: FederationStore + ?Sized> BrokerService<S> {
         Ok(())
     }
 
-    /// Record that the peer acknowledged one of our keepalives (a verified
-    /// response from the peer's broker). Restores a degraded session.
+    /// Records a verified peer acknowledgment of our keepalive and restores a degraded session.
     pub async fn record_keepalive_ack(&self, session_id: SessionId) -> Result<(), CoordError> {
         self.store.update_session_keepalive(session_id).await?;
         if let Some(session) = self
@@ -185,8 +161,7 @@ impl<S: FederationStore + ?Sized> BrokerService<S> {
         Ok(())
     }
 
-    /// Mark sessions as degraded if their last keepalive exceeds the
-    /// configured staleness threshold.
+    /// Marks sessions degraded when their last keepalive exceeds `keepalive_stale`.
     async fn check_session_health(&self) -> Result<(), CoordError> {
         let sessions = self.store.list_sessions().await?;
         let now = Utc::now();
@@ -216,20 +191,16 @@ impl<S: FederationStore + ?Sized> BrokerService<S> {
         Ok(())
     }
 
-    /// Initiate an outbound handshake for a link.
-    ///
-    /// Returns `true` if the handshake was initiated (or is already in flight),
-    /// `false` if preconditions aren't met (no link, no collective DID, etc.).
-    ///
-    /// The `callbacks` trait provides signing and verification. The actual
-    /// Ed25519 key material is loaded by the caller and injected here.
+    /// Starts an outbound handshake for a link.
+    /// Returns `true` if started or already in flight, `false` if preconditions fail.
+    /// The caller loads the Ed25519 keys and injects them via `callbacks`.
     pub async fn initiate_outbound_handshake(
         &self,
         link_id: LinkId,
         tenant_id: TenantId,
         callbacks: &dyn HandshakeCallbacks,
     ) -> Result<bool, CoordError> {
-        // Guard: only one handshake per link at a time.
+        // Only one handshake per link runs at a time.
         {
             let mut in_flight = self.handshakes_in_flight.lock().await;
             if in_flight.contains(&link_id) {
@@ -243,7 +214,7 @@ impl<S: FederationStore + ?Sized> BrokerService<S> {
             .do_outbound_handshake(link_id, tenant_id, callbacks)
             .await;
 
-        // Always remove from in-flight set.
+        // Always clear the in-flight entry, even on error.
         {
             let mut in_flight = self.handshakes_in_flight.lock().await;
             in_flight.remove(&link_id);
@@ -252,7 +223,7 @@ impl<S: FederationStore + ?Sized> BrokerService<S> {
         result
     }
 
-    /// Inner handshake logic, separated for cleanup guarantees.
+    /// Separate so the caller always clears the in-flight entry.
     async fn do_outbound_handshake(
         &self,
         link_id: LinkId,
@@ -277,7 +248,6 @@ impl<S: FederationStore + ?Sized> BrokerService<S> {
             }
         };
 
-        // Create handshake state and initiate HELLO.
         let state = crate::handshake::create_handshake(local_did);
         let (_state, _hello) = crate::handshake::initiate_hello(
             state,
@@ -289,10 +259,8 @@ impl<S: FederationStore + ?Sized> BrokerService<S> {
         )
         .await?;
 
-        // NOTE: The actual HTTP send of the HELLO message and the subsequent
-        // CHALLENGE/COMMIT/ESTABLISHED exchange is delegated to the transport
-        // layer. This method prepares the HELLO; the full flow will be wired
-        // when the HTTP transport integration is complete.
+        // This method only prepares HELLO.
+        // Nothing here sends it or runs CHALLENGE/COMMIT/ESTABLISHED.
 
         info!(
             link_id = %link_id,
@@ -303,9 +271,8 @@ impl<S: FederationStore + ?Sized> BrokerService<S> {
         Ok(true)
     }
 
-    /// Tear down a session: mark it as disconnected and delete it.
-    ///
-    /// The caller should send a REVOKE message to the peer before calling this.
+    /// Marks a session disconnected and deletes it.
+    /// Send a REVOKE to the peer before calling this.
     pub async fn teardown_session(&self, session_id: SessionId) -> Result<(), CoordError> {
         info!(session_id = %session_id, "tearing down session");
         self.store
@@ -315,7 +282,6 @@ impl<S: FederationStore + ?Sized> BrokerService<S> {
         Ok(())
     }
 
-    /// Mark a session as established after a successful handshake.
     pub async fn mark_session_established(
         &self,
         link_id: LinkId,
@@ -335,12 +301,8 @@ impl<S: FederationStore + ?Sized> BrokerService<S> {
     }
 }
 
-// ── ACL policy helpers (pure functions) ────────────────────────────────────────
 
-/// Add federated CIDRs to a policy's route auto-approvers for the relay tag.
-///
-/// The policy is a freeform JSON object matching Headscale's ACL format.
-/// This adds `tag:federation-relay` as an auto-approver for each CIDR.
+/// Adds `tag:federation-relay` as a route auto-approver for each CIDR in a Headscale ACL policy.
 pub fn add_federated_routes_to_policy(
     policy: &serde_json::Value,
     cidrs: &[String],
@@ -352,7 +314,6 @@ pub fn add_federated_routes_to_policy(
     };
     let obj = result.as_object_mut().expect("just verified this is an object");
 
-    // Ensure tagOwners has the federation relay tag.
     let tag_owners = obj
         .entry("tagOwners")
         .or_insert_with(|| serde_json::json!({}));
@@ -361,7 +322,6 @@ pub fn add_federated_routes_to_policy(
             .or_insert_with(|| serde_json::json!([]));
     }
 
-    // Ensure autoApprovers.routes exists.
     let auto_approvers = obj
         .entry("autoApprovers")
         .or_insert_with(|| serde_json::json!({}));
@@ -390,10 +350,8 @@ pub fn add_federated_routes_to_policy(
     result
 }
 
-/// Remove federated CIDRs from a policy's route auto-approvers.
-///
-/// Removes only the `tag:federation-relay` approver; other approvers for the
-/// same CIDR are left in place. If no approvers remain, the CIDR entry is deleted.
+/// Removes the relay-tag approver for each CIDR. Other approvers stay.
+/// A CIDR entry with no approvers left is deleted.
 pub fn remove_federated_routes_from_policy(
     policy: &serde_json::Value,
     cidrs: &[String],
@@ -435,7 +393,6 @@ pub fn remove_federated_routes_from_policy(
     result
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -525,20 +482,17 @@ mod tests {
         let tenant_id = TenantId::generate();
         let link = make_active_link(tenant_id);
 
-        // Create session without its link being active (link status = Revoked).
+        // The link is revoked, so its session is an orphan.
         let mut revoked_link = link.clone();
         revoked_link.status = LinkStatus::Revoked;
         store.create_link(revoked_link).await.unwrap();
 
         let session = make_session(&link);
-        // Directly insert session (bypassing create_session_if_missing since
-        // the link status is revoked and won't match active).
         store.create_session_if_missing(session.clone()).await.unwrap();
 
         let broker = BrokerService::new(store.clone(), test_config());
         broker.tick().await.unwrap();
 
-        // The session should be deleted because its link is not active.
         let sessions = store.list_sessions().await.unwrap();
         assert!(sessions.is_empty());
     }
@@ -550,7 +504,7 @@ mod tests {
         let link = make_active_link(tenant_id);
         store.create_link(link.clone()).await.unwrap();
 
-        // Create an established session with a stale keepalive.
+        // An established session with a stale keepalive.
         let mut session = make_session(&link);
         session.last_keepalive = Some(Utc::now() - chrono::Duration::seconds(120));
         store.create_session_if_missing(session.clone()).await.unwrap();
@@ -583,13 +537,13 @@ mod tests {
             ..test_config()
         };
         let broker = BrokerService::new(store.clone(), config);
-        // A full tick (which "sends" keepalives) must still see the session as stale.
+        // A full tick must still see the session as stale.
         broker.tick().await.unwrap();
 
         let sessions = store.list_sessions().await.unwrap();
         assert_eq!(sessions[0].status, BrokerSessionStatus::Degraded);
 
-        // An acknowledgment from the peer restores it.
+        // A peer acknowledgment restores it.
         broker.record_keepalive_ack(session.id).await.unwrap();
         let sessions = store.list_sessions().await.unwrap();
         assert_eq!(sessions[0].status, BrokerSessionStatus::Established);
@@ -620,7 +574,6 @@ mod tests {
         let link = make_active_link(tenant_id);
         store.create_link(link.clone()).await.unwrap();
 
-        // Create a connecting session.
         let mut session = make_session(&link);
         session.status = BrokerSessionStatus::Connecting;
         session.cfp_session_id = None;
@@ -645,7 +598,6 @@ mod tests {
         assert_eq!(sessions[0].imported_routes, vec!["10.1.0.0/24"]);
     }
 
-    // ── ACL policy helper tests ───────────────────────────────────────────
 
     #[test]
     fn add_federated_routes_to_empty_policy() {
@@ -658,7 +610,6 @@ mod tests {
         assert_eq!(routes.len(), 1);
         assert_eq!(routes[0], FEDERATION_RELAY_TAG);
 
-        // tagOwners should have the relay tag.
         assert!(result["tagOwners"][FEDERATION_RELAY_TAG].is_array());
     }
 
@@ -704,7 +655,7 @@ mod tests {
         });
         let result = remove_federated_routes_from_policy(&policy, &["10.0.0.0/24".to_string()]);
 
-        // CIDR should be removed entirely since no other approvers.
+        // No other approvers remain, so the CIDR entry goes.
         assert!(result["autoApprovers"]["routes"]
             .get("10.0.0.0/24")
             .is_none());

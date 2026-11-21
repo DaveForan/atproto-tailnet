@@ -17,16 +17,11 @@ use crate::state::CoordinatorState;
 const UPGRADE_HEADER_VALUE: &str = "tailscale-control-protocol";
 const HANDSHAKE_HEADER_NAME: &str = "X-Tailscale-Handshake";
 
-/// Everything below happens before the client has authenticated (any machine
-/// key completes the Noise handshake), so every resource is bounded.
-///
-/// Max concurrent HTTP/2 streams per Noise connection. tailscaled's
-/// controlclient keeps one streaming /machine/map open and issues short
-/// register / lite-map / set-dns / health requests alongside it — a handful at
-/// most. hyper's default (~200) let one connection buffer 200 bodies at once.
+// These limits apply before authentication: any machine key completes the Noise handshake.
+/// Max concurrent HTTP/2 streams per Noise connection. tailscaled needs one map stream plus a few short requests.
+/// hyper's default (~200) lets one connection buffer 200 bodies at once.
 pub const MAX_CONCURRENT_STREAMS: u32 = 8;
-/// Max request body for /machine/register and /machine/map. Real requests
-/// (Hostinfo + endpoints) are a few KiB; 256 KiB leaves ample headroom.
+/// Max request body for /machine/register and /machine/map. Real requests are a few KiB.
 pub const MAX_CONTROL_BODY: usize = 256 * 1024;
 /// Max HTTP/2 header list size (hyper defaults to 16 MiB).
 const MAX_HEADER_LIST_SIZE: u32 = 16 * 1024;
@@ -180,8 +175,7 @@ async fn run_noise_session(
     serve_control_h2(state, cleartext_stream, machine_key, client_ip).await
 }
 
-/// Serve the control protocol's HTTP/2 over an already-authenticated-by-Noise
-/// cleartext stream, then mark the node offline if this session registered it.
+/// Serves control HTTP/2 over a Noise-decrypted stream, then marks the node offline if this session registered it.
 pub(crate) async fn serve_control_h2<IO>(
     state: Arc<CoordinatorState>,
     io: IO,
@@ -193,11 +187,10 @@ where
 {
     let h2_io = hyper_util::rt::TokioIo::new(io);
 
-    // Session generation is set during /machine/register inside the H2 service.
-    // Shared via atomic so the disconnect handler can read it.
+    // /machine/register sets the session generation. The disconnect handler reads it.
     let session_gen = Arc::new(AtomicU64::new(0));
-    // Any machine key completes the handshake. A session must prove a real
-    // device (registration, sign-in, or a known machine's map poll) before the deadline.
+    // Any machine key completes the handshake. Before the deadline, a session must register,
+    // start a sign-in, or poll the map as a known machine.
     let authed = Arc::new(AtomicBool::new(false));
     let deadline = state.noise_auth_deadline;
 
@@ -215,8 +208,7 @@ where
         }
     });
 
-    // keep_alive_* need a timer; without one hyper panics on the first
-    // connection ("You must supply a timer").
+    // keep_alive_* need a timer. Without one, hyper panics on the first connection.
     let conn = hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
         .timer(hyper_util::rt::TokioTimer::new())
         .keep_alive_interval(Some(std::time::Duration::from_secs(30)))
@@ -353,8 +345,7 @@ async fn handle_register_request(
     }
 }
 
-/// True for a register response that authorizes the machine or starts an
-/// interactive sign-in (the device then long-polls for the user's decision).
+/// True for a register response that authorizes the machine or starts an interactive sign-in.
 fn grants_session(response_body: &str) -> bool {
     serde_json::from_str::<coord_proto::register::RegisterResponse>(response_body)
         .is_ok_and(|r| r.machine_authorized || !r.auth_url.is_empty())
@@ -381,9 +372,8 @@ pub(crate) async fn handle_map_request(
         Err(e) => return json_error(StatusCode::BAD_REQUEST, &format!("invalid map request: {e}")),
     };
 
-    // Unknown machines (e.g. a deleted node still polling) get 401 rather than a
-    // 500, and suspended tenants get 403; tailscaled treats both as a failed
-    // poll and backs off instead of hammering us.
+    // Unknown machines get 401 and suspended tenants get 403, not 500.
+    // tailscaled treats both as a failed poll and backs off.
     let Some(node_id) = state.store.get_node_by_machine_key(&machine_key).await else {
         return json_error(StatusCode::UNAUTHORIZED, "node not registered");
     };

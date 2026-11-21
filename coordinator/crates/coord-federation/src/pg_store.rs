@@ -17,7 +17,6 @@ fn db(e: sqlx::Error) -> StorageError {
     StorageError::new(e)
 }
 
-// ── Public store struct ──────────────────────────────────────────────────────
 
 /// A [`FederationStore`] backed by PostgreSQL via sqlx.
 pub struct PgFederationStore {
@@ -25,13 +24,11 @@ pub struct PgFederationStore {
 }
 
 impl PgFederationStore {
-    /// Wrap an existing connection pool.
     pub fn new(pool: PgPool) -> Self {
         Self { pool }
     }
 }
 
-// ── Row types (sqlx::FromRow) ────────────────────────────────────────────────
 
 #[derive(sqlx::FromRow)]
 struct LinkRow {
@@ -77,7 +74,6 @@ struct DidRow {
     created_at: DateTime<Utc>,
 }
 
-// ── Parsing helpers ──────────────────────────────────────────────────────────
 
 fn parse_direction(s: &str) -> LinkDirection {
     match s {
@@ -129,7 +125,6 @@ fn session_status_str(s: BrokerSessionStatus) -> &'static str {
     }
 }
 
-// ── Row → domain conversions ─────────────────────────────────────────────────
 
 fn link_from_row(r: LinkRow) -> FederationLink {
     FederationLink {
@@ -178,11 +173,9 @@ fn did_from_row(r: DidRow) -> CollectiveDid {
     }
 }
 
-// ── FederationStore implementation ───────────────────────────────────────────
 
 #[async_trait]
 impl FederationStore for PgFederationStore {
-    // ── Links ────────────────────────────────────────────────────────────
 
     async fn list_active_links(&self) -> Result<Vec<FederationLink>, CoordError> {
         let rows = sqlx::query_as::<_, LinkRow>(
@@ -324,7 +317,6 @@ impl FederationStore for PgFederationStore {
         Ok(())
     }
 
-    // ── Sessions ─────────────────────────────────────────────────────────
 
     async fn list_sessions(&self) -> Result<Vec<BrokerSession>, CoordError> {
         let rows = sqlx::query_as::<_, SessionRow>(
@@ -383,8 +375,7 @@ impl FederationStore for PgFederationStore {
         &self,
         session: BrokerSession,
     ) -> Result<Option<BrokerSession>, CoordError> {
-        // INSERT ... ON CONFLICT DO NOTHING: if the unique constraint
-        // (federation_link_id, local_tenant_id) fires, no row is returned.
+        // ON CONFLICT DO NOTHING returns no row if (federation_link_id, local_tenant_id) already exists.
         let row = sqlx::query_as::<_, SessionRow>(
             "INSERT INTO coord_broker_sessions \
                 (id, federation_link_id, local_tenant_id, peer_did, status, \
@@ -484,7 +475,6 @@ impl FederationStore for PgFederationStore {
         Ok(())
     }
 
-    // ── Collective DIDs ──────────────────────────────────────────────────
 
     async fn get_collective_did(
         &self,
@@ -539,7 +529,6 @@ impl FederationStore for PgFederationStore {
         Ok(())
     }
 
-    // ── Federation link counts ───────────────────────────────────────────
 
     async fn count_pending_incoming(&self, tenant_id: TenantId) -> Result<usize, CoordError> {
         let count: i64 = sqlx::query_scalar(
@@ -558,9 +547,8 @@ impl FederationStore for PgFederationStore {
         tenant_id: TenantId,
         max: usize,
     ) -> Result<usize, CoordError> {
-        // In a single statement: mark the oldest pending-incoming links
-        // beyond `max` as 'rejected'. Uses a subquery to find the IDs to
-        // expire, ordered by created_at ascending, skipping the `max` newest.
+        // Rejects the oldest pending-incoming links beyond `max` in one statement.
+        // The subquery orders by created_at and skips the `max` newest.
         let result = sqlx::query(
             "UPDATE coord_federation_links \
              SET status = 'rejected', \
@@ -588,7 +576,6 @@ impl FederationStore for PgFederationStore {
     }
 }
 
-// ── Tests ────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {

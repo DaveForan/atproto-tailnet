@@ -1,8 +1,6 @@
-//! PgStore integration tests — run against a real PostgreSQL instance.
-//!
-//! Skipped unless TEST_DATABASE_URL is set (a failure when env CI is set). To run:
-//!   TEST_DATABASE_URL=postgresql://atproto_tailnet:atproto_tailnet@localhost:5432/coord_test \
-//!     cargo test -p coord-store --test pg_integration
+//! PgStore integration tests against a real PostgreSQL instance.
+//! Skipped without TEST_DATABASE_URL; a failure when `CI` is set. Run:
+//!   TEST_DATABASE_URL=postgresql://atproto_tailnet:atproto_tailnet@localhost:5432/coord_test cargo test -p coord-store --test pg_integration
 
 use coord_core::{FederationPosture, NodeInfo};
 use coord_store::PgStore;
@@ -40,14 +38,13 @@ macro_rules! skip_without_db {
     };
 }
 
-/// Generate a unique slug to avoid collisions across parallel runs.
+/// A unique slug, so parallel runs do not collide.
 fn unique(prefix: &str) -> String {
     let mut buf = [0u8; 4];
     rand::rng().fill_bytes(&mut buf);
     format!("{}-{}", prefix, hex::encode(buf))
 }
 
-/// Generate a unique 32-byte key.
 fn unique_key() -> [u8; 32] {
     let mut key = [0u8; 32];
     rand::rng().fill_bytes(&mut key);
@@ -67,7 +64,6 @@ fn make_info(hostname: &str) -> NodeInfo {
     }
 }
 
-// ── Tenant CRUD ───────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn pg_create_and_get_tenant() {
@@ -147,7 +143,6 @@ async fn pg_parent_child_tenants() {
     assert_eq!(children[0].slug, child_slug);
 }
 
-// ── Preauth keys ──────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn pg_preauth_key_single_use() {
@@ -177,7 +172,6 @@ async fn pg_preauth_key_reusable() {
     assert_eq!(tid2, Some(tenant.id), "reusable key should still validate");
 }
 
-// ── Node registration ─────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn pg_register_node_assigns_ip() {
@@ -235,7 +229,6 @@ async fn pg_reregistration_reuses_node() {
     assert_eq!(ip1, ip2, "IP should stay the same on re-registration");
 }
 
-// ── Peer queries ──────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn pg_peers_exclude_self() {
@@ -276,7 +269,6 @@ async fn pg_tenant_isolation() {
     assert!(peers.is_empty(), "t1 should not see t2's nodes");
 }
 
-// ── Node operations ───────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn pg_node_online_offline() {
@@ -399,7 +391,6 @@ async fn pg_update_endpoints() {
     assert_eq!(detail.info.disco_key.as_deref(), Some("disco:abc123"));
 }
 
-// ── Peer events ───────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn pg_peer_event_on_register() {
@@ -424,7 +415,6 @@ async fn pg_peer_event_on_register() {
     assert_eq!(joined, Some(node_id));
 }
 
-// ── Route snapshot ────────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn pg_tenant_route_snapshot() {
@@ -450,7 +440,6 @@ async fn pg_tenant_route_snapshot() {
     assert_eq!(snapshot.children.len(), 1);
 }
 
-// ── Two replicas on one database (ADR-0034) ──
 
 #[tokio::test]
 async fn pg_events_reach_the_other_replica_but_not_twice_the_sender() {
@@ -464,7 +453,7 @@ async fn pg_events_reach_the_other_replica_but_not_twice_the_sender() {
     let mut b_remote = b.subscribe_remote();
     let mut a_remote = a.subscribe_remote();
 
-    // The listeners connect in the background: publish until replica B hears it
+    // The listeners connect in the background, so publish until replica B hears it.
     // Each listener also emits a local Resync when it (re)connects; skip those.
     let mut heard = false;
     'publish: for _ in 0..50 {

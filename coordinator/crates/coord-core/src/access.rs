@@ -1,8 +1,6 @@
 //! Per-tenant device access (ADR-0036): which devices may reach which.
-//!
-//! In `Open` mode the tenant uses its ACL policy, or allow-all when it has
-//! none. In `Member` mode a device accepts traffic only from devices of the
-//! same owner plus what the access rules allow, and sees only those peers.
+//! `Open` mode uses the tenant's ACL policy, or allow-all without one.
+//! `Member` mode allows same-owner devices plus the rules, and shows only those peers.
 
 use serde::{Deserialize, Serialize};
 
@@ -31,7 +29,7 @@ pub enum AccessProto {
 }
 
 impl AccessProto {
-    /// IANA protocol numbers for the packet filter (`None` = client default: TCP, UDP, ICMP).
+    /// IANA protocol numbers for the packet filter. `None` means the client default: TCP, UDP, ICMP.
     pub fn ip_protos(self) -> Option<Vec<i32>> {
         match self {
             AccessProto::Any => None,
@@ -130,7 +128,7 @@ mod tests {
         assert!(!by_owner.src_matches(1, Some("bob")));
         assert!(!by_owner.src_matches(1, None));
 
-        // Explicit devices replace the owner
+        // Explicit source devices replace the owner match.
         let by_node = rule(Some("alice"), vec![3]);
         assert!(by_node.src_matches(3, Some("bob")));
         assert!(!by_node.src_matches(1, Some("alice")));

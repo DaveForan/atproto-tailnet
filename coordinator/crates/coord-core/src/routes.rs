@@ -4,7 +4,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// Max routes a single node may advertise; extra entries are dropped.
 pub const MAX_ADVERTISED_ROUTES: usize = 256;
-/// Max tags carried by a pre-auth key (and therefore a node).
+/// Max tags on a pre-auth key, and so on a node.
 pub const MAX_TAGS: usize = 8;
 /// Max length of an opaque owner string.
 pub const MAX_OWNER_LEN: usize = 128;
@@ -65,13 +65,12 @@ fn mask(addr: IpAddr, len: u8) -> IpAddr {
     }
 }
 
-/// Normalise a single CIDR string (clears host bits). `None` if unparseable.
+/// Normalise one CIDR string and clear host bits. `None` if it does not parse.
 pub fn normalize_cidr(s: &str) -> Option<String> {
     Cidr::parse(s).map(|c| c.to_string())
 }
 
-/// Normalise, dedupe and sort a list of CIDRs, silently dropping invalid entries
-/// and capping at [`MAX_ADVERTISED_ROUTES`]. Used for client-supplied RoutableIPs.
+/// Normalise, dedupe and sort client RoutableIPs. Drops invalid entries and caps at [`MAX_ADVERTISED_ROUTES`].
 pub fn normalize_routes_lossy<S: AsRef<str>>(routes: &[S]) -> Vec<String> {
     let mut out: Vec<String> = routes
         .iter()
@@ -83,7 +82,7 @@ pub fn normalize_routes_lossy<S: AsRef<str>>(routes: &[S]) -> Vec<String> {
     out
 }
 
-/// Normalise, dedupe and sort; returns the first invalid entry as an error.
+/// Normalise, dedupe and sort. Returns the first invalid entry as the error.
 pub fn normalize_routes_strict<S: AsRef<str>>(routes: &[S]) -> Result<Vec<String>, String> {
     let mut out = Vec::with_capacity(routes.len());
     for r in routes {

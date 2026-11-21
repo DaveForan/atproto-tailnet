@@ -210,7 +210,7 @@ impl MapStream {
 
 /// Whether a live map stream may go on: the node exists in the same tenant, the
 /// tenant is not suspended, and the owner's machine lock still lists this machine.
-/// A store error on the lock keeps the stream (registration fails closed). A malformed lock ends it.
+/// A store error on the lock keeps the stream, because registration fails closed. A malformed lock ends it.
 async fn stream_still_valid(state: &Arc<CoordinatorState>, tenant_id: TenantId, node_id: NodeId, machine_key: &[u8; 32]) -> bool {
     let Some(detail) = state.store.get_node_info(node_id).await else {
         return false;

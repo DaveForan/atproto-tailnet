@@ -1,7 +1,6 @@
-//! Named HTTPS services, end to end (ADR-0029, ADR-0030): a viewer device
-//! opens `https://food-app.ts.example.com`; the gateway ends TLS, finds the
-//! service and passes the request to an application on another device. All
-//! traffic runs through WireGuard and the relay, as with real devices.
+//! Named HTTPS services end to end (ADR-0029, ADR-0030).
+//! A viewer opens `https://food-app.ts.example.com`, and the gateway routes it to an app on another device.
+//! All traffic runs through WireGuard and the relay, as with real devices.
 
 use std::net::{Ipv4Addr, SocketAddrV4};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -42,9 +41,8 @@ impl Devices for Fixed {
     }
 }
 
-/// One service, `food-app`, on port 3000 of the app device, for the viewer
-/// only while `allowed` holds; `chat` on 3001 likewise; `nameless` is visible
-/// but the gateway does not know the caller's sign-in name.
+/// `food-app` (port 3000) and `chat` (port 3001) serve the viewer only while `allowed` holds.
+/// `nameless` is visible, but the gateway does not know the caller's sign-in name.
 struct OneService {
     allowed: Arc<AtomicBool>,
 }
@@ -88,16 +86,16 @@ impl ServerCertVerifier for Pinned {
     }
 }
 
-/// (method, path, headers of interest, body)
+/// `(method, path, headers of interest, body)`.
 type SeenRequest = (String, String, Vec<(String, String)>, Vec<u8>);
 
 struct World {
     viewer: NetStack,
     outsider: NetStack,
     connector: TlsConnector,
-    /// The viewer's access to the services: clear it to withdraw access.
+    /// The viewer's access to the services. Clear it to withdraw access.
     allowed: Arc<AtomicBool>,
-    /// Requests the application received: (method, path, headers of interest, body)
+    /// Requests the application received.
     seen: Arc<Mutex<Vec<SeenRequest>>>,
 }
 
@@ -125,7 +123,7 @@ async fn world_with(limits: Limits) -> World {
     let allowed = Arc::new(AtomicBool::new(true));
     tokio::spawn(proxy::serve_with(gateway, certificate, Arc::new(OneService { allowed: allowed.clone() }), limits));
 
-    // The application on the app device: answers with what it saw
+    // The application on the app device answers with what it saw.
     let seen = Arc::new(Mutex::new(Vec::new()));
     let mut incoming = app_device.listen(3000).await.unwrap();
     let seen_by_app = seen.clone();
@@ -152,7 +150,7 @@ async fn world_with(limits: Limits) -> World {
         }
     });
 
-    // A second application that switches protocols (as a WebSocket does) and echoes
+    // A second application switches protocols, as a WebSocket does, and echoes.
     let mut chat = app_device.listen(3001).await.unwrap();
     tokio::spawn(async move {
         while let Some(Accepted { mut stream, .. }) = chat.recv().await {
@@ -349,7 +347,7 @@ async fn a_caller_whose_identity_is_unknown_is_refused_not_given_a_shared_one() 
     assert!(w.seen.lock().unwrap().is_empty(), "the application saw nothing");
 }
 
-/// Open the echo service and switch protocols; returns the upgraded stream.
+/// Opens the echo service, switches protocols, and returns the upgraded stream.
 async fn open_chat(w: &World) -> tokio_rustls::client::TlsStream<tokio::io::DuplexStream> {
     let name = "chat.ts.example.com";
     let tcp = w.viewer.connect(SocketAddrV4::new(GATEWAY, 443)).await.unwrap();

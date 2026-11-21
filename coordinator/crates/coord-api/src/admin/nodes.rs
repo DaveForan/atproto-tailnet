@@ -111,7 +111,6 @@ pub async fn list_nodes(
     })).into_response()
 }
 
-// ── Tenant-scoped node listing ──
 
 pub async fn list_tenant_nodes_handler(
     State(state): State<Arc<CoordinatorState>>,
@@ -130,7 +129,6 @@ pub async fn list_tenant_nodes_handler(
     Json(serde_json::json!({"nodes": summaries, "count": summaries.len()})).into_response()
 }
 
-// ── Node operations: get, delete, rename ──
 
 #[derive(Deserialize)]
 pub struct RenameNodeRequest {
@@ -142,10 +140,9 @@ pub struct TenantGuardQuery {
     pub tenant_id: Option<String>,
 }
 
-/// Returns node info including tenant_id.
-/// NOTE: This is an admin endpoint — it intentionally returns data across all
-/// tenants. Callers that need tenant-scoped access should use the tenant-scoped
-/// node listing endpoint instead.
+/// Returns a node of any tenant, with its tenant_id.
+/// # Security
+/// Not tenant-scoped. Tenant callers use the tenant node listing.
 pub async fn get_node_handler(
     State(state): State<Arc<CoordinatorState>>,
     Path(id): Path<String>,
@@ -170,7 +167,7 @@ pub async fn delete_node_handler(
         Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "invalid node_id"}))).into_response(),
     };
 
-    // If caller specifies tenant_id, verify the node belongs to that tenant before deleting.
+    // With a tenant_id, the node must belong to that tenant.
     if let Some(ref tid_str) = query.tenant_id {
         let expected_tenant = match tid_str.parse::<uuid::Uuid>() {
             Ok(uuid) => TenantId::new(uuid),
@@ -209,7 +206,7 @@ pub async fn rename_node_handler(
         ).into_response();
     }
 
-    // If caller specifies tenant_id, verify the node belongs to that tenant before renaming.
+    // With a tenant_id, the node must belong to that tenant.
     if let Some(ref tid_str) = query.tenant_id {
         let expected_tenant = match tid_str.parse::<uuid::Uuid>() {
             Ok(uuid) => TenantId::new(uuid),

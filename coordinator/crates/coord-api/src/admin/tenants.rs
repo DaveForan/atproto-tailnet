@@ -11,7 +11,6 @@ use crate::state::CoordinatorState;
 use coord_core::is_valid_slug;
 use super::{bad_request, internal_error, not_found, parse_tenant_id};
 
-// ── Tenant management ──
 
 #[derive(Deserialize)]
 pub struct CreateTenantRequest {
@@ -162,8 +161,7 @@ pub async fn delete_tenant(
 
     match state.store.delete_tenant(tenant_id).await {
         Ok(()) => {
-            // Clean up any ACL policy for the deleted tenant
-            // The stored configuration went with the tenant row; drop the caches here and on other replicas
+            // The stored configuration went with the tenant row. Drop the caches here and on other replicas.
             state.forget_tenant_config(tenant_id);
             state.notify_tenant_changed(tenant_id);
             (
@@ -183,7 +181,6 @@ pub async fn delete_tenant(
     }
 }
 
-// ── Tenant posture management ──
 
 #[derive(Deserialize)]
 pub struct UpdatePostureRequest {
@@ -240,9 +237,8 @@ pub struct SetSuspendedRequest {
     pub suspended: bool,
 }
 
-/// PUT /api/tenants/{id}/suspended — instance-operator suspension. While
-/// suspended the tenant's nodes cannot register or poll the map, and live map
-/// streams end (via the config_changed broadcast, which re-checks suspension).
+/// PUT /api/tenants/{id}/suspended — instance-operator suspension.
+/// A suspended tenant's nodes cannot register or poll the map, and their live streams end.
 pub async fn set_tenant_suspended(
     State(state): State<Arc<CoordinatorState>>,
     Path(id): Path<String>,

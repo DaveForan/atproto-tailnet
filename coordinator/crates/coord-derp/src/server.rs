@@ -26,13 +26,9 @@ const DISCO_MAGIC: &[u8; 6] = b"TS\xf0\x9f\x92\xac";
 const NOT_HERE_BURST: u32 = 3;
 const NOT_HERE_INTERVAL: Duration = Duration::from_secs(1);
 
-/// Who may talk to whom through the relay. Nodes are grouped by tenant; a
-/// node reaches nodes of its own tenant and of its tenant's parent or
-/// children (the same visibility the coordinator's netmap gives them).
-///
-/// `parent` is the link to the parent tenant, and both directions of
-/// parent/child relaying depend on it: admission sets it only while the
-/// child is visible to its parent (posture not Closed, neither suspended).
+/// Who may talk to whom through the relay, with the same visibility as the netmap.
+/// A node reaches its own tenant and its tenant's parent or children.
+/// Admission sets `parent` only while the child is visible to its parent (posture not Closed, neither suspended).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Scope {
     pub tenant: [u8; 16],
@@ -48,8 +44,8 @@ impl Scope {
 /// Decides which node keys may use the relay.
 #[async_trait::async_trait]
 pub trait Admission: Send + Sync + 'static {
-    /// The scope of an admitted node, or `None` to refuse it. Called at
-    /// connect time and again periodically while the node stays connected.
+    /// Returns the node's scope, or `None` to refuse it.
+    /// The server calls it at connect and again periodically while the node stays connected.
     async fn admit(&self, node_key: &[u8; 32]) -> Option<Scope>;
 }
 
@@ -118,12 +114,12 @@ impl LocalClient {
         self.client.key
     }
 
-    /// The next packet sent to this client: (sender key, payload). `None`
-    /// after the client was replaced by another with the same key.
+    /// Returns the next packet as `(sender key, payload)`.
+    /// Returns `None` after another client with the same key replaces this one.
     pub async fn recv(&self) -> Option<([u8; 32], Bytes)> {
         loop {
-            // Register for a wake-up before looking, so a packet that arrives
-            // between the look and the wait is not missed.
+            // Register for a wake-up before the check, so a packet that arrives
+            // between the check and the wait is not missed.
             let notified = self.client.queue.notify.notified();
             while let Some(item) = self.client.queue.pop() {
                 if let Outbound::Packet { src, data } = item {
@@ -137,8 +133,8 @@ impl LocalClient {
         }
     }
 
-    /// Send a packet to a peer in this client's scope. Dropped without a
-    /// trace when the peer is not connected (WireGuard retransmits).
+    /// Sends a packet to a peer in this client's scope.
+    /// The packet is silently dropped when the peer is not connected (WireGuard retransmits).
     pub fn send(&self, dst: [u8; 32], data: Bytes) {
         let mut not_here = self.not_here.lock().unwrap_or_else(|e| e.into_inner());
         self.server.forward(&self.client, dst, data, &mut not_here);
@@ -159,8 +155,8 @@ enum Outbound {
     KeepAlive,
 }
 
-/// Bounded outbound queue. When full, the oldest packet is dropped so fresh
-/// packets win (WireGuard retransmits; stale packets are worthless).
+/// Bounded outbound queue that drops the oldest packet when full.
+/// Fresh packets win because WireGuard retransmits and stale packets are worthless.
 struct SendQueue {
     items: Mutex<VecDeque<Outbound>>,
     notify: Notify,
@@ -194,8 +190,8 @@ struct Client {
     /// Distinguishes this connection from a later one with the same key.
     id: u64,
     key: [u8; 32],
-    /// Re-read at every admission re-check: a parent/child link can close
-    /// (posture, suspension) while the client stays connected.
+    /// Updated at every admission re-check.
+    /// A parent/child link can close (posture, suspension) while the client stays connected.
     scope: RwLock<Scope>,
     /// An in-process client (the gateway). It has no connection to close.
     local: bool,
@@ -248,10 +244,8 @@ impl DerpServer {
         self.clients.read().unwrap_or_else(|e| e.into_inner()).len()
     }
 
-    /// Attach a client that lives in this process (the gateway, ADR-0029). It
-    /// is a relay client like any other: peers in its scope send to its key
-    /// and receive from it. It needs no connection and no handshake, because
-    /// the caller is trusted code that states its own key and scope.
+    /// Attaches an in-process relay client (the gateway, ADR-0029).
+    /// It needs no handshake because the caller is trusted code that states its own key and scope.
     pub fn attach_local(self: &Arc<Self>, key: [u8; 32], scope: Scope) -> LocalClient {
         let client = Arc::new(Client {
             id: self.next_id.fetch_add(1, Ordering::Relaxed),
@@ -279,9 +273,8 @@ impl DerpServer {
         self.clients.read().unwrap_or_else(|e| e.into_inner()).get(key).map(|c| c.scope())
     }
 
-    /// Re-admit now, instead of at the next keep-alive, the connected clients
-    /// whose tenant is in `tenants` (`None`: every client). A refused remote
-    /// client is disconnected. A refused local client keeps only its own tenant.
+    /// Re-admits now the connected clients whose tenant is in `tenants` (`None`: all clients).
+    /// A refused remote client is disconnected. A refused local client keeps only its own tenant.
     pub async fn rescope(&self, tenants: Option<&[[u8; 16]]>) {
         let clients: Vec<Arc<Client>> = self
             .clients
@@ -306,8 +299,7 @@ impl DerpServer {
         }
     }
 
-    /// Serve one client over `io` (the stream after the HTTP upgrade) until
-    /// it disconnects or misbehaves.
+    /// Serves one client over `io`, the stream after the HTTP upgrade, until it disconnects or misbehaves.
     pub async fn serve_conn<S>(&self, io: S) -> Result<(), DerpError>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send,
@@ -434,8 +426,8 @@ impl DerpServer {
                     discard(r, len - 8).await?;
                     client.queue.push(Outbound::Pong(payload));
                 }
-                // Home-relay hints, client keep-alives and frames this relay
-                // does not implement (mesh) carry nothing we need.
+                // Home-relay hints, client keep-alives, and unimplemented mesh frames
+                // carry nothing the relay needs.
                 _ => {
                     if len as usize > MAX_PACKET_SIZE + 2 * KEY_LEN {
                         return Err(DerpError::Protocol("oversized frame"));
@@ -500,8 +492,8 @@ impl DerpServer {
                             info!(node = %hex::encode(&client.key[..8]), "derp client no longer admitted");
                             return Err(DerpError::NotAdmitted);
                         }
-                        // The reach of the client follows its tenant (a child that
-                        // turned Closed, a parent that was suspended).
+                        // The client's reach follows its tenant, for example a child that
+                        // turned Closed or a parent that was suspended.
                         Some(scope) => client.set_scope(scope),
                     }
                     client.queue.push(Outbound::KeepAlive);
@@ -512,8 +504,7 @@ impl DerpServer {
     }
 
     fn keep_alive_interval(&self) -> Duration {
-        // Jitter spreads keep-alives of clients that connected together
-        // (up to 5 s, less for short intervals).
+        // Jitter of up to 5 s spreads keep-alives of clients that connected together.
         let max_jitter = (self.config.keep_alive.as_millis() / 12).clamp(1, 5000) as u64;
         self.config.keep_alive + Duration::from_millis(rand::random_range(0..max_jitter))
     }
@@ -779,7 +770,7 @@ mod tests {
 
     struct ByFirstByte;
 
-    /// Tenant is derived from the seed: 1x → tenant 1, 2x → tenant 2 (child of 1), 3x → tenant 3; 9x refused.
+    /// Maps seeds to tenants: 1x → tenant 1, 2x → tenant 2 (child of 1), 3x → tenant 3, 9x refused.
     #[async_trait::async_trait]
     impl Admission for ByFirstByte {
         async fn admit(&self, node_key: &[u8; 32]) -> Option<Scope> {
@@ -823,9 +814,8 @@ mod tests {
         assert_eq!((ty, body[32]), (FRAME_PEER_GONE, PEER_GONE_NOT_HERE));
     }
 
-    /// Tenant 1 is the parent of tenant 2; `linked` says whether the child is
-    /// visible to the parent (posture not Closed, neither suspended), as
-    /// `StoreAdmission` decides it from the store.
+    /// Tenant 1 is the parent of tenant 2.
+    /// `linked` says whether the child is visible to the parent, as `StoreAdmission` decides it.
     struct LinkedChild {
         linked: AtomicBool,
     }

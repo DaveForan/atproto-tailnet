@@ -1,11 +1,6 @@
-//! RFC 8785 JSON Canonicalization Scheme (JCS) — the single signing
-//! canonicalization of CFP messages, shared with the TypeScript service
-//! (`src/federation/jcs.ts`). Both are pinned by `tests/fixtures/cfp_vectors.json`.
-//!
-//! - object members sorted by their names' UTF-16 code units, no whitespace
-//! - strings escaped as ECMAScript `JSON.stringify` does
-//! - numbers formatted as ECMAScript `Number.prototype.toString` (IEEE-754
-//!   doubles; integers beyond 2^53 are rounded the way a JS peer sees them)
+//! RFC 8785 JCS for CFP signing, shared with the TS `src/federation/jcs.ts` and pinned by `tests/fixtures/cfp_vectors.json`.
+//! Members sort by UTF-16 code units. Strings and numbers follow ECMAScript `JSON.stringify`.
+//! Numbers are IEEE-754 doubles, so integers beyond 2^53 round as a JS peer sees them.
 
 use std::cmp::Ordering;
 use std::fmt::Write as _;
@@ -26,7 +21,7 @@ impl std::error::Error for JcsError {}
 
 const MAX_DEPTH: usize = 64;
 
-/// RFC 8785 canonical JSON text of `value`.
+/// Returns the RFC 8785 canonical JSON text of `value`.
 pub fn canonicalize(value: &Value) -> Result<String, JcsError> {
     let mut out = String::new();
     write_value(&mut out, value, 0)?;
@@ -168,7 +163,7 @@ mod tests {
     use super::*;
 
     #[test]
-    // The vectors are written as published (ECMAScript / RFC 8785 examples)
+    // The vectors use the published ECMAScript / RFC 8785 digits.
     #[allow(clippy::excessive_precision)]
     fn es_numbers() {
         let cases: &[(f64, &str)] = &[

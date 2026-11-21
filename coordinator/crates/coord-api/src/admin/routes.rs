@@ -69,7 +69,7 @@ pub async fn get_tenant_routes(
         }
     };
 
-    // Use atomic snapshot to prevent posture/nodes interleaving
+    // One atomic snapshot, so posture and nodes cannot interleave with a concurrent change.
     let snapshot = match state.store.get_tenant_route_snapshot(tenant_id).await {
         Ok(s) => s,
         Err(_) => {
@@ -171,8 +171,7 @@ pub async fn set_auto_approvers(
     for node in state.store.list_nodes_for_tenant(tenant_id).await {
         crate::control::apply_auto_approvers(&state, node.id).await;
     }
-    // Always notify: other replicas cache the policy and must reload it even
-    // when no node's approved routes changed here.
+    // Always notify: other replicas cache the policy and must reload it.
     state.notify_tenant_changed(tenant_id);
     Json(policy).into_response()
 }

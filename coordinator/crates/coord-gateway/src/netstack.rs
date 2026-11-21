@@ -1,5 +1,5 @@
-//! A userspace TCP/IP stack for one tailnet (ADR-0029). Tailnets share one address space, so each gets its own stack.
-//! Packets enter through [`NetStack::inject`] and leave on the `out` channel; the host network is never touched.
+//! Userspace TCP/IP stack for one tailnet (ADR-0029). Tailnets share one address space, so each has its own stack.
+//! Packets enter through [`NetStack::inject`] and leave on the `out` channel. The host network is never touched.
 //! TCP connections appear to the gateway as async byte streams.
 
 use std::collections::VecDeque;
@@ -16,22 +16,20 @@ use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio::sync::{mpsc, oneshot, Notify};
 
-/// MTU inside a tailnet (the value Tailscale clients use).
+/// MTU inside a tailnet, as Tailscale clients use.
 pub const TAILNET_MTU: usize = 1280;
 /// Tailnet addresses are in 100.64.0.0/10.
 const TAILNET_PREFIX: u8 = 10;
 const SOCKET_BUFFER: usize = 64 * 1024;
 /// Sockets waiting for a connection on each listening port.
 const BACKLOG: usize = 16;
-/// Connections of one tailnet at once; more are refused.
+/// Concurrent connections per tailnet. The stack refuses more.
 pub const MAX_CONNECTIONS: usize = 1024;
-/// Connections that one peer address may open to this stack at once,
-/// counting those still in their handshake. More are reset, so one device
-/// cannot use up the connections of its tailnet. Browsers open about six
-/// per name; this leaves room for many tabs and WebSockets.
+/// Concurrent connections from one peer address, including handshakes. The stack resets more.
+/// One device then cannot exhaust its tailnet. Browsers open about six per name, so 64 allows many tabs.
 pub const MAX_CONNECTIONS_PER_PEER: usize = 64;
 const CHUNK: usize = 16 * 1024;
-/// Arriving packets handled between two refills of the backlog.
+/// Arriving packets handled between two backlog refills.
 const INGRESS_BATCH: usize = 8;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// A connection whose peer stops answering is closed after this time.
@@ -78,9 +76,8 @@ pub struct NetStack {
 }
 
 impl NetStack {
-    /// Start a stack with the address `addr`. IP packets that the stack wants
-    /// to send appear on `out`; when `out` is full they are dropped (TCP
-    /// retransmits).
+    /// Starts a stack with the address `addr`. Outgoing IP packets appear on `out`.
+    /// The stack drops packets when `out` is full, because TCP retransmits.
     pub fn spawn(addr: Ipv4Addr, out: mpsc::Sender<Vec<u8>>) -> Self {
         Self::spawn_with(addr, out, Limits::default())
     }
@@ -92,20 +89,17 @@ impl NetStack {
         Self { packets, cmds }
     }
 
-    /// Give the stack an IP packet that arrived for it. Dropped when the
-    /// stack is busy (TCP retransmits).
+    /// Gives the stack an arriving IP packet. The packet is dropped when the stack is busy, because TCP retransmits.
     pub fn inject(&self, packet: Vec<u8>) {
         let _ = self.packets.try_send(packet);
     }
 
-    /// Accept TCP connections on `port`.
     pub async fn listen(&self, port: u16) -> io::Result<mpsc::Receiver<Accepted>> {
         let (accept, rx) = mpsc::channel(BACKLOG);
         self.cmds.send(Cmd::Listen { port, accept }).await.map_err(|_| stopped())?;
         Ok(rx)
     }
 
-    /// Open a TCP connection to another address of the tailnet.
     pub async fn connect(&self, addr: SocketAddrV4) -> io::Result<DuplexStream> {
         let (reply, rx) = oneshot::channel();
         self.cmds.send(Cmd::Connect { addr, reply }).await.map_err(|_| stopped())?;
@@ -117,7 +111,6 @@ fn stopped() -> io::Error {
     io::Error::new(io::ErrorKind::BrokenPipe, "the tailnet stack stopped")
 }
 
-// ── The packet queue that stands in for a network card ──────────────────
 
 struct Queue {
     rx: VecDeque<Vec<u8>>,
@@ -163,7 +156,6 @@ impl Device for Queue {
     }
 }
 
-// ── Streams between a TCP socket and the rest of the gateway ────────────
 
 /// Both directions of one connection, as the stack sees them.
 struct Pipe {
@@ -177,8 +169,8 @@ struct Pipe {
     app_done: bool,
 }
 
-/// Make the application's stream and the stack's view of it. Two small tasks
-/// move bytes between them; `wake` tells the stack that there is work.
+/// Makes the application's stream and the stack's view of it.
+/// Two small tasks move bytes between them. `wake` tells the stack that work is ready.
 fn pipe(wake: &Arc<Notify>) -> (DuplexStream, Pipe) {
     let (app, inner) = tokio::io::duplex(SOCKET_BUFFER);
     let (mut read_half, mut write_half) = tokio::io::split(inner);
@@ -222,8 +214,7 @@ struct Listening {
     handle: SocketHandle,
     port: u16,
     accept: mpsc::Sender<Accepted>,
-    /// True once a peer started a handshake on this socket and another
-    /// socket took its place in the backlog.
+    /// True once a peer started a handshake on this socket and another socket replaced it in the backlog.
     replaced: bool,
 }
 
@@ -236,9 +227,8 @@ struct Connecting {
 struct Stack {
     iface: Interface,
     device: Queue,
-    /// Packets that arrived and wait for their turn. They enter the stack a
-    /// few at a time, so that the backlog is refilled between them when many
-    /// connections start at once.
+    /// Arrived packets that wait their turn.
+    /// They enter a few at a time, so the backlog refills between them when many connections start at once.
     inbox: VecDeque<Vec<u8>>,
     sockets: SocketSet<'static>,
     started: Instant,
@@ -246,8 +236,7 @@ struct Stack {
     wake: Arc<Notify>,
     listening: Vec<Listening>,
     connecting: Vec<Connecting>,
-    /// Open connections, with the peer address of those a peer opened
-    /// (`None` for connections this stack opened).
+    /// Open connections, with the peer address for inbound ones (`None` for outbound).
     open: Vec<(SocketHandle, Pipe, Option<Ipv4Addr>)>,
     next_port: u16,
     limits: Limits,
@@ -288,7 +277,7 @@ impl Stack {
         socket
     }
 
-    /// The next local port that no socket of this stack holds. `None` when every port is in use.
+    /// The next local port that no socket holds, or `None` when every port is in use.
     fn free_port(&mut self) -> Option<u16> {
         let (first, last) = (*self.limits.ports.start(), *self.limits.ports.end());
         let used: std::collections::HashSet<u16> = self
@@ -316,7 +305,7 @@ impl Stack {
 
     async fn run(mut self, mut packets: mpsc::Receiver<Vec<u8>>, mut cmds: mpsc::Receiver<Cmd>) {
         loop {
-            // Work until nothing moves any more, then sleep until something happens
+            // Work until nothing moves, then sleep until something happens.
             for _ in 0..32 {
                 if !self.service() {
                     break;
@@ -387,8 +376,7 @@ impl Stack {
         }
     }
 
-    /// One round: let the stack process packets and timers, then move bytes
-    /// between sockets and applications. Returns true when anything moved.
+    /// Runs one round of packets, timers, and byte moves. Returns true when anything moved.
     fn service(&mut self) -> bool {
         let now = self.now();
         let batch = self.inbox.len().min(INGRESS_BATCH);
@@ -397,7 +385,7 @@ impl Stack {
         let mut moved = batch > 0;
         moved |= self.accept_new() | self.finish_connects() | self.move_bytes();
         if moved {
-            // Send what the applications just wrote, and the ACKs
+            // Flush what the applications just wrote, and the ACKs.
             self.iface.poll(self.now(), &mut self.device, &mut self.sockets);
         }
         while let Some(packet) = self.device.tx.pop_front() {
@@ -407,8 +395,7 @@ impl Stack {
         moved
     }
 
-    /// Connections from `peer`: open ones, and those in their handshake
-    /// (other than the listening socket `except`).
+    /// Counts open and handshaking connections from `peer`, other than the listening socket `except`.
     fn inbound_from(&self, peer: Ipv4Addr, except: SocketHandle) -> usize {
         let open = self.open.iter().filter(|(_, _, from)| *from == Some(peer)).count();
         let starting = self
@@ -427,14 +414,14 @@ impl Stack {
             let socket = self.sockets.get_mut::<tcp::Socket>(self.listening[i].handle);
             let state = socket.state();
             if state != tcp::State::Listen && !self.listening[i].replaced {
-                // A handshake started here: keep the backlog full
+                // A handshake started here, so add a listener to keep the backlog full.
                 self.listening[i].replaced = true;
                 let (port, accept) = (self.listening[i].port, self.listening[i].accept.clone());
                 if !accept.is_closed() {
                     self.add_listener(port, accept);
                 }
                 moved = true;
-                // One peer may not hold more than its share of connections
+                // Security: one peer may not hold more than its share of connections.
                 let handle = self.listening[i].handle;
                 let from = match self.sockets.get::<tcp::Socket>(handle).remote_endpoint() {
                     Some(e) => match e.addr {
@@ -473,8 +460,7 @@ impl Stack {
                         self.open.push((l.handle, pipe, peer.map(|p| *p.ip())));
                         moved = true;
                     }
-                    // The application is busy: the connection waits its turn,
-                    // with its data held back by the TCP window
+                    // The application is busy. The connection waits, and the TCP window holds back its data.
                     Err(_) => i += 1,
                 }
             } else {
@@ -540,7 +526,7 @@ impl Stack {
             // Peer → application
             if let Some(to_app) = &pipe.to_app {
                 if to_app.is_closed() {
-                    // The application went away: nothing will read this
+                    // The application went away, so nothing reads this data.
                     pipe.to_app = None;
                     socket.abort();
                     moved = true;
@@ -646,7 +632,7 @@ mod tests {
         });
 
         let mut client = a.connect(SocketAddrV4::new(Ipv4Addr::new(100, 64, 0, 2), 8080)).await.unwrap();
-        // More than the socket buffers and the pipes together, so flow control is used
+        // Larger than the socket buffers and pipes combined, so flow control engages.
         let data: Vec<u8> = (0..400_000u32).map(|i| (i % 251) as u8).collect();
         client.write_all(&data).await.unwrap();
         client.shutdown().await.unwrap();

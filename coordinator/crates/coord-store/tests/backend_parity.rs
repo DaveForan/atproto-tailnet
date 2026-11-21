@@ -271,7 +271,7 @@ async fn registration_attrs_and_routes() {
         assert_eq!(d.attrs.advertised_routes, strs(&["0.0.0.0/0", "10.0.0.0/24"]), "{}", b.name);
         assert!(d.attrs.approved_routes.is_empty(), "{}", b.name);
 
-        // Unchanged → false; changed → true.
+        // The setters return true only when the routes change.
         assert!(!s.set_advertised_routes(n1, strs(&["0.0.0.0/0", "10.0.0.0/24"])).await.unwrap(), "{}", b.name);
         assert!(s.set_approved_routes(n1, strs(&["0.0.0.0/0", "10.0.0.0/24"])).await.unwrap(), "{}", b.name);
         assert!(!s.set_approved_routes(n1, strs(&["0.0.0.0/0", "10.0.0.0/24"])).await.unwrap(), "{}", b.name);
@@ -294,8 +294,8 @@ async fn registration_attrs_and_routes() {
         assert_eq!(p.allowed_ips, vec![format!("{ip1}/32"), "0.0.0.0/0".into()], "{}", b.name);
         assert!(p.primary_routes.is_empty(), "{}", b.name);
 
-        // Re-register with the same grant identity keeps approvals; replaces
-        // advertised routes when given.
+        // Re-registering with the same grant identity keeps approvals.
+        // Given advertised routes replace the old ones.
         let same = NodeRegistration {
             owner: Some("alice".into()),
             tags: strs(&["tag:relay"]),
@@ -307,8 +307,8 @@ async fn registration_attrs_and_routes() {
         assert_eq!(d.attrs.approved_routes, strs(&["0.0.0.0/0", "10.0.0.0/24"]), "{}", b.name);
         assert_eq!(d.attrs.advertised_routes, strs(&["0.0.0.0/0"]), "{}", b.name);
 
-        // Re-register with a different grant (re-auth with a new key) replaces
-        // owner/tags/ephemeral and drops approvals granted to the old identity.
+        // Re-registering with a different grant replaces owner, tags and ephemeral.
+        // It drops approvals granted to the old identity.
         s.register_node_with(
             t,
             mk,
@@ -436,7 +436,7 @@ async fn tenant_suspension_round_trip() {
         assert!(listed.iter().find(|x| x.id == t).unwrap().suspended, "{}", b.name);
         assert!(!listed.iter().find(|x| x.id == other).unwrap().suspended, "{}", b.name);
 
-        // Non-consuming key lookup used to refuse registration before validation.
+        // The non-consuming key lookup lets registration refuse before validation.
         assert_eq!(s.preauth_key_tenant(&key).await, Some(t), "{}", b.name);
         assert_eq!(s.preauth_key_tenant("tskey-auth-nope").await, None, "{}", b.name);
         assert!(s.validate_preauth_key(&key).await.is_some(), "{}: lookup must not consume", b.name);

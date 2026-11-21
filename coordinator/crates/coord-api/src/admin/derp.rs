@@ -9,7 +9,6 @@ use crate::state::CoordinatorState;
 use coord_core::is_valid_hostname;
 use super::{bad_request, parse_tenant_id};
 
-// ── Per-tenant DERP configuration ──
 
 const CUSTOM_DERP_REGION_MIN: i32 = 900;
 const CUSTOM_DERP_REGION_MAX: i32 = 999;
@@ -67,7 +66,7 @@ pub async fn set_tenant_derp(
                 return bad_request(format!("invalid DERP hostname: {}", node.host_name));
             }
             node.region_id = region.region_id;
-            // Only meaningful in test harnesses; never let a tenant disable TLS verification.
+            // Never let a tenant disable TLS verification. Only test harnesses need it.
             node.insecure_for_tests = None;
         }
         custom_regions.insert(region.region_id, region);

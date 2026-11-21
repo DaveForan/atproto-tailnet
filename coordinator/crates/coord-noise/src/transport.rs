@@ -7,8 +7,8 @@ use crate::handshake::{
     NoiseError,
 };
 
-/// Tailscale-compatible nonce: 4 zero bytes + 8-byte big-endian counter.
-/// Go's controlbase uses this layout, which differs from snow's LE encoding.
+/// Tailscale nonce: 4 zero bytes, then an 8-byte big-endian counter.
+/// Go's controlbase uses this layout; snow uses little-endian.
 fn make_nonce(counter: u64) -> [u8; 12] {
     let mut nonce = [0u8; 12];
     nonce[4..12].copy_from_slice(&counter.to_be_bytes());
@@ -95,8 +95,7 @@ impl NoiseTransport {
     }
 }
 
-/// Read a single record frame from the wire.
-/// Returns the ciphertext payload (without the 3-byte header).
+/// Reads one record frame and returns its ciphertext without the 3-byte header.
 pub async fn read_record_frame<R: AsyncRead + Unpin>(
     reader: &mut R,
 ) -> Result<Vec<u8>, NoiseError> {
@@ -124,7 +123,7 @@ pub async fn read_record_frame<R: AsyncRead + Unpin>(
     Ok(payload)
 }
 
-/// Write a single record frame to the wire.
+/// Writes one record frame and flushes the writer.
 pub async fn write_record_frame<W: AsyncWrite + Unpin>(
     writer: &mut W,
     ciphertext: &[u8],
@@ -140,9 +139,8 @@ pub async fn write_record_frame<W: AsyncWrite + Unpin>(
     Ok(())
 }
 
-/// Spawn two bridge tasks between the Noise-framed connection and a cleartext
-/// duplex stream. Each task owns one half of the transport.
-/// Returns the cleartext side for the HTTP/2 server.
+/// Bridges the Noise-framed `io` to a cleartext duplex and returns the side for the HTTP/2 server.
+/// Two tasks run, and each owns one half of the transport.
 pub fn spawn_noise_bridge<IO>(
     io: IO,
     transport: NoiseTransport,
@@ -156,8 +154,8 @@ where
     let (tcp_read, tcp_write) = tokio::io::split(io);
     let (duplex_read, duplex_write) = tokio::io::split(duplex_bridge);
 
-    // When one task ends, the other must end too. The split halves share an
-    // Arc, so the duplex is not dropped and H2 would hang without this.
+    // When one task ends, the other must end too.
+    // The split halves share an Arc, so the duplex stays open and H2 hangs otherwise.
     let cancel = tokio_util::sync::CancellationToken::new();
 
     let cancel_in = cancel.clone();
@@ -179,7 +177,6 @@ where
     duplex_h2
 }
 
-/// TCP → decrypt → duplex.
 async fn bridge_inbound<R, W>(
     mut tcp_read: R,
     mut duplex_write: W,
@@ -205,7 +202,6 @@ where
     }
 }
 
-/// duplex → encrypt → TCP.
 async fn bridge_outbound<R, W>(
     mut duplex_read: R,
     mut tcp_write: W,
@@ -329,7 +325,6 @@ mod tests {
         let (wire_server, mut wire_client) = tokio::io::duplex(65536);
         let mut clear = spawn_noise_bridge(wire_server, server);
 
-        // Client → server
         for msg in [&b"one"[..], b"two"] {
             write_record_frame(&mut wire_client, &client.encrypt(msg).unwrap()).await.unwrap();
         }
@@ -337,12 +332,11 @@ mod tests {
         clear.read_exact(&mut got).await.unwrap();
         assert_eq!(&got, b"onetwo");
 
-        // Server → client
         clear.write_all(b"reply").await.unwrap();
         let ct = read_record_frame(&mut wire_client).await.unwrap();
         assert_eq!(client.decrypt(&ct).unwrap(), b"reply");
 
-        // A forged record ends the bridge and closes the cleartext side
+        // A forged record ends the bridge and closes the cleartext side.
         write_record_frame(&mut wire_client, &[0u8; 32]).await.unwrap();
         let mut rest = Vec::new();
         assert_eq!(clear.read_to_end(&mut rest).await.unwrap(), 0);

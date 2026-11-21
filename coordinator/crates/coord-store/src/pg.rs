@@ -104,21 +104,16 @@ fn decode_event(payload: &str, own_replica: &str) -> Option<Decoded> {
     }))
 }
 
-/// Feed notifications of other replicas into this process's channels. Runs
-/// until the process ends; reconnects when the connection drops.
-///
-/// NOTIFY is not durable: whatever is published while this process has no
-/// LISTEN connection is lost. Every time the connection comes back, a
-/// `RemoteEvent::Resync` tells the process to rebuild its caches and send
-/// every live stream a full snapshot.
+/// Feeds other replicas' notifications into this process's channels and reconnects when the connection drops.
+/// NOTIFY is not durable: events published while no LISTEN connection exists are lost.
+/// So each reconnect sends `RemoteEvent::Resync`: caches rebuild and live streams get a full snapshot.
 async fn listen_for_events(
     pool: PgPool,
     replica: String,
     peer_tx: broadcast::Sender<PeerEvent>,
     remote_tx: broadcast::Sender<RemoteEvent>,
 ) {
-    // The next connection starts with a resync. True at start too: whatever
-    // was published between loading the caches and the first LISTEN is lost.
+    // Start with a resync too: events published between the cache load and the first LISTEN are lost.
     let mut missed = true;
     loop {
         let listener = async {
@@ -193,10 +188,9 @@ impl PgStore {
         MIGRATOR.iter().map(|m| m.version).max().unwrap_or(0)
     }
 
-    /// Connect without migrating (relay processes, which may run with a
-    /// least-privilege role that cannot create anything). Fails with a clear
-    /// error when the schema is behind this binary: start a control process
-    /// (which migrates) first.
+    /// Connects without migrating, for relay processes that may run with a least-privilege role.
+    /// Fails with a clear error when the schema is behind this binary.
+    /// A control process must run first to apply the migrations.
     pub async fn new_verified(pool: PgPool) -> Result<Self, StorageError> {
         let required = Self::required_schema_version();
         let applied: Result<(Option<i64>, i64), sqlx::Error> =
@@ -615,8 +609,8 @@ impl PgStore {
         Ok(decode_owner_lock(tenant_id, row))
     }
 
-    /// Serialized per (tenant, owner) by a transaction-scoped advisory lock
-    /// (so the first insert is covered too, where `FOR UPDATE` has no row).
+    /// A transaction-scoped advisory lock serializes updates per (tenant, owner).
+    /// It covers the first insert too, where `FOR UPDATE` has no row to lock.
     pub async fn update_owner_lock<R, F>(&self, tenant_id: TenantId, owner: &str, f: F) -> Result<R, CoordError>
     where
         F: FnOnce(coord_core::LockRead) -> (coord_core::LockWrite, R),
@@ -933,8 +927,6 @@ impl PgStore {
         Ok(result.rows_affected())
     }
 
-    /// Atomically consume a key: the conditional UPDATE (row-locked by Postgres)
-    /// means two registrations racing on a single-use key cannot both succeed.
     /// Tenant a pre-auth key belongs to, without validating or consuming it.
     pub async fn preauth_key_tenant(&self, key: &str) -> Option<TenantId> {
         sqlx::query_scalar::<_, uuid::Uuid>("SELECT tenant_id FROM coord_preauth_keys WHERE key = $1")
@@ -945,6 +937,8 @@ impl PgStore {
             .map(TenantId::new)
     }
 
+    /// Atomically consumes a key: the conditional UPDATE locks the row.
+    /// Two registrations racing on a single-use key cannot both succeed.
     pub async fn validate_preauth_key(&self, key: &str) -> Option<PreAuthGrant> {
         let row: Option<(uuid::Uuid, Option<String>, Json, bool)> = sqlx::query_as(
             "UPDATE coord_preauth_keys SET used = TRUE \
@@ -986,9 +980,8 @@ impl PgStore {
     ) -> Result<(NodeId, Ipv4Addr, u64), CoordError> {
         let endpoints_json = serde_json::to_value(&info.endpoints).unwrap();
 
-        // All registrations serialize on one transaction-scoped advisory lock so
-        // the lowest-free-address scan and the INSERT are atomic with respect
-        // to each other (and a machine key can't be inserted twice).
+        // One transaction-scoped advisory lock serializes all registrations.
+        // The lowest-free-address scan and the INSERT are then atomic, and a machine key cannot be inserted twice.
         let mut tx = self.pool.begin().await.map_err(db)?;
         sqlx::query("SELECT pg_advisory_xact_lock($1)")
             .bind(IPV4_ALLOC_LOCK_KEY)

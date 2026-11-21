@@ -1,7 +1,5 @@
-//! Cross-implementation CFP signing vectors (shared with the TypeScript
-//! service's `src/__tests__/federation-cfp-vectors.test.ts`). Lives as a unit
-//! test module so it runs with `cargo test -p coord-federation` without an
-//! extra test binary.
+//! Cross-implementation CFP signing vectors.
+//! The TS service shares them in `src/__tests__/federation-cfp-vectors.test.ts`.
 
 use ed25519_dalek::SigningKey;
 use serde_json::Value;
@@ -30,7 +28,7 @@ fn struct_payload<T: CfpSigned>(m: &T) -> String {
     message_signing_payload(m).unwrap()
 }
 
-/// Signing payload rebuilt from the typed struct (what the Rust handshake signs).
+/// Signing payload rebuilt from the typed struct, as the Rust handshake signs it.
 fn typed_payload(message: &Value) -> String {
     match serde_json::from_value::<CfpMessage>(message.clone()).expect("message parses as CfpMessage") {
         CfpMessage::Hello(m) => struct_payload(&m),
