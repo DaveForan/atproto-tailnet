@@ -7,6 +7,7 @@ import { Loading } from "../components/Loading";
 import { LoadError } from "../components/LoadError";
 import {
   boardsService,
+  type ChildBoard,
   type MyDevice,
   type MyPost,
   type PendingPost,
@@ -26,6 +27,7 @@ interface BoardsData {
   pending: { posts: PendingPost[] };
   mode: { mode: "open" | "member"; canEdit: boolean };
   board: { text: string; canEdit: boolean; address: string };
+  children: { tailnets: ChildBoard[] };
 }
 
 const FALLBACK: BoardsData = {
@@ -35,6 +37,7 @@ const FALLBACK: BoardsData = {
   pending: { posts: [] },
   mode: { mode: "open", canEdit: false },
   board: { text: "", canEdit: false, address: "" },
+  children: { tailnets: [] },
 };
 
 export function BoardsTab() {
@@ -47,6 +50,7 @@ export function BoardsTab() {
     pending: (tid) => (canReview ? boardsService.pending(tid) : Promise.resolve({ posts: [] })),
     mode: (tid) => boardsService.accessMode(tid),
     board: (tid) => boardsService.controllerBoard(tid),
+    children: (tid) => boardsService.children(tid),
   };
   const { data, loading, error, reload } = useTenantParallel(loaders, FALLBACK, {
     deps: [canReview],
@@ -87,6 +91,31 @@ export function BoardsTab() {
           </ul>
         )}
       </Card>
+
+      {data.children.tailnets.length > 0 && (
+        <Card title="Services in sub-collectives">
+          <p className="card-description">
+            Public services of the tailnets below this one. This list is to read only: to use a service, join that tailnet.
+          </p>
+          {data.children.tailnets.map((c) => (
+            <section key={c.name + (c.address ?? "")}>
+              <h4>{c.name}</h4>
+              <ul className="post-list">
+                {c.posts.map((p) => (
+                  <li key={p.id} className="post-card">
+                    <div className="post-head">
+                      <h4>{p.title}</h4>
+                      <span className="mono text-sm">{p.proto} {p.port}</span>
+                    </div>
+                    {p.description && <p className="post-desc">{p.description}</p>}
+                    <p className="text-dim text-sm">by @{p.author.handle}{p.web ? " · web application" : ""}</p>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ))}
+        </Card>
+      )}
 
       {canReview && data.pending.posts.length > 0 && (
         <PendingPostsCard

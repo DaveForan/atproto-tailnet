@@ -199,6 +199,60 @@ boardsRouter.get("/api/tenants/:tenantId/boards/public", requireAuth, tenantGuar
   });
 });
 
+/**
+ * True when a parent tailnet may see the public board of this child (ADR-0030, Hierarchy).
+ * The child decides with its posture: only "open" shows it. A suspended or deleted child shows nothing.
+ */
+export function childBoardVisible(child: { status: string; suspended: boolean; boardEnabled: boolean; federationPosture: string }): boolean {
+  return child.status !== "deleted" && !child.suspended && child.boardEnabled && child.federationPosture === "open";
+}
+
+/**
+ * The public services of the child tailnets of this tailnet, to read only.
+ * No addresses and no Connect: to use a service, a member joins the child tailnet.
+ * Posts for some roles of the child are not shown.
+ */
+boardsRouter.get("/api/tenants/:tenantId/boards/children", requireAuth, tenantGuard(), async (_req, res) => {
+  const result = tenantCtx(res);
+  const children = (await db.select().from(tenants).where(eq(tenants.parentId, result.tenant.id)).limit(200)).filter(childBoardVisible);
+  if (children.length === 0) {
+    res.json({ tailnets: [] });
+    return;
+  }
+  const posts = await db
+    .select({ post: servicePosts, authorHandle: users.handle })
+    .from(servicePosts)
+    .innerJoin(users, eq(servicePosts.authorId, users.id))
+    .where(
+      and(
+        inArray(servicePosts.tenantId, children.map((c) => c.id)),
+        eq(servicePosts.board, "public"),
+        eq(servicePosts.status, "approved"),
+      ),
+    )
+    .orderBy(desc(servicePosts.createdAt))
+    .limit(500);
+  const open = posts.filter(({ post }) => post.allowedRoleIds.length === 0);
+  const tailnets = await Promise.all(
+    children.map(async (c) => ({
+      name: c.name,
+      address: await primaryHostname(c.id, c.slug).catch(() => null),
+      posts: open
+        .filter(({ post }) => post.tenantId === c.id)
+        .map(({ post, authorHandle }) => ({
+          id: post.id,
+          title: post.title,
+          description: post.description,
+          proto: post.proto,
+          port: post.port,
+          web: post.web,
+          author: { handle: authorHandle },
+        })),
+    })),
+  );
+  res.json({ tailnets: tailnets.filter((t) => t.posts.length > 0) });
+});
+
 /** The caller's own posts on both boards, any status except removed. */
 boardsRouter.get("/api/tenants/:tenantId/boards/mine", requireAuth, tenantGuard(), async (req, res) => {
   const userId = authUserId(req);

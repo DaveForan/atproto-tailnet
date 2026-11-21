@@ -52,6 +52,14 @@ export interface PendingPost extends Omit<MyPost, "device" | "connections"> {
   authorHandle: string;
 }
 
+/** Public services of a child tailnet, as members of the parent see them: to read only. */
+export interface ChildBoard {
+  name: string;
+  /** The public address of the child tailnet (its join page), or null. */
+  address: string | null;
+  posts: Array<{ id: string; title: string; description: string | null; proto: "tcp" | "udp"; port: number; web: boolean; author: { handle: string } }>;
+}
+
 export interface NewPost {
   board: "public" | "private";
   title: string;
@@ -74,6 +82,7 @@ export const boardsService = {
   myDevices: (tid: string) => tenantApi<{ devices: MyDevice[]; supported: boolean }>(tid, "/my-devices"),
   publicBoard: (tid: string) => tenantApi<{ posts: PublicPost[] }>(tid, "/boards/public"),
   myPosts: (tid: string) => tenantApi<{ baseDomain: string; httpsServices: boolean; serviceDomain: string | null; posts: MyPost[] }>(tid, "/boards/mine"),
+  children: (tid: string) => tenantApi<{ tailnets: ChildBoard[] }>(tid, "/boards/children"),
   pending: (tid: string) => tenantApi<{ posts: PendingPost[] }>(tid, "/boards/pending"),
   create: (tid: string, post: NewPost) => tenantApi<MyPost>(tid, "/boards/posts", json("POST", post)),
   remove: (tid: string, postId: string) => tenantApi(tid, `/boards/posts/${postId}`, json("DELETE")),

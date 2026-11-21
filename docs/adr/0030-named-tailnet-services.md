@@ -129,11 +129,21 @@ Built:
 Differences from the decision:
 
 - The publish flow is the service form of the Boards tab, not a separate
-  Services screen. There is no MCP tool yet.
-- No restriction of a service to roles. Visibility is by board and
-  connection, as for all service posts.
+  Services screen. The MCP tools are `list_my_devices`, `list_services`,
+  `publish_service`, `connect_to_service` and `remove_service`.
+- A public service can be for some roles only (`allowed_role_ids`). The
+  restriction applies when access is compiled, not in the gateway: a member
+  whose role does not match has no connection that counts. Thus the
+  coordinator sends no rule and no name for that member's devices, and the
+  gateway gives the answer of an unknown name. The author and the originator
+  always have access. A role change or a deleted role pushes the rules again.
 - In a tailnet with an ACL policy (open mode with rules), no rule is added
   for the gateway. The originator must allow it in the policy.
-- The hierarchy rule (a parent sees the services of children) is not built.
+- The hierarchy rule is built as a view only. Members of a parent tailnet
+  see the public services of each child tailnet whose posture is Open
+  (`GET .../boards/children`): title, description, port and author. They get
+  no address and cannot connect from the parent. To use a service, a member
+  joins the child tailnet. Selective posture counts as Closed. Posts for some
+  roles of the child are not shown.
 
 Not yet done: the acceptance test with a real device and a browser.

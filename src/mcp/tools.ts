@@ -229,6 +229,97 @@ export const TOOL_DEFS: ToolDef[] = [
   },
 
   {
+    name: "list_my_devices",
+    title: "List my devices",
+    description: "List the caller's own devices in a tailnet (id, name, address, online). A service runs on one of these.",
+    shape: { tailnet_id: tailnetId },
+    annotations: READ,
+    run: (api, a) => api.call("GET", `${t(a)}/my-devices`),
+  },
+  {
+    name: "list_roles",
+    title: "List roles",
+    description: "List the roles of a tailnet (id, name, permissions).",
+    shape: { tailnet_id: tailnetId },
+    annotations: READ,
+    run: (api, a) => api.call("GET", `${t(a)}/roles`),
+  },
+  {
+    name: "list_services",
+    title: "List services",
+    description:
+      "List the services of a tailnet that the caller can see: the public board, the caller's own posts on both boards " +
+      "(with status and connected members), and the public services of sub-collectives (read only).",
+    shape: { tailnet_id: tailnetId },
+    annotations: READ,
+    run: async (api, a) => ({
+      public_board: await api.call("GET", `${t(a)}/boards/public`),
+      mine: await api.call("GET", `${t(a)}/boards/mine`),
+      sub_collectives: await api.call("GET", `${t(a)}/boards/children`),
+    }),
+  },
+  {
+    name: "publish_service",
+    title: "Publish a service",
+    description:
+      "Publish one port of one of the caller's devices as a service, for example \"publish food-app on port 3000 from my laptop\". " +
+      "board \"private\": for the caller's own devices, needs a name. board \"public\": offered to members, who connect chosen devices; " +
+      "it may need approval by the tailnet first. web: serve it at an https address inside the tailnet (needs a name and TCP; " +
+      "the application must listen on the tailnet address of the device, not only on localhost). " +
+      "role_ids: only members with these roles may connect (public board).",
+    shape: {
+      tailnet_id: tailnetId,
+      device_id: idArg().describe("One of the caller's devices (from list_my_devices)"),
+      port: z.number().int().min(1).max(65535),
+      title: z.string().min(1).max(120),
+      board: z.enum(["private", "public"]).optional().describe("Default private"),
+      name: z.string().max(63).optional().describe("DNS label of the service, for example food-app"),
+      description: z.string().max(1000).optional(),
+      proto: z.enum(["tcp", "udp"]).optional().describe("Default tcp"),
+      web: z.boolean().optional().describe("Give it an https web address"),
+      role_ids: z.array(uuidArg()).max(20).optional().describe("Role ids from list_roles; public board only"),
+    },
+    annotations: WRITE,
+    run: (api, a) => {
+      const body: Record<string, unknown> = {
+        board: a.board ?? "private",
+        title: a.title,
+        nodeId: seg(a.device_id, "id", "device_id"),
+        port: a.port,
+      };
+      for (const [from, to] of [["name", "name"], ["description", "description"], ["proto", "proto"], ["web", "web"], ["role_ids", "roleIds"]] as const) {
+        if (a[from] !== undefined) body[to] = a[from];
+      }
+      return api.call("POST", `${t(a)}/boards/posts`, body);
+    },
+  },
+  {
+    name: "remove_service",
+    title: "Remove a service",
+    description: "Remove one of the caller's service posts (or any public post, with the manage_board permission). Access through it ends at once." + DESTRUCTIVE_NOTE,
+    shape: { tailnet_id: tailnetId, service_id: uuidArg().describe("Post id from list_services") },
+    annotations: DESTRUCTIVE,
+    run: (api, a) => api.call("DELETE", `${t(a)}/boards/posts/${seg(a.service_id, "uuid", "service_id")}`),
+  },
+  {
+    name: "connect_to_service",
+    title: "Connect devices to a service",
+    description:
+      "Set which of the caller's devices are connected to a public service. Each connected device can reach that one port of the service device. " +
+      "An empty list disconnects.",
+    shape: {
+      tailnet_id: tailnetId,
+      service_id: uuidArg().describe("Post id from list_services"),
+      device_ids: z.array(idArg()).max(32).describe("The caller's devices (from list_my_devices); empty to disconnect"),
+    },
+    annotations: WRITE,
+    run: (api, a) =>
+      api.call("PUT", `${t(a)}/boards/posts/${seg(a.service_id, "uuid", "service_id")}/connections`, {
+        nodeIds: (a.device_ids as unknown[]).map((id) => seg(id, "id", "device_ids")),
+      }),
+  },
+
+  {
     name: "list_auth_keys",
     title: "List auth keys",
     description: "List issued pre-auth keys (all keys if you manage devices, otherwise your own).",
