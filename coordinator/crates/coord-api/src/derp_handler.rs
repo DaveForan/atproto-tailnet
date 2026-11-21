@@ -128,8 +128,9 @@ mod tests {
         assert_eq!(relay_scope(&store, child).await.unwrap().parent, Some(pb));
         assert_eq!(relay_scope(&store, parent).await.unwrap().parent, None);
 
+        // Selective is not implemented and behaves as Closed
         store.update_tenant_posture(child, FederationPosture::Selective).await.unwrap();
-        assert_eq!(relay_scope(&store, child).await.unwrap().parent, Some(pb));
+        assert_eq!(relay_scope(&store, child).await.unwrap().parent, None);
 
         // Closed: no link, so neither side reaches the other
         store.update_tenant_posture(child, FederationPosture::Closed).await.unwrap();

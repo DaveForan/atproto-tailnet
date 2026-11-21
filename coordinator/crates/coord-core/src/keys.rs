@@ -7,24 +7,6 @@ pub fn encode_key_hex(prefix: &str, key: &[u8; 32]) -> String {
     format!("{}{}", prefix, hex::encode(key))
 }
 
-pub fn decode_key_hex(s: &str) -> Option<(String, [u8; 32])> {
-    let (prefix, hex_part) = if let Some(rest) = s.strip_prefix(MACHINE_KEY_PREFIX) {
-        (MACHINE_KEY_PREFIX.to_string(), rest)
-    } else if let Some(rest) = s.strip_prefix(NODE_KEY_PREFIX) {
-        (NODE_KEY_PREFIX.to_string(), rest)
-    } else {
-        return None;
-    };
-
-    let bytes = hex::decode(hex_part).ok()?;
-    if bytes.len() != 32 {
-        return None;
-    }
-    let mut key = [0u8; 32];
-    key.copy_from_slice(&bytes);
-    Some((prefix, key))
-}
-
 pub fn format_machine_key(key: &MachineKey) -> String {
     encode_key_hex(MACHINE_KEY_PREFIX, &key.0)
 }
@@ -33,13 +15,28 @@ pub fn format_node_key(key: &[u8; 32]) -> String {
     encode_key_hex(NODE_KEY_PREFIX, key)
 }
 
-pub fn parse_node_key(s: &str) -> Option<[u8; 32]> {
-    let hex_str = s.strip_prefix(NODE_KEY_PREFIX)?;
-    let bytes = hex::decode(hex_str).ok()?;
-    if bytes.len() != 32 {
-        return None;
+/// Parse a node key as Tailscale clients send it: `nodekey:` and 64 hex digits.
+///
+/// # Errors
+/// A missing prefix, bad hex, or a length other than 32 bytes.
+pub fn parse_node_key(s: &str) -> Result<[u8; 32], String> {
+    let hex_part = s.strip_prefix(NODE_KEY_PREFIX).ok_or("node key must start with nodekey:")?;
+    let bytes = hex::decode(hex_part).map_err(|e| format!("node key is not hex: {e}"))?;
+    bytes.try_into().map_err(|b: Vec<u8>| format!("node key must be 32 bytes, got {}", b.len()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn node_keys_need_the_nodekey_prefix() {
+        let hex = "ab".repeat(32);
+        assert_eq!(parse_node_key(&format!("nodekey:{hex}")), Ok([0xab; 32]));
+        assert_eq!(parse_node_key(&format_node_key(&[7; 32])), Ok([7; 32]));
+        assert!(parse_node_key(&hex).is_err(), "bare hex");
+        assert!(parse_node_key(&format!("mkey:{hex}")).is_err(), "machine key prefix");
+        assert!(parse_node_key("nodekey:abcd").is_err(), "short");
+        assert!(parse_node_key(&format!("nodekey:{}", "zz".repeat(32))).is_err(), "not hex");
     }
-    let mut key = [0u8; 32];
-    key.copy_from_slice(&bytes);
-    Some(key)
 }

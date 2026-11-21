@@ -14,9 +14,11 @@ const TEST_ADMIN_KEY: &str = "test-admin-key";
 fn setup() -> (axum::Router, Arc<CoordinatorState>) {
     let key = coord_noise::generate_control_key();
     let state = Arc::new(
-        CoordinatorState::new(key)
+        CoordinatorState::builder(key)
             .with_admin_api_key(Some(TEST_ADMIN_KEY.to_string()))
-            .with_federation_callbacks(Arc::new(TestCallbacks)),
+            .with_federation_enabled(true)
+            .with_federation_callbacks(Arc::new(TestCallbacks))
+            .build(),
     );
     let app = coord_api::router(state.clone());
     (app, state)
@@ -43,9 +45,11 @@ impl coord_federation::HandshakeCallbacks for TestCallbacks {
 fn setup_with_callbacks() -> (axum::Router, Arc<CoordinatorState>) {
     let key = coord_noise::generate_control_key();
     let state = Arc::new(
-        CoordinatorState::new(key)
+        CoordinatorState::builder(key)
             .with_admin_api_key(Some(TEST_ADMIN_KEY.to_string()))
-            .with_federation_callbacks(Arc::new(TestCallbacks)),
+            .with_federation_enabled(true)
+            .with_federation_callbacks(Arc::new(TestCallbacks))
+            .build(),
     );
     let app = coord_api::router(state.clone());
     (app, state)
@@ -55,9 +59,10 @@ fn setup_with_callbacks() -> (axum::Router, Arc<CoordinatorState>) {
 fn setup_with_relay_region() -> (axum::Router, Arc<CoordinatorState>) {
     let key = coord_noise::generate_control_key();
     let state = Arc::new(
-        CoordinatorState::new(key)
+        CoordinatorState::builder(key)
             .with_admin_api_key(Some(TEST_ADMIN_KEY.to_string()))
-            .with_builtin_relay_region("derp.example.com", 3478),
+            .with_builtin_relay_region("derp.example.com", 3478)
+            .build(),
     );
     (coord_api::router(state.clone()), state)
 }
@@ -504,7 +509,7 @@ async fn node_key_rotation() {
 #[tokio::test]
 async fn map_includes_home_derp() {
     let key = coord_noise::generate_control_key();
-    let state = Arc::new(CoordinatorState::new(key).with_builtin_relay_region("derp.example.com", 3478));
+    let state = Arc::new(CoordinatorState::builder(key).with_builtin_relay_region("derp.example.com", 3478).build());
     let tenant_id = create_test_tenant(&state, "home-derp").await;
     let auth_key = state.store().create_preauth_key(tenant_id, false).await.unwrap();
     let machine_key = [140u8; 32];
@@ -687,7 +692,7 @@ async fn custom_derp_map() {
         omit_default_regions: Some(true),
     };
 
-    let state = Arc::new(CoordinatorState::new(key).with_derp_map(custom_derp));
+    let state = Arc::new(CoordinatorState::builder(key).with_derp_map(custom_derp).build());
     let tenant_id = create_test_tenant(&state, "custom-derp").await;
     let auth_key = state.store().create_preauth_key(tenant_id, false).await.unwrap();
     let machine_key = [150u8; 32];
@@ -1124,7 +1129,7 @@ async fn hierarchy_child_does_not_see_parent_peers() {
 }
 
 #[tokio::test]
-async fn hierarchy_selective_posture_allows_visibility() {
+async fn hierarchy_selective_posture_fails_safe_as_closed() {
     let (_, state) = setup();
 
     let parent = state.store().create_tenant("sel-parent".into(), None, None).await.unwrap();
@@ -1148,9 +1153,8 @@ async fn hierarchy_selective_posture_allows_visibility() {
         .await
         .unwrap();
     let resp: serde_json::Value = serde_json::from_str(&result).unwrap();
-    let peers = resp["Peers"].as_array().unwrap();
-    assert_eq!(peers.len(), 1, "selective posture should allow parent to see child");
-    assert_eq!(peers[0]["Name"], "child-sel.mesh.local.");
+    let peers = resp["Peers"].as_array().map_or(0, Vec::len);
+    assert_eq!(peers, 0, "a stored selective posture hides the child, as closed does");
 }
 
 #[tokio::test]
@@ -1210,7 +1214,7 @@ async fn update_posture_via_api() {
     let updated = state.store().get_tenant(tenant.id).await.unwrap();
     assert_eq!(updated.federation_posture, coord_core::FederationPosture::Open);
 
-    // Update to Selective
+    // Selective is refused and the posture stays as it was
     let resp = app.clone().oneshot(
         admin_req()
             .method("PUT")
@@ -1219,9 +1223,10 @@ async fn update_posture_via_api() {
             .body(Body::from(r#"{"posture":"selective"}"#))
             .unwrap(),
     ).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let body = json_body(resp).await;
-    assert_eq!(body["federation_posture"], "selective");
+    assert_eq!(body["error"], "selective posture is not implemented");
+    assert_eq!(state.store().get_tenant(tenant.id).await.unwrap().federation_posture, coord_core::FederationPosture::Open);
 
     // Invalid posture rejected
     let resp = app.clone().oneshot(
@@ -1607,8 +1612,9 @@ async fn federation_revoke_missing_session_rejected() {
 fn setup_with_admin_key() -> (axum::Router, Arc<CoordinatorState>) {
     let key = coord_noise::generate_control_key();
     let state = Arc::new(
-        CoordinatorState::new(key)
-            .with_admin_api_key(Some("test-admin-secret".to_string())),
+        CoordinatorState::builder(key)
+            .with_admin_api_key(Some("test-admin-secret".to_string()))
+            .build(),
     );
     let app = coord_api::router(state.clone());
     (app, state)
@@ -1708,9 +1714,9 @@ async fn admin_create_tenant_with_federation_posture() {
         )
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let body: serde_json::Value = serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    assert_eq!(body["federation_posture"], "selective");
+    assert_eq!(body["error"], "selective posture is not implemented");
 
     let resp = app.clone()
         .oneshot(
@@ -2509,7 +2515,7 @@ async fn ephemeral_nodes_swept_after_offline_grace() {
 #[tokio::test]
 async fn federation_routes_absent_when_disabled() {
     let state = Arc::new(
-        CoordinatorState::new(coord_noise::generate_control_key()).with_federation_enabled(false),
+        CoordinatorState::builder(coord_noise::generate_control_key()).with_federation_enabled(false).build(),
     );
     let resp = coord_api::router(state)
         .oneshot(
@@ -2523,6 +2529,52 @@ async fn federation_routes_absent_when_disabled() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn federation_is_off_by_default_and_needs_callbacks() {
+    let state = Arc::new(CoordinatorState::new(coord_noise::generate_control_key()));
+    assert!(!state.federation_enabled());
+    let resp = coord_api::router(state)
+        .oneshot(Request::builder().method("POST").uri("/api/federation/messages/hello").body(Body::from("{}")).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+    let on = CoordinatorState::builder(coord_noise::generate_control_key()).with_federation_enabled(true);
+    assert_eq!(on.validate(), Err(coord_api::ConfigError::FederationWithoutCallbacks));
+    assert!(on.with_federation_callbacks(Arc::new(TestCallbacks)).validate().is_ok());
+    assert!(CoordinatorState::builder(coord_noise::generate_control_key()).validate().is_ok());
+}
+
+#[tokio::test]
+async fn federation_bodies_are_capped_below_the_app_limit() {
+    let (app, _) = setup();
+    let limit = coord_federation::abuse::MAX_FEDERATION_BODY_BYTES;
+    let send = |len: usize| {
+        let app = app.clone();
+        async move {
+            app.oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/federation/messages/hello")
+                    .header("content-type", "application/json")
+                    .body(Body::from(vec![b' '; len]))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status()
+        }
+    };
+    assert_eq!(send(limit + 1).await, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_ne!(send(limit).await, StatusCode::PAYLOAD_TOO_LARGE);
+    // Other routes keep the 2 MiB limit
+    let resp = app
+        .oneshot(admin_req().method("POST").uri("/api/acl").header("content-type", "application/json").body(Body::from(vec![b' '; limit + 1])).unwrap())
+        .await
+        .unwrap();
+    assert_ne!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
 }
 
 // ── Tenant suspension ──
@@ -2906,7 +2958,7 @@ async fn noise_connection_cap_refuses_before_handshake() {
         .body(Body::empty())
         .unwrap();
 
-    let capped = coord_api::router(Arc::new(CoordinatorState::new(key.clone()).with_max_noise_connections(0)));
+    let capped = coord_api::router(Arc::new(CoordinatorState::builder(key.clone()).with_max_noise_connections(0).build()));
     let resp = capped.oneshot(ts2021()).await.unwrap();
     assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
 
@@ -3085,7 +3137,7 @@ async fn default_derp_map_has_no_third_party_relays() {
     assert!(state.derp().default_map().regions.is_empty());
 
     let key = coord_noise::generate_control_key();
-    let state = CoordinatorState::new(key).with_builtin_relay_region("derp.example.com", 3478);
+    let state = CoordinatorState::builder(key).with_builtin_relay_region("derp.example.com", 3478).build();
     let map = state.derp().default_map().clone();
     assert_eq!(map.regions.len(), 1);
     let node = &map.regions[&1].nodes[0];
@@ -3370,10 +3422,11 @@ async fn dns_record_is_hidden_when_its_device_is_not_visible() {
 fn sign_in_state() -> (axum::Router, Arc<CoordinatorState>) {
     let key = coord_noise::generate_control_key();
     let state = Arc::new(
-        CoordinatorState::new(key)
+        CoordinatorState::builder(key)
             .with_admin_api_key(Some(TEST_ADMIN_KEY.to_string()))
             .with_device_auth_url(Some("https://dash.example/device".into()))
-            .with_device_auth_wait(std::time::Duration::from_millis(150)),
+            .with_device_auth_wait(std::time::Duration::from_millis(150))
+            .build(),
     );
     (coord_api::router(state.clone()), state)
 }
@@ -3608,9 +3661,10 @@ async fn status_of(app: &axum::Router, uri: &str) -> StatusCode {
 async fn a_process_serves_only_the_parts_of_its_role() {
     let make = |role| {
         let state = Arc::new(
-            CoordinatorState::new(coord_noise::generate_control_key())
+            CoordinatorState::builder(coord_noise::generate_control_key())
                 .with_admin_api_key(Some(TEST_ADMIN_KEY.to_string()))
-                .with_role(role),
+                .with_role(role)
+                .build(),
         );
         coord_api::router(state)
     };
@@ -3648,7 +3702,7 @@ async fn control_builds_the_derp_map_from_live_relays_and_tells_devices() {
     assert_eq!(ids, vec![2, 3]);
     assert_eq!(map.regions[&3].nodes[0].host_name, "relay-3.example.com");
     assert_eq!(map.regions[&3].nodes[0].stun_port, 3478);
-    assert!(changes.try_recv().unwrap().as_uuid().is_nil(), "every tenant's streams are told");
+    assert_eq!(changes.try_recv().unwrap(), coord_api::ConfigChange::All, "every tenant's streams are told");
 
     // Nothing changed: devices are not disturbed again
     state.refresh_relays().await;
@@ -3659,9 +3713,10 @@ async fn control_builds_the_derp_map_from_live_relays_and_tells_devices() {
 async fn a_relay_process_reports_itself_and_a_control_process_does_not() {
     let state = |role| {
         Arc::new(
-            CoordinatorState::new(coord_noise::generate_control_key())
+            CoordinatorState::builder(coord_noise::generate_control_key())
                 .with_relay_identity(coord_core::RelayInfo { region_id: 5, hostname: "relay-5.example.com".into(), stun_port: 0 })
-                .with_role(role),
+                .with_role(role)
+                .build(),
         )
     };
     let control = state(coord_api::Role::Control);
@@ -3751,9 +3806,10 @@ async fn sqlite_state() -> (axum::Router, Arc<CoordinatorState>, sqlx::SqlitePoo
     let pool = coord_store::create_sqlite_pool(path.to_str().unwrap()).await.unwrap();
     let store = coord_store::SqliteStore::new(pool.clone()).await.unwrap();
     let state = Arc::new(
-        CoordinatorState::new(coord_noise::generate_control_key())
+        CoordinatorState::builder(coord_noise::generate_control_key())
             .with_admin_api_key(Some(TEST_ADMIN_KEY.to_string()))
-            .with_store(coord_store::Store::Sqlite(store)),
+            .with_store(coord_store::Store::Sqlite(store))
+            .build(),
     );
     (coord_api::router(state.clone()), state, pool, path)
 }
@@ -3929,9 +3985,10 @@ async fn deltas_from_a_child_need_the_child_to_be_visible() {
 async fn streams_send_a_periodic_full_snapshot_without_any_event() {
     let key = coord_noise::generate_control_key();
     let state = Arc::new(
-        CoordinatorState::new(key)
+        CoordinatorState::builder(key)
             .with_admin_api_key(Some(TEST_ADMIN_KEY.to_string()))
-            .with_stream_resync_period(std::time::Duration::from_millis(150)),
+            .with_stream_resync_period(std::time::Duration::from_millis(150))
+            .build(),
     );
     let app = coord_api::router(state.clone());
     let t = create_test_tenant(&state, "periodic").await;
@@ -3963,7 +4020,7 @@ async fn resync_reloads_every_tenant_and_wakes_every_stream() {
     assert!(state.acl().get_policy(t).is_none());
     state.resync_all().await;
     assert!(state.acl().get_policy(t).is_some_and(|p| p.default_deny));
-    assert!(changes.try_recv().unwrap().as_uuid().is_nil(), "every stream is told to resend");
+    assert_eq!(changes.try_recv().unwrap(), coord_api::ConfigChange::All, "every stream is told to resend");
 
     // Removed elsewhere: the cache follows
     state.store().set_tenant_config(t, "acl", None).await.unwrap();

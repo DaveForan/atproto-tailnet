@@ -20,6 +20,9 @@ const IPV4_ALLOC_LOCK_KEY: i64 = 0x636f_6f72_6449_5034; // "coordIP4"
 /// (the second is a hash of tenant and owner).
 const OWNER_LOCK_LOCK_CLASS: i32 = 0x6f6c_636b; // "olck"
 
+/// pg_advisory_xact_lock key serializing the start of device sign-ins.
+const SIGN_IN_LOCK_KEY: i64 = 0x636f_6f72_6453_474e; // "coordSGN"
+
 fn decode_owner_lock(tenant_id: TenantId, row: Option<Json>) -> coord_core::LockRead {
     match row {
         None => coord_core::LockRead::Unlocked,
@@ -84,8 +87,7 @@ fn decode_event(payload: &str, own_replica: &str) -> Option<Decoded> {
     if kind == "d" {
         return Some(Decoded::Remote(RemoteEvent::SignInDecided(subject.to_string())));
     }
-    // The nil id means "every tenant" inside a process; a notification never
-    // carries it (that would rebuild every stream on every replica).
+    // No tenant has the nil id: a notification that names it is malformed
     let tenant_id = TenantId::new(subject.parse().ok().filter(|u: &uuid::Uuid| !u.is_nil())?);
     if kind == "t" {
         return Some(Decoded::Remote(RemoteEvent::TenantChanged(tenant_id)));
@@ -425,15 +427,49 @@ impl PgStore {
         Ok(())
     }
 
-    pub async fn sign_in_start(&self, id: &str, machine_key: &[u8; 32], hostname: &str, os: &str, requester_ip: Option<&str>) -> Result<(), CoordError> {
+    pub async fn sign_in_start(
+        &self,
+        id: &str,
+        machine_key: &[u8; 32],
+        hostname: &str,
+        os: &str,
+        requester_ip: Option<&str>,
+        limits: coord_core::SignInLimits,
+    ) -> Result<coord_core::SignInStart, CoordError> {
         let now = crate::now_secs();
         let machine = hex::encode(machine_key);
+        // One lock serializes starts, so concurrent replicas cannot pass a cap together
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(SIGN_IN_LOCK_KEY)
+            .execute(&mut *tx)
+            .await
+            .map_err(db)?;
         sqlx::query("DELETE FROM coord_sign_ins WHERE machine_key = $1 OR expires_at <= $2")
             .bind(&machine)
             .bind(now)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(db)?;
+        if let Some(ip) = requester_ip {
+            let from_ip: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM coord_sign_ins WHERE requester_ip = $1")
+                .bind(ip)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(db)?;
+            if from_ip >= limits.per_ip {
+                tx.commit().await.map_err(db)?;
+                return Ok(coord_core::SignInStart::TooManyFromAddress);
+            }
+        }
+        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM coord_sign_ins")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?;
+        if total >= limits.total {
+            tx.commit().await.map_err(db)?;
+            return Ok(coord_core::SignInStart::Full);
+        }
         sqlx::query("INSERT INTO coord_sign_ins (id, machine_key, hostname, os, expires_at, requester_ip, requested_at) VALUES ($1, $2, $3, $4, $5, $6, $7)")
             .bind(id)
             .bind(&machine)
@@ -442,19 +478,11 @@ impl PgStore {
             .bind(now + coord_core::signin::SIGN_IN_TTL_SECS)
             .bind(requester_ip)
             .bind(now)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(db)?;
-        // Bound the table: drop the oldest beyond the cap
-        sqlx::query(
-            "DELETE FROM coord_sign_ins WHERE id IN \
-             (SELECT id FROM coord_sign_ins ORDER BY expires_at DESC OFFSET $1)"
-        )
-            .bind(coord_core::signin::MAX_PENDING_SIGN_INS)
-            .execute(&self.pool)
-            .await
-            .map_err(db)?;
-        Ok(())
+        tx.commit().await.map_err(db)?;
+        Ok(coord_core::SignInStart::Started)
     }
 
     pub async fn sign_in_get(&self, id: &str) -> Option<coord_core::PendingSignIn> {
@@ -977,7 +1005,7 @@ impl PgStore {
                 tenant_id,
                 node_id,
             }).await;
-            return Ok((node_id, ipv4, new_gen as u64));
+            return Ok((node_id, ipv4, crate::generation_from_db(new_gen)?));
         }
 
         let used: Vec<String> = sqlx::query_scalar("SELECT ipv4 FROM coord_nodes")
@@ -1018,7 +1046,7 @@ impl PgStore {
             node_id,
         }).await;
 
-        Ok((node_id, new_ipv4, generation as u64))
+        Ok((node_id, new_ipv4, crate::generation_from_db(generation)?))
     }
 
     pub async fn rotate_node_key(
@@ -1332,7 +1360,7 @@ impl PgStore {
              RETURNING tenant_id"
         )
             .bind(node_id.as_i64())
-            .bind(generation as i64)
+            .bind(crate::generation_to_db(generation)?)
             .fetch_optional(&self.pool)
             .await
             .map_err(db)?;

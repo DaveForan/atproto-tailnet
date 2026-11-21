@@ -27,8 +27,6 @@ struct StoredNode {
     stable_id: String,
     online: bool,
     session_generation: u64,
-    #[allow(dead_code)]
-    registered_at: chrono::DateTime<chrono::Utc>,
     last_seen: chrono::DateTime<chrono::Utc>,
     attrs: NodeAttrs,
 }
@@ -184,14 +182,26 @@ impl MemoryStore {
         Ok(())
     }
 
-    pub fn sign_in_start(&self, id: &str, machine_key: &[u8; 32], hostname: &str, os: &str, requester_ip: Option<&str>) -> Result<(), CoordError> {
+    pub fn sign_in_start(
+        &self,
+        id: &str,
+        machine_key: &[u8; 32],
+        hostname: &str,
+        os: &str,
+        requester_ip: Option<&str>,
+        limits: coord_core::SignInLimits,
+    ) -> Result<coord_core::SignInStart, CoordError> {
         let now = crate::now_secs();
         let mut all = self.sign_ins.lock().unwrap_or_else(|e| e.into_inner());
         all.retain(|_, (p, exp)| &p.machine_key != machine_key && *exp > now);
-        if all.len() as i64 >= coord_core::signin::MAX_PENDING_SIGN_INS {
-            if let Some(oldest) = all.iter().min_by_key(|(_, (_, exp))| *exp).map(|(k, _)| k.clone()) {
-                all.remove(&oldest);
+        if let Some(ip) = requester_ip {
+            let from_ip = all.values().filter(|(p, _)| p.requester_ip.as_deref() == Some(ip)).count();
+            if i64::try_from(from_ip).unwrap_or(i64::MAX) >= limits.per_ip {
+                return Ok(coord_core::SignInStart::TooManyFromAddress);
             }
+        }
+        if i64::try_from(all.len()).unwrap_or(i64::MAX) >= limits.total {
+            return Ok(coord_core::SignInStart::Full);
         }
         let p = coord_core::PendingSignIn {
             machine_key: *machine_key,
@@ -202,7 +212,7 @@ impl MemoryStore {
             requested_at: chrono::DateTime::from_timestamp(now, 0).unwrap_or_default(),
         };
         all.insert(id.to_string(), (p, now + coord_core::signin::SIGN_IN_TTL_SECS));
-        Ok(())
+        Ok(coord_core::SignInStart::Started)
     }
 
     pub fn sign_in_get(&self, id: &str) -> Option<coord_core::PendingSignIn> {
@@ -603,7 +613,6 @@ impl MemoryStore {
             stable_id,
             online: true,
             session_generation: 1,
-            registered_at: chrono::Utc::now(),
             last_seen: chrono::Utc::now(),
             attrs: NodeAttrs {
                 owner: reg.owner,

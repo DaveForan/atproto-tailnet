@@ -220,14 +220,14 @@ where
     Ok(())
 }
 
-type BoxBody = http_body_util::combinators::BoxBody<Bytes, std::io::Error>;
+pub(crate) type BoxBody = http_body_util::combinators::BoxBody<Bytes, std::io::Error>;
 
 fn full_body(bytes: Bytes) -> BoxBody {
     use http_body_util::BodyExt;
     Full::new(bytes).map_err(|_| unreachable!()).boxed()
 }
 
-fn json_error(status: StatusCode, msg: &str) -> Response<BoxBody> {
+pub(crate) fn json_error(status: StatusCode, msg: &str) -> Response<BoxBody> {
     Response::builder()
         .status(status)
         .body(full_body(Bytes::from(
@@ -304,7 +304,7 @@ async fn handle_register_request(
     }
 }
 
-fn frame_map_response(json_bytes: &[u8]) -> Result<Vec<u8>, std::io::Error> {
+pub(crate) fn frame_map_response(json_bytes: &[u8]) -> Result<Vec<u8>, std::io::Error> {
     let compressed = zstd::bulk::compress(json_bytes, 3)?;
     let len: u32 = compressed.len().try_into().map_err(|_| {
         std::io::Error::new(std::io::ErrorKind::InvalidData, "compressed frame exceeds u32::MAX")
@@ -359,231 +359,8 @@ pub(crate) async fn handle_map_request(
             }
         }
     } else {
-        handle_streaming_map(state, machine_key, body.to_string()).await
+        crate::map_stream::handle_streaming_map(state, machine_key, body.to_string()).await
     }
-}
-
-async fn handle_streaming_map(
-    state: Arc<CoordinatorState>,
-    machine_key: [u8; 32],
-    body: String,
-) -> Response<BoxBody> {
-    // Subscribe BEFORE computing snapshot so no events are lost between
-    // snapshot and subscribe. Duplicate events are harmless (client merges
-    // PeersChanged idempotently).
-    let mut peer_rx = state.store.subscribe();
-    let mut config_rx = state.config_changed.subscribe();
-
-    let initial = match control::handle_map(&state, &machine_key, &body).await {
-        Ok(json) => json,
-        Err(e) => {
-            warn!(error = %e, "streaming map initial response failed");
-            return json_error(StatusCode::INTERNAL_SERVER_ERROR, "internal error");
-        }
-    };
-
-    let node_id = match state.store.get_node_by_machine_key(&machine_key).await {
-        Some(id) => id,
-        None => return json_error(StatusCode::UNAUTHORIZED, "node not registered"),
-    };
-
-    let tenant_id = match state.store.get_node_tenant(node_id).await {
-        Some(tid) => tid,
-        None => return json_error(StatusCode::NOT_FOUND, "node has no tenant"),
-    };
-
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<hyper::body::Frame<Bytes>, std::io::Error>>(32);
-
-    if let Ok(initial_frame) = frame_map_response(initial.as_bytes()) {
-        let _ = tx.send(Ok(hyper::body::Frame::data(Bytes::from(initial_frame)))).await;
-    }
-    let state_clone = state.clone();
-
-    // Collect child tenant IDs for federation-aware streaming.
-    // Refreshed periodically (on keepalive tick) and after lag recovery.
-    let mut child_tenant_ids: Vec<coord_core::TenantId> = state_clone
-        .store
-        .get_child_tenants(tenant_id)
-        .await
-        .into_iter()
-        .filter(|t| t.visible_to_parent())
-        .map(|t| t.id)
-        .collect();
-
-    let mut last_peers = control::peer_ids_in(&initial);
-
-    tokio::spawn(async move {
-        use std::time::Duration;
-        let keepalive_period = Duration::from_secs(60);
-        let mut keepalive = tokio::time::interval_at(
-            tokio::time::Instant::now() + keepalive_period,
-            keepalive_period,
-        );
-        // Jittered so the streams of one replica do not all rebuild at once.
-        let resync_period = state_clone.stream_resync_period;
-        let jitter = Duration::from_millis(rand::random_range(0..=resync_period.as_millis() as u64 / 10));
-        let mut resync = tokio::time::interval_at(tokio::time::Instant::now() + resync_period + jitter, resync_period);
-        resync.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
-        loop {
-            tokio::select! {
-                _ = tx.closed() => {
-                    break;
-                }
-                changed = config_rx.recv() => {
-                    let affected = match changed {
-                        // The nil id means every tenant (the default DERP map changed)
-                        Ok(t) => t == tenant_id || t.as_uuid().is_nil(),
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => true,
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    };
-                    if !affected {
-                        continue;
-                    }
-                    if !stream_still_valid(&state_clone, tenant_id, node_id, &machine_key).await {
-                        send_cutoff(&state_clone, &tx, tenant_id, node_id).await;
-                        break;
-                    }
-                    child_tenant_ids = state_clone.store.get_child_tenants(tenant_id).await
-                        .into_iter()
-                        .filter(|t| t.visible_to_parent())
-                        .map(|t| t.id)
-                        .collect();
-                    if let Ok(json) = control::build_map_update(&state_clone, &machine_key, &mut last_peers).await {
-                        if let Ok(framed) = frame_map_response(json.as_bytes()) {
-                            if tx.send(Ok(hyper::body::Frame::data(Bytes::from(framed)))).await.is_err() {
-                                break;
-                            }
-                        }
-                    }
-                }
-                event = peer_rx.recv() => {
-                    let event = match event {
-                        Ok(e) => e,
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            tracing::warn!(skipped = n, "map stream lagged, sending full update");
-                            if let Ok(json) = control::build_map_update(&state_clone, &machine_key, &mut last_peers).await {
-                                if let Ok(framed) = frame_map_response(json.as_bytes()) {
-                                    if tx.send(Ok(hyper::body::Frame::data(Bytes::from(framed)))).await.is_err() {
-                                        break;
-                                    }
-                                }
-                            }
-                            // Refresh child tenant IDs after lag recovery
-                            child_tenant_ids = state_clone.store.get_child_tenants(tenant_id).await
-                                .into_iter()
-                                .filter(|t| t.visible_to_parent())
-                                .map(|t| t.id)
-                                .collect();
-                            continue;
-                        }
-                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                    };
-
-                    let event_tenant = match &event {
-                        coord_store::PeerEvent::NodeJoined { tenant_id: t, .. } => *t,
-                        coord_store::PeerEvent::NodeUpdated { tenant_id: t, .. } => *t,
-                        coord_store::PeerEvent::NodeOffline { tenant_id: t, .. } => *t,
-                    };
-
-                    if event_tenant != tenant_id && !child_tenant_ids.contains(&event_tenant) {
-                        continue;
-                    }
-
-                    let event_node_id = match &event {
-                        coord_store::PeerEvent::NodeJoined { node_id: n, .. } => *n,
-                        coord_store::PeerEvent::NodeUpdated { node_id: n, .. } => *n,
-                        coord_store::PeerEvent::NodeOffline { node_id: n, .. } => *n,
-                    };
-
-                    // Don't notify a node about its own changes, but end the
-                    // session if the node was deleted or moved to another tenant.
-                    if event_node_id == node_id {
-                        if state_clone.store.get_node_tenant(node_id).await != Some(tenant_id) {
-                            break;
-                        }
-                        continue;
-                    }
-
-                    // Member mode (ADR-0036): what a device may see differs per
-                    // device, so a tenant-wide delta would leak other members'
-                    // devices. Send this device its own fresh view instead.
-                    if state_clone.store.get_tenant_access(tenant_id).await.mode == coord_core::AccessMode::Member {
-                        if let Ok(json) = control::build_map_update(&state_clone, &machine_key, &mut last_peers).await {
-                            if let Ok(framed) = frame_map_response(json.as_bytes()) {
-                                if tx.send(Ok(hyper::body::Frame::data(Bytes::from(framed)))).await.is_err() {
-                                    break;
-                                }
-                            }
-                        }
-                        continue;
-                    }
-
-                    let delta = control::build_delta_response(
-                        &state_clone,
-                        tenant_id,
-                        &event,
-                    ).await;
-
-                    if let Some(json) = delta {
-                        if let Ok(framed) = frame_map_response(json.as_bytes()) {
-                            if tx.send(Ok(hyper::body::Frame::data(Bytes::from(framed)))).await.is_err() {
-                                break;
-                            }
-                        }
-                    }
-                }
-                _ = resync.tick() => {
-                    // Safety net for lost notifications: a full, re-checked
-                    // snapshot every few minutes whatever the events said.
-                    if !stream_still_valid(&state_clone, tenant_id, node_id, &machine_key).await {
-                        send_cutoff(&state_clone, &tx, tenant_id, node_id).await;
-                        break;
-                    }
-                    child_tenant_ids = state_clone.store.get_child_tenants(tenant_id).await
-                        .into_iter()
-                        .filter(|t| t.visible_to_parent())
-                        .map(|t| t.id)
-                        .collect();
-                    if let Ok(json) = control::build_map_update(&state_clone, &machine_key, &mut last_peers).await {
-                        if let Ok(framed) = frame_map_response(json.as_bytes()) {
-                            if tx.send(Ok(hyper::body::Frame::data(Bytes::from(framed)))).await.is_err() {
-                                break;
-                            }
-                        }
-                    }
-                }
-                _ = keepalive.tick() => {
-                    if !stream_still_valid(&state_clone, tenant_id, node_id, &machine_key).await {
-                        send_cutoff(&state_clone, &tx, tenant_id, node_id).await;
-                        break;
-                    }
-                    let keepalive_msg = serde_json::json!({"KeepAlive": true});
-                    if let Ok(framed) = frame_map_response(keepalive_msg.to_string().as_bytes()) {
-                        if tx.send(Ok(hyper::body::Frame::data(Bytes::from(framed)))).await.is_err() {
-                            break;
-                        }
-                    }
-                    // Refresh child tenant IDs alongside keepalive
-                    child_tenant_ids = state_clone.store.get_child_tenants(tenant_id).await
-                        .into_iter()
-                        .filter(|t| t.visible_to_parent())
-                        .map(|t| t.id)
-                        .collect();
-                }
-            }
-        }
-
-        tracing::debug!(node = %node_id, "streaming map session ended");
-    });
-
-    let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
-    let body = http_body_util::StreamBody::new(stream);
-    use http_body_util::BodyExt;
-    Response::builder()
-        .status(StatusCode::OK)
-        .body(body.boxed())
-        .unwrap()
 }
 
 mod base64 {
@@ -612,59 +389,5 @@ mod base64 {
             }
         }
         Ok(out)
-    }
-}
-
-/// Whether a live map stream may go on: the node still exists in the same
-/// tenant, the tenant is not suspended, and the owner's machine lock (if
-/// any) still lists this machine. A store error reading the lock keeps the
-/// stream (registration is where the lock fails closed); a malformed lock
-/// ends it.
-async fn stream_still_valid(
-    state: &Arc<CoordinatorState>,
-    tenant_id: coord_core::TenantId,
-    node_id: coord_core::NodeId,
-    machine_key: &[u8; 32],
-) -> bool {
-    let Some(detail) = state.store.get_node_info(node_id).await else {
-        return false;
-    };
-    if detail.tenant_id != tenant_id || state.store.is_tenant_suspended(tenant_id).await {
-        return false;
-    }
-    let Some(owner) = detail.attrs.owner.as_deref() else {
-        return true;
-    };
-    match state.store.get_owner_lock(tenant_id, owner).await {
-        Ok(coord_core::LockRead::Unlocked) => true,
-        Ok(coord_core::LockRead::Locked(l)) => l.allows(&hex::encode(machine_key)),
-        Ok(coord_core::LockRead::Malformed) => false,
-        Err(e) => {
-            tracing::warn!(error = %e, "machine lock not readable during stream re-check");
-            true
-        }
-    }
-}
-
-/// Before ending a stream for a suspended tenant or a removed node, tell the
-/// client to drop every peer and deny all traffic. Otherwise peers that are
-/// already connected keep talking over their existing WireGuard sessions.
-async fn send_cutoff(
-    state: &Arc<CoordinatorState>,
-    tx: &tokio::sync::mpsc::Sender<Result<hyper::body::Frame<Bytes>, std::io::Error>>,
-    tenant_id: coord_core::TenantId,
-    node_id: coord_core::NodeId,
-) {
-    let peers = state.store.get_peers_with_children(tenant_id, node_id).await;
-    let cutoff = coord_proto::map::MapResponse {
-        peers_removed: Some(peers.iter().map(|p| p.node_id.as_i64()).collect()),
-        packet_filter: Some(vec![]),
-        control_time: Some(chrono::Utc::now().to_rfc3339()),
-        ..Default::default()
-    };
-    if let Ok(json) = serde_json::to_string(&cutoff) {
-        if let Ok(framed) = frame_map_response(json.as_bytes()) {
-            let _ = tx.send(Ok(hyper::body::Frame::data(Bytes::from(framed)))).await;
-        }
     }
 }

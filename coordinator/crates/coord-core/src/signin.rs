@@ -7,8 +7,33 @@ use crate::TenantId;
 
 /// How long a sign-in link stays valid.
 pub const SIGN_IN_TTL_SECS: i64 = 10 * 60;
-/// Pending sign-ins kept at once; the oldest are dropped beyond this.
+/// Pending sign-ins kept at once; new sign-ins are refused beyond this.
 pub const MAX_PENDING_SIGN_INS: i64 = 10_000;
+/// Pending sign-ins one client address can hold at once.
+pub const MAX_PENDING_SIGN_INS_PER_IP: i64 = 20;
+
+/// Caps on pending sign-ins. A full cap refuses new sign-ins and never evicts pending ones.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignInLimits {
+    pub per_ip: i64,
+    pub total: i64,
+}
+
+impl Default for SignInLimits {
+    fn default() -> Self {
+        Self { per_ip: MAX_PENDING_SIGN_INS_PER_IP, total: MAX_PENDING_SIGN_INS }
+    }
+}
+
+/// Result of an attempt to start a sign-in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignInStart {
+    Started,
+    /// The requester's address holds `SignInLimits::per_ip` pending sign-ins.
+    TooManyFromAddress,
+    /// The instance holds `SignInLimits::total` pending sign-ins.
+    Full,
+}
 
 /// The user's answer to a sign-in. A sign-in without a decision is pending.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

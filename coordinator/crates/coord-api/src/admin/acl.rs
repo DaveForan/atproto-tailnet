@@ -41,7 +41,7 @@ pub async fn set_acl(
     if let Err(r) = state.save_config(tenant_id, crate::state::CONFIG_ACL, &body.policy).await {
         return r;
     }
-    state.acl.set_policy(tenant_id, body.policy);
+    state.caches.acl.set_policy(tenant_id, body.policy);
     state.notify_tenant_changed(tenant_id);
 
     (
@@ -62,7 +62,7 @@ pub async fn get_acl(
         Err(_) => return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "invalid tenant_id"}))).into_response(),
     };
 
-    match state.acl.get_policy(tenant_id) {
+    match state.caches.acl.get_policy(tenant_id) {
         Some(policy) => Json(serde_json::json!(policy)).into_response(),
         None => {
             // No policy set = allow-all default
@@ -90,7 +90,7 @@ pub async fn set_acl_for_tenant(
     if let Err(r) = state.save_config(tenant_id, crate::state::CONFIG_ACL, &body).await {
         return r;
     }
-    state.acl.set_policy(tenant_id, body);
+    state.caches.acl.set_policy(tenant_id, body);
     state.notify_tenant_changed(tenant_id);
     (StatusCode::OK, Json(serde_json::json!({"status": "ok"}))).into_response()
 }

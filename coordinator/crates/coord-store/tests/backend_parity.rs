@@ -758,14 +758,15 @@ async fn tenant_config_round_trip_list_and_removal() {
 
 #[tokio::test]
 async fn sign_in_is_decided_once_and_taken_once() {
-    use coord_core::SignInDecision;
+    use coord_core::{SignInDecision, SignInLimits, SignInStart};
+    const LIMITS: SignInLimits = SignInLimits { per_ip: 20, total: 10_000 };
     for b in backends().await {
         let s = &b.store;
         let t = tenant(s, "signin").await;
         let key = [7u8; 32];
         let id = format!("{}-first", b.name);
         let before = chrono::Utc::now().timestamp();
-        s.sign_in_start(&id, &key, "phone", "iOS", Some("203.0.113.7")).await.unwrap();
+        assert_eq!(s.sign_in_start(&id, &key, "phone", "iOS", Some("203.0.113.7"), LIMITS).await.unwrap(), SignInStart::Started);
         let p = s.sign_in_get(&id).await.unwrap();
         assert_eq!((p.machine_key, p.hostname.as_str(), p.decision.clone()), (key, "phone", None), "{}", b.name);
         assert_eq!(p.requester_ip.as_deref(), Some("203.0.113.7"), "{}", b.name);
@@ -775,7 +776,7 @@ async fn sign_in_is_decided_once_and_taken_once() {
 
         // A new sign-in of the same machine replaces the old one
         let id2 = format!("{}-second", b.name);
-        s.sign_in_start(&id2, &key, "phone", "iOS", None).await.unwrap();
+        s.sign_in_start(&id2, &key, "phone", "iOS", None, LIMITS).await.unwrap();
         assert!(s.sign_in_get(&id).await.is_none(), "{}", b.name);
         assert_eq!(s.sign_in_get(&id2).await.unwrap().requester_ip, None, "{}", b.name);
 
@@ -786,6 +787,43 @@ async fn sign_in_is_decided_once_and_taken_once() {
         assert_eq!(s.sign_in_get(&id2).await.unwrap().decision, Some(yes.clone()), "{}", b.name);
         assert_eq!(s.sign_in_take(&id2).await, Some(yes), "{}", b.name);
         assert_eq!(s.sign_in_take(&id2).await, None, "taken once ({})", b.name);
+    }
+}
+
+#[tokio::test]
+async fn full_sign_in_caps_refuse_new_sign_ins_and_keep_pending_ones() {
+    use coord_core::{SignInLimits, SignInStart};
+    let limits = SignInLimits { per_ip: 2, total: 10_000 };
+    for b in backends().await {
+        let s = &b.store;
+        // The PostgreSQL table is shared with other tests: use an address no other test uses
+        let r = rand_bytes::<3>();
+        let ip = format!("10.{}.{}.{}", r[0], r[1], r[2]);
+        let other_ip = format!("10.{}.{}.{}", r[0], r[1], r[2].wrapping_add(1));
+        let id = |n: &str| format!("{}-cap-{}-{}", b.name, hex::encode(r), n);
+        let start = |n: u8, ip: Option<String>| {
+            let id = id(&n.to_string());
+            async move { s.sign_in_start(&id, &[n; 32], "x", "linux", ip.as_deref(), limits).await.unwrap() }
+        };
+
+        assert_eq!(start(1, Some(ip.clone())).await, SignInStart::Started, "{}", b.name);
+        assert_eq!(start(2, Some(ip.clone())).await, SignInStart::Started, "{}", b.name);
+        assert_eq!(start(3, Some(ip.clone())).await, SignInStart::TooManyFromAddress, "{}", b.name);
+        assert!(s.sign_in_get(&id("1")).await.is_some(), "a refused start evicts nothing ({})", b.name);
+        assert!(s.sign_in_get(&id("2")).await.is_some(), "{}", b.name);
+        assert!(s.sign_in_get(&id("3")).await.is_none(), "{}", b.name);
+        // A machine that starts again replaces its own sign-in, so it is not refused
+        assert_eq!(start(2, Some(ip.clone())).await, SignInStart::Started, "{}", b.name);
+        // Other addresses and unknown addresses have their own budget
+        assert_eq!(start(4, Some(other_ip)).await, SignInStart::Started, "{}", b.name);
+        assert_eq!(start(5, None).await, SignInStart::Started, "{}", b.name);
+
+        // The global cap refuses everyone and evicts nothing
+        let none = SignInLimits { per_ip: 2, total: 0 };
+        let full = s.sign_in_start(&id("6"), &[6; 32], "x", "linux", None, none).await.unwrap();
+        assert_eq!(full, SignInStart::Full, "{}", b.name);
+        assert!(s.sign_in_get(&id("6")).await.is_none(), "{}", b.name);
+        assert!(s.sign_in_get(&id("1")).await.is_some(), "{}", b.name);
     }
 }
 

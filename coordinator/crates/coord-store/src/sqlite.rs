@@ -260,15 +260,44 @@ impl SqliteStore {
         Ok(())
     }
 
-    pub async fn sign_in_start(&self, id: &str, machine_key: &[u8; 32], hostname: &str, os: &str, requester_ip: Option<&str>) -> Result<(), CoordError> {
+    pub async fn sign_in_start(
+        &self,
+        id: &str,
+        machine_key: &[u8; 32],
+        hostname: &str,
+        os: &str,
+        requester_ip: Option<&str>,
+        limits: coord_core::SignInLimits,
+    ) -> Result<coord_core::SignInStart, CoordError> {
         let now = crate::now_secs();
         let machine = hex::encode(machine_key);
+        // BEGIN IMMEDIATE serializes starts, so concurrent requests cannot pass a cap together
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await.map_err(db)?;
         sqlx::query("DELETE FROM coord_sign_ins WHERE machine_key = ?1 OR expires_at <= ?2")
             .bind(&machine)
             .bind(now)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(db)?;
+        if let Some(ip) = requester_ip {
+            let from_ip: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM coord_sign_ins WHERE requester_ip = ?1")
+                .bind(ip)
+                .fetch_one(&mut *tx)
+                .await
+                .map_err(db)?;
+            if from_ip >= limits.per_ip {
+                tx.commit().await.map_err(db)?;
+                return Ok(coord_core::SignInStart::TooManyFromAddress);
+            }
+        }
+        let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM coord_sign_ins")
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(db)?;
+        if total >= limits.total {
+            tx.commit().await.map_err(db)?;
+            return Ok(coord_core::SignInStart::Full);
+        }
         sqlx::query("INSERT INTO coord_sign_ins (id, machine_key, hostname, os, expires_at, requester_ip, requested_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)")
             .bind(id)
             .bind(&machine)
@@ -277,19 +306,11 @@ impl SqliteStore {
             .bind(now + coord_core::signin::SIGN_IN_TTL_SECS)
             .bind(requester_ip)
             .bind(now)
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(db)?;
-        // Bound the table: drop the oldest beyond the cap
-        sqlx::query(
-            "DELETE FROM coord_sign_ins WHERE id IN \
-             (SELECT id FROM coord_sign_ins ORDER BY expires_at DESC LIMIT -1 OFFSET ?1)"
-        )
-            .bind(coord_core::signin::MAX_PENDING_SIGN_INS)
-            .execute(&self.pool)
-            .await
-            .map_err(db)?;
-        Ok(())
+        tx.commit().await.map_err(db)?;
+        Ok(coord_core::SignInStart::Started)
     }
 
     pub async fn sign_in_get(&self, id: &str) -> Option<coord_core::PendingSignIn> {
@@ -798,7 +819,7 @@ impl SqliteStore {
                 tenant_id,
                 node_id,
             });
-            return Ok((node_id, ipv4, new_gen as u64));
+            return Ok((node_id, ipv4, crate::generation_from_db(new_gen)?));
         }
 
         let used: Vec<String> = sqlx::query_scalar("SELECT ipv4 FROM coord_nodes")
@@ -839,7 +860,7 @@ impl SqliteStore {
             node_id,
         });
 
-        Ok((node_id, new_ipv4, generation as u64))
+        Ok((node_id, new_ipv4, crate::generation_from_db(generation)?))
     }
 
     pub async fn rotate_node_key(
@@ -1178,7 +1199,7 @@ impl SqliteStore {
              RETURNING tenant_id"
         )
             .bind(node_id.as_i64())
-            .bind(generation as i64)
+            .bind(crate::generation_to_db(generation)?)
             .fetch_optional(&self.pool)
             .await
             .map_err(db)?;

@@ -194,7 +194,7 @@ impl NetmapService {
             | PeerEvent::NodeUpdated { tenant_id, node_id }
             | PeerEvent::NodeOffline { tenant_id, node_id } => (*tenant_id, *node_id),
         };
-        if event_tenant.as_uuid().is_nil() || !self.tenant_visible_to(viewer, event_tenant).await {
+        if !self.tenant_visible_to(viewer, event_tenant).await {
             return None;
         }
         match event {

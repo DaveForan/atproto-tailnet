@@ -81,20 +81,12 @@ pub async fn get_tenant_routes(
     };
 
     let child_summaries: Vec<serde_json::Value> = snapshot.children.iter().map(|c| {
-        let mut obj = serde_json::json!({
+        serde_json::json!({
             "id": c.id.to_string(),
             "slug": &c.slug,
             "federation_posture": c.federation_posture.as_str(),
             "visible": c.visible_to_parent(),
-        });
-        // FIX R15: Document that Selective == Open for now
-        if c.federation_posture == coord_core::FederationPosture::Selective {
-            obj.as_object_mut().unwrap().insert(
-                "posture_note".into(),
-                serde_json::Value::String("selective is currently treated as open".into()),
-            );
-        }
-        obj
+        })
     }).collect();
 
     let own_routes: Vec<String> = snapshot.own_nodes.iter()
@@ -134,7 +126,7 @@ pub async fn get_auto_approvers(
         Ok(t) => t,
         Err(r) => return r,
     };
-    Json(state.auto_approvers.get_tenant(tenant_id)).into_response()
+    Json(state.caches.auto_approvers.get_tenant(tenant_id)).into_response()
 }
 
 /// PUT /api/tenants/{id}/auto-approvers — replaces the tenant's policy and
@@ -174,7 +166,7 @@ pub async fn set_auto_approvers(
     if let Err(r) = state.save_config(tenant_id, crate::state::CONFIG_AUTO_APPROVERS, &policy).await {
         return r;
     }
-    state.auto_approvers.set_tenant(tenant_id, policy.clone());
+    state.caches.auto_approvers.set_tenant(tenant_id, policy.clone());
 
     for node in state.store.list_nodes_for_tenant(tenant_id).await {
         crate::control::apply_auto_approvers(&state, node.id).await;

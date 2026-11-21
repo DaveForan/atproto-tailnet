@@ -2,7 +2,7 @@ pub mod handshake;
 pub mod transport;
 
 pub use handshake::{NoiseResponder, SplitKeys};
-pub use transport::{NoiseTransport, spawn_noise_bridge};
+pub use transport::{NoiseReceiver, NoiseSender, NoiseTransport, spawn_noise_bridge};
 
 pub fn generate_control_key() -> coord_core::ControlKey {
     use rand::RngCore;

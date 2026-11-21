@@ -24,7 +24,7 @@ pub async fn handle_register(
         .as_ref()
         .and_then(|a| a.auth_key.as_deref());
 
-    let node_key_bytes = parse_key_from_request(&req.node_key)?;
+    let node_key_bytes = coord_core::keys::parse_node_key(&req.node_key)?;
     let advertised = advertised_routes_from(req.hostinfo.as_ref());
 
     // A known machine re-registering with its current (or rotated-from) node key
@@ -36,7 +36,7 @@ pub async fn handle_register(
             let old_key = req
                 .old_node_key
                 .as_deref()
-                .and_then(|k| parse_key_from_request(k).ok())
+                .and_then(|k| coord_core::keys::parse_node_key(k).ok())
                 .filter(|k| *k != [0u8; 32]);
             // A suspended tenant's machine may not re-authorize itself. With an auth
             // key it falls through to the key path (which checks that key's tenant).
@@ -121,7 +121,7 @@ pub async fn handle_register(
     };
 
     if let Some(ref old_key_str) = req.old_node_key {
-        if let Ok(old_key) = parse_key_from_request(old_key_str) {
+        if let Ok(old_key) = coord_core::keys::parse_node_key(old_key_str) {
             if old_key != [0u8; 32] {
                 if let Err(e) = state.store.rotate_node_key(machine_key, &old_key, &node_key_bytes).await {
                     tracing::warn!(error = %e, "rotate_node_key failed");
@@ -281,9 +281,11 @@ async fn interactive_sign_in(
         .and_then(sanitize::dns_label)
         .unwrap_or_else(|| HOSTNAME_PLACEHOLDER.into());
     let os = sanitize::os(hostinfo.and_then(|h| h.os.as_deref()));
-    match state.device_auth.start(&state.store, *machine_key, &hostname, &os, client_ip).await {
-        Some(id) => Err(sign_in_url(&id)),
-        None => Err(error_response("sign-in is not available right now; try again")),
+    match state.device_auth.start(&state.store, *machine_key, &hostname, &os, client_ip, state.sign_in_limits).await {
+        Ok(id) => Err(sign_in_url(&id)),
+        Err(device_auth::StartError::TooManyFromAddress) => Err(error_response(SIGN_INS_FROM_ADDRESS_MSG)),
+        Err(device_auth::StartError::Full) => Err(error_response(SIGN_INS_FULL_MSG)),
+        Err(device_auth::StartError::Unavailable) => Err(error_response("sign-in is not available right now; try again")),
     }
 }
 
@@ -295,6 +297,11 @@ pub(crate) const MACHINE_LOCKED_MSG: &str =
 
 pub(crate) const LOCK_UNAVAILABLE_MSG: &str =
     "this account's device lock could not be checked right now; try again in a moment";
+
+pub(crate) const SIGN_INS_FROM_ADDRESS_MSG: &str =
+    "too many device sign-ins are waiting from your network; finish one or wait 10 minutes, then try again";
+
+pub(crate) const SIGN_INS_FULL_MSG: &str = "too many device sign-ins are waiting on this server; try again in a few minutes";
 
 pub(crate) const TENANT_SUSPENDED_MSG: &str = "this tailnet is suspended by the instance operator";
 
@@ -314,7 +321,7 @@ fn error_response(msg: &str) -> RegisterResponse {
 /// Authorized RegisterResponse naming the node's owner as the TS service
 /// pushed it (Bluesky handle), or the legacy placeholder user when unknown.
 fn authorized_response(state: &CoordinatorState, tenant: TenantId, owner: Option<&str>) -> RegisterResponse {
-    let profile = state.identity.profile(tenant, owner);
+    let profile = state.caches.identity.profile(tenant, owner);
     RegisterResponse {
         user: User {
             id: profile.id,
@@ -454,7 +461,7 @@ pub(crate) async fn apply_auto_approvers(state: &Arc<CoordinatorState>, node_id:
     let Some(detail) = state.store.get_node_info(node_id).await else {
         return false;
     };
-    let policy = state.auto_approvers.get_tenant(detail.tenant_id);
+    let policy = state.caches.auto_approvers.get_tenant(detail.tenant_id);
     let auto = policy.approvable(&detail.attrs.tags, &detail.attrs.advertised_routes);
     if auto.iter().all(|r| detail.attrs.approved_routes.contains(r)) {
         return false;
@@ -475,19 +482,4 @@ pub(crate) async fn apply_auto_approvers(state: &Arc<CoordinatorState>, node_id:
             false
         }
     }
-}
-
-fn parse_key_from_request(key_str: &str) -> Result<[u8; 32], Box<dyn std::error::Error + Send + Sync>> {
-    let hex_str = key_str
-        .strip_prefix("nodekey:")
-        .or_else(|| key_str.strip_prefix("mkey:"))
-        .unwrap_or(key_str);
-
-    let bytes = hex::decode(hex_str)?;
-    if bytes.len() != 32 {
-        return Err(format!("key must be 32 bytes, got {}", bytes.len()).into());
-    }
-    let mut result = [0u8; 32];
-    result.copy_from_slice(&bytes);
-    Ok(result)
 }

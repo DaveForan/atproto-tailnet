@@ -47,10 +47,11 @@ fn setup() -> (axum::Router, Arc<CoordinatorState>) {
     let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(made.signing_key.serialize_der()));
     let certificate = Arc::new(Certificate::from_der(vec![made.cert.der().clone()], key).unwrap());
     let state = Arc::new(
-        CoordinatorState::new(coord_noise::generate_control_key())
+        CoordinatorState::builder(coord_noise::generate_control_key())
             .with_admin_api_key(Some(ADMIN_KEY.to_string()))
             .with_builtin_relay_region("derp.example.com", 3478)
-            .with_gateway([5; 32], certificate),
+            .with_gateway([5; 32], certificate)
+            .build(),
     );
     (coord_api::router(state.clone()), state)
 }
@@ -259,7 +260,7 @@ async fn publishing_an_https_service_brings_the_gateway_and_serves_it_with_ident
 
 #[tokio::test]
 async fn without_a_gateway_a_service_name_resolves_to_its_device() {
-    let state = Arc::new(CoordinatorState::new(coord_noise::generate_control_key()).with_admin_api_key(Some(ADMIN_KEY.to_string())));
+    let state = Arc::new(CoordinatorState::builder(coord_noise::generate_control_key()).with_admin_api_key(Some(ADMIN_KEY.to_string())).build());
     let app = coord_api::router(state.clone());
     let tenant = state.store().create_tenant("no-gw".into(), None, None).await.unwrap().id;
     let t = tenant.to_string();
@@ -285,9 +286,10 @@ async fn a_service_port_of_zero_is_refused() {
 #[tokio::test]
 async fn gateway_can_be_enabled_after_startup() {
     let state = Arc::new(
-        CoordinatorState::new(coord_noise::generate_control_key())
+        CoordinatorState::builder(coord_noise::generate_control_key())
             .with_admin_api_key(Some(ADMIN_KEY.to_string()))
-            .with_builtin_relay_region("derp.example.com", 3478),
+            .with_builtin_relay_region("derp.example.com", 3478)
+            .build(),
     );
     assert!(state.gateways().is_none(), "no certificate at start: gateway off");
 

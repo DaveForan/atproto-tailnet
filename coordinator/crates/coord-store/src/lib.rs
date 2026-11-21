@@ -26,6 +26,22 @@ pub enum RemoteEvent {
     Resync,
 }
 
+/// A session generation read from a BIGINT column.
+///
+/// # Errors
+/// A negative stored value (the column only ever counts up from 0).
+pub(crate) fn generation_from_db(stored: i64) -> Result<u64, coord_core::CoordError> {
+    u64::try_from(stored).map_err(|_| coord_core::CoordError::Protocol(format!("stored session generation {stored} is negative")))
+}
+
+/// A session generation for a BIGINT column.
+///
+/// # Errors
+/// A value above `i64::MAX`, which the store never hands out.
+pub(crate) fn generation_to_db(generation: u64) -> Result<i64, coord_core::CoordError> {
+    i64::try_from(generation).map_err(|_| coord_core::CoordError::Protocol(format!("session generation {generation} does not fit the store")))
+}
+
 pub(crate) fn now_secs() -> i64 {
     chrono::Utc::now().timestamp()
 }
@@ -125,5 +141,19 @@ mod ipv4_alloc_tests {
         assert!(is_reserved_ipv4(u32::from(Ipv4Addr::new(100, 100, 100, 100))));
         assert!(is_reserved_ipv4(u32::from(Ipv4Addr::new(100, 115, 93, 7))));
         assert!(!is_reserved_ipv4(u32::from(Ipv4Addr::new(100, 115, 94, 0))));
+    }
+}
+
+#[cfg(test)]
+mod generation_tests {
+    use super::{generation_from_db, generation_to_db};
+
+    #[test]
+    fn generations_convert_only_when_they_fit() {
+        assert_eq!(generation_from_db(7).unwrap(), 7);
+        assert!(generation_from_db(-1).is_err());
+        assert_eq!(generation_to_db(7).unwrap(), 7);
+        assert_eq!(generation_to_db(u64::try_from(i64::MAX).unwrap()).unwrap(), i64::MAX);
+        assert!(generation_to_db(u64::MAX).is_err());
     }
 }

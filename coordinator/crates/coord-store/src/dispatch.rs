@@ -180,12 +180,20 @@ impl Store {
         }
     }
 
-    /// Start a pending sign-in; replaces any other pending sign-in of the machine.
-    pub async fn sign_in_start(&self, id: &str, machine_key: &[u8; 32], hostname: &str, os: &str, requester_ip: Option<&str>) -> Result<(), CoordError> {
+    /// Start a pending sign-in unless a cap in `limits` is reached; drops the machine's older pending sign-in.
+    pub async fn sign_in_start(
+        &self,
+        id: &str,
+        machine_key: &[u8; 32],
+        hostname: &str,
+        os: &str,
+        requester_ip: Option<&str>,
+        limits: coord_core::SignInLimits,
+    ) -> Result<coord_core::SignInStart, CoordError> {
         match self {
-            Store::Memory(m) => m.sign_in_start(id, machine_key, hostname, os, requester_ip),
-            Store::Pg(p) => p.sign_in_start(id, machine_key, hostname, os, requester_ip).await,
-            Store::Sqlite(s) => s.sign_in_start(id, machine_key, hostname, os, requester_ip).await,
+            Store::Memory(m) => m.sign_in_start(id, machine_key, hostname, os, requester_ip, limits),
+            Store::Pg(p) => p.sign_in_start(id, machine_key, hostname, os, requester_ip, limits).await,
+            Store::Sqlite(s) => s.sign_in_start(id, machine_key, hostname, os, requester_ip, limits).await,
         }
     }
 

@@ -33,12 +33,21 @@ chrono = { workspace = true }
 uuid = { workspace = true }
 zstd = { workspace = true }
 tokio-stream = { workspace = true }
+subtle = "2"
+sha2 = "0.10"
+
+[features]
+# Exposes `__test_*` hooks for this crate's integration tests.
+test-hooks = []
 
 [dev-dependencies]
+coord-api = { path = ".", features = ["test-hooks"] }
 tower = { workspace = true }
 crypto_box = { version = "0.9", features = ["salsa20"] }
 reqwest = { version = "0.12", features = ["json"] }
 h2 = "0.4"
+snow = { workspace = true }
+base64 = "0.22"
 serde_json = { workspace = true }
 tokio = { workspace = true }
 sqlx = { workspace = true }

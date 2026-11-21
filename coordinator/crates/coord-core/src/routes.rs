@@ -9,9 +9,6 @@ pub const MAX_TAGS: usize = 8;
 /// Max length of an opaque owner string.
 pub const MAX_OWNER_LEN: usize = 128;
 
-pub const EXIT_ROUTE_V4: &str = "0.0.0.0/0";
-pub const EXIT_ROUTE_V6: &str = "::/0";
-
 /// A parsed, normalised prefix (host bits cleared).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Cidr {

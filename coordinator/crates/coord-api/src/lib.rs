@@ -5,11 +5,12 @@ pub mod client_ip;
 pub mod derp_handler;
 pub mod device_auth;
 mod noise_handler;
+mod map_stream;
 mod control;
 mod admin;
 mod federation;
 
-pub use state::{CoordinatorState, Role};
+pub use state::{ConfigChange, ConfigError, CoordinatorState, CoordinatorStateBuilder, Role};
 
 use axum::{
     Router,
@@ -21,16 +22,11 @@ use axum::{
 };
 use std::sync::Arc;
 
-/// Constant-time byte comparison to prevent timing side-channels on API key checks.
-/// Compares all bytes of the shorter slice against the longer, preventing length leakage.
+/// Compares secrets in constant time. Hashing first hides the lengths and gives equal-length inputs to `ct_eq`.
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    let mut diff = (a.len() ^ b.len()) as u8;
-    for i in 0..a.len().max(b.len()) {
-        let x = if i < a.len() { a[i] } else { 0 };
-        let y = if i < b.len() { b[i] } else { 0 };
-        diff |= x ^ y;
-    }
-    diff == 0
+    use sha2::{Digest, Sha256};
+    use subtle::ConstantTimeEq;
+    Sha256::digest(a).ct_eq(&Sha256::digest(b)).into()
 }
 
 async fn require_admin_auth(
@@ -121,7 +117,9 @@ pub fn router(state: Arc<CoordinatorState>) -> Router {
         .route("/link-request", post(federation::handle_link_request))
         .route("/link-accept", post(federation::handle_link_accept))
         .route("/link-reject", post(federation::handle_link_reject))
-        .route("/link-revoke", post(federation::handle_link_revoke));
+        .route("/link-revoke", post(federation::handle_link_revoke))
+        // Inner layer: overrides the 2 MiB limit of the whole app for these routes
+        .layer(DefaultBodyLimit::max(coord_federation::abuse::MAX_FEDERATION_BODY_BYTES));
 
     // A process serves the parts of its role (ADR-0034)
     let role = state.role();
@@ -191,6 +189,7 @@ async fn health(axum::extract::State(state): axum::extract::State<Arc<Coordinato
     axum::Json(serde_json::json!({"status": "ok", "boot_id": boot_id, "gateway": state.gateways().is_some()}))
 }
 
+#[cfg(feature = "test-hooks")]
 #[doc(hidden)]
 pub async fn __test_handle_register(
     state: &Arc<CoordinatorState>,
@@ -202,6 +201,7 @@ pub async fn __test_handle_register(
 }
 
 /// Like `__test_handle_register`, as if the Noise connection came from `client_ip`.
+#[cfg(feature = "test-hooks")]
 #[doc(hidden)]
 pub async fn __test_handle_register_from(
     state: &Arc<CoordinatorState>,
@@ -212,6 +212,7 @@ pub async fn __test_handle_register_from(
     Ok(control::handle_register(state, machine_key, body, client_ip).await?.0)
 }
 
+#[cfg(feature = "test-hooks")]
 #[doc(hidden)]
 pub async fn __test_handle_map(
     state: &Arc<CoordinatorState>,
@@ -221,6 +222,7 @@ pub async fn __test_handle_map(
     control::handle_map(state, machine_key, body).await
 }
 
+#[cfg(feature = "test-hooks")]
 #[doc(hidden)]
 pub async fn __test_build_delta(
     state: &Arc<CoordinatorState>,
@@ -232,6 +234,7 @@ pub async fn __test_build_delta(
 
 /// Drive `/machine/map` (streaming or not) as the Noise H2 server would; the
 /// body yields length-prefixed zstd frames.
+#[cfg(feature = "test-hooks")]
 #[doc(hidden)]
 pub async fn __test_map_request(
     state: Arc<CoordinatorState>,
@@ -243,6 +246,7 @@ pub async fn __test_map_request(
 
 /// Serve the Noise-side control HTTP/2 protocol over an arbitrary stream
 /// (tests drive it over an in-memory duplex without the Noise layer).
+#[cfg(feature = "test-hooks")]
 #[doc(hidden)]
 pub async fn __test_serve_control_h2(
     state: Arc<CoordinatorState>,
@@ -254,3 +258,25 @@ pub async fn __test_serve_control_h2(
 
 pub use noise_handler::{MAX_CONCURRENT_STREAMS, MAX_CONTROL_BODY};
 pub use state::DEFAULT_MAX_NOISE_CONNECTIONS;
+
+#[cfg(test)]
+mod tests {
+    use super::constant_time_eq;
+
+    #[test]
+    fn constant_time_eq_compares_content_and_length() {
+        assert!(constant_time_eq(b"secret", b"secret"));
+        assert!(constant_time_eq(b"", b""));
+        assert!(!constant_time_eq(b"secret", b"secreT"));
+        assert!(!constant_time_eq(b"secret", b"secret!"));
+        assert!(!constant_time_eq(b"", b"x"));
+        // Lengths that differ by a multiple of 256 (a length XOR cast to u8 sees 0)
+        let key = vec![b'a'; 32];
+        for extra in [256, 512] {
+            let mut longer = key.clone();
+            longer.extend(std::iter::repeat_n(0u8, extra));
+            assert!(!constant_time_eq(&key, &longer), "extra {extra}");
+            assert!(!constant_time_eq(&vec![0u8; extra], b""), "zeros {extra}");
+        }
+    }
+}

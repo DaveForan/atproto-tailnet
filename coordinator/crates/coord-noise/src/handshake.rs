@@ -241,4 +241,70 @@ mod tests {
         initiator.read_message(resp_payload, &mut buf).unwrap();
         let _initiator_transport = initiator.into_transport_mode().unwrap();
     }
+
+    /// A valid wire-format initiation from a client that uses `version` in its prologue.
+    fn initiation(control_public: &[u8; 32], version: u16) -> Vec<u8> {
+        let prologue = format!("{PROLOGUE_PREFIX}{version}");
+        let mut initiator = Builder::new(NOISE_PATTERN.parse().unwrap())
+            .local_private_key(&[9u8; 32])
+            .unwrap()
+            .remote_public_key(control_public)
+            .unwrap()
+            .prologue(prologue.as_bytes())
+            .unwrap()
+            .build_initiator()
+            .unwrap();
+        let mut payload = vec![0u8; 256];
+        let len = initiator.write_message(&[], &mut payload).unwrap();
+        let mut msg = version.to_be_bytes().to_vec();
+        msg.push(MSG_TYPE_INITIATION);
+        msg.extend_from_slice(&u16::try_from(len).unwrap().to_be_bytes());
+        msg.extend_from_slice(&payload[..len]);
+        msg
+    }
+
+    #[test]
+    fn a_version_that_differs_from_the_prologue_fails_the_handshake() {
+        let key = crate::generate_control_key();
+        let responder = NoiseResponder::new(key.clone());
+        let mut msg = initiation(&key.public, 1);
+        assert!(responder.accept_initiation(&msg).is_ok());
+        msg[0..2].copy_from_slice(&3u16.to_be_bytes());
+        assert!(matches!(responder.accept_initiation(&msg), Err(NoiseError::Handshake(_))));
+    }
+
+    #[test]
+    fn truncated_and_padded_initiations_are_refused() {
+        let key = crate::generate_control_key();
+        let responder = NoiseResponder::new(key.clone());
+        let msg = initiation(&key.public, 1);
+        for len in [0, 2, INITIATION_HEADER_LEN, INITIATION_MESSAGE_LEN - 1] {
+            assert!(responder.accept_initiation(&msg[..len]).is_err(), "length {len}");
+        }
+        let mut padded = msg.clone();
+        padded.push(0);
+        assert!(responder.accept_initiation(&padded).is_err());
+    }
+
+    #[test]
+    fn wrong_message_type_payload_length_or_key_is_refused() {
+        let key = crate::generate_control_key();
+        let responder = NoiseResponder::new(key.clone());
+        let msg = initiation(&key.public, 1);
+        for wrong_type in [MSG_TYPE_RESPONSE, MSG_TYPE_ERROR, MSG_TYPE_RECORD, 0] {
+            let mut m = msg.clone();
+            m[2] = wrong_type;
+            assert!(responder.accept_initiation(&m).is_err(), "type {wrong_type}");
+        }
+        let mut m = msg.clone();
+        m[3..5].copy_from_slice(&95u16.to_be_bytes());
+        assert!(responder.accept_initiation(&m).is_err(), "payload length");
+        // Encrypted to another server key
+        let other = crate::generate_control_key();
+        assert!(responder.accept_initiation(&initiation(&other.public, 1)).is_err());
+        // A flipped ciphertext byte fails authentication
+        let mut m = msg;
+        m[INITIATION_MESSAGE_LEN - 1] ^= 1;
+        assert!(responder.accept_initiation(&m).is_err());
+    }
 }

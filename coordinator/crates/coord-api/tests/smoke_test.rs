@@ -7,7 +7,7 @@ use coord_api::CoordinatorState;
 async fn start_server() -> (String, tokio::task::JoinHandle<()>) {
     let key = coord_noise::generate_control_key();
     let state = Arc::new(
-        CoordinatorState::new(key).with_admin_api_key(Some("smoke-test-key".into())),
+        CoordinatorState::builder(key).with_admin_api_key(Some("smoke-test-key".into())).build(),
     );
     let app = coord_api::router(state);
 

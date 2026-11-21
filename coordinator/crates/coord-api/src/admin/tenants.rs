@@ -72,13 +72,10 @@ pub async fn create_tenant(
     };
 
     let posture = match &body.federation_posture {
-        Some(p) => match p.parse::<coord_core::FederationPosture>() {
+        Some(p) => match parse_posture(p) {
             Ok(fp) => Some(fp),
-            Err(_) => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({"error": "invalid federation_posture: must be open, selective, or closed"})),
-                ).into_response();
+            Err(msg) => {
+                return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": msg }))).into_response();
             }
         },
         None => None,
@@ -193,6 +190,15 @@ pub struct UpdatePostureRequest {
     pub posture: String,
 }
 
+/// A posture the admin API accepts: `open` or `closed`.
+fn parse_posture(s: &str) -> Result<coord_core::FederationPosture, &'static str> {
+    match s.parse() {
+        Ok(coord_core::FederationPosture::Selective) => Err("selective posture is not implemented"),
+        Ok(p) => Ok(p),
+        Err(_) => Err("invalid federation posture: must be open or closed"),
+    }
+}
+
 pub async fn update_tenant_posture(
     State(state): State<Arc<CoordinatorState>>,
     Path(id): Path<String>,
@@ -208,13 +214,10 @@ pub async fn update_tenant_posture(
         }
     };
 
-    let posture: coord_core::FederationPosture = match body.posture.parse() {
+    let posture = match parse_posture(&body.posture) {
         Ok(p) => p,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": "invalid posture: must be open, selective, or closed"})),
-            ).into_response();
+        Err(msg) => {
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({ "error": msg }))).into_response();
         }
     };
 

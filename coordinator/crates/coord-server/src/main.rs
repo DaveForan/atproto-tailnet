@@ -70,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let control_key_path = std::env::var("COORD_CONTROL_KEY_PATH").ok();
-    let mut coordinator = coord_api::CoordinatorState::new(control_key);
+    let mut coordinator = coord_api::CoordinatorState::builder(control_key);
 
     // Which parts this process serves: all (default), control, or relay (ADR-0034)
     let role: coord_api::Role = std::env::var("COORD_ROLE")
@@ -78,6 +78,14 @@ async fn main() -> anyhow::Result<()> {
         .parse()
         .map_err(|e: String| anyhow::anyhow!("invalid COORD_ROLE: {e}"))?;
     coordinator = coordinator.with_role(role);
+    // The TS service is the federation endpoint. The Rust CFP endpoints need
+    // handshake callbacks, so enabling them here fails before any database work.
+    let federation_enabled = std::env::var("COORD_FEDERATION_ENABLED")
+        .map(|v| v == "true" || v == "1")
+        .unwrap_or(false);
+    coordinator = coordinator.with_federation_enabled(federation_enabled);
+    coordinator.validate().map_err(|e| anyhow::anyhow!("COORD_FEDERATION_ENABLED: {e}"))?;
+
     // Built-in DERP relay (ADR-0027): a persistent key keeps the relay's
     // identity stable across restarts. By default it sits next to the control key.
     let relay_key_path = std::env::var("COORD_DERP_KEY_PATH").ok().or_else(|| {
@@ -282,14 +290,7 @@ async fn main() -> anyhow::Result<()> {
     }
     coordinator = coordinator.with_trusted_proxies(trusted_proxies);
 
-    // The TS service is the authoritative federation endpoint; the Rust CFP
-    // implementation only runs when explicitly enabled.
-    let federation_enabled = std::env::var("COORD_FEDERATION_ENABLED")
-        .map(|v| v == "true" || v == "1")
-        .unwrap_or(false);
-    coordinator = coordinator.with_federation_enabled(federation_enabled);
-
-    let state = Arc::new(coordinator);
+    let state = Arc::new(coordinator.build());
     // Per-tenant configuration lives in the store; other replicas report changes (ADR-0034)
     if role.serves_control() {
         state.load_config().await;

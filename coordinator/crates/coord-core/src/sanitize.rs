@@ -42,11 +42,6 @@ pub fn node_dns_label(raw: &str, node_id: i64) -> String {
     dns_label(raw).unwrap_or_else(|| format!("node-{node_id}"))
 }
 
-/// Hostname to store at registration (sanitised; `fallback` if unusable).
-pub fn stored_hostname(raw: Option<&str>, fallback: &str) -> String {
-    raw.and_then(dns_label).unwrap_or_else(|| fallback.to_string())
-}
-
 /// Keep at most `MAX_ENDPOINTS` endpoints that parse as `ip:port` and are
 /// short; everything else is dropped.
 pub fn endpoints(raw: &[String]) -> Vec<String> {

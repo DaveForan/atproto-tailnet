@@ -1,11 +1,6 @@
-//! A userspace TCP/IP stack for one tailnet (ADR-0029).
-//!
-//! All tailnets use the same address space, so each tailnet gets its own
-//! stack with its own address, connections and listeners. Nothing here
-//! touches the network of the host: IP packets come in through [`NetStack::inject`]
-//! (after WireGuard decryption) and leave through the `out` channel (to be
-//! encrypted). TCP connections appear to the rest of the gateway as ordinary
-//! async byte streams.
+//! A userspace TCP/IP stack for one tailnet (ADR-0029). Tailnets share one address space, so each gets its own stack.
+//! Packets enter through [`NetStack::inject`] and leave on the `out` channel; the host network is never touched.
+//! TCP connections appear to the gateway as async byte streams.
 
 use std::collections::VecDeque;
 use std::io;
@@ -44,6 +39,26 @@ const DEAD_PEER_TIMEOUT: Duration = Duration::from_secs(60);
 const KEEP_ALIVE: Duration = Duration::from_secs(15);
 const FIRST_EPHEMERAL_PORT: u16 = 49152;
 
+/// Bounds of one stack. Tests use small values.
+#[derive(Debug, Clone)]
+struct Limits {
+    max_connections: usize,
+    dead_peer_timeout: Duration,
+    keep_alive: Duration,
+    ports: std::ops::RangeInclusive<u16>,
+}
+
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_connections: MAX_CONNECTIONS,
+            dead_peer_timeout: DEAD_PEER_TIMEOUT,
+            keep_alive: KEEP_ALIVE,
+            ports: FIRST_EPHEMERAL_PORT..=u16::MAX,
+        }
+    }
+}
+
 /// An accepted TCP connection and the tailnet address it came from.
 pub struct Accepted {
     pub stream: DuplexStream,
@@ -67,9 +82,13 @@ impl NetStack {
     /// to send appear on `out`; when `out` is full they are dropped (TCP
     /// retransmits).
     pub fn spawn(addr: Ipv4Addr, out: mpsc::Sender<Vec<u8>>) -> Self {
+        Self::spawn_with(addr, out, Limits::default())
+    }
+
+    fn spawn_with(addr: Ipv4Addr, out: mpsc::Sender<Vec<u8>>, limits: Limits) -> Self {
         let (packets, packets_rx) = mpsc::channel(1024);
         let (cmds, cmds_rx) = mpsc::channel(64);
-        tokio::spawn(Stack::new(addr, out).run(packets_rx, cmds_rx));
+        tokio::spawn(Stack::new(addr, out, limits).run(packets_rx, cmds_rx));
         Self { packets, cmds }
     }
 
@@ -231,20 +250,11 @@ struct Stack {
     /// (`None` for connections this stack opened).
     open: Vec<(SocketHandle, Pipe, Option<Ipv4Addr>)>,
     next_port: u16,
-}
-
-fn new_socket() -> tcp::Socket<'static> {
-    let mut socket = tcp::Socket::new(
-        tcp::SocketBuffer::new(vec![0u8; SOCKET_BUFFER]),
-        tcp::SocketBuffer::new(vec![0u8; SOCKET_BUFFER]),
-    );
-    socket.set_keep_alive(Some(KEEP_ALIVE.into()));
-    socket.set_timeout(Some(DEAD_PEER_TIMEOUT.into()));
-    socket
+    limits: Limits,
 }
 
 impl Stack {
-    fn new(addr: Ipv4Addr, out: mpsc::Sender<Vec<u8>>) -> Self {
+    fn new(addr: Ipv4Addr, out: mpsc::Sender<Vec<u8>>, limits: Limits) -> Self {
         let mut device = Queue { rx: VecDeque::new(), tx: VecDeque::new() };
         let mut config = Config::new(HardwareAddress::Ip);
         config.random_seed = rand::random();
@@ -263,12 +273,45 @@ impl Stack {
             listening: Vec::new(),
             connecting: Vec::new(),
             open: Vec::new(),
-            next_port: FIRST_EPHEMERAL_PORT,
+            next_port: *limits.ports.start(),
+            limits,
         }
     }
 
+    fn new_socket(&self) -> tcp::Socket<'static> {
+        let mut socket = tcp::Socket::new(
+            tcp::SocketBuffer::new(vec![0u8; SOCKET_BUFFER]),
+            tcp::SocketBuffer::new(vec![0u8; SOCKET_BUFFER]),
+        );
+        socket.set_keep_alive(Some(self.limits.keep_alive.into()));
+        socket.set_timeout(Some(self.limits.dead_peer_timeout.into()));
+        socket
+    }
+
+    /// The next local port that no socket of this stack holds. `None` when every port is in use.
+    fn free_port(&mut self) -> Option<u16> {
+        let (first, last) = (*self.limits.ports.start(), *self.limits.ports.end());
+        let used: std::collections::HashSet<u16> = self
+            .sockets
+            .iter()
+            .filter_map(|(_, s)| match s {
+                smoltcp::socket::Socket::Tcp(t) => t.local_endpoint().map(|e| e.port),
+                #[allow(unreachable_patterns, reason = "other socket kinds exist when their smoltcp features are on")]
+                _ => None,
+            })
+            .collect();
+        for _ in first..=last {
+            let port = self.next_port;
+            self.next_port = if port >= last { first } else { port + 1 };
+            if !used.contains(&port) {
+                return Some(port);
+            }
+        }
+        None
+    }
+
     fn now(&self) -> SmolInstant {
-        SmolInstant::from_millis(self.started.elapsed().as_millis() as i64)
+        SmolInstant::from_millis(i64::try_from(self.started.elapsed().as_millis()).unwrap_or(i64::MAX))
     }
 
     async fn run(mut self, mut packets: mpsc::Receiver<Vec<u8>>, mut cmds: mpsc::Receiver<Cmd>) {
@@ -314,13 +357,15 @@ impl Stack {
                 }
             }
             Cmd::Connect { addr, reply } => {
-                if self.open.len() + self.connecting.len() >= MAX_CONNECTIONS {
+                if self.open.len() + self.connecting.len() >= self.limits.max_connections {
                     let _ = reply.send(Err(io::Error::other("too many connections in this tailnet")));
                     return;
                 }
-                let local = self.next_port;
-                self.next_port = if local == u16::MAX { FIRST_EPHEMERAL_PORT } else { local + 1 };
-                let mut socket = new_socket();
+                let Some(local) = self.free_port() else {
+                    let _ = reply.send(Err(io::Error::new(io::ErrorKind::AddrInUse, "no free local port in this tailnet")));
+                    return;
+                };
+                let mut socket = self.new_socket();
                 match socket.connect(self.iface.context(), (IpAddress::Ipv4(*addr.ip()), addr.port()), local) {
                     Ok(()) => {
                         let handle = self.sockets.add(socket);
@@ -335,7 +380,7 @@ impl Stack {
     }
 
     fn add_listener(&mut self, port: u16, accept: mpsc::Sender<Accepted>) {
-        let mut socket = new_socket();
+        let mut socket = self.new_socket();
         if socket.listen(port).is_ok() {
             let handle = self.sockets.add(socket);
             self.listening.push(Listening { handle, port, accept, replaced: false });
@@ -417,7 +462,7 @@ impl Stack {
                 Some((IpAddress::Ipv4(ip), port)) if socket.is_active() => Some(SocketAddrV4::new(ip, port)),
                 _ => None,
             };
-            let wanted = peer.is_some() && self.open.len() < MAX_CONNECTIONS && !self.listening[i].accept.is_closed();
+            let wanted = peer.is_some() && self.open.len() < self.limits.max_connections && !self.listening[i].accept.is_closed();
             if wanted {
                 let accept = self.listening[i].accept.clone();
                 match accept.try_reserve() {
@@ -723,5 +768,110 @@ mod tests {
         let (a, _b) = pair();
         let refused = a.connect(SocketAddrV4::new(Ipv4Addr::new(100, 64, 0, 2), 9)).await;
         assert_eq!(refused.unwrap_err().kind(), io::ErrorKind::ConnectionRefused);
+    }
+
+    /// Like `pair`, with limits for `a` and a switch that cuts the wire.
+    fn pair_with(limits: Limits) -> (NetStack, NetStack, Arc<std::sync::atomic::AtomicBool>) {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let cut = Arc::new(AtomicBool::new(false));
+        let (a_out, mut a_rx) = mpsc::channel(4096);
+        let (b_out, mut b_rx) = mpsc::channel(4096);
+        let a = NetStack::spawn_with(Ipv4Addr::new(100, 64, 0, 1), a_out, limits);
+        let b = NetStack::spawn(Ipv4Addr::new(100, 64, 0, 2), b_out);
+        let (a2, b2, cut_a, cut_b) = (a.clone(), b.clone(), cut.clone(), cut.clone());
+        tokio::spawn(async move {
+            while let Some(p) = a_rx.recv().await {
+                if !cut_a.load(Ordering::Relaxed) {
+                    b2.inject(p);
+                }
+            }
+        });
+        tokio::spawn(async move {
+            while let Some(p) = b_rx.recv().await {
+                if !cut_b.load(Ordering::Relaxed) {
+                    a2.inject(p);
+                }
+            }
+        });
+        (a, b, cut)
+    }
+
+    /// Accept connections on `port` of `b`. Each stays open until the peer sends `q`.
+    async fn hold_open(b: &NetStack, port: u16) {
+        let mut incoming = b.listen(port).await.unwrap();
+        tokio::spawn(async move {
+            while let Some(Accepted { mut stream, .. }) = incoming.recv().await {
+                tokio::spawn(async move {
+                    let mut byte = [0u8; 1];
+                    while stream.read_exact(&mut byte).await.is_ok() && byte[0] != b'q' {}
+                });
+            }
+        });
+    }
+
+    /// Close from the server side first, so this side does not wait in TIME-WAIT.
+    async fn close_passively(mut s: DuplexStream) {
+        s.write_all(b"q").await.unwrap();
+        let mut rest = Vec::new();
+        let _ = tokio::time::timeout(Duration::from_secs(3), s.read_to_end(&mut rest)).await;
+    }
+
+    async fn connect_soon(a: &NetStack, target: SocketAddrV4) -> Option<DuplexStream> {
+        for _ in 0..50 {
+            if let Ok(s) = a.connect(target).await {
+                return Some(s);
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        None
+    }
+
+    #[tokio::test]
+    async fn connections_beyond_the_cap_are_refused_until_one_closes() {
+        let (a, b, _) = pair_with(Limits { max_connections: 3, ..Limits::default() });
+        hold_open(&b, 80).await;
+        let target = SocketAddrV4::new(Ipv4Addr::new(100, 64, 0, 2), 80);
+        let mut held = Vec::new();
+        for _ in 0..3 {
+            held.push(a.connect(target).await.unwrap());
+        }
+        let refused = a.connect(target).await.unwrap_err();
+        assert!(refused.to_string().contains("too many connections"), "{refused}");
+
+        close_passively(held.pop().unwrap()).await;
+        assert!(connect_soon(&a, target).await.is_some(), "a closed connection frees its place");
+    }
+
+    #[tokio::test]
+    async fn local_ports_in_use_are_never_reused() {
+        let (a, b, _) = pair_with(Limits { ports: 50000..=50001, ..Limits::default() });
+        hold_open(&b, 80).await;
+        let target = SocketAddrV4::new(Ipv4Addr::new(100, 64, 0, 2), 80);
+        let first = a.connect(target).await.unwrap();
+        let _second = a.connect(target).await.unwrap();
+        let exhausted = a.connect(target).await.unwrap_err();
+        assert_eq!(exhausted.kind(), io::ErrorKind::AddrInUse);
+
+        // Another remote port: the peer keeps the old 4-tuple in TIME-WAIT
+        close_passively(first).await;
+        hold_open(&b, 81).await;
+        let other = SocketAddrV4::new(Ipv4Addr::new(100, 64, 0, 2), 81);
+        assert!(connect_soon(&a, other).await.is_some(), "the freed port is used again");
+    }
+
+    #[tokio::test]
+    async fn a_peer_that_stops_answering_is_dropped_after_the_timeout() {
+        let limits = Limits {
+            dead_peer_timeout: Duration::from_millis(600),
+            keep_alive: Duration::from_millis(100),
+            ..Limits::default()
+        };
+        let (a, b, cut) = pair_with(limits);
+        hold_open(&b, 80).await;
+        let mut s = a.connect(SocketAddrV4::new(Ipv4Addr::new(100, 64, 0, 2), 80)).await.unwrap();
+        cut.store(true, std::sync::atomic::Ordering::Relaxed);
+        let mut buf = [0u8; 1];
+        let ended = tokio::time::timeout(Duration::from_secs(5), s.read(&mut buf)).await;
+        assert!(matches!(ended, Ok(Ok(0)) | Ok(Err(_))), "the stream ends: {ended:?}");
     }
 }

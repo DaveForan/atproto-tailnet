@@ -15,7 +15,7 @@ pub async fn get_tenant_identity(
         Ok(t) => t,
         Err(r) => return r,
     };
-    Json(state.identity.get_tenant(tenant_id)).into_response()
+    Json(state.caches.identity.get_tenant(tenant_id)).into_response()
 }
 
 /// PUT /api/tenants/{id}/identity — replaces the tenant's tailnet name and
@@ -35,11 +35,11 @@ pub async fn set_tenant_identity(
         Ok(i) => i,
         Err(e) => return bad_request(e.to_string()),
     };
-    let changed = state.identity.get_tenant(tenant_id) != identity;
+    let changed = state.caches.identity.get_tenant(tenant_id) != identity;
     if let Err(r) = state.save_config(tenant_id, crate::state::CONFIG_IDENTITY, &identity).await {
         return r;
     }
-    state.identity.set_tenant(tenant_id, identity.clone());
+    state.caches.identity.set_tenant(tenant_id, identity.clone());
     if changed {
         state.notify_tenant_changed(tenant_id);
     }

@@ -1,6 +1,5 @@
 use chacha20poly1305::{ChaCha20Poly1305, KeyInit, aead::Aead};
 use chacha20poly1305::aead::generic_array::GenericArray;
-use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::handshake::{
@@ -16,27 +15,15 @@ fn make_nonce(counter: u64) -> [u8; 12] {
     nonce
 }
 
-/// Encrypt/decrypt using chacha20poly1305 with Tailscale-compatible
-/// big-endian nonce encoding. After Noise IK handshake, the two split
-/// keys are used directly instead of snow's TransportState.
-pub struct NoiseTransport {
-    tx_cipher: ChaCha20Poly1305,
-    rx_cipher: ChaCha20Poly1305,
-    tx_nonce: u64,
-    rx_nonce: u64,
+/// Encrypting half of a Noise transport: one key and its nonce counter.
+pub struct NoiseSender {
+    cipher: ChaCha20Poly1305,
+    nonce: u64,
 }
 
-impl NoiseTransport {
-    /// Create from raw split keys. For the responder (server):
-    /// - initiator_key (key0): client→server, used to decrypt (rx)
-    /// - responder_key (key1): server→client, used to encrypt (tx)
-    pub fn from_responder_keys(initiator_key: [u8; 32], responder_key: [u8; 32]) -> Self {
-        Self {
-            tx_cipher: ChaCha20Poly1305::new(GenericArray::from_slice(&responder_key)),
-            rx_cipher: ChaCha20Poly1305::new(GenericArray::from_slice(&initiator_key)),
-            tx_nonce: 0,
-            rx_nonce: 0,
-        }
+impl NoiseSender {
+    fn new(key: [u8; 32]) -> Self {
+        Self { cipher: ChaCha20Poly1305::new(GenericArray::from_slice(&key)), nonce: 0 }
     }
 
     pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, NoiseError> {
@@ -45,29 +32,66 @@ impl NoiseTransport {
                 "plaintext {} exceeds max {}", plaintext.len(), MAX_PLAINTEXT_SIZE
             )));
         }
-        if self.tx_nonce == u64::MAX {
+        if self.nonce == u64::MAX {
             return Err(NoiseError::Transport("tx nonce exhausted".into()));
         }
-        let nonce = make_nonce(self.tx_nonce);
         let ciphertext = self
-            .tx_cipher
-            .encrypt(GenericArray::from_slice(&nonce), plaintext)
+            .cipher
+            .encrypt(GenericArray::from_slice(&make_nonce(self.nonce)), plaintext)
             .map_err(|e| NoiseError::Transport(format!("encrypt: {e}")))?;
-        self.tx_nonce += 1;
+        self.nonce += 1;
         Ok(ciphertext)
+    }
+}
+
+/// Decrypting half of a Noise transport: one key and its nonce counter.
+pub struct NoiseReceiver {
+    cipher: ChaCha20Poly1305,
+    nonce: u64,
+}
+
+impl NoiseReceiver {
+    fn new(key: [u8; 32]) -> Self {
+        Self { cipher: ChaCha20Poly1305::new(GenericArray::from_slice(&key)), nonce: 0 }
     }
 
     pub fn decrypt(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>, NoiseError> {
-        if self.rx_nonce == u64::MAX {
+        if self.nonce == u64::MAX {
             return Err(NoiseError::Transport("rx nonce exhausted".into()));
         }
-        let nonce = make_nonce(self.rx_nonce);
         let plaintext = self
-            .rx_cipher
-            .decrypt(GenericArray::from_slice(&nonce), ciphertext)
+            .cipher
+            .decrypt(GenericArray::from_slice(&make_nonce(self.nonce)), ciphertext)
             .map_err(|e| NoiseError::Transport(format!("decrypt: {e}")))?;
-        self.rx_nonce += 1;
+        self.nonce += 1;
         Ok(plaintext)
+    }
+}
+
+/// Noise transport keys from the IK split, with Tailscale's big-endian nonces.
+/// The halves are independent, so each direction can run in its own task.
+pub struct NoiseTransport {
+    pub sender: NoiseSender,
+    pub receiver: NoiseReceiver,
+}
+
+impl NoiseTransport {
+    /// `tx_key` encrypts what this side sends; `rx_key` decrypts what it receives.
+    pub fn new(tx_key: [u8; 32], rx_key: [u8; 32]) -> Self {
+        Self { sender: NoiseSender::new(tx_key), receiver: NoiseReceiver::new(rx_key) }
+    }
+
+    /// The server side: it receives with the initiator key and sends with the responder key.
+    pub fn from_responder_keys(initiator_key: [u8; 32], responder_key: [u8; 32]) -> Self {
+        Self::new(responder_key, initiator_key)
+    }
+
+    pub fn encrypt(&mut self, plaintext: &[u8]) -> Result<Vec<u8>, NoiseError> {
+        self.sender.encrypt(plaintext)
+    }
+
+    pub fn decrypt(&mut self, ciphertext: &[u8]) -> Result<Vec<u8>, NoiseError> {
+        self.receiver.decrypt(ciphertext)
     }
 }
 
@@ -87,7 +111,7 @@ pub async fn read_record_frame<R: AsyncRead + Unpin>(
         )));
     }
 
-    let ct_len = u16::from_be_bytes([hdr[1], hdr[2]]) as usize;
+    let ct_len = usize::from(u16::from_be_bytes([hdr[1], hdr[2]]));
     if ct_len > MAX_CIPHERTEXT_SIZE {
         return Err(NoiseError::Protocol(format!(
             "record frame ciphertext {} exceeds max {}",
@@ -105,26 +129,20 @@ pub async fn write_record_frame<W: AsyncWrite + Unpin>(
     writer: &mut W,
     ciphertext: &[u8],
 ) -> Result<(), NoiseError> {
-    let ct_len = ciphertext.len();
-    if ct_len > MAX_CIPHERTEXT_SIZE {
-        return Err(NoiseError::Protocol("ciphertext too large for frame".into()));
-    }
-
-    let hdr = [
-        MSG_TYPE_RECORD,
-        (ct_len >> 8) as u8,
-        ct_len as u8,
-    ];
-    writer.write_all(&hdr).await?;
+    let ct_len = u16::try_from(ciphertext.len())
+        .ok()
+        .filter(|&n| usize::from(n) <= MAX_CIPHERTEXT_SIZE)
+        .ok_or_else(|| NoiseError::Protocol("ciphertext too large for frame".into()))?;
+    let [hi, lo] = ct_len.to_be_bytes();
+    writer.write_all(&[MSG_TYPE_RECORD, hi, lo]).await?;
     writer.write_all(ciphertext).await?;
     writer.flush().await?;
     Ok(())
 }
 
-/// Spawn two bridge tasks that shuttle data between the raw TCP connection
-/// (with Noise record framing) and a duplex stream (cleartext for HTTP/2).
-///
-/// Returns the cleartext side of the duplex for the HTTP/2 server to use.
+/// Spawn two bridge tasks between the Noise-framed connection and a cleartext
+/// duplex stream. Each task owns one half of the transport.
+/// Returns the cleartext side for the HTTP/2 server.
 pub fn spawn_noise_bridge<IO>(
     io: IO,
     transport: NoiseTransport,
@@ -133,31 +151,27 @@ where
     IO: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
     let (duplex_bridge, duplex_h2) = tokio::io::duplex(65536);
-    let transport = Arc::new(Mutex::new(transport));
+    let NoiseTransport { sender, receiver } = transport;
 
     let (tcp_read, tcp_write) = tokio::io::split(io);
     let (duplex_read, duplex_write) = tokio::io::split(duplex_bridge);
 
-    // When either bridge task exits, cancel the token so the other
-    // shuts down too. Without this, tokio::io::split's Arc prevents
-    // the DuplexStream from being dropped, so the surviving task and
-    // the H2 connection hang forever.
+    // When one task ends, the other must end too. The split halves share an
+    // Arc, so the duplex is not dropped and H2 would hang without this.
     let cancel = tokio_util::sync::CancellationToken::new();
 
-    let tr = transport.clone();
     let cancel_in = cancel.clone();
     tokio::spawn(async move {
         let _guard = cancel_in.clone().drop_guard();
-        if let Err(e) = bridge_inbound(tcp_read, duplex_write, tr, cancel_in).await {
+        if let Err(e) = bridge_inbound(tcp_read, duplex_write, receiver, cancel_in).await {
             tracing::debug!(error = %e, "noise bridge inbound ended");
         }
     });
 
-    let tw = transport;
     let cancel_out = cancel;
     tokio::spawn(async move {
         let _guard = cancel_out.clone().drop_guard();
-        if let Err(e) = bridge_outbound(duplex_read, tcp_write, tw, cancel_out).await {
+        if let Err(e) = bridge_outbound(duplex_read, tcp_write, sender, cancel_out).await {
             tracing::debug!(error = %e, "noise bridge outbound ended");
         }
     });
@@ -165,61 +179,37 @@ where
     duplex_h2
 }
 
-/// TCP → decrypt → duplex (server reads client data)
+/// TCP → decrypt → duplex.
 async fn bridge_inbound<R, W>(
     mut tcp_read: R,
     mut duplex_write: W,
-    transport: Arc<Mutex<NoiseTransport>>,
+    mut receiver: NoiseReceiver,
     cancel: tokio_util::sync::CancellationToken,
 ) -> Result<(), NoiseError>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let mut frame_count = 0u64;
     loop {
         let ciphertext = tokio::select! {
-            _ = cancel.cancelled() => return Ok(()),
-            result = read_record_frame(&mut tcp_read) => {
-                match result {
-                    Ok(ct) => ct,
-                    Err(NoiseError::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                        tracing::debug!(frames = frame_count, "noise bridge inbound: EOF");
-                        return Ok(());
-                    }
-                    Err(e) => return Err(e),
-                }
-            }
+            () = cancel.cancelled() => return Ok(()),
+            result = read_record_frame(&mut tcp_read) => match result {
+                Ok(ct) => ct,
+                Err(NoiseError::Io(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()),
+                Err(e) => return Err(e),
+            },
         };
-
-        tracing::debug!(
-            frame = frame_count,
-            ct_len = ciphertext.len(),
-            "noise bridge inbound: read record frame"
-        );
-
-        let plaintext = {
-            let mut t = transport.lock().unwrap_or_else(|e| e.into_inner());
-            t.decrypt(&ciphertext)?
-        };
-
-        tracing::debug!(
-            frame = frame_count,
-            pt_len = plaintext.len(),
-            "noise bridge inbound: decrypted"
-        );
-
+        let plaintext = receiver.decrypt(&ciphertext)?;
         duplex_write.write_all(&plaintext).await?;
         duplex_write.flush().await?;
-        frame_count += 1;
     }
 }
 
-/// duplex → encrypt → TCP (server sends data to client)
+/// duplex → encrypt → TCP.
 async fn bridge_outbound<R, W>(
     mut duplex_read: R,
     mut tcp_write: W,
-    transport: Arc<Mutex<NoiseTransport>>,
+    mut sender: NoiseSender,
     cancel: tokio_util::sync::CancellationToken,
 ) -> Result<(), NoiseError>
 where
@@ -227,36 +217,16 @@ where
     W: AsyncWrite + Unpin,
 {
     let mut buf = vec![0u8; MAX_PLAINTEXT_SIZE];
-    let mut frame_count = 0u64;
     loop {
         let n = tokio::select! {
-            _ = cancel.cancelled() => return Ok(()),
+            () = cancel.cancelled() => return Ok(()),
             result = duplex_read.read(&mut buf) => result?,
         };
         if n == 0 {
-            tracing::debug!(frames = frame_count, "noise bridge outbound: duplex closed");
             return Ok(());
         }
-
-        tracing::debug!(
-            frame = frame_count,
-            pt_len = n,
-            "noise bridge outbound: encrypting"
-        );
-
-        let ciphertext = {
-            let mut t = transport.lock().unwrap_or_else(|e| e.into_inner());
-            t.encrypt(&buf[..n])?
-        };
-
-        tracing::debug!(
-            frame = frame_count,
-            ct_len = ciphertext.len(),
-            "noise bridge outbound: writing record frame"
-        );
-
+        let ciphertext = sender.encrypt(&buf[..n])?;
         write_record_frame(&mut tcp_write, &ciphertext).await?;
-        frame_count += 1;
     }
 }
 
@@ -268,12 +238,7 @@ mod tests {
         let key_a = [1u8; 32];
         let key_b = [2u8; 32];
         let server = NoiseTransport::from_responder_keys(key_a, key_b);
-        let client = NoiseTransport {
-            tx_cipher: ChaCha20Poly1305::new(GenericArray::from_slice(&key_a)),
-            rx_cipher: ChaCha20Poly1305::new(GenericArray::from_slice(&key_b)),
-            tx_nonce: 0,
-            rx_nonce: 0,
-        };
+        let client = NoiseTransport::new(key_a, key_b);
         (server, client)
     }
 
@@ -304,15 +269,15 @@ mod tests {
             let pt = server.decrypt(&ct).unwrap();
             assert_eq!(pt, vec![i]);
         }
-        assert_eq!(client.tx_nonce, 5);
-        assert_eq!(server.rx_nonce, 5);
+        assert_eq!(client.sender.nonce, 5);
+        assert_eq!(server.receiver.nonce, 5);
     }
 
     #[test]
     fn decrypt_wrong_nonce_fails() {
         let (mut server, mut client) = make_test_transport();
         let ct = client.encrypt(b"msg1").unwrap();
-        server.rx_nonce = 99;
+        server.receiver.nonce = 99;
         assert!(server.decrypt(&ct).is_err());
     }
 
@@ -320,14 +285,8 @@ mod tests {
     fn decrypt_wrong_key_fails() {
         let (_, mut client) = make_test_transport();
         let ct = client.encrypt(b"data").unwrap();
-        let wrong = NoiseTransport::from_responder_keys([3u8; 32], [4u8; 32]);
-        let mut wrong_rx = NoiseTransport {
-            tx_cipher: wrong.tx_cipher,
-            rx_cipher: wrong.rx_cipher,
-            tx_nonce: 0,
-            rx_nonce: 0,
-        };
-        assert!(wrong_rx.decrypt(&ct).is_err());
+        let mut wrong = NoiseTransport::from_responder_keys([3u8; 32], [4u8; 32]);
+        assert!(wrong.decrypt(&ct).is_err());
     }
 
     #[tokio::test]
@@ -362,6 +321,31 @@ mod tests {
         frame.extend_from_slice(b"abc");
         let mut cursor = std::io::Cursor::new(frame);
         assert!(read_record_frame(&mut cursor).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn bridge_halves_carry_both_directions_independently() {
+        let (server, mut client) = make_test_transport();
+        let (wire_server, mut wire_client) = tokio::io::duplex(65536);
+        let mut clear = spawn_noise_bridge(wire_server, server);
+
+        // Client → server
+        for msg in [&b"one"[..], b"two"] {
+            write_record_frame(&mut wire_client, &client.encrypt(msg).unwrap()).await.unwrap();
+        }
+        let mut got = [0u8; 6];
+        clear.read_exact(&mut got).await.unwrap();
+        assert_eq!(&got, b"onetwo");
+
+        // Server → client
+        clear.write_all(b"reply").await.unwrap();
+        let ct = read_record_frame(&mut wire_client).await.unwrap();
+        assert_eq!(client.decrypt(&ct).unwrap(), b"reply");
+
+        // A forged record ends the bridge and closes the cleartext side
+        write_record_frame(&mut wire_client, &[0u8; 32]).await.unwrap();
+        let mut rest = Vec::new();
+        assert_eq!(clear.read_to_end(&mut rest).await.unwrap(), 0);
     }
 
     #[tokio::test]

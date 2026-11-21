@@ -216,7 +216,7 @@ impl CoordinatorState {
             .set_tenant_config(tenant, CONFIG_GATEWAY, Some(serde_json::json!({ "node_id": node_id.as_i64() })))
             .await
             .map_err(|e| format!("cannot record the gateway node: {e}"))?;
-        self.gateway_nodes.set(tenant, node_id.as_i64());
+        self.caches.gateways.set(tenant, node_id.as_i64());
 
         let scope = Scope { tenant: tenant_bytes, parent: tenant_row.parent_id.map(|p| *p.as_uuid().as_bytes()) };
         let relay = self.relay.attach_local(node_key, scope);
@@ -224,7 +224,7 @@ impl CoordinatorState {
         watch_devices(self.store.subscribe(), tenant, changed.clone());
         let devices = Arc::new(StoreDevices { store: self.store.clone(), tenant, gateway: node_id, changed });
         let stack = Tailnet::spawn(node_secret, addr, relay, devices);
-        let services = Arc::new(StoreServices { store: self.store.clone(), identity: self.identity.clone(), tenant, gateway: node_id });
+        let services = Arc::new(StoreServices { store: self.store.clone(), identity: self.caches.identity.clone(), tenant, gateway: node_id });
         let serving = stack.clone();
         let certificate = gateways.certificate.clone();
         tokio::spawn(async move {

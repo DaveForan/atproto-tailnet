@@ -1,18 +1,11 @@
-//! Interactive device sign-in (ADR-0032).
-//!
-//! A device that registers without a pre-auth key gets a sign-in URL. The
-//! user opens it, signs in on the dashboard and approves the device; the TS
-//! service then tells the coordinator which tenant and owner the device
-//! belongs to. Meanwhile the device waits on a follow-up register request.
-//!
-//! Pending sign-ins live in the store, so the device, the approval and the
-//! follow-up can each reach a different coordinator replica (ADR-0034). This
-//! registry only wakes the waiting requests of this process.
+//! Interactive device sign-in (ADR-0032): a device without a key waits while a user approves it.
+//! Pending sign-ins live in the store, so each step can reach another replica (ADR-0034).
+//! This registry only wakes the waiting requests of this process.
 
 use std::sync::Arc;
 use std::time::Duration;
 
-use coord_core::{PendingSignIn, SignInDecision, TenantId};
+use coord_core::{PendingSignIn, SignInDecision, SignInLimits, SignInStart, TenantId};
 use coord_store::{RemoteEvent, Store};
 use rand::RngCore;
 use tokio::sync::Notify;
@@ -39,6 +32,14 @@ impl From<SignInDecision> for Decision {
     }
 }
 
+/// Why a sign-in could not start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartError {
+    TooManyFromAddress,
+    Full,
+    Unavailable,
+}
+
 #[derive(Default)]
 pub struct DeviceAuthRegistry {
     changed: Notify,
@@ -50,8 +51,7 @@ impl DeviceAuthRegistry {
     }
 
     /// Start a sign-in for a machine and return its id (128 random bits, hex).
-    /// A machine has one pending sign-in at a time: a new one replaces the old.
-    /// `requester_ip` is the client address of the request that started it.
+    /// A new sign-in replaces the machine's pending one. A full cap refuses it.
     pub async fn start(
         &self,
         store: &Store,
@@ -59,16 +59,25 @@ impl DeviceAuthRegistry {
         hostname: &str,
         os: &str,
         requester_ip: Option<std::net::IpAddr>,
-    ) -> Option<String> {
+        limits: SignInLimits,
+    ) -> Result<String, StartError> {
         let mut id_bytes = [0u8; 16];
         rand::rng().fill_bytes(&mut id_bytes);
         let id = hex::encode(id_bytes);
         let ip = requester_ip.map(|ip| ip.to_string());
-        match store.sign_in_start(&id, &machine_key, hostname, os, ip.as_deref()).await {
-            Ok(()) => Some(id),
+        match store.sign_in_start(&id, &machine_key, hostname, os, ip.as_deref(), limits).await {
+            Ok(SignInStart::Started) => Ok(id),
+            Ok(SignInStart::TooManyFromAddress) => {
+                tracing::warn!(requester = ?requester_ip, "device sign-in refused: too many pending sign-ins from one address");
+                Err(StartError::TooManyFromAddress)
+            }
+            Ok(SignInStart::Full) => {
+                tracing::warn!("device sign-in refused: too many pending sign-ins");
+                Err(StartError::Full)
+            }
             Err(e) => {
                 tracing::warn!(error = %e, "could not store a pending device sign-in");
-                None
+                Err(StartError::Unavailable)
             }
         }
     }
@@ -144,7 +153,7 @@ mod tests {
     async fn approve_wakes_the_waiting_device_once() {
         let reg = DeviceAuthRegistry::new();
         let store = store();
-        let id = reg.start(&store, [1; 32], "phone", "iOS", None).await.unwrap();
+        let id = reg.start(&store, [1; 32], "phone", "iOS", None, SignInLimits::default()).await.unwrap();
         let waiter = {
             let (reg, store, id) = (reg.clone(), store.clone(), id.clone());
             tokio::spawn(async move { reg.wait(&store, &id, &[1; 32], Duration::from_secs(5)).await })
@@ -164,7 +173,7 @@ mod tests {
     async fn wait_times_out_as_pending_and_rejects_other_machines() {
         let reg = DeviceAuthRegistry::new();
         let store = store();
-        let id = reg.start(&store, [1; 32], "phone", "iOS", None).await.unwrap();
+        let id = reg.start(&store, [1; 32], "phone", "iOS", None, SignInLimits::default()).await.unwrap();
         assert_eq!(reg.wait(&store, &id, &[1; 32], Duration::from_millis(20)).await, Some(Decision::Pending));
         assert_eq!(reg.wait(&store, &id, &[2; 32], Duration::from_millis(20)).await, None, "another machine cannot claim the id");
         assert_eq!(reg.wait(&store, "00000000000000000000000000000000", &[1; 32], Duration::from_millis(20)).await, None);
@@ -175,7 +184,7 @@ mod tests {
         // As if another replica decided and its notification was lost
         let reg = DeviceAuthRegistry::new();
         let store = store();
-        let id = reg.start(&store, [1; 32], "phone", "iOS", None).await.unwrap();
+        let id = reg.start(&store, [1; 32], "phone", "iOS", None, SignInLimits::default()).await.unwrap();
         let waiter = {
             let (reg, store, id) = (reg.clone(), store.clone(), id.clone());
             tokio::spawn(async move { reg.wait(&store, &id, &[1; 32], Duration::from_secs(10)).await })
@@ -189,12 +198,25 @@ mod tests {
     async fn a_machine_has_one_pending_sign_in_and_a_decision_is_final() {
         let reg = DeviceAuthRegistry::new();
         let store = store();
-        let first = reg.start(&store, [1; 32], "a", "linux", None).await.unwrap();
-        let second = reg.start(&store, [1; 32], "a", "linux", None).await.unwrap();
+        let first = reg.start(&store, [1; 32], "a", "linux", None, SignInLimits::default()).await.unwrap();
+        let second = reg.start(&store, [1; 32], "a", "linux", None, SignInLimits::default()).await.unwrap();
         assert!(reg.get(&store, &first).await.is_none());
         assert!(reg.get(&store, &second).await.is_some());
         assert!(reg.decide(&store, &second, SignInDecision::Denied).await);
         assert!(!reg.decide(&store, &second, SignInDecision::Approved { tenant_id: TenantId::generate(), owner: "x".into() }).await);
+    }
+
+    #[tokio::test]
+    async fn full_caps_refuse_new_sign_ins() {
+        let reg = DeviceAuthRegistry::new();
+        let store = store();
+        let ip = Some("198.51.100.4".parse().unwrap());
+        let limits = SignInLimits { per_ip: 1, total: 2 };
+        let first = reg.start(&store, [1; 32], "a", "linux", ip, limits).await.unwrap();
+        assert_eq!(reg.start(&store, [2; 32], "b", "linux", ip, limits).await, Err(StartError::TooManyFromAddress));
+        reg.start(&store, [3; 32], "c", "linux", None, limits).await.unwrap();
+        assert_eq!(reg.start(&store, [4; 32], "d", "linux", None, limits).await, Err(StartError::Full));
+        assert!(reg.get(&store, &first).await.is_some(), "pending sign-ins are kept");
     }
 
     #[test]

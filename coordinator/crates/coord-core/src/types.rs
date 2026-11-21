@@ -112,6 +112,7 @@ pub struct PeerInfo {
 pub enum FederationPosture {
     #[default]
     Closed,
+    /// Not implemented: the admin API refuses it, and stored rows behave as Closed.
     Selective,
     Open,
 }
@@ -159,8 +160,9 @@ pub struct Tenant {
 
 impl Tenant {
     /// Whether a parent tenant's nodes may see this (child) tenant's nodes.
+    /// Only Open shares: Selective is not implemented, so it fails safe as Closed.
     pub fn visible_to_parent(&self) -> bool {
-        self.federation_posture != FederationPosture::Closed && !self.suspended
+        self.federation_posture == FederationPosture::Open && !self.suspended
     }
 }
 
@@ -425,11 +427,4 @@ pub fn is_valid_hostname(s: &str) -> bool {
     bytes[1..]
         .iter()
         .all(|&b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_' || b == b'-')
-}
-
-pub fn generate_random_slug() -> String {
-    use rand::RngCore;
-    let mut buf = [0u8; 4];
-    rand::rng().fill_bytes(&mut buf);
-    hex::encode(buf)
 }

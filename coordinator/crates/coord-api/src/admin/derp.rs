@@ -31,11 +31,11 @@ pub async fn get_tenant_derp(
     if state.store.get_tenant(tenant_id).await.is_none() {
         return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "tenant not found"}))).into_response();
     }
-    let cfg = state.derp.get_tenant(tenant_id);
+    let cfg = state.caches.derp.get_tenant(tenant_id);
     Json(serde_json::json!({
         "regions": cfg.as_ref().map(|c| c.custom_regions.clone()).unwrap_or_default(),
         "include_default": cfg.as_ref().map(|c| c.include_default).unwrap_or(true),
-        "effective": state.derp.map_for(tenant_id),
+        "effective": state.caches.derp.map_for(tenant_id),
     })).into_response()
 }
 
@@ -82,9 +82,9 @@ pub async fn set_tenant_derp(
     if let Err(r) = state.save_config(tenant_id, crate::state::CONFIG_DERP, &derp).await {
         return r;
     }
-    state.derp.set_tenant(tenant_id, derp);
+    state.caches.derp.set_tenant(tenant_id, derp);
     state.notify_tenant_changed(tenant_id);
     tracing::info!(tenant = %tenant_id, custom_regions = region_count, "tenant DERP config updated");
 
-    Json(serde_json::json!({"status": "updated", "effective": state.derp.map_for(tenant_id)})).into_response()
+    Json(serde_json::json!({"status": "updated", "effective": state.caches.derp.map_for(tenant_id)})).into_response()
 }

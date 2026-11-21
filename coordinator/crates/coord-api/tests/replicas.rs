@@ -32,11 +32,12 @@ async fn replica() -> Option<(axum::Router, Arc<CoordinatorState>)> {
     let pool = sqlx::PgPool::connect(&url).await.expect("connect to test DB");
     let store = coord_store::PgStore::new(pool).await.expect("PgStore::new");
     let state = Arc::new(
-        CoordinatorState::new(coord_noise::generate_control_key())
+        CoordinatorState::builder(coord_noise::generate_control_key())
             .with_store(coord_store::Store::Pg(store))
             .with_admin_api_key(Some(ADMIN_KEY.to_string()))
             .with_device_auth_url(Some("https://dash.example/device".into()))
-            .with_device_auth_wait(Duration::from_secs(8)),
+            .with_device_auth_wait(Duration::from_secs(8))
+            .build(),
     );
     state.load_config().await;
     state.spawn_replica_listener();

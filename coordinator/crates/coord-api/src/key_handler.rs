@@ -1,16 +1,9 @@
-use axum::extract::{Query, State};
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use std::sync::Arc;
 
 use crate::state::CoordinatorState;
-
-#[derive(serde::Deserialize)]
-pub struct KeyQuery {
-    #[serde(default)]
-    #[allow(dead_code)]
-    pub v: Option<u32>,
-}
 
 /// Matches tailcfg.OverTLSPublicKeyResponse
 #[derive(serde::Serialize)]
@@ -22,7 +15,6 @@ struct KeyResponse {
 
 pub async fn key_handler(
     State(state): State<Arc<CoordinatorState>>,
-    Query(_query): Query<KeyQuery>,
 ) -> impl IntoResponse {
     let mkey = format!("mkey:{}", hex::encode(state.control_key.public));
 
