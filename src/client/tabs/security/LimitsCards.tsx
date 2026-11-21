@@ -3,6 +3,7 @@ import { Card } from "../../components/Card";
 import { useToast } from "../../components/Toast";
 import { useSession } from "../../hooks/session";
 import { securityService } from "../../services/security";
+import { errorMessage } from "../../lib/utils";
 
 export function HibernationCard({
   days,
@@ -61,18 +62,18 @@ export function BoardLimitsCard({
     try {
       await securityService.updateSetting(currentTenant.id, "maxBoardPosts", maxPosts);
     } catch (e) {
-      errors.push(`maxBoardPosts: ${e instanceof Error ? e.message : "update failed"}`);
+      errors.push(`maxBoardPosts: ${errorMessage(e, "update failed")}`);
     }
     try {
       await securityService.updateSetting(currentTenant.id, "maxBoardPostsDisplayed", maxPostsDisplayed);
     } catch (e) {
-      errors.push(`maxBoardPostsDisplayed: ${e instanceof Error ? e.message : "update failed"}`);
+      errors.push(`maxBoardPostsDisplayed: ${errorMessage(e, "update failed")}`);
     }
     setBusy(false);
     if (errors.length > 0) {
       toastError(`Failed to save board limits: ${errors.join("; ")}`);
       if (errors.length < 2) {
-        // Partial success -- reload to reflect the setting that was saved
+        // One setting was saved: show it
         await reloadSettings();
       }
     } else {

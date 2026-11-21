@@ -3,6 +3,7 @@ import { useTenantMutation } from "../../hooks/useMutation";
 import { useToast } from "../../components/Toast";
 import { Badge } from "../../components/Badge";
 import { boardsService, type MyDevice, type PublicPost } from "../../services/boards";
+import { safeUrl } from "../../lib/utils";
 
 /** Checkbox list of the caller's devices. */
 function DevicePicker({
@@ -68,9 +69,9 @@ export function PublicPostCard({ post, devices, onChanged }: { post: PublicPost;
         by @{post.author.handle}
         {post.isAuthor && post.connectedDevices !== undefined && ` · ${post.connectedDevices} device(s) connected`}
       </p>
-      {post.url ? (
+      {safeUrl(post.url) ? (
         <p className="post-address">
-          <a className="mono" href={post.url} target="_blank" rel="noreferrer">{post.url}</a>
+          <a className="mono" href={safeUrl(post.url)} target="_blank" rel="noreferrer">{post.url}</a>
         </p>
       ) : (
         post.address && (

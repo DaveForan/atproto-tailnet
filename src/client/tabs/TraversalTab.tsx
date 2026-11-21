@@ -12,7 +12,7 @@ import { LoadError } from "../components/LoadError";
 
 export function TraversalTab() {
   const { currentTenant } = useTenant();
-  const { toastError } = useToast();
+  const { toastError, toastFailure } = useToast();
   const { data: policy, loading, error, reload } = useTenantData<unknown>(
     (tid) => networkService.getTraversalPolicy(tid),
     null,
@@ -56,9 +56,7 @@ export function TraversalTab() {
       );
       setResult(data);
     } catch (err) {
-      toastError(
-        err instanceof Error ? err.message : "Failed to evaluate policy",
-      );
+      toastFailure(err, "Failed to evaluate policy");
     } finally {
       setTestBusy(false);
     }

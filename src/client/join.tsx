@@ -6,6 +6,7 @@ import { sessionService } from "./services/session";
 import { ToastProvider, useToast } from "./components/Toast";
 import { Badge } from "./components/Badge";
 import { applyTheme } from "./lib/theme";
+import { errorMessage } from "./lib/utils";
 
 applyTheme();
 
@@ -84,7 +85,7 @@ function JoinApp() {
     } catch (e) {
       setState({
         kind: "error",
-        message: e instanceof Error ? e.message : "Something went wrong",
+        message: errorMessage(e, "Something went wrong"),
       });
     }
   }, [slug]);

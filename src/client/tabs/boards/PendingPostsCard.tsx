@@ -8,8 +8,10 @@ export function PendingPostsCard({
   posts,
   onApprove,
   onReject,
+  busy = false,
 }: {
   posts: PendingPost[];
+  busy?: boolean;
   onApprove: (postId: string) => void;
   onReject: (postId: string, reason: string) => void;
 }) {
@@ -27,12 +29,13 @@ export function PendingPostsCard({
             {p.description && <p className="post-desc">{p.description}</p>}
             <p className="text-dim text-sm">by @{p.authorHandle}</p>
             <div className="btn-group">
-              <button type="button" className="btn-sm" onClick={() => onApprove(p.id)}>
+              <button type="button" className="btn-sm" disabled={busy} onClick={() => onApprove(p.id)}>
                 Approve
               </button>
               <button
                 type="button"
                 className="btn-sm btn-danger"
+                disabled={busy}
                 aria-expanded={rejectingId === p.id}
                 onClick={() => setRejectingId(rejectingId === p.id ? null : p.id)}
               >

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { Card } from "./Card";
 import { Badge } from "./Badge";
-import { useToast } from "./Toast";
 import { useConfirm } from "./ConfirmDialog";
-import { errorCode, errorMessage } from "../lib/utils";
+import { useMutation } from "../hooks/useMutation";
+import { trustedDeviceError } from "../lib/utils";
 import { machineLockService, type MachineLockState } from "../services/machine-lock";
 
 /**
@@ -11,13 +11,12 @@ import { machineLockService, type MachineLockState } from "../services/machine-l
  * tailnet to chosen machines. The coordinator refuses every other machine.
  */
 export function MachineLockCard({ tenantId, onChanged }: { tenantId: string; onChanged?: () => void }) {
-  const { toast, toastError } = useToast();
+  const { mutate, busy } = useMutation({ onError: trustedDeviceError });
   const confirm = useConfirm();
   const [state, setState] = useState<MachineLockState | null>(null);
   const [keep, setKeep] = useState<Set<string>>(new Set());
   const [max, setMax] = useState<number | null>(null);
   const [choosing, setChoosing] = useState(false);
-  const [busy, setBusy] = useState(false);
 
   const apply = useCallback((s: MachineLockState | null) => {
     setState(s);
@@ -31,23 +30,13 @@ export function MachineLockCard({ tenantId, onChanged }: { tenantId: string; onC
     machineLockService.get(tenantId).then(apply, () => setState(null));
   }, [tenantId, apply]);
 
-  /** Run a change and show the result. */
+  /** The API layer proves this device again when the server asks. */
   const run = async (fn: () => Promise<MachineLockState | null>, done: string) => {
-    setBusy(true);
-    try {
-      apply(await fn()); // the API layer proves this device again when the server asks
+    const ok = await mutate(async () => {
+      apply(await fn());
       setChoosing(false);
-      toast(done);
-      onChanged?.();
-    } catch (e) {
-      toastError(
-        errorCode(e) === "device_not_trusted"
-          ? "This browser is not one of your trusted devices, so it cannot change the lock."
-          : errorMessage(e, "That did not work"),
-      );
-    } finally {
-      setBusy(false);
-    }
+    }, { successMsg: done });
+    if (ok) onChanged?.();
   };
 
   if (!state || !state.supported) return null;

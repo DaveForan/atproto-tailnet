@@ -12,30 +12,24 @@ function CodeResult({ value, label }: { value: string | null; label: string }) {
 
 export function CredentialsTab() {
   const { currentTenant } = useTenant();
-  const { toast, toastError } = useToast();
+  const { toast, toastFailure } = useToast();
 
-  // Track which action is in-flight (null = idle)
   const [busyAction, setBusyAction] = useState<string | null>(null);
 
-  // Membership form
   const [memberDid, setMemberDid] = useState("");
   const [memberResult, setMemberResult] = useState<string | null>(null);
 
-  // Role form
   const [roleDid, setRoleDid] = useState("");
   const [rolePerms, setRolePerms] = useState("");
   const [roleResult, setRoleResult] = useState<string | null>(null);
 
-  // Capability form
   const [capDid, setCapDid] = useState("");
   const [capName, setCapName] = useState("");
   const [capResult, setCapResult] = useState<string | null>(null);
 
-  // Verify form
   const [verifyJwt, setVerifyJwt] = useState("");
   const [verifyResult, setVerifyResult] = useState<string | null>(null);
 
-  // Challenge
   const [challenge, setChallenge] = useState<string | null>(null);
 
   const busy = busyAction !== null;
@@ -52,9 +46,7 @@ export function CredentialsTab() {
       setMemberResult(result?.jwt ?? null);
       toast("Membership credential issued");
     } catch (e) {
-      toastError(
-        e instanceof Error ? e.message : "Failed to issue membership",
-      );
+      toastFailure(e, "Failed to issue membership");
     } finally {
       setBusyAction(null);
     }
@@ -74,7 +66,7 @@ export function CredentialsTab() {
       setRoleResult(result?.jwt ?? null);
       toast("Role credential issued");
     } catch (e) {
-      toastError(e instanceof Error ? e.message : "Failed to issue role");
+      toastFailure(e, "Failed to issue role");
     } finally {
       setBusyAction(null);
     }
@@ -93,9 +85,7 @@ export function CredentialsTab() {
       setCapResult(result?.jwt ?? null);
       toast("Capability credential issued");
     } catch (e) {
-      toastError(
-        e instanceof Error ? e.message : "Failed to issue capability",
-      );
+      toastFailure(e, "Failed to issue capability");
     } finally {
       setBusyAction(null);
     }
@@ -111,7 +101,7 @@ export function CredentialsTab() {
         result ? JSON.stringify(result, null, 2) : "No response",
       );
     } catch (e) {
-      toastError(e instanceof Error ? e.message : "Verification failed");
+      toastFailure(e, "Verification failed");
     } finally {
       setBusyAction(null);
     }
@@ -128,7 +118,7 @@ export function CredentialsTab() {
       setChallenge(result?.challenge ? JSON.stringify(result.challenge, null, 2) : null);
       toast("Challenge generated");
     } catch (e) {
-      toastError(e instanceof Error ? e.message : "Failed to generate challenge");
+      toastFailure(e, "Failed to generate challenge");
     } finally {
       setBusyAction(null);
     }

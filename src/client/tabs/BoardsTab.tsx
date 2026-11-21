@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
 import { useSession } from "../hooks/session";
-import { useToast } from "../components/Toast";
+import { useTenantParallel, type TenantLoaders } from "../hooks/useTenantData";
+import { useTenantMutation, type TenantAction } from "../hooks/useMutation";
 import { Card } from "../components/Card";
 import { EmptyState } from "../components/EmptyState";
+import { Loading } from "../components/Loading";
+import { LoadError } from "../components/LoadError";
 import {
   boardsService,
   type MyDevice,
@@ -17,87 +19,53 @@ import { NewServiceForm } from "./boards/NewServiceForm";
 import { ControllerBoardEditor } from "./boards/ControllerBoardEditor";
 import { DeviceAccessCard } from "./boards/DeviceAccessCard";
 
-interface State {
-  devices: MyDevice[];
-  supported: boolean;
-  publicPosts: PublicPost[];
-  myPosts: MyPost[];
-  baseDomain: string;
-  httpsServices: boolean;
-  pending: PendingPost[];
-  mode: "open" | "member";
-  canEditMode: boolean;
+interface BoardsData {
+  devices: { devices: MyDevice[]; supported: boolean };
+  publicBoard: { posts: PublicPost[] };
+  mine: { baseDomain: string; httpsServices: boolean; posts: MyPost[] };
+  pending: { posts: PendingPost[] };
+  mode: { mode: "open" | "member"; canEdit: boolean };
   board: { text: string; canEdit: boolean; address: string };
 }
 
+const FALLBACK: BoardsData = {
+  devices: { devices: [], supported: false },
+  publicBoard: { posts: [] },
+  mine: { baseDomain: "", httpsServices: false, posts: [] },
+  pending: { posts: [] },
+  mode: { mode: "open", canEdit: false },
+  board: { text: "", canEdit: false, address: "" },
+};
+
 export function BoardsTab() {
-  const { currentTenant, hasPerm } = useSession();
-  const { toast, toastFailure } = useToast();
-  const [state, setState] = useState<State | null>(null);
-  const [failed, setFailed] = useState(false);
+  const { hasPerm } = useSession();
   const canReview = hasPerm("approve_services");
-  const tid = currentTenant?.id;
-
-  const load = useCallback(async () => {
-    if (!tid) return;
-    try {
-      const [devices, pub, mine, mode, board, pending] = await Promise.all([
-        boardsService.myDevices(tid),
-        boardsService.publicBoard(tid),
-        boardsService.myPosts(tid),
-        boardsService.accessMode(tid),
-        boardsService.controllerBoard(tid),
-        canReview ? boardsService.pending(tid) : Promise.resolve({ posts: [] }),
-      ]);
-      setState({
-        devices: devices?.devices ?? [],
-        supported: devices?.supported ?? false,
-        publicPosts: pub?.posts ?? [],
-        myPosts: mine?.posts ?? [],
-        baseDomain: mine?.baseDomain ?? "",
-        httpsServices: mine?.httpsServices ?? false,
-        pending: pending?.posts ?? [],
-        mode: mode?.mode ?? "open",
-        canEditMode: mode?.canEdit ?? false,
-        board: board ?? { text: "", canEdit: false, address: "" },
-      });
-      setFailed(false);
-    } catch {
-      setFailed(true);
-    }
-  }, [tid, canReview]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
-
-  if (failed) {
-    return (
-      <div className="tab-content">
-        <Card>
-          <p role="alert">The boards could not be loaded.</p>
-          <button type="button" className="btn-sm" onClick={() => { void load(); }}>Retry</button>
-        </Card>
-      </div>
-    );
-  }
-  if (!state || !tid) return <div className="loading" role="status">Loading…</div>;
-
-  const act = async (fn: () => Promise<unknown>, done: string, fail: string) => {
-    try {
-      await fn();
-      toast(done);
-      await load();
-    } catch (e) {
-      toastFailure(e, fail);
-    }
+  const loaders: TenantLoaders<BoardsData> = {
+    devices: (tid) => boardsService.myDevices(tid),
+    publicBoard: (tid) => boardsService.publicBoard(tid),
+    mine: (tid) => boardsService.myPosts(tid),
+    pending: (tid) => (canReview ? boardsService.pending(tid) : Promise.resolve({ posts: [] })),
+    mode: (tid) => boardsService.accessMode(tid),
+    board: (tid) => boardsService.controllerBoard(tid),
   };
-  const mine = (board: "public" | "private") => state.myPosts.filter((p) => p.board === board);
-  const remove = (postId: string) => { void act(() => boardsService.remove(tid, postId), "Removed", "Could not remove"); };
+  const { data, loading, error, reload } = useTenantParallel(loaders, FALLBACK, {
+    deps: [canReview],
+    keepPreviousOnReload: true,
+  });
+  const { mutate, busy } = useTenantMutation({ reload });
+
+  if (loading) return <Loading />;
+
+  const act = (action: TenantAction, done: string, fail: string) => {
+    void mutate(action, { successMsg: done, errorMsg: fail });
+  };
+  const mine = (board: "public" | "private") => data.mine.posts.filter((p) => p.board === board);
+  const remove = (postId: string) => act((tid) => boardsService.remove(tid, postId), "Removed", "Could not remove");
 
   return (
     <div className="tab-content">
-      {!state.supported && (
+      <LoadError error={error} onRetry={reload} />
+      {!data.devices.supported && (
         <Card>
           <p>Boards open ports between devices only with the coordinator control plane. This instance uses the legacy mode.</p>
         </Card>
@@ -107,52 +75,55 @@ export function BoardsTab() {
         <p className="card-description">
           Services that members offer to this tailnet. Connect the devices you choose; each one then reaches that
           service&apos;s one port.
-          {state.mode === "open" && " This tailnet is in open mode, so every device can already reach every device."}
+          {data.mode.mode === "open" && " This tailnet is in open mode, so every device can already reach every device."}
         </p>
-        {state.publicPosts.length === 0 ? (
+        {data.publicBoard.posts.length === 0 ? (
           <EmptyState>No services are offered yet.</EmptyState>
         ) : (
           <ul className="post-list">
-            {state.publicPosts.map((p) => (
-              <PublicPostCard key={`${p.id}:${p.myConnectedDevices.join(",")}`} post={p} devices={state.devices} onChanged={() => { void load(); }} />
+            {data.publicBoard.posts.map((p) => (
+              <PublicPostCard key={`${p.id}:${p.myConnectedDevices.join(",")}`} post={p} devices={data.devices.devices} onChanged={() => { void reload(); }} />
             ))}
           </ul>
         )}
       </Card>
 
-      {canReview && state.pending.length > 0 && (
+      {canReview && data.pending.posts.length > 0 && (
         <PendingPostsCard
-          posts={state.pending}
-          onApprove={(postId) => { void act(() => boardsService.approve(tid, postId), "Approved", "Could not approve"); }}
-          onReject={(postId, reason) => { void act(() => boardsService.reject(tid, postId, reason), "Not approved", "Could not reject"); }}
+          posts={data.pending.posts}
+          busy={busy}
+          onApprove={(postId) => { act((tid) => boardsService.approve(tid, postId), "Approved", "Could not approve"); }}
+          onReject={(postId, reason) => { act((tid) => boardsService.reject(tid, postId, reason), "Not approved", "Could not reject"); }}
         />
       )}
 
-      <PrivateBoardCard posts={mine("private")} baseDomain={state.baseDomain} onRemove={remove} />
+      <PrivateBoardCard posts={mine("private")} baseDomain={data.mine.baseDomain} onRemove={remove} busy={busy} />
 
       <MyPublicServicesCard
         posts={mine("public")}
         onRemove={remove}
-        onDisconnect={(postId, userId) => { void act(() => boardsService.disconnectMember(tid, postId, userId), "Disconnected", "Could not disconnect"); }}
+        busy={busy}
+        onDisconnect={(postId, userId) => { act((tid) => boardsService.disconnectMember(tid, postId, userId), "Disconnected", "Could not disconnect"); }}
       />
 
       <Card title="Add a service">
-        <NewServiceForm devices={state.devices} baseDomain={state.baseDomain} httpsServices={state.httpsServices} onCreated={() => { void load(); }} />
+        <NewServiceForm devices={data.devices.devices} baseDomain={data.mine.baseDomain} httpsServices={data.mine.httpsServices} onCreated={() => { void reload(); }} />
       </Card>
 
-      {state.board.canEdit && (
+      {data.board.canEdit && (
         <Card title="Controller board">
           <p className="card-description">
             The public page of this tailnet: its purpose, how to join, contact details. Anyone on the internet can read it.
           </p>
-          <ControllerBoardEditor key={state.board.text} initial={state.board.text} address={state.board.address} onSaved={() => { void load(); }} />
+          <ControllerBoardEditor key={data.board.text} initial={data.board.text} address={data.board.address} onSaved={() => { void reload(); }} />
         </Card>
       )}
 
-      {state.canEditMode && state.supported && (
+      {data.mode.canEdit && data.devices.supported && (
         <DeviceAccessCard
-          mode={state.mode}
-          onChange={(next) => { void act(() => boardsService.setAccessMode(tid, next), "Access mode changed", "Could not change the access mode"); }}
+          mode={data.mode.mode}
+          busy={busy}
+          onChange={(next) => { act((tid) => boardsService.setAccessMode(tid, next), "Access mode changed", "Could not change the access mode"); }}
         />
       )}
     </div>

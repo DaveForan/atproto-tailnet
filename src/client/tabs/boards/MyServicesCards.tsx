@@ -7,10 +7,12 @@ export function PrivateBoardCard({
   posts,
   baseDomain,
   onRemove,
+  busy = false,
 }: {
   posts: MyPost[];
   baseDomain: string;
   onRemove: (postId: string) => void;
+  busy?: boolean;
 }) {
   return (
     <Card title="My private board">
@@ -33,7 +35,7 @@ export function PrivateBoardCard({
                 )}
                 {p.device?.address && <span className="text-dim"> · {p.device.address}:{p.port} on {p.device.name}</span>}
               </p>
-              <button type="button" className="btn-sm btn-ghost" onClick={() => onRemove(p.id)}>
+              <button type="button" className="btn-sm btn-ghost" disabled={busy} onClick={() => onRemove(p.id)}>
                 Remove
               </button>
             </li>
@@ -48,10 +50,12 @@ export function MyPublicServicesCard({
   posts,
   onRemove,
   onDisconnect,
+  busy = false,
 }: {
   posts: MyPost[];
   onRemove: (postId: string) => void;
   onDisconnect: (postId: string, userId: string) => void;
+  busy?: boolean;
 }) {
   return (
     <Card title="My services on the public board">
@@ -75,6 +79,7 @@ export function MyPublicServicesCard({
                       <span>@{c.handle} · {c.devices} device(s)</span>
                       <button type="button"
                         className="btn-sm btn-ghost"
+                        disabled={busy}
                         onClick={() => onDisconnect(p.id, c.userId)}
                       >
                         Disconnect
@@ -83,7 +88,7 @@ export function MyPublicServicesCard({
                   ))}
                 </ul>
               )}
-              <button type="button" className="btn-sm btn-ghost" onClick={() => onRemove(p.id)}>
+              <button type="button" className="btn-sm btn-ghost" disabled={busy} onClick={() => onRemove(p.id)}>
                 Remove
               </button>
             </li>

@@ -15,7 +15,7 @@ import { LoadError } from "../components/LoadError";
 const KEYS_FALLBACK: { keys: AuthKeyInfo[] } = { keys: [] };
 
 export function DevicesTab() {
-  const { hasPerm, reload, user, currentTenant } = useSession();
+  const { hasPerm, reloadTenants, user, currentTenant } = useSession();
   const { data: devices, loading, error, reload: reloadDevices } = useTenantData<DevicesData | null>(
     (tid) => deviceService.getDevices(tid),
     null,
@@ -28,7 +28,7 @@ export function DevicesTab() {
     if (!(await confirm({ title: `Remove device "${deviceName}"?`, message: "This cannot be undone.", confirmLabel: "Remove device", danger: true }))) return;
     await mutate(
       (tid) => deviceService.removeDevice(tid, deviceId),
-      { successMsg: "Device removed", reload: async () => { await reloadDevices(); reload(); } },
+      { successMsg: "Device removed", reload: async () => { await reloadDevices(); void reloadTenants(); } },
     );
   };
 
@@ -87,7 +87,7 @@ export function DevicesTab() {
         )}
       </Card>
       {currentTenant && (
-        <MachineLockCard tenantId={currentTenant.id} onChanged={() => { void reloadDevices(); reload(); }} />
+        <MachineLockCard tenantId={currentTenant.id} onChanged={() => { void reloadDevices(); void reloadTenants(); }} />
       )}
       <AuthKeysCard />
     </div>

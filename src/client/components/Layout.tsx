@@ -10,7 +10,6 @@ import { NotificationBell } from "./NotificationBell";
 import { tabEnabled, tabRegistry, type TabGroup } from "./registry";
 import { safeUrl } from "../lib/utils";
 
-// Sidebar open/close state shared between Header and Sidebar
 interface SidebarState {
   sidebarOpen: boolean;
   toggleSidebar: () => void;
@@ -206,7 +205,7 @@ function buildVisibleGroups(
 
 export function LockdownBanner() {
   const { settings, hasPerm, currentTenant, reloadSettings } = useSession();
-  const { toast, toastError } = useToast();
+  const { toast, toastFailure } = useToast();
   const [busy, setBusy] = useState(false);
   if (!settings?.lockdownMode) return null;
 
@@ -218,7 +217,7 @@ export function LockdownBanner() {
       toast("Lockdown mode disabled");
       await reloadSettings();
     } catch (e) {
-      toastError(e instanceof Error ? e.message : "Failed to disable lockdown mode");
+      toastFailure(e, "Failed to disable lockdown mode");
     } finally {
       setBusy(false);
     }

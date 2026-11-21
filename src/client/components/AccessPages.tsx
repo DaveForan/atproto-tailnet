@@ -3,6 +3,7 @@ import { useSession } from "../hooks/session";
 import { useTabRoute } from "../hooks/useTabRoute";
 import { useToast } from "./Toast";
 import { Card } from "./Card";
+import { Loading } from "./Loading";
 import { Badge } from "./Badge";
 import { PendingInvitations } from "./PendingInvitations";
 import { instanceService } from "../services/instance";
@@ -32,7 +33,7 @@ export function NoAccessPage() {
         <button type="button" className="btn-sm btn-ghost mb-12" onClick={() => setTab("status")}>
           &larr; Back
         </button>
-        <Suspense fallback={<div className="loading" role="status">Loading…</div>}>
+        <Suspense fallback={<Loading />}>
           <InstanceTab />
         </Suspense>
       </main>
@@ -123,7 +124,7 @@ function JoinDefaultTailnet({ hasInvitations }: { hasInvitations: boolean }) {
     }
   };
 
-  if (state.kind === "loading") return <div className="loading" role="status">Loading…</div>;
+  if (state.kind === "loading") return <Loading />;
 
   if (state.kind === "error") {
     return (

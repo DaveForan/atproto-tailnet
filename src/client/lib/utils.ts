@@ -61,6 +61,13 @@ export function errorMessage(e: unknown, fallback: string): string {
   return e instanceof Error ? e.message : fallback;
 }
 
+/** Error text for a change that needs a trusted device (device lock, machine lock). */
+export function trustedDeviceError(e: unknown): string {
+  return errorCode(e) === "device_not_trusted"
+    ? "This browser is not one of your trusted devices, so it cannot change the lock."
+    : errorMessage(e, "That did not work");
+}
+
 export function formatExpiry(dateStr: string | null): string {
   if (!dateStr) return "never";
   const diff = new Date(dateStr).getTime() - Date.now();

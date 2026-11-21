@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
-import { useToast } from "../components/Toast";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useConfirm } from "../components/ConfirmDialog";
 import { Card } from "../components/Card";
 import { Badge } from "../components/Badge";
-import { errorMessage, errorCode, tryCopy } from "../lib/utils";
+import { Loading } from "../components/Loading";
+import { useMutation } from "../hooks/useMutation";
+import { errorMessage, trustedDeviceError, tryCopy } from "../lib/utils";
 import { THEMES, currentTheme, setTheme, type ThemeId } from "../lib/theme";
 import { deviceTrustService, type TrustState } from "../services/device-trust";
 import { deviceKeysSupported, forgetDeviceKey, suggestedDeviceName } from "../lib/device-key";
@@ -74,21 +75,24 @@ function RecoveryCodes({ codes, onDone }: { codes: string[]; onDone: () => void 
 
 /** Trusted devices: the lock that limits sign-in to chosen devices (ADR-0035). */
 function TrustedDevices({ onChanged }: { onChanged?: () => void }) {
-  const { toast, toastError } = useToast();
+  const { mutate, busy } = useMutation({ onError: trustedDeviceError });
   const confirm = useConfirm();
   const [state, setState] = useState<TrustState | null>(null);
   const [name, setName] = useState(suggestedDeviceName());
   const [codes, setCodes] = useState<string[] | null>(null);
   const [pairing, setPairing] = useState<Record<string, string>>({});
-  const [busy, setBusy] = useState(false);
 
   const [loadError, setLoadError] = useState<string | null>(null);
+  const seqRef = useRef(0);
   const load = useCallback(async () => {
+    const seq = ++seqRef.current;
     try {
-      setState(await deviceTrustService.state());
+      const next = await deviceTrustService.state();
+      if (seq !== seqRef.current) return;
+      setState(next);
       setLoadError(null);
     } catch (e) {
-      setLoadError(errorMessage(e, "Could not load your trusted devices"));
+      if (seq === seqRef.current) setLoadError(errorMessage(e, "Could not load your trusted devices"));
     }
   }, []);
   useEffect(() => {
@@ -97,25 +101,11 @@ function TrustedDevices({ onChanged }: { onChanged?: () => void }) {
 
   /** Run a change that needs a fresh proof; proves this device first when asked to. */
   const guarded = async (fn: () => Promise<unknown>, done: string) => {
-    setBusy(true);
-    try {
-      await fn(); // the API layer proves this device again when the server asks
-      toast(done);
-      await load();
-      onChanged?.();
-    } catch (e) {
-      toastError(
-        errorCode(e) === "device_not_trusted"
-          ? "This browser is not one of your trusted devices, so it cannot change the lock."
-          : errorMessage(e, "That did not work"),
-      );
-    } finally {
-      setBusy(false);
-    }
+    if (await mutate(fn, { successMsg: done, reload: load })) onChanged?.();
   };
 
   if (!state) {
-    return loadError ? <LoadError error={loadError} onRetry={load} /> : <div className="loading" role="status">Loading…</div>;
+    return loadError ? <LoadError error={loadError} onRetry={load} /> : <Loading />;
   }
   if (codes) {
     return (

@@ -5,13 +5,13 @@ import { useWizard } from "./hooks/useWizard";
 import { Header, LockdownBanner, LoginPage, Sidebar, SidebarProvider, StatsSummary } from "./components/Layout";
 import { PendingInvitations } from "./components/PendingInvitations";
 import { Loading } from "./components/Loading";
-import { CodeBlock } from "./components/CodeBlock";
 import { InvitePage, NoAccessPage, SuspendedPage } from "./components/AccessPages";
 import { DeviceSignInPage } from "./components/DeviceSignIn";
 import { VerifyDevicePage } from "./components/VerifyDevice";
-import type { HostnamesData, TabId, Tenant } from "./lib/types";
-import { AddressForm } from "./components/TailnetAddress";
-import { hostnamesService } from "./services/hostnames";
+import { SetupWizard } from "./components/SetupWizard";
+import { tabRegistry } from "./components/registry";
+import { usePathRoute } from "./hooks/usePathRoute";
+import type { TabId } from "./lib/types";
 import { onSessionExpired, SESSION_EXPIRED_MESSAGE } from "./services/api";
 
 const StatusTab = lazy(() => import("./tabs/StatusTab").then((m) => ({ default: m.StatusTab })));
@@ -64,9 +64,6 @@ const tabComponents: Record<TabId, React.LazyExoticComponent<React.ComponentType
   instance: InstanceTab,
 };
 
-const DEVICE_PATH = /^\/device\/([0-9a-f]{32})\/?$/;
-const INVITE_PATH = /^\/invite\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i;
-
 /**
  * The session ended while the dashboard was open (an API call answered 401).
  * Nothing on the page can succeed any more: say so and offer the sign-in.
@@ -104,12 +101,10 @@ export function App() {
 function AppContent() {
   const { user, loading, error, currentTenant, reload, reloadAndSelect } = useSession();
   const { showWizard } = useWizard();
-  const [path, setPath] = useState(window.location.pathname);
-  const inviteId = INVITE_PATH.exec(path)?.[1] ?? null;
-  const deviceId = DEVICE_PATH.exec(path)?.[1] ?? null;
+  const { verifyDevice, inviteId, deviceId, goHome } = usePathRoute();
 
   // Second step of sign-in for accounts with trusted devices (no session yet)
-  if (path === "/verify-device") {
+  if (verifyDevice) {
     return <VerifyDevicePage />;
   }
 
@@ -147,8 +142,7 @@ function AppContent() {
 
   if (deviceId) {
     const done = () => {
-      history.replaceState(null, "", "/");
-      setPath("/");
+      goHome();
       void reload();
     };
     return (
@@ -161,8 +155,7 @@ function AppContent() {
 
   if (inviteId) {
     const done = (slug?: string) => {
-      history.replaceState(null, "", "/");
-      setPath("/");
+      goHome();
       void (slug ? reloadAndSelect(slug) : reload());
     };
     return (
@@ -194,15 +187,29 @@ function AppContent() {
   );
 }
 
+const APP_NAME = "atproto-tailnet";
+
 function Dashboard() {
-  const { invitations, currentTenant, reload } = useSession();
-  const { tab, setTab } = useTabRoute();
+  const { invitations, currentTenant, reloadInvitations, reloadTenants } = useSession();
+  const { tab, setTab, navCount } = useTabRoute();
   const TabComponent = tabComponents[tab] ?? StatusTab;
+  const label = tabRegistry.find((e) => e.id === tab)?.label ?? "Status";
+  const headingRef = useRef<HTMLHeadingElement>(null);
+
+  useEffect(() => {
+    document.title = currentTenant ? `${label} · ${currentTenant.name} · ${APP_NAME}` : APP_NAME;
+  }, [label, currentTenant?.name]);
+
+  // Screen readers and keyboard users land on the new page; the first load keeps the browser's focus
+  useEffect(() => {
+    if (navCount > 0) headingRef.current?.focus();
+  }, [navCount]);
 
   return (
     <div className="dashboard-layout">
       <Sidebar />
       <main>
+        <h2 ref={headingRef} tabIndex={-1} className="tab-title">{label}</h2>
         {currentTenant?.suspended && (
           <div className="suspended-banner" role="status">
             <span>
@@ -214,94 +221,15 @@ function Dashboard() {
             )}
           </div>
         )}
-        <PendingInvitations invitations={invitations} onAction={() => { void reload(); }} />
+        <PendingInvitations
+          invitations={invitations}
+          onAction={() => { void reloadInvitations(); void reloadTenants(); }}
+        />
         <StatsSummary />
         <Suspense key={currentTenant?.id} fallback={<Loading />}>
           <TabComponent />
         </Suspense>
       </main>
     </div>
-  );
-}
-
-function SetupWizard({ tenant }: { tenant: Tenant }) {
-  const { reload } = useSession();
-  const { wizardStep, setWizardStep, dismissWizard } = useWizard();
-  const [address, setAddress] = useState<HostnamesData | null>(null);
-
-  useEffect(() => {
-    hostnamesService
-      .list(tenant.id)
-      .then((d) => d && setAddress(d))
-      .catch(() => setAddress(null));
-  }, [tenant.id]);
-
-  const loginServer = address?.loginServer ?? "https://<login-server>";
-
-  return (
-    <main className="wizard-overlay">
-      <div className="wizard-card">
-        <p className="wizard-step" aria-live="polite">Step {wizardStep} of 3</p>
-        <h2>Welcome to {tenant.name}</h2>
-        {wizardStep === 1 && tenant.isOriginator && address && (
-          <div>
-            <p>
-              Your tailnet is ready. First, choose its address — the public name used in
-              join and board links{address.sharedControl ? "" : ", and the server your devices connect to"}.
-              You can change it later; old addresses keep working as aliases.
-            </p>
-            <AddressForm
-              tenantId={tenant.id}
-              initial={address.primary}
-              baseDomain={address.baseDomain}
-              sharedControl={address.sharedControl}
-              submitLabel="Use this address"
-              onSaved={(primary) => {
-                setAddress({ ...address, primary });
-                void reload();
-                setWizardStep(2);
-              }}
-              secondary={
-                <button type="button" className="btn-ghost" onClick={() => setWizardStep(2)}>
-                  Keep {address.primary}
-                </button>
-              }
-            />
-          </div>
-        )}
-        {wizardStep === 1 && !(tenant.isOriginator && address) && (
-          <div>
-            <p>Your tailnet is ready. Let&apos;s connect your first device.</p>
-            <div className="wizard-actions">
-              <button type="button" onClick={() => setWizardStep(2)}>Get started</button>
-              <button type="button" className="btn-ghost" onClick={dismissWizard}>
-                Skip
-              </button>
-            </div>
-          </div>
-        )}
-        {wizardStep === 2 && (
-          <div>
-            <p>
-              Install <a href="https://tailscale.com/download" target="_blank" rel="noopener noreferrer">Tailscale</a> on your device, then go to the <strong>Add device</strong> tab to generate an auth key.
-            </p>
-            <div className="wizard-actions">
-              <button type="button" onClick={() => setWizardStep(3)}>Next</button>
-              <button type="button" className="btn-ghost" onClick={() => setWizardStep(1)}>Back</button>
-            </div>
-          </div>
-        )}
-        {wizardStep === 3 && (
-          <div>
-            <p>Run this command with your auth key:</p>
-            <CodeBlock value={`tailscale up --login-server ${loginServer} --authkey YOUR_KEY`} label="Connect command" />
-            <div className="wizard-actions">
-              <button type="button" onClick={dismissWizard}>Go to the dashboard</button>
-              <button type="button" className="btn-ghost" onClick={() => setWizardStep(2)}>Back</button>
-            </div>
-          </div>
-        )}
-      </div>
-    </main>
   );
 }

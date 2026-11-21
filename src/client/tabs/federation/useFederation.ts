@@ -1,14 +1,17 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { federationService } from "../../services/federation";
 import { useSession } from "../../hooks/session";
 import { useToast } from "../../components/Toast";
+import { useTenantData } from "../../hooks/useTenantData";
 import { useTenantMutation } from "../../hooks/useMutation";
 import { useConfirm } from "../../components/ConfirmDialog";
-import { errorMessage } from "../../lib/utils";
 import type {
   FederationLink,
   BrokerData,
+  DidData,
   FederationScope,
+  PostureData,
+  ScopeData,
   ScopePolicyConfig,
   ScopeUpdate,
 } from "../../lib/types";
@@ -24,82 +27,65 @@ const lines = (text: string) =>
 
 /** State and actions of the Federation tab, shared by its cards. */
 export function useFederation() {
-  const { currentTenant, hasPerm } = useSession();
+  const { hasPerm } = useSession();
   const { toastError } = useToast();
   const { mutate, busy } = useTenantMutation();
   const confirm = useConfirm();
   const canManage = hasPerm("manage_settings");
 
-  const [links, setLinks] = useState<FederationLink[]>([]);
-  const [posture, setPosture] = useState("selective");
-  const [did, setDid] = useState("");
-  const [broker, setBroker] = useState<BrokerData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  // One hook per part, so each action reloads only what it changed
+  const keep = { keepPreviousOnReload: true };
+  const linksData = useTenantData((tid) => federationService.getLinks(tid), { links: [] as FederationLink[] }, [], keep);
+  const postureData = useTenantData<PostureData | null>((tid) => federationService.getPosture(tid), null, [], keep);
+  const scopeData = useTenantData<ScopeData | null>((tid) => federationService.getScope(tid), null, [], keep);
+  const didData = useTenantData<DidData | null>((tid) => federationService.getDid(tid), null, [], keep);
+  const brokerData = useTenantData<BrokerData | null>((tid) => federationService.getBroker(tid), null, [], keep);
+  const parts = [linksData, postureData, scopeData, didData, brokerData];
+  const loading = parts.some((p) => p.loading);
+  const failure = parts.find((p) => p.error)?.error;
+  const loadError = failure ? `Some federation data failed to load: ${failure}` : null;
+  const { reload: loadLinks } = linksData;
+  const { reload: loadPosture } = postureData;
+  const { reload: loadScope } = scopeData;
+  const { reload: loadDid } = didData;
+  const { reload: loadBroker } = brokerData;
+  const loadAll = useCallback(async () => {
+    await Promise.all([loadLinks(), loadPosture(), loadScope(), loadDid(), loadBroker()]);
+  }, [loadLinks, loadPosture, loadScope, loadDid, loadBroker]);
 
   const [targetSlug, setTargetSlug] = useState("");
   const [requestMessage, setRequestMessage] = useState("");
   const [requestCidrs, setRequestCidrs] = useState("");
 
-  // Accept form state: per-link CIDRs
   const [acceptCidrs, setAcceptCidrs] = useState<Record<string, string>>({});
 
+  const [posture, setPosture] = useState("selective");
   const [scopes, setScopes] = useState<FederationScope[]>(["regional"]);
   const [region, setRegion] = useState("");
   const [lat, setLat] = useState("");
   const [lon, setLon] = useState("");
   const [policies, setPolicies] = useState<Partial<Record<FederationScope, ScopePolicyConfig>>>({});
 
-  const loadLinks = useCallback(async () => {
-    if (!currentTenant) return;
-    const data = await federationService.getLinks(currentTenant.id);
-    setLinks(data?.links ?? []);
-  }, [currentTenant?.id]);
+  // Loaded values reset the forms once per load
+  const [seenPosture, setSeenPosture] = useState<PostureData | null>(null);
+  if (postureData.data && postureData.data !== seenPosture) {
+    setSeenPosture(postureData.data);
+    setPosture(postureData.data.posture);
+  }
+  const [seenScope, setSeenScope] = useState<ScopeData | null>(null);
+  const scopeLoaded = scopeData.data;
+  if (scopeLoaded && scopeLoaded !== seenScope) {
+    setSeenScope(scopeLoaded);
+    setScopes(scopeLoaded.scopes);
+    setRegion(scopeLoaded.region ?? "");
+    setLat(scopeLoaded.coordinates ? String(scopeLoaded.coordinates[0]) : "");
+    setLon(scopeLoaded.coordinates ? String(scopeLoaded.coordinates[1]) : "");
+    setPolicies(scopeLoaded.scopePolicies ?? {});
+  }
 
-  const loadPosture = useCallback(async () => {
-    if (!currentTenant) return;
-    const data = await federationService.getPosture(currentTenant.id);
-    if (data) setPosture(data.posture);
-  }, [currentTenant?.id]);
-
-  const loadScope = useCallback(async () => {
-    if (!currentTenant) return;
-    const data = await federationService.getScope(currentTenant.id);
-    if (data) {
-      setScopes(data.scopes);
-      setRegion(data.region ?? "");
-      setLat(data.coordinates ? String(data.coordinates[0]) : "");
-      setLon(data.coordinates ? String(data.coordinates[1]) : "");
-      setPolicies(data.scopePolicies ?? {});
-    }
-  }, [currentTenant?.id]);
-
-  const loadDid = useCallback(async () => {
-    if (!currentTenant) return;
-    const data = await federationService.getDid(currentTenant.id);
-    if (data) setDid(data.did);
-  }, [currentTenant?.id]);
-
-  const loadBroker = useCallback(async () => {
-    if (!currentTenant) return;
-    const data = await federationService.getBroker(currentTenant.id);
-    setBroker(data);
-  }, [currentTenant?.id]);
-
-  const loadAll = useCallback(async () => {
-    if (!currentTenant) return;
-    try {
-      const results = await Promise.allSettled([
-        loadLinks(), loadPosture(), loadScope(), loadDid(), loadBroker(),
-      ]);
-      const failure = results.find((r): r is PromiseRejectedResult => r.status === "rejected");
-      setLoadError(failure ? `Some federation data failed to load: ${errorMessage(failure.reason, "unknown error")}` : null);
-    } finally {
-      setLoading(false);
-    }
-  }, [loadLinks, loadPosture, loadScope, loadDid, loadBroker]);
-
-  useEffect(() => { void loadAll(); }, [loadAll]);
+  const links = linksData.data.links ?? [];
+  const did = didData.data?.did ?? "";
+  const broker = brokerData.data;
 
   const requestFederation = async (e: React.FormEvent) => {
     e.preventDefault();

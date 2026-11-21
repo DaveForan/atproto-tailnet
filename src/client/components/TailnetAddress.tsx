@@ -100,7 +100,7 @@ export function AddressForm({
 
 /** Settings card: current address, aliases, change/retire (originator only). */
 export function TailnetAddressCard() {
-  const { currentTenant, reload } = useSession();
+  const { currentTenant, reloadTenants } = useSession();
   const { toast, toastFailure } = useToast();
   const confirm = useConfirm();
   const [data, setData] = useState<HostnamesData | null>(null);
@@ -197,7 +197,7 @@ export function TailnetAddressCard() {
             onSaved={() => {
               setEditing(false);
               void load();
-              void reload();
+              void reloadTenants();
             }}
             secondary={
               <button type="button" className="btn-ghost" onClick={() => setEditing(false)}>

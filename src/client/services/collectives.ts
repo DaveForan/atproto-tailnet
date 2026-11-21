@@ -2,16 +2,9 @@ import { tenantApi } from "./api";
 import type { Ancestor, SubCollective, ComplianceData } from "../lib/types";
 
 export const collectivesService = {
-  getAll: (tid: string) =>
-    Promise.all([
-      tenantApi<Ancestor[]>(tid, "/ancestors"),
-      tenantApi<SubCollective[]>(tid, "/collectives"),
-      tenantApi<ComplianceData>(tid, "/compliance"),
-    ]).then(([ancestors, collectives, compliance]) => ({
-      ancestors: ancestors ?? [],
-      collectives: collectives ?? [],
-      compliance,
-    })),
+  ancestors: (tid: string) => tenantApi<Ancestor[]>(tid, "/ancestors"),
+  list: (tid: string) => tenantApi<SubCollective[]>(tid, "/collectives"),
+  compliance: (tid: string) => tenantApi<ComplianceData>(tid, "/compliance"),
 
   create: (tid: string, name: string, slug: string) =>
     tenantApi(tid, "/collectives", {

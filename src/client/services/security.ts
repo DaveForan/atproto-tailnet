@@ -9,16 +9,8 @@ export const securityService = {
   getSettings: (tid: string) =>
     tenantApi<Settings>(tid, "/settings"),
 
-  getAll: (tid: string) =>
-    Promise.all([
-      tenantApi<Settings>(tid, "/settings"),
-      tenantApi<DeviceApproval[]>(tid, "/device-approvals"),
-      tenantApi<JoinRequest[]>(tid, "/join-requests"),
-    ]).then(([settings, approvals, joinRequests]) => ({
-      settings,
-      approvals: approvals ?? [],
-      joinRequests: joinRequests ?? [],
-    })),
+  deviceApprovals: (tid: string) => tenantApi<DeviceApproval[]>(tid, "/device-approvals"),
+  joinRequests: (tid: string) => tenantApi<JoinRequest[]>(tid, "/join-requests"),
 
   updateSetting: (tid: string, key: string, value: boolean | number) =>
     tenantApi(tid, "/settings", {

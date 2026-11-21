@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import { collectivesService } from "../services/collectives";
 import { useSession } from "../hooks/session";
-import { useToast } from "../components/Toast";
+import { useTenantParallel, type TenantLoaders } from "../hooks/useTenantData";
 import { useTenantMutation } from "../hooks/useMutation";
 import { Card } from "../components/Card";
 import { Badge } from "../components/Badge";
@@ -12,62 +12,53 @@ import { errorCode, errorMessage } from "../lib/utils";
 import type { Ancestor, SubCollective, ComplianceData } from "../lib/types";
 import { LoadError } from "../components/LoadError";
 
+interface CollectivesData {
+  ancestors: Ancestor[];
+  collectives: SubCollective[];
+  compliance: ComplianceData | null;
+}
+
+const LOADERS: TenantLoaders<CollectivesData> = {
+  ancestors: (tid) => collectivesService.ancestors(tid),
+  collectives: (tid) => collectivesService.list(tid),
+  compliance: (tid) => collectivesService.compliance(tid),
+};
+
 export function CollectivesTab() {
-  const { currentTenant, hasPerm, user } = useSession();
-  const { toast, toastFailure } = useToast();
-  const { mutate, busy } = useTenantMutation();
-  const confirm = useConfirm();
-
-  const [ancestors, setAncestors] = useState<Ancestor[]>([]);
-  const [collectives, setCollectives] = useState<SubCollective[]>([]);
-  const [compliance, setCompliance] = useState<ComplianceData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
-
-  const [newName, setNewName] = useState("");
-  const [newSlug, setNewSlug] = useState("");
-  const [creating, setCreating] = useState(false);
+  const { hasPerm, user } = useSession();
+  const { data, loading, error, reload } = useTenantParallel(
+    LOADERS,
+    { ancestors: [], collectives: [], compliance: null },
+    { keepPreviousOnReload: true },
+  );
+  const { ancestors, collectives, compliance } = data;
   const [singleTailnet, setSingleTailnet] = useState(!!user?.isOperator && user.canCreateTailnet === false);
   // Sub-collectives are tailnets: only operators and designated tailnet creators may create them
   const [cannotCreate, setCannotCreate] = useState(
     !!user && !user.isOperator && user.canCreateTailnet === false,
   );
+  const { mutate, busy } = useTenantMutation({ reload });
+  // The refusal codes also switch the form to its explanation
+  const { mutate: create, busy: creating } = useTenantMutation({
+    onError: (e) => {
+      const code = errorCode(e);
+      if (code === "single_tailnet") setSingleTailnet(true);
+      if (code === "cannot_create_tailnet") setCannotCreate(true);
+      return errorMessage(e, "Failed to create sub-collective");
+    },
+    reload,
+  });
+  const confirm = useConfirm();
 
-  const loadData = useCallback(async () => {
-    if (!currentTenant) return;
-    const data = await collectivesService.getAll(currentTenant.id);
-    setAncestors(data.ancestors);
-    setCollectives(data.collectives);
-    setCompliance(data.compliance);
-  }, [currentTenant?.id]);
-
-  const loadAll = useCallback(() => {
-    setLoading(true);
-    return loadData()
-      .then(() => setLoadError(null))
-      .catch((e) => setLoadError(errorMessage(e, "Failed to load collectives")))
-      .finally(() => setLoading(false));
-  }, [loadData]);
-
-  useEffect(() => { void loadAll(); }, [loadAll]);
+  const [newName, setNewName] = useState("");
+  const [newSlug, setNewSlug] = useState("");
 
   const createCollective = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!currentTenant || creating) return;
-    setCreating(true);
-    try {
-      await collectivesService.create(currentTenant.id, newName, newSlug);
-      toast("Sub-collective created");
+    const ok = await create((tid) => collectivesService.create(tid, newName, newSlug), { successMsg: "Sub-collective created" });
+    if (ok) {
       setNewName("");
       setNewSlug("");
-      await loadData();
-    } catch (err) {
-      const code = errorCode(err);
-      if (code === "single_tailnet") setSingleTailnet(true);
-      if (code === "cannot_create_tailnet") setCannotCreate(true);
-      toastFailure(err, "Failed to create sub-collective");
-    } finally {
-      setCreating(false);
     }
   };
 
@@ -75,7 +66,7 @@ export function CollectivesTab() {
     if (!(await confirm({ title: `Eject ${name}?`, message: "This sub-collective is removed from this tailnet. This cannot be undone.", confirmLabel: "Eject", danger: true }))) return;
     await mutate(
       (tid) => collectivesService.eject(tid, id),
-      { successMsg: "Sub-collective ejected", reload: loadData },
+      { successMsg: "Sub-collective ejected" },
     );
   };
 
@@ -85,8 +76,7 @@ export function CollectivesTab() {
 
   return (
     <div className="tab-content">
-      <LoadError error={loadError} onRetry={loadAll} />
-      {/* Ancestors */}
+      <LoadError error={error} onRetry={reload} />
       <Card title="Parent chain">
         {ancestors.length > 0 ? (
           <ul className="item-list">
@@ -104,7 +94,6 @@ export function CollectivesTab() {
         )}
       </Card>
 
-      {/* Sub-collectives */}
       <Card title="Sub-collectives">
         {collectives.length > 0 ? (
           <ul className="item-list">
@@ -182,7 +171,6 @@ export function CollectivesTab() {
         )}
       </Card>
 
-      {/* Compliance */}
       <Card title="Compliance">
         {violations.length > 0 ? (
           <ul className="item-list">

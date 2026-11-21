@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Card } from "./Card";
+import { Loading } from "./Loading";
 import { deviceTrustService } from "../services/device-trust";
 import { ensureDeviceKey, loadDeviceKey, setDeviceId, signChallenge, suggestedDeviceName, deviceKeysSupported } from "../lib/device-key";
 import { errorMessage, localRedirect } from "../lib/utils";
@@ -113,7 +114,7 @@ export function VerifyDevicePage() {
   return (
     <main className="access-main">
       <div className="access-page">
-        {view.kind === "checking" && <div className="loading" role="status">Checking this device…</div>}
+        {view.kind === "checking" && <Loading label="Checking this device…" />}
 
         {view.kind === "no-session" && (
           <Card title="Sign in first">

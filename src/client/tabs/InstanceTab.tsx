@@ -1,13 +1,14 @@
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import { useSession } from "../hooks/session";
+import { useTenantParallel, type TenantLoaders } from "../hooks/useTenantData";
 import { useToast } from "../components/Toast";
 import { Card } from "../components/Card";
 import { Loading } from "../components/Loading";
+import { LoadError } from "../components/LoadError";
 import { ConnectClaude } from "../components/ConnectClaude";
 import { operatorService } from "../services/operator";
 import { instanceService } from "../services/instance";
 import { ApiError } from "../services/api";
-import { errorMessage } from "../lib/utils";
 import type { InstanceInfo, OperatorOverview, TailnetCreator } from "../lib/types";
 import { TailnetsCard } from "./instance/TailnetsCard";
 import { UsersCard } from "./instance/UsersCard";
@@ -31,33 +32,29 @@ function conflictNames(e: unknown): string[] {
     .filter(Boolean);
 }
 
+interface InstanceData {
+  overview: OperatorOverview | null;
+  creators: TailnetCreator[];
+  instance: InstanceInfo | null;
+}
+
+const LOADERS: TenantLoaders<InstanceData> = {
+  overview: () => operatorService.overview(),
+  creators: () => operatorService.getCreators(),
+  instance: () => instanceService.get().catch(() => null),
+};
+
 export function InstanceTab() {
   const { tenants: myTenants, reload: reloadApp } = useSession();
   const { toast, toastFailure } = useToast();
-  const [overview, setOverview] = useState<OperatorOverview | null>(null);
-  const [creators, setCreators] = useState<TailnetCreator[]>([]);
-  const [instance, setInstance] = useState<InstanceInfo | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const { data, loading, error: loadError, reload: load } = useTenantParallel(
+    LOADERS,
+    { overview: null, creators: [], instance: null },
+    { keepPreviousOnReload: true, instanceWide: true },
+  );
+  const { overview, creators, instance } = data;
   const [busy, setBusy] = useState(false);
   const [conflict, setConflict] = useState<string[] | null>(null);
-
-  const load = useCallback(async () => {
-    try {
-      const [o, c, i] = await Promise.all([
-        operatorService.overview(),
-        operatorService.getCreators(),
-        instanceService.get().catch(() => null),
-      ]);
-      setOverview(o);
-      setCreators(c);
-      setInstance(i);
-      setLoadError(null);
-    } catch (e) {
-      setLoadError(errorMessage(e, "Failed to load instance overview"));
-    }
-  }, []);
-
-  useEffect(() => { void load(); }, [load]);
 
   const run: RunAction = async (fn, success, opts) => {
     if (busy) return false;
@@ -119,10 +116,11 @@ export function InstanceTab() {
     );
   }
 
-  if (!overview) return <Loading />;
+  if (loading || !overview) return <Loading />;
 
   return (
     <div className="tab-content">
+      <LoadError error={loadError} onRetry={load} />
       <TailnetsCard overview={overview} busy={busy} run={run} isMine={isMine} />
       <UsersCard users={overview.users} busy={busy} run={run} />
       <InstanceSettingsCard

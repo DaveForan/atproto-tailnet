@@ -210,6 +210,10 @@ main {
 /* One tab's worth of cards; capped so long lines stay readable on wide screens */
 .tab-content { max-width: 1080px; min-width: 0; }
 
+/* Page heading; takes focus on a tab change, so it needs no focus ring of its own */
+.tab-title { font-size: 22px; font-weight: 600; margin-bottom: 16px; }
+.tab-title:focus { outline: none; }
+
 /* ── Sidebar ──────────────────────────────────────────────────────────── */
 
 .sidebar {

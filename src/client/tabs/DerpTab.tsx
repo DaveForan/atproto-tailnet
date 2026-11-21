@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useId, useState } from "react";
+import { useId, useState } from "react";
 import { networkService } from "../services/network";
 import { useTenant } from "../hooks/session";
+import { useTenantData } from "../hooks/useTenantData";
 import { useToast } from "../components/Toast";
 import { useTenantMutation } from "../hooks/useMutation";
 import { Card } from "../components/Card";
@@ -10,34 +11,28 @@ import { Badge } from "../components/Badge";
 import { Toggle } from "../components/Toggle";
 import type { DerpConfig, DerpNode, DerpRegion } from "../lib/types";
 import { LoadError } from "../components/LoadError";
-import { errorMessage } from "../lib/utils";
 
 export function DerpTab() {
   const { currentTenant } = useTenant();
   const { toast } = useToast();
-  const { mutate, busy } = useTenantMutation();
+  const { data, loading, error, reload } = useTenantData<DerpConfig | null>(
+    (tid) => networkService.getDerp(tid),
+    null,
+    [],
+    { keepPreviousOnReload: true },
+  );
+  const { mutate, busy } = useTenantMutation({ reload });
   const [config, setConfig] = useState<DerpConfig>({
     regions: [],
     embeddedDerpEnabled: false,
     usePublicDerp: true,
   });
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    if (!currentTenant) return;
-    try {
-      const data = await networkService.getDerp(currentTenant.id);
-      if (data) setConfig(data);
-      setLoadError(null);
-    } catch (e) {
-      setLoadError(errorMessage(e, "Failed to load DERP config"));
-    } finally {
-      setLoading(false);
-    }
-  }, [currentTenant?.id]);
-
-  useEffect(() => { load().catch(() => {}); }, [load]);
+  // Each loaded config replaces the edits once
+  const [loaded, setLoaded] = useState<DerpConfig | null>(null);
+  if (data && data !== loaded) {
+    setLoaded(data);
+    setConfig(data);
+  }
 
   const updateRegions = (regions: DerpRegion[]) => {
     setConfig((c) => ({ ...c, regions }));
@@ -74,7 +69,7 @@ export function DerpTab() {
   const save = async () => {
     await mutate(
       (tid) => networkService.setDerp(tid, config),
-      { successMsg: "DERP configuration saved", reload: load },
+      { successMsg: "DERP configuration saved" },
     );
   };
 
@@ -82,7 +77,7 @@ export function DerpTab() {
 
   return (
     <div className="tab-content">
-      <LoadError error={loadError} onRetry={load} />
+      <LoadError error={error} onRetry={reload} />
       <Card title="DERP relays">
         <p className="card-description">
           DERP (Designated Encrypted Relay for Packets) relays help devices

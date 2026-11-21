@@ -292,12 +292,6 @@ export interface AgentToken {
   lastUsedAt?: string;
 }
 
-export interface AclPolicy {
-  acls: AclRule[];
-  groups: Record<string, string[]>;
-  hosts: Record<string, string>;
-}
-
 export interface AclRule {
   action: string;
   src: string[];
@@ -363,42 +357,6 @@ export interface UsageSnapshot {
   routeCount: number;
   onlineDevices: number;
   recordedAt: string;
-}
-
-export interface ServiceDevice {
-  id: string;
-  name: string;
-  description?: string;
-  status: "pending" | "approved" | "rejected";
-  createdAt: string;
-}
-
-export interface Service {
-  id: string;
-  name: string;
-  url: string;
-  description?: string | null;
-  serviceDeviceId: string;
-  status: "pending" | "active" | "disabled";
-  ownerId?: string;
-  ownerHandle?: string;
-  ownerDisplayName?: string | null;
-  deviceName?: string;
-  createdAt: string;
-}
-
-export interface BoardPost {
-  id: string;
-  title: string;
-  description?: string | null;
-  status: "active" | "removed";
-  serviceId: string;
-  serviceName?: string;
-  serviceUrl?: string;
-  authorId: string;
-  authorHandle: string;
-  authorDisplayName?: string | null;
-  createdAt: string;
 }
 
 export interface AuditEntry {

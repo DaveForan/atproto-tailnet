@@ -4,9 +4,11 @@ import { useConfirm } from "../../components/ConfirmDialog";
 export function DeviceAccessCard({
   mode,
   onChange,
+  busy = false,
 }: {
   mode: "open" | "member";
   onChange: (next: "open" | "member") => void;
+  busy?: boolean;
 }) {
   const confirm = useConfirm();
   return (
@@ -19,6 +21,7 @@ export function DeviceAccessCard({
       <button
         type="button"
         className="btn-sm"
+        disabled={busy}
         onClick={async () => {
           const next = mode === "member" ? "open" : "member";
           if (next === "member" && !(await confirm({

@@ -6,6 +6,8 @@ import type { TabId } from "../lib/types";
 interface RouteContext {
   tab: TabId;
   setTab: (tab: TabId) => void;
+  /** Counts tab changes the user asked for; the permission fallback does not count. */
+  navCount: number;
 }
 
 const RouteCtx = createContext<RouteContext>(null!);
@@ -28,9 +30,11 @@ function initialTab(): TabId {
 export function TabRouteProvider({ children }: { children: ReactNode }) {
   const { loading, currentTenant, settings, user, hasPerm } = useSession();
   const [tab, setTabState] = useState<TabId>(initialTab);
+  const [navCount, setNavCount] = useState(0);
 
   const setTab = useCallback((next: TabId) => {
     setTabState(next);
+    setNavCount((n) => n + 1);
     window.location.hash = next;
   }, []);
 
@@ -39,6 +43,7 @@ export function TabRouteProvider({ children }: { children: ReactNode }) {
       const hash = window.location.hash.slice(1);
       if (!hash) return;
       setTabState(isTabId(hash) ? hash : "status");
+      setNavCount((n) => n + 1);
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
@@ -56,6 +61,6 @@ export function TabRouteProvider({ children }: { children: ReactNode }) {
     }
   }, [loading, tab, currentTenant, settings, user, hasPerm]);
 
-  const value = useMemo(() => ({ tab, setTab }), [tab, setTab]);
+  const value = useMemo(() => ({ tab, setTab, navCount }), [tab, setTab, navCount]);
   return <RouteCtx.Provider value={value}>{children}</RouteCtx.Provider>;
 }

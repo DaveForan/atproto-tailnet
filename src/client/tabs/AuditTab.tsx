@@ -1,59 +1,48 @@
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import { auditService } from "../services/audit";
 import { useTenant } from "../hooks/session";
+import { useTenantData } from "../hooks/useTenantData";
+import { useToast } from "../components/Toast";
 import { Card } from "../components/Card";
 import { EmptyState } from "../components/EmptyState";
 import { Loading } from "../components/Loading";
-import { auditActionLabels, errorMessage, relativeTime } from "../lib/utils";
-import type { AuditEntry } from "../lib/types";
 import { LoadError } from "../components/LoadError";
+import { auditActionLabels, relativeTime } from "../lib/utils";
+import type { AuditEntry } from "../lib/types";
 
 const PAGE_SIZE = 50;
 
+interface AuditPage {
+  entries: AuditEntry[];
+  total: number;
+}
+
 export function AuditTab() {
   const { currentTenant } = useTenant();
-  const [entries, setEntries] = useState<AuditEntry[]>([]);
-  const [offset, setOffset] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const { toastFailure } = useToast();
+  const { data: first, loading, error, reload } = useTenantData<AuditPage>(
+    (tid) => auditService.getAuditLog(tid, PAGE_SIZE, 0).then((d) => ({ entries: d?.entries ?? [], total: d?.total ?? 0 })),
+    { entries: [], total: 0 },
+  );
+  // Later pages, appended to the first one; a reload of the first page drops them
+  const [more, setMore] = useState<{ base: AuditPage; entries: AuditEntry[]; total: number } | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [hasMore, setHasMore] = useState(true);
+  const extra = more?.base === first ? more : null;
+  const entries = extra ? [...first.entries, ...extra.entries] : first.entries;
+  const total = extra ? extra.total : first.total;
+  const hasMore = entries.length < total;
 
-  const loadEntries = useCallback(async (currentOffset: number, append: boolean) => {
-    if (!currentTenant) return;
-    if (append) {
-      setLoadingMore(true);
-    } else {
-      setLoading(true);
-    }
+  const handleLoadMore = async () => {
+    if (!currentTenant || loadingMore) return;
+    setLoadingMore(true);
     try {
-      const data = await auditService.getAuditLog(currentTenant.id, PAGE_SIZE, currentOffset);
-      const items = data?.entries ?? [];
-      const total = data?.total ?? 0;
-      if (append) {
-        setEntries((prev) => [...prev, ...items]);
-      } else {
-        setEntries(items);
-      }
-      setHasMore(currentOffset + items.length < total);
-      setLoadError(null);
+      const d = await auditService.getAuditLog(currentTenant.id, PAGE_SIZE, entries.length);
+      setMore({ base: first, entries: [...(extra?.entries ?? []), ...(d?.entries ?? [])], total: d?.total ?? total });
     } catch (e) {
-      setLoadError(errorMessage(e, "Failed to load audit log"));
+      toastFailure(e, "Failed to load audit log");
     } finally {
-      setLoading(false);
       setLoadingMore(false);
     }
-  }, [currentTenant?.id]);
-
-  useEffect(() => {
-    setOffset(0);
-    loadEntries(0, false);
-  }, [loadEntries]);
-
-  const handleLoadMore = () => {
-    const nextOffset = offset + PAGE_SIZE;
-    setOffset(nextOffset);
-    loadEntries(nextOffset, true);
   };
 
   const formatDetail = (detail?: Record<string, unknown> | null): string => {
@@ -69,7 +58,7 @@ export function AuditTab() {
 
   return (
     <div className="tab-content">
-      <LoadError error={loadError} onRetry={() => { setOffset(0); return loadEntries(0, false); }} />
+      <LoadError error={error} onRetry={reload} />
       <Card title="Audit log">
         {entries.length === 0 ? (
           <EmptyState>No audit log entries.</EmptyState>
@@ -103,7 +92,7 @@ export function AuditTab() {
             </ul>
             {hasMore && (
               <div className="form-footer mt-12">
-                <button type="button" className="btn-ghost" onClick={handleLoadMore} disabled={loadingMore}>
+                <button type="button" className="btn-ghost" onClick={() => { void handleLoadMore(); }} disabled={loadingMore}>
                   {loadingMore ? "Loading…" : "Load more"}
                 </button>
               </div>

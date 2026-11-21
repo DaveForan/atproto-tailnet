@@ -1,60 +1,50 @@
-import { useCallback, useEffect, useState } from "react";
 import { useSession } from "../hooks/session";
+import { useTenantData } from "../hooks/useTenantData";
 import { useTenantMutation } from "../hooks/useMutation";
 import { Card } from "../components/Card";
 import { Badge } from "../components/Badge";
 import { EmptyState } from "../components/EmptyState";
 import { Loading } from "../components/Loading";
 import { useConfirm } from "../components/ConfirmDialog";
-import { errorMessage, safeUrl } from "../lib/utils";
+import { safeUrl } from "../lib/utils";
 import { deviceService } from "../services/devices";
 import type { Member } from "../lib/types";
 import { LoadError } from "../components/LoadError";
 
+interface MembersData {
+  members: Member[];
+  /** Device lock per member id; empty without `lock_devices`. */
+  locks: Map<string, boolean>;
+}
+
+async function loadMembers(tid: string, withLocks: boolean): Promise<MembersData> {
+  const members = (await deviceService.getMembers(tid)) ?? [];
+  const locks = new Map<string, boolean>();
+  if (withLocks && members.length > 0) {
+    const results = await Promise.all(
+      members.map((m) => deviceService.getDeviceLock(tid, m.id).then((res) => [m.id, res?.locked ?? false] as const)),
+    );
+    for (const [id, locked] of results) locks.set(id, locked);
+  }
+  return { members, locks };
+}
+
 export function MembersTab() {
-  const { currentTenant, hasPerm, roles, reload } = useSession();
-  const [members, setMembers] = useState<Member[]>([]);
-  const [lockInfo, setLockInfo] = useState<Map<string, boolean>>(new Map());
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState<string | null>(null);
-
-  const loadMembers = useCallback(async (showSpinner = true) => {
-    if (!currentTenant) return;
-    if (showSpinner) setLoading(true);
-    try {
-      const memberList =
-        (await deviceService.getMembers(currentTenant.id)) ?? [];
-      setMembers(memberList);
-
-      if (hasPerm("lock_devices") && memberList.length > 0) {
-        const lockResults = await Promise.all(
-          memberList.map((m) =>
-            deviceService.getDeviceLock(currentTenant.id, m.id).then((res) => ({
-              memberId: m.id,
-              locked: res?.locked ?? false,
-            })),
-          ),
-        );
-        const locks = new Map<string, boolean>();
-        for (const r of lockResults) {
-          locks.set(r.memberId, r.locked);
-        }
-        setLockInfo(locks);
-      }
-      setLoadError(null);
-    } catch (e) {
-      setLoadError(errorMessage(e, "Failed to load members"));
-    } finally {
-      setLoading(false);
-    }
-  }, [currentTenant?.id]);
-
-  useEffect(() => { loadMembers(); }, [loadMembers]);
+  const { hasPerm, roles, reloadTenants } = useSession();
+  const canLock = hasPerm("lock_devices");
+  const { data, loading, error: loadError, reload } = useTenantData<MembersData>(
+    (tid) => loadMembers(tid, canLock),
+    { members: [], locks: new Map() },
+    [canLock],
+    { keepPreviousOnReload: true },
+  );
+  const { members, locks: lockInfo } = data;
 
   const { mutate, busy } = useTenantMutation();
   const confirm = useConfirm();
 
-  const reloadAfterMutate = async () => { await loadMembers(false); reload(); };
+  // Roles and the member count also show outside this tab
+  const reloadAfterMutate = async () => { await reload(); void reloadTenants(); };
 
   const handleRoleChange = async (memberId: string, roleId: string) => {
     await mutate(
@@ -66,7 +56,7 @@ export function MembersTab() {
   const handleToggleLock = async (memberId: string, currentlyLocked: boolean) => {
     await mutate(
       (tid) => (currentlyLocked ? deviceService.unlockDevice(tid, memberId) : deviceService.lockDevice(tid, memberId)),
-      { successMsg: currentlyLocked ? "Devices unlocked" : "Devices locked", reload: () => loadMembers(false) },
+      { successMsg: currentlyLocked ? "Devices unlocked" : "Devices locked", reload },
     );
   };
 
@@ -88,7 +78,7 @@ export function MembersTab() {
   if (members.length === 0) {
     return (
       <div className="tab-content">
-        <LoadError error={loadError} onRetry={loadMembers} />
+        <LoadError error={loadError} onRetry={reload} />
         <Card title="Members">
           {loadError ? (
             <p className="help-text">The member list could not be loaded.</p>
@@ -104,7 +94,7 @@ export function MembersTab() {
 
   return (
     <div className="tab-content">
-      <LoadError error={loadError} onRetry={loadMembers} />
+      <LoadError error={loadError} onRetry={reload} />
       <Card title="Members">
         <ul className="item-list">
           {members.map((member) => {

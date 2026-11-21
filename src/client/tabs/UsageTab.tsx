@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useTenantData } from "../hooks/useTenantData";
 import { useTenantMutation } from "../hooks/useMutation";
-import { useSession } from "../hooks/session";
+import { useTenant } from "../hooks/session";
 import { usageService } from "../services/usage";
 import { Card } from "../components/Card";
 import { Loading } from "../components/Loading";
@@ -26,7 +26,7 @@ function clampCap(v: string): number {
 }
 
 export function UsageTab() {
-  const { isOriginator } = useSession();
+  const { currentTenant } = useTenant();
   const { data: usage, loading, error, reload } = useTenantData<UsageData>(
     (tid) => usageService.getUsage(tid),
     USAGE_FALLBACK,
@@ -103,7 +103,7 @@ export function UsageTab() {
       </Card>
 
       <Card title="Limits">
-        {isOriginator() ? (
+        {currentTenant?.isOriginator ? (
           <form className="form-stack" onSubmit={handleSave}>
             <p className="card-description">
               Caps are enforced when issuing auth keys, approving devices, accepting invitations,

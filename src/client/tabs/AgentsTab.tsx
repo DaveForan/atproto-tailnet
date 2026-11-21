@@ -16,7 +16,7 @@ import { LoadError } from "../components/LoadError";
 
 export function AgentsTab() {
   const { currentTenant, allPerms, hasPerm } = useSession();
-  const { toast, toastError } = useToast();
+  const { toast, toastFailure } = useToast();
   const { data: tokens, loading, error, reload } = useTenantData<AgentToken[]>((tid) => agentsService.getAgentTokens(tid), []);
   const { mutate, busy } = useTenantMutation();
 
@@ -51,9 +51,7 @@ export function AgentsTab() {
       setSelectedPerms([]);
       await reload();
     } catch (e) {
-      toastError(
-        e instanceof Error ? e.message : "Failed to create agent token",
-      );
+      toastFailure(e, "Failed to create agent token");
     } finally {
       setCreating(false);
     }
