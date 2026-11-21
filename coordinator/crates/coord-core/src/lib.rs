@@ -1,4 +1,5 @@
 pub mod access;
+pub mod clock;
 pub mod dns;
 pub mod lock;
 pub mod relay;

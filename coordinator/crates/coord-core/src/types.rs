@@ -1,4 +1,5 @@
 use std::net::Ipv4Addr;
+use crate::clock::OffsetDateTime;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -102,7 +103,8 @@ pub struct PeerInfo {
     pub hostname: String,
     pub derp_region: Option<i32>,
     pub online: bool,
-    pub last_seen: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, with = "crate::clock::serde_rfc3339::option")]
+    pub last_seen: Option<OffsetDateTime>,
     /// The TS service's user id, inherited from the node's pre-auth key.
     pub owner: Option<String>,
 }
@@ -151,7 +153,8 @@ pub struct Tenant {
     pub federation_posture: FederationPosture,
     pub ipv4_prefix: String,
     pub ipv6_prefix: String,
-    pub created_at: chrono::DateTime<chrono::Utc>,
+    #[serde(with = "crate::clock::serde_rfc3339")]
+    pub created_at: OffsetDateTime,
     /// Operator suspension. A suspended tenant cannot register nodes, poll the map, or mint pre-auth keys.
     #[serde(default)]
     pub suspended: bool,
@@ -260,8 +263,10 @@ pub struct FederationLink {
     pub protocol_version: Option<String>,
     pub message: Option<String>,
     pub signed_request: Option<String>,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub updated_at: chrono::DateTime<chrono::Utc>,
+    #[serde(with = "crate::clock::serde_rfc3339")]
+    pub created_at: OffsetDateTime,
+    #[serde(with = "crate::clock::serde_rfc3339")]
+    pub updated_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -276,9 +281,12 @@ pub struct BrokerSession {
     pub protocol_version: Option<String>,
     pub exported_routes: Vec<String>,
     pub imported_routes: Vec<String>,
-    pub last_keepalive: Option<chrono::DateTime<chrono::Utc>>,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub updated_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default, with = "crate::clock::serde_rfc3339::option")]
+    pub last_keepalive: Option<OffsetDateTime>,
+    #[serde(with = "crate::clock::serde_rfc3339")]
+    pub created_at: OffsetDateTime,
+    #[serde(with = "crate::clock::serde_rfc3339")]
+    pub updated_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -287,7 +295,8 @@ pub struct CollectiveDid {
     pub did: String,
     pub public_key_jwk: serde_json::Value,
     pub encrypted_private_key: String,
-    pub created_at: chrono::DateTime<chrono::Utc>,
+    #[serde(with = "crate::clock::serde_rfc3339")]
+    pub created_at: OffsetDateTime,
 }
 
 /// Ownership / routing attributes of a node.
@@ -347,7 +356,7 @@ pub fn is_gateway_identity(owner: Option<&str>, tags: &[String]) -> bool {
 pub struct PreAuthKeyOptions {
     pub reusable: bool,
     pub ephemeral: bool,
-    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub expires_at: Option<OffsetDateTime>,
     pub owner: Option<String>,
     pub tags: Vec<String>,
 }
@@ -357,7 +366,7 @@ pub struct CreatedPreAuthKey {
     pub id: Uuid,
     pub key: String,
     pub tenant_id: TenantId,
-    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub expires_at: Option<OffsetDateTime>,
 }
 
 /// Listing view of a pre-auth key. It never carries the full secret.
@@ -371,8 +380,8 @@ pub struct PreAuthKeyInfo {
     pub reusable: bool,
     pub ephemeral: bool,
     pub used: bool,
-    pub expires_at: Option<chrono::DateTime<chrono::Utc>>,
-    pub created_at: chrono::DateTime<chrono::Utc>,
+    pub expires_at: Option<OffsetDateTime>,
+    pub created_at: OffsetDateTime,
     pub revoked: bool,
 }
 

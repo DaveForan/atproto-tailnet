@@ -8,11 +8,13 @@ const EMPTY_POST: NewPost = { board: "private", title: "", description: "", node
 export function NewServiceForm({
   devices,
   baseDomain,
+  serviceDomain,
   httpsServices,
   onCreated,
 }: {
   devices: MyDevice[];
   baseDomain: string;
+  serviceDomain: string | null;
   httpsServices: boolean;
   onCreated: () => void;
 }) {
@@ -20,6 +22,7 @@ export function NewServiceForm({
   const { mutate, busy } = useTenantMutation({ onError: "Could not add the service" });
   const [post, setPost] = useState<NewPost>({ ...EMPTY_POST, nodeId: devices[0]?.id ?? "" });
   const set = (patch: Partial<NewPost>) => setPost((p) => ({ ...p, ...patch }));
+  const domain = post.web && serviceDomain ? serviceDomain : baseDomain;
   const valid = post.title.trim() && post.nodeId && post.port >= 1 && post.port <= 65535 && (post.board === "public" || post.name?.trim());
 
   const submit = async () => {
@@ -91,7 +94,7 @@ export function NewServiceForm({
             spellCheck={false}
             onChange={(e) => set({ name: e.target.value.trim().toLowerCase() })}
           />
-          <span className="mono text-dim">.{baseDomain}</span>
+          <span className="mono text-dim">.{domain}</span>
         </div>
         <p className="help-text">
           {post.board === "private"
@@ -115,7 +118,7 @@ export function NewServiceForm({
             </label>
             <p className="help-text">
               {post.web && post.name
-                ? <>It opens at <span className="mono">https://{post.name}.{baseDomain}</span> inside the tailnet, with a valid certificate. The application gets the name and the device of each visitor in the headers <span className="mono">X-Tailnet-User</span> and <span className="mono">X-Tailnet-Device</span>. It must listen on the tailnet address of the device, not only on localhost.</>
+                ? <>It opens at <span className="mono">https://{post.name}.{domain}</span> inside the tailnet, with a valid certificate. The application gets the name and the device of each visitor in the headers <span className="mono">X-Tailnet-User</span> and <span className="mono">X-Tailnet-Device</span>. It must listen on the tailnet address of the device, not only on localhost.</>
                 : "Needs a name and TCP. Without this, the name points at the device and you add the port yourself."}
             </p>
           </div>

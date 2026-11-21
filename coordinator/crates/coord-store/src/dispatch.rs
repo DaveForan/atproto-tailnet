@@ -5,6 +5,7 @@ use coord_core::{
     CoordError, CreatedPreAuthKey, FederationPosture, NodeDetail, NodeId, NodeInfo, NodeRegistration,
     NodeSummary, PeerInfo, PreAuthGrant, PreAuthKeyInfo, PreAuthKeyOptions, Tenant, TenantId,
 };
+use coord_core::clock::{self, Duration};
 use crate::memory::{MemoryStore, PeerEvent};
 use crate::pg::PgStore;
 use crate::sqlite::SqliteStore;
@@ -343,7 +344,7 @@ impl Store {
         fingerprint: &str,
     ) -> Result<Option<coord_core::LockOutcome>, CoordError> {
         let hex_key = hex::encode(machine_key);
-        let now = chrono::Utc::now();
+        let now = clock::now();
         self.update_owner_lock(tenant_id, owner, |read| {
             if read == coord_core::LockRead::Malformed {
                 tracing::error!(tenant = %tenant_id, "machine lock is malformed: refusing registration");
@@ -446,7 +447,7 @@ impl Store {
         }
     }
 
-    pub async fn delete_stale_ephemeral_nodes(&self, max_offline: chrono::Duration) -> Result<Vec<(TenantId, NodeId)>, CoordError> {
+    pub async fn delete_stale_ephemeral_nodes(&self, max_offline: Duration) -> Result<Vec<(TenantId, NodeId)>, CoordError> {
         match self {
             Store::Memory(m) => m.delete_stale_ephemeral_nodes(max_offline),
             Store::Pg(p) => p.delete_stale_ephemeral_nodes(max_offline).await,

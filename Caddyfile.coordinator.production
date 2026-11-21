@@ -25,6 +25,15 @@
 	import /etc/caddy/tls-strategy/site.caddy
 }
 
+# HTTPS service names (ADR-0038). Caddy only obtains this wildcard certificate;
+# the gateway serves the names inside tailnets. From the internet a service
+# name gets the same 404 as an unknown tailnet name. Must not cover APP_DOMAIN,
+# CONTROL_DOMAIN or DERP_DOMAIN.
+*.{$SERVICE_DOMAIN:svc.ts.example.com} {
+	import /etc/caddy/tls-strategy/site.caddy
+	respond "Unknown tailnet" 404
+}
+
 # Shared control URL (ADR-0026): every tailnet's devices use this one host; the
 # pre-auth key alone selects the tailnet. Only the paths Tailscale clients need
 # reach the coordinator (its admin API is on the same port). Must not be under
@@ -46,7 +55,7 @@
 {$DERP_DOMAIN:derp.localhost} {
 	@derp path /derp /derp/* /generate_204
 	handle @derp {
-		reverse_proxy {$COORDINATOR_UPSTREAM:coordinator:9443}
+		reverse_proxy {$RELAY_UPSTREAM:coordinator:9443}
 	}
 	handle {
 		respond "Not found" 404
@@ -57,7 +66,7 @@
 http://{$DERP_DOMAIN:derp.localhost} {
 	@probe path /generate_204
 	handle @probe {
-		reverse_proxy {$COORDINATOR_UPSTREAM:coordinator:9443}
+		reverse_proxy {$RELAY_UPSTREAM:coordinator:9443}
 	}
 	handle {
 		redir https://{host}{uri} 308

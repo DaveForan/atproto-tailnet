@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use coord_core::{NodeInfo, NodeRegistration, PreAuthKeyOptions, TenantId};
+use coord_core::clock::{self, Duration};
 use coord_store::{PeerEvent, Store};
 use rand::RngCore;
 
@@ -202,8 +203,8 @@ async fn expired_keys_rejected() {
     for b in backends().await {
         let s = &b.store;
         let t = tenant(s, "expiry").await;
-        let past = chrono::DateTime::from_timestamp(chrono::Utc::now().timestamp() - 10, 0);
-        let future = chrono::DateTime::from_timestamp(chrono::Utc::now().timestamp() + 3600, 0);
+        let past = clock::from_unix(clock::now().unix_timestamp() - 10);
+        let future = clock::from_unix(clock::now().unix_timestamp() + 3600);
         let expired = s
             .create_preauth_key_with(t, PreAuthKeyOptions { reusable: true, expires_at: past, ..Default::default() })
             .await
@@ -402,11 +403,11 @@ async fn ephemeral_sweep() {
         s.set_node_offline_if_current(durable, dg).await.unwrap();
 
         // Within the grace period nothing is swept.
-        let swept = s.delete_stale_ephemeral_nodes(chrono::Duration::minutes(5)).await.unwrap();
+        let swept = s.delete_stale_ephemeral_nodes(Duration::minutes(5)).await.unwrap();
         assert!(swept.iter().all(|(tid, _)| *tid != t), "{}", b.name);
         assert!(s.get_node_tenant(gone).await.is_some(), "{}", b.name);
 
-        let swept = s.delete_stale_ephemeral_nodes(chrono::Duration::zero()).await.unwrap();
+        let swept = s.delete_stale_ephemeral_nodes(Duration::ZERO).await.unwrap();
         let ours: Vec<_> = swept.into_iter().filter(|(tid, _)| *tid == t).map(|(_, n)| n).collect();
         assert_eq!(ours, vec![gone], "{}", b.name);
         assert!(s.get_node_tenant(gone).await.is_none(), "{}", b.name);
@@ -533,7 +534,7 @@ async fn ipv4_addresses_reused_after_delete_and_never_duplicated() {
             distinct.insert(ip);
             let id = s.get_node_by_machine_key(&mk).await.unwrap();
             s.set_node_offline_if_current(id, g).await.unwrap();
-            s.delete_stale_ephemeral_nodes(chrono::Duration::zero()).await.unwrap();
+            s.delete_stale_ephemeral_nodes(Duration::ZERO).await.unwrap();
         }
         // 220 registrations; a never-reusing allocator would hand out 220 addresses.
         let bound = if exact { 11 } else { 120 };
@@ -634,7 +635,7 @@ async fn owner_lock_round_trip_and_removal() {
         let s = &b.store;
         let t = tenant(s, "lock").await;
         assert_eq!(s.get_owner_lock(t, "alice").await.unwrap(), LockRead::Unlocked, "{}", b.name);
-        let lock = OwnerLock { machines: vec!["ab".repeat(32)], allow_one_until: Some(chrono::Utc::now()), refused: vec![], max_machines: Some(3) };
+        let lock = OwnerLock { machines: vec!["ab".repeat(32)], allow_one_until: Some(clock::now()), refused: vec![], max_machines: Some(3) };
         s.set_owner_lock(t, "alice", Some(lock.clone())).await.unwrap();
         let got = s.get_owner_lock(t, "alice").await.unwrap();
         let got = got.lock().unwrap();
@@ -667,7 +668,7 @@ async fn owner_lock_check_records_and_consumes_the_window_atomically() {
         // Open the window, then race many new machines: exactly one gets in.
         s.update_owner_lock(t, "alice", |read| {
             let mut l = read.lock().unwrap().clone();
-            l.allow_one_until = Some(chrono::Utc::now() + chrono::Duration::minutes(10));
+            l.allow_one_until = Some(clock::now() + Duration::minutes(10));
             (coord_core::LockWrite::Set(l), ())
         })
         .await
@@ -764,13 +765,13 @@ async fn sign_in_is_decided_once_and_taken_once() {
         let t = tenant(s, "signin").await;
         let key = [7u8; 32];
         let id = format!("{}-first", b.name);
-        let before = chrono::Utc::now().timestamp();
+        let before = clock::now().unix_timestamp();
         assert_eq!(s.sign_in_start(&id, &key, "phone", "iOS", Some("203.0.113.7"), LIMITS).await.unwrap(), SignInStart::Started);
         let p = s.sign_in_get(&id).await.unwrap();
         assert_eq!((p.machine_key, p.hostname.as_str(), p.decision.clone()), (key, "phone", None), "{}", b.name);
         assert_eq!(p.requester_ip.as_deref(), Some("203.0.113.7"), "{}", b.name);
-        let at = p.requested_at.timestamp();
-        assert!(at >= before && at <= chrono::Utc::now().timestamp(), "{}", b.name);
+        let at = p.requested_at.unix_timestamp();
+        assert!(at >= before && at <= clock::now().unix_timestamp(), "{}", b.name);
         assert_eq!(s.sign_in_take(&id).await, None, "a pending sign-in cannot be taken ({})", b.name);
 
         // A new sign-in of the same machine replaces the old one
@@ -1015,5 +1016,35 @@ async fn tenant_parent_can_be_set_moved_and_cleared() {
             tokio::spawn(async move { s2.set_tenant_parent(y, Some(x)).await.is_ok() }),
         );
         assert!(!(r1.unwrap() && r2.unwrap()), "{}: a parent cycle was created", b.name);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn create_with_parent_races_parent_change_without_second_level() {
+    for b in backends().await {
+        for round in 0..20 {
+            let x = tenant(&b.store, "rx").await;
+            let y = tenant(&b.store, "ry").await;
+            let (s1, s2) = (b.store.clone(), b.store.clone());
+            let slug = unique("rkid");
+            let (created, moved) = tokio::join!(
+                tokio::spawn(async move { s1.create_tenant(slug, Some(x), None).await.is_ok() }),
+                tokio::spawn(async move { s2.set_tenant_parent(x, Some(y)).await.is_ok() }),
+            );
+            let (created, moved) = (created.unwrap(), moved.unwrap());
+            assert!(created || moved, "{} round {round}: one side must win", b.name);
+            assert!(!(created && moved), "{} round {round}: both won, so a second level exists", b.name);
+
+            // Only this round's tenants: a shared PostgreSQL database holds rows of other runs.
+            let tenants = b.store.list_tenants().await;
+            let ours = [x, y];
+            let parent_of = |id: TenantId| tenants.iter().find(|t| t.id == id).and_then(|t| t.parent_id);
+            for t in tenants.iter().filter(|t| ours.contains(&t.id) || t.parent_id.is_some_and(|p| ours.contains(&p))) {
+                if let Some(p) = t.parent_id {
+                    assert_ne!(p, t.id, "{}: a tenant is its own parent", b.name);
+                    assert_eq!(parent_of(p), None, "{} round {round}: {} sits two levels deep", b.name, t.slug);
+                }
+            }
+        }
     }
 }

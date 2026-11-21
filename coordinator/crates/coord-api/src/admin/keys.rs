@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 use coord_core::TenantId;
+use coord_core::clock;
 use crate::state::CoordinatorState;
 use super::{bad_request, existing_tenant, internal_error, not_found, required_owner, validate_owner, OwnerQuery};
 
@@ -84,8 +85,8 @@ pub async fn create_preauth_key(
         None => None,
         Some(secs) if (1..=MAX_KEY_EXPIRATION_SECS).contains(&secs) => {
             // Whole seconds so every backend compares expiry identically.
-            let at = chrono::Utc::now().timestamp() + secs as i64;
-            chrono::DateTime::from_timestamp(at, 0)
+            let at = clock::now().unix_timestamp() + secs as i64;
+            clock::from_unix(at)
         }
         Some(_) => {
             return bad_request(format!("expiration_seconds must be 1..={MAX_KEY_EXPIRATION_SECS}"));
@@ -120,7 +121,7 @@ pub async fn create_preauth_key(
             key: created.key,
             id: created.id.to_string(),
             tenant_id: tenant_id.to_string(),
-            expires_at: created.expires_at.map(|t| t.to_rfc3339()),
+            expires_at: created.expires_at.map(clock::to_rfc3339),
         }),
     )
         .into_response()
@@ -149,8 +150,8 @@ pub async fn list_preauth_keys(
                 "reusable": k.reusable,
                 "ephemeral": k.ephemeral,
                 "used": k.used,
-                "expires_at": k.expires_at.map(|t| t.to_rfc3339()),
-                "created_at": k.created_at.to_rfc3339(),
+                "expires_at": k.expires_at.map(clock::to_rfc3339),
+                "created_at": clock::to_rfc3339(k.created_at),
                 "revoked": k.revoked,
             })
         })

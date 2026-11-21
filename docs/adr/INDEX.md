@@ -49,6 +49,7 @@ Any state can move to **Deferred** (still on the roadmap; work is paused).
 |----|-------|------|------------|------------|
 | 0025 | Instance operators and MCP access | 2026-11-19 | — | 0003, 0005, 0023 |
 | 0037 | Keep separate PostgreSQL and SQLite store implementations | 2026-11-20 | — | 0023, 0034 |
+| 0038 | Scope of the gateway certificate | 2026-11-20 | — | 0029, 0030, 0034 |
 
 ### Proposed
 

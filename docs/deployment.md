@@ -443,6 +443,17 @@ files in each directory document the requirements of the strategy.
 |------|------|-------|
 | A | `tailnets.yourdomain.com` | `<server IP>` |
 | A | `*.ts.yourdomain.com` | `<server IP>` |
+| A (optional) | `*.svc.ts.yourdomain.com` | `<server IP>` |
+
+HTTPS service names (ADR-0038) are `<name>.<SERVICE_DOMAIN>`. The default is
+`svc.<BASE_DOMAIN>`. Caddy obtains a separate DNS-01 wildcard for
+`*.<SERVICE_DOMAIN>`, and only that certificate goes to the gateway. Devices
+resolve service names through the coordinator, so the A record is optional.
+Without it, a service name does not resolve on the internet. To use another
+domain, set `SERVICE_DOMAIN`. Its wildcard must not cover `APP_DOMAIN`,
+`CONTROL_DOMAIN` or `DERP_DOMAIN`, and the DNS-01 credentials must reach its
+zone. Use a DNS-01 strategy: with `on-demand` or `manual`, the gateway gets no
+certificate.
 
 ### TLS strategies
 
@@ -503,6 +514,14 @@ same steps apply on other hosts.
 
 The coordinator manages all tenants. It stores its Noise control key on the
 `coord_data` volume. Back up this volume.
+
+The coordinator runs as two services (ADR-0038). `coordinator`
+(`COORD_ROLE=control`) serves the Noise control plane and the admin API.
+`relay` (`COORD_ROLE=relay`) serves DERP, STUN on `STUN_PORT` and the gateway
+for HTTPS services. `relay` has no admin key and no control key. It keeps
+`derp.key` and `gateway.key` on the `relay_data` volume. `DERP_DOMAIN` is
+required. On the first start after an upgrade, the one-shot `relay-keys`
+service moves the two keys from `coord_data` to `relay_data`.
 Each tenant sets its own DERP relays in the dashboard. The service stores the
 settings and sends them to the coordinator for that tenant only. Connected
 devices receive the new relay map immediately. You do not need to restart the

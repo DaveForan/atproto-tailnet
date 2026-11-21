@@ -8,6 +8,7 @@ use coord_core::{
     NodeRegistration, NodeSummary, PeerInfo, PreAuthGrant, PreAuthKeyInfo, PreAuthKeyOptions, Tenant,
     TenantId,
 };
+use coord_core::clock::{self, Duration, OffsetDateTime};
 
 use crate::{generate_auth_key, generate_random_id};
 
@@ -27,7 +28,7 @@ struct StoredNode {
     stable_id: String,
     online: bool,
     session_generation: u64,
-    last_seen: chrono::DateTime<chrono::Utc>,
+    last_seen: OffsetDateTime,
     attrs: NodeAttrs,
 }
 
@@ -42,9 +43,9 @@ struct PreAuthKey {
     ephemeral: bool,
     owner: Option<String>,
     tags: Vec<String>,
-    expires_at: Option<chrono::DateTime<chrono::Utc>>,
-    created_at: chrono::DateTime<chrono::Utc>,
-    revoked_at: Option<chrono::DateTime<chrono::Utc>>,
+    expires_at: Option<OffsetDateTime>,
+    created_at: OffsetDateTime,
+    revoked_at: Option<OffsetDateTime>,
 }
 
 pub struct MemoryStore {
@@ -115,16 +116,7 @@ impl MemoryStore {
             return Err(CoordError::Protocol(format!("tenant slug '{}' already exists", slug)));
         }
         if let Some(pid) = parent_id {
-            match tenants.get(&pid) {
-                None => return Err(CoordError::TenantNotFound(pid)),
-                Some(parent) => {
-                    if parent.parent_id.is_some() {
-                        return Err(CoordError::Protocol(
-                            "multi-level hierarchy not supported: parent is itself a child".into(),
-                        ));
-                    }
-                }
-            }
+            crate::check_create_parent(pid, tenants.get(&pid).map(|p| p.parent_id.is_some()))?;
         }
         let tenant = Tenant {
             id: TenantId::generate(),
@@ -133,7 +125,7 @@ impl MemoryStore {
             federation_posture: posture.unwrap_or_default(),
             ipv4_prefix: coord_core::DEFAULT_IPV4_PREFIX.into(),
             ipv6_prefix: coord_core::DEFAULT_IPV6_PREFIX.into(),
-            created_at: chrono::Utc::now(),
+            created_at: clock::now(),
             suspended: false,
         };
         tenants.insert(tenant.id, tenant.clone());
@@ -222,7 +214,7 @@ impl MemoryStore {
             os: os.to_string(),
             decision: None,
             requester_ip: requester_ip.map(str::to_string),
-            requested_at: chrono::DateTime::from_timestamp(now, 0).unwrap_or_default(),
+            requested_at: clock::from_unix(now).unwrap_or(clock::EPOCH),
         };
         all.insert(id.to_string(), (p, now + coord_core::signin::SIGN_IN_TTL_SECS));
         Ok(coord_core::SignInStart::Started)
@@ -477,7 +469,7 @@ impl MemoryStore {
                 owner: opts.owner,
                 tags: opts.tags,
                 expires_at: opts.expires_at,
-                created_at: chrono::Utc::now(),
+                created_at: clock::now(),
                 revoked_at: None,
             },
         );
@@ -513,7 +505,7 @@ impl MemoryStore {
         match keys.values_mut().find(|k| k.tenant_id == tenant_id && k.id == key_id) {
             Some(k) => {
                 if k.revoked_at.is_none() {
-                    k.revoked_at = Some(chrono::Utc::now());
+                    k.revoked_at = Some(clock::now());
                 }
                 Ok(true)
             }
@@ -524,7 +516,7 @@ impl MemoryStore {
     /// Revoke every not-yet-revoked key of `owner` in this tenant; returns the count.
     pub fn revoke_preauth_keys_by_owner(&self, tenant_id: TenantId, owner: &str) -> Result<u64, CoordError> {
         let mut keys = self.preauth_keys.lock().unwrap_or_else(|e| e.into_inner());
-        let now = chrono::Utc::now();
+        let now = clock::now();
         let mut n = 0;
         for k in keys.values_mut() {
             if k.tenant_id == tenant_id && k.owner.as_deref() == Some(owner) && k.revoked_at.is_none() {
@@ -552,7 +544,7 @@ impl MemoryStore {
             return None;
         }
         if let Some(expires) = pak.expires_at
-            && chrono::Utc::now() >= expires {
+            && clock::now() >= expires {
                 return None;
             }
 
@@ -599,7 +591,7 @@ impl MemoryStore {
                 let Some(node) = nodes.get_mut(&existing_id) else { unreachable!("checked above") };
                 node.info = info;
                 node.online = true;
-                node.last_seen = chrono::Utc::now();
+                node.last_seen = clock::now();
                 node.session_generation += 1;
                 if node.attrs.owner != reg.owner || node.attrs.tags != reg.tags {
                     // A new identity must not inherit approvals granted to the old one.
@@ -653,7 +645,7 @@ impl MemoryStore {
             stable_id,
             online: true,
             session_generation: 1,
-            last_seen: chrono::Utc::now(),
+            last_seen: clock::now(),
             attrs: NodeAttrs {
                 owner: reg.owner,
                 tags: reg.tags,
@@ -867,7 +859,7 @@ impl MemoryStore {
         let mut nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(node) = nodes.get_mut(&node_id) {
             node.online = online;
-            node.last_seen = chrono::Utc::now();
+            node.last_seen = clock::now();
             let tid = node.tenant_id;
             drop(nodes);
             if online {
@@ -892,7 +884,7 @@ impl MemoryStore {
                 return Ok(());
             }
             node.online = false;
-            node.last_seen = chrono::Utc::now();
+            node.last_seen = clock::now();
             let tid = node.tenant_id;
             drop(nodes);
             let _ = self.peer_tx.send(PeerEvent::NodeOffline {
@@ -954,9 +946,9 @@ impl MemoryStore {
     /// Delete ephemeral nodes that have been offline for at least `max_offline`.
     pub fn delete_stale_ephemeral_nodes(
         &self,
-        max_offline: chrono::Duration,
+        max_offline: Duration,
     ) -> Result<Vec<(TenantId, NodeId)>, CoordError> {
-        let cutoff = chrono::Utc::now() - max_offline;
+        let cutoff = clock::now() - max_offline;
         Ok(self.remove_nodes_where(|n| n.attrs.ephemeral && !n.online && n.last_seen <= cutoff))
     }
 

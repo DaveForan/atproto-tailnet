@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{OnceLock, RwLock};
 
 use coord_core::TenantId;
 
@@ -7,6 +7,8 @@ use coord_core::TenantId;
 #[derive(Default)]
 pub struct GatewayRegistry {
     tenants: RwLock<HashMap<TenantId, i64>>,
+    /// HTTPS service names are `<name>.<service_domain>` (ADR-0038). Unset: `<name>.<base_domain>`.
+    service_domain: OnceLock<String>,
 }
 
 impl GatewayRegistry {
@@ -24,5 +26,14 @@ impl GatewayRegistry {
 
     pub fn remove(&self, tenant: TenantId) {
         self.tenants.write().unwrap_or_else(|e| e.into_inner()).remove(&tenant);
+    }
+
+    /// Sets the service domain once. Returns false when it was already set.
+    pub fn set_service_domain(&self, domain: String) -> bool {
+        self.service_domain.set(domain).is_ok()
+    }
+
+    pub fn service_domain(&self) -> Option<&str> {
+        self.service_domain.get().map(String::as_str)
     }
 }

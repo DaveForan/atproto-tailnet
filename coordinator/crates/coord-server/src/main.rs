@@ -63,20 +63,24 @@ async fn main() -> anyhow::Result<()> {
     // Validate before touching the database so a weak key fails fast.
     let admin_key = validate_admin_key(std::env::var("COORD_ADMIN_KEY").ok())?;
 
-    let control_key = load_or_create_control_key(std::env::var("COORD_CONTROL_KEY_PATH").ok())?;
-    tracing::info!(
-        control_public_key = hex::encode(control_key.public),
-        "coordinator starting"
-    );
-
-    let control_key_path = std::env::var("COORD_CONTROL_KEY_PATH").ok();
-    let mut coordinator = coord_api::CoordinatorState::builder(control_key);
-
     // Parts this process serves: all (default), control, or relay (ADR-0034).
     let role: coord_api::Role = std::env::var("COORD_ROLE")
         .unwrap_or_default()
         .parse()
         .map_err(|e: String| anyhow::anyhow!("invalid COORD_ROLE: {e}"))?;
+
+    // A relay never answers the Noise control plane, so it holds no persisted control key.
+    let control_key = if role.serves_control() {
+        let key = load_or_create_control_key(std::env::var("COORD_CONTROL_KEY_PATH").ok())?;
+        tracing::info!(control_public_key = hex::encode(key.public), "coordinator starting");
+        key
+    } else {
+        tracing::info!(role = ?role, "coordinator starting without a control key");
+        coord_noise::generate_control_key()
+    };
+
+    let control_key_path = std::env::var("COORD_CONTROL_KEY_PATH").ok();
+    let mut coordinator = coord_api::CoordinatorState::builder(control_key);
     coordinator = coordinator.with_role(role);
     // The TS service is the federation endpoint. The Rust CFP endpoints need handshake callbacks.
     // So enabling them here fails before any database work.
@@ -233,7 +237,8 @@ async fn main() -> anyhow::Result<()> {
     coordinator = coordinator.with_admin_api_key(admin_key);
 
     // Gateway (ADR-0029): HTTPS for named services inside tailnets.
-    // It needs the base domain's wildcard certificate and this process's relay.
+    // Its certificate covers only `*.<COORD_SERVICE_DOMAIN>` and it needs this process's relay (ADR-0038).
+    let service_domain = parse_service_domain(std::env::var("COORD_SERVICE_DOMAIN").ok().as_deref(), derp_hostname.as_deref())?;
     let gateway_cert = std::env::var("COORD_GATEWAY_CERT").ok().filter(|p| !p.is_empty());
     let gateway_key = std::env::var("COORD_GATEWAY_KEY").ok().filter(|p| !p.is_empty());
     if role.serves_relay() && (gateway_cert.is_none() || gateway_key.is_none()) {
@@ -243,8 +248,12 @@ async fn main() -> anyhow::Result<()> {
             "COORD_GATEWAY_CERT / COORD_GATEWAY_KEY not both set: this relay runs no gateway, named HTTPS services (ADR-0029) are off here"
         );
     }
-    let mut pending_gateway: Option<([u8; 32], String, String)> = None;
-    if let (Some(cert), Some(key), true) = (gateway_cert, gateway_key, role.serves_relay()) {
+    let gateway_configured = role.serves_relay() && gateway_cert.is_some() && gateway_key.is_some();
+    if gateway_configured && service_domain.is_none() {
+        anyhow::bail!("COORD_GATEWAY_CERT needs COORD_SERVICE_DOMAIN: the gateway serves only names under it (ADR-0038)");
+    }
+    let mut pending_gateway: Option<([u8; 32], String, String, String)> = None;
+    if let (Some(cert), Some(key), Some(domain), true) = (gateway_cert, gateway_key, service_domain.clone(), gateway_configured) {
         let secret_path = std::env::var("COORD_GATEWAY_SECRET_PATH").ok().or_else(|| {
             let dir = std::path::Path::new(control_key_path.as_deref()?).parent()?;
             Some(dir.join("gateway.key").to_string_lossy().into_owned())
@@ -253,16 +262,16 @@ async fn main() -> anyhow::Result<()> {
             .ok_or_else(|| anyhow::anyhow!("the gateway needs COORD_GATEWAY_SECRET_PATH or COORD_CONTROL_KEY_PATH for its secret"))?;
         // Caddy usually obtains the certificate after the first start, and a helper copies it.
         // Start without it and enable the gateway when it appears.
-        match coord_gateway::proxy::Certificate::from_files(&cert, &key) {
+        match coord_gateway::proxy::Certificate::from_files(&cert, &key, &domain) {
             Ok(c) => {
                 let certificate = Arc::new(c);
                 coord_gateway::proxy::spawn_reload(certificate.clone(), std::time::Duration::from_secs(6 * 3600));
                 coordinator = coordinator.with_gateway(secret, certificate);
-                tracing::info!(cert = %cert, "gateway enabled: named HTTPS services");
+                tracing::info!(cert = %cert, service_domain = %domain, "gateway enabled: named HTTPS services");
             }
             Err(e) => {
                 tracing::warn!(error = %e, cert = %cert, key = %key, "gateway certificate not usable yet: will enable named HTTPS services when it appears");
-                pending_gateway = Some((secret, cert, key));
+                pending_gateway = Some((secret, cert, key, domain));
             }
         }
     }
@@ -295,8 +304,12 @@ async fn main() -> anyhow::Result<()> {
         .with_max_noise_connections_per_ip(max_noise_per_ip);
 
     let state = Arc::new(coordinator.build());
+    if let Some(domain) = service_domain {
+        state.set_service_domain(domain);
+    }
     // Per-tenant configuration lives in the store. Other replicas report changes (ADR-0034).
-    if role.serves_control() {
+    // A relay with a gateway needs them too: sign-in names, and new HTTPS services.
+    if role.serves_control() || gateway_configured {
         state.load_config().await;
         state.spawn_replica_listener();
     }
@@ -305,13 +318,13 @@ async fn main() -> anyhow::Result<()> {
     state.spawn_relay_tasks();
     // Tailnets that already have HTTPS services get their gateway back.
     state.start_gateways().await;
-    if let Some((secret, cert, key)) = pending_gateway {
+    if let Some((secret, cert, key, domain)) = pending_gateway {
         let state = state.clone();
         tokio::spawn(async move {
             let mut warned = 0u32;
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(10)).await;
-                match coord_gateway::proxy::Certificate::from_files(&cert, &key) {
+                match coord_gateway::proxy::Certificate::from_files(&cert, &key, &domain) {
                     Ok(c) => {
                         let certificate = Arc::new(c);
                         coord_gateway::proxy::spawn_reload(certificate.clone(), std::time::Duration::from_secs(6 * 3600));
@@ -377,6 +390,26 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
 
     Ok(())
+}
+
+/// The service domain (ADR-0038): a lowercase domain of two or more labels.
+/// Refuses a domain whose wildcard would cover the relay hostname.
+fn parse_service_domain(value: Option<&str>, derp_hostname: Option<&str>) -> anyhow::Result<Option<String>> {
+    let Some(domain) = value.map(str::trim).filter(|v| !v.is_empty()) else { return Ok(None) };
+    let label_ok = |l: &str| {
+        (1..=63).contains(&l.len())
+            && l.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            && !l.starts_with('-')
+            && !l.ends_with('-')
+    };
+    if domain.len() > 253 || domain.split('.').count() < 2 || !domain.split('.').all(label_ok) {
+        anyhow::bail!("COORD_SERVICE_DOMAIN must be a lowercase domain name, got {domain:?}");
+    }
+    let covered = |host: &str| host.strip_suffix(domain).and_then(|r| r.strip_suffix('.')).is_some_and(|l| !l.contains('.'));
+    if let Some(host) = derp_hostname.filter(|h| covered(h)) {
+        anyhow::bail!("COORD_SERVICE_DOMAIN {domain:?} would cover the relay hostname {host:?}; use a domain for services only");
+    }
+    Ok(Some(domain.to_string()))
 }
 
 /// Minimum COORD_ADMIN_KEY length (32 chars ~ 128+ bits for a random key).
@@ -475,6 +508,18 @@ fn write_secret_file(path: &str, contents: &str) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn service_domain_validation() {
+        assert_eq!(parse_service_domain(None, None).unwrap(), None);
+        assert_eq!(parse_service_domain(Some(" "), None).unwrap(), None);
+        assert_eq!(parse_service_domain(Some("svc.ts.example.com"), Some("derp.example.com")).unwrap().as_deref(), Some("svc.ts.example.com"));
+        assert!(parse_service_domain(Some("localhost"), None).is_err(), "one label");
+        assert!(parse_service_domain(Some("Svc.example.com"), None).is_err());
+        assert!(parse_service_domain(Some("*.svc.example.com"), None).is_err());
+        assert!(parse_service_domain(Some("svc..example.com"), None).is_err());
+        assert!(parse_service_domain(Some("example.com"), Some("derp.example.com")).is_err(), "the wildcard covers the relay");
+    }
 
     #[test]
     fn admin_key_validation() {

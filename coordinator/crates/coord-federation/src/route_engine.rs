@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use chrono::{DateTime, Utc};
+use coord_core::clock::{self, OffsetDateTime};
 use ipnetwork::IpNetwork;
 use serde::{Deserialize, Serialize};
 
@@ -18,7 +18,8 @@ pub struct InstalledRoute {
     pub community_tags: Vec<String>,
     pub preference: u32,
     pub received_from: String, // session ID
-    pub installed_at: DateTime<Utc>,
+    #[serde(with = "coord_core::clock::serde_rfc3339")]
+    pub installed_at: OffsetDateTime,
 }
 
 /// Route table with BGP-like path-vector logic: loop detection, scope validation,
@@ -77,7 +78,7 @@ impl RouteTable {
                     community_tags: ann.community_tags.clone(),
                     preference: ann.preference,
                     received_from: session_id.to_string(),
-                    installed_at: Utc::now(),
+                    installed_at: clock::now(),
                 },
             );
             installed.push(ann.prefix.clone());

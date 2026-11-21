@@ -21,6 +21,7 @@ use tower::ServiceExt;
 
 const ADMIN_KEY: &str = "test-admin-key-for-gateway-tests-0000";
 const BASE: &str = "ts.example.com";
+const SERVICES: &str = "svc.ts.example.com";
 
 /// Test client: the certificate is the test's own, so any certificate passes.
 #[derive(Debug)]
@@ -42,7 +43,7 @@ impl ServerCertVerifier for AnyCert {
 }
 
 fn setup() -> (axum::Router, Arc<CoordinatorState>) {
-    let made = rcgen::generate_simple_self_signed(vec![format!("*.{BASE}")]).unwrap();
+    let made = rcgen::generate_simple_self_signed(vec![format!("*.{SERVICES}")]).unwrap();
     let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(made.signing_key.serialize_der()));
     let certificate = Arc::new(Certificate::from_der(vec![made.cert.der().clone()], key).unwrap());
     let state = Arc::new(
@@ -52,6 +53,7 @@ fn setup() -> (axum::Router, Arc<CoordinatorState>) {
             .with_gateway([5; 32], certificate)
             .build(),
     );
+    assert!(state.set_service_domain(SERVICES.into()));
     (coord_api::router(state.clone()), state)
 }
 
@@ -192,7 +194,7 @@ async fn publishing_an_https_service_brings_the_gateway_and_serves_it_with_ident
     assert_eq!(peer_names(&viewer_map), vec!["gateway"]);
     let gateway_peer = &viewer_map["Peers"][0];
     let gateway_addr: Ipv4Addr = gateway_peer["Addresses"][0].as_str().unwrap().split('/').next().unwrap().parse().unwrap();
-    assert_eq!(record(&viewer_map, "food-app.ts.example.com"), Some(gateway_addr.to_string()));
+    assert_eq!(record(&viewer_map, "food-app.svc.ts.example.com"), Some(gateway_addr.to_string()));
     assert!(gateway_peer["DiscoKey"].as_str().unwrap().starts_with("discokey:"), "devices need a disco key to use a peer");
     assert_eq!(gateway_peer["HomeDERP"], 1, "devices reach the gateway through the built-in relay");
     // Bob's laptop is not opened to anything by this
@@ -205,12 +207,12 @@ async fn publishing_an_https_service_brings_the_gateway_and_serves_it_with_ident
     assert_eq!(filter.len(), 1, "{filter:?}");
     assert_eq!(filter[0]["SrcIPs"], serde_json::json!([format!("{gateway_addr}/32")]));
     assert_eq!(filter[0]["DstPorts"][0]["Ports"], serde_json::json!({ "First": 3000, "Last": 3000 }));
-    assert_eq!(record(&app_map, "food-app.ts.example.com"), Some(gateway_addr.to_string()), "the owner can open it too");
+    assert_eq!(record(&app_map, "food-app.svc.ts.example.com"), Some(gateway_addr.to_string()), "the owner can open it too");
 
     // Carol's phone sees neither the gateway nor the name
     let outsider_map = netmap(&state, &outsider).await;
     assert_eq!(peer_names(&outsider_map), Vec::<String>::new());
-    assert_eq!(record(&outsider_map, "food-app.ts.example.com"), None);
+    assert_eq!(record(&outsider_map, "food-app.svc.ts.example.com"), None);
 
     // Data path, with the three devices online
     let gateway_key: [u8; 32] = hex::decode(gateway_peer["Key"].as_str().unwrap().trim_start_matches("nodekey:")).unwrap().try_into().unwrap();
@@ -238,22 +240,22 @@ async fn publishing_an_https_service_brings_the_gateway_and_serves_it_with_ident
         }
     });
 
-    let answer = https_get(&viewer_stack, gateway_addr, "food-app.ts.example.com", "/", "X-Tailnet-User: admin.example.com\r\n").await.unwrap();
+    let answer = https_get(&viewer_stack, gateway_addr, "food-app.svc.ts.example.com", "/", "X-Tailnet-User: admin.example.com\r\n").await.unwrap();
     assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
     assert!(answer.contains(&format!("from={gateway_addr}")), "{answer}");
     assert!(answer.contains("x-tailnet-user: bob.example.com"), "the identity is the caller's, not the forged one: {answer}");
     assert!(answer.contains("x-tailnet-device: bob-laptop"), "{answer}");
 
     // Carol knows the address and the name, but gets what an unknown name gets
-    let hidden = https_get(&outsider_stack, gateway_addr, "food-app.ts.example.com", "/", "").await.unwrap();
+    let hidden = https_get(&outsider_stack, gateway_addr, "food-app.svc.ts.example.com", "/", "").await.unwrap();
     assert!(hidden.starts_with("HTTP/1.1 404"), "{hidden}");
-    let unknown = https_get(&viewer_stack, gateway_addr, "nothing.ts.example.com", "/", "").await.unwrap();
+    let unknown = https_get(&viewer_stack, gateway_addr, "nothing.svc.ts.example.com", "/", "").await.unwrap();
     assert!(unknown.starts_with("HTTP/1.1 404"), "{unknown}");
     assert_eq!(hidden.split("\r\n\r\n").nth(1), unknown.split("\r\n\r\n").nth(1));
 
     // A suspended tailnet serves nothing
     call(&app, "PUT", format!("/api/tenants/{t}/suspended"), Some(serde_json::json!({ "suspended": true }))).await;
-    let suspended = https_get(&viewer_stack, gateway_addr, "food-app.ts.example.com", "/", "").await.unwrap();
+    let suspended = https_get(&viewer_stack, gateway_addr, "food-app.svc.ts.example.com", "/", "").await.unwrap();
     assert!(suspended.starts_with("HTTP/1.1 404"), "{suspended}");
 }
 
@@ -292,7 +294,8 @@ async fn gateway_can_be_enabled_after_startup() {
     );
     assert!(state.gateways().is_none(), "no certificate at start: gateway off");
 
-    let made = rcgen::generate_simple_self_signed(vec![format!("*.{BASE}")]).unwrap();
+    assert!(state.set_service_domain(SERVICES.into()));
+    let made = rcgen::generate_simple_self_signed(vec![format!("*.{SERVICES}")]).unwrap();
     let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(made.signing_key.serialize_der()));
     let certificate = Arc::new(Certificate::from_der(vec![made.cert.der().clone()], key).unwrap());
 
@@ -310,6 +313,36 @@ async fn gateway_can_be_enabled_after_startup() {
     let body = http_body_util::BodyExt::collect(resp.into_body()).await.unwrap().to_bytes();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["gateway"], true, "health reports the gateway once enabled");
+    assert_eq!(json["service_domain"], SERVICES);
+}
+
+#[tokio::test]
+async fn a_control_process_names_services_under_the_service_domain_for_a_remote_gateway() {
+    let health = |state: &Arc<CoordinatorState>| {
+        let app = coord_api::router(state.clone());
+        async move {
+            let resp = app.oneshot(Request::builder().uri("/health").body(Body::empty()).unwrap()).await.unwrap();
+            let body = http_body_util::BodyExt::collect(resp.into_body()).await.unwrap().to_bytes();
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap()
+        }
+    };
+    let control = Arc::new(
+        CoordinatorState::builder(coord_noise::generate_control_key())
+            .with_admin_api_key(Some(ADMIN_KEY.to_string()))
+            .with_role(coord_api::Role::Control)
+            .build(),
+    );
+    assert_eq!(health(&control).await["gateway"], false, "no service domain: no named services");
+    assert!(control.set_service_domain(SERVICES.into()));
+    assert!(!control.set_service_domain("other.example".into()), "set once");
+    let json = health(&control).await;
+    assert_eq!(json["gateway"], true, "the gateway runs on a relay process");
+    assert_eq!(json["service_domain"], SERVICES);
+
+    // A relay without a gateway does not claim one.
+    let relay = Arc::new(CoordinatorState::builder(coord_noise::generate_control_key()).with_role(coord_api::Role::Relay).build());
+    relay.set_service_domain(SERVICES.into());
+    assert_eq!(health(&relay).await["gateway"], false);
 }
 
 #[tokio::test]

@@ -13,14 +13,16 @@
 #   # Then run TS service on the host: npm run dev
 
 services:
-  # ---------- Rust mesh coordinator ---------------------------------------
+  # ---------- Rust mesh coordinator: control plane -----------------------
+  # Noise control plane and admin API (COORD_ROLE=control). It holds the
+  # control key and the admin key, and never the gateway certificate (ADR-0038).
   coordinator:
     build:
       context: ./coordinator
       dockerfile: Dockerfile
     restart: unless-stopped
-    # Listens on 9443/tcp and 3478/udp only, so it needs no capability. The
-    # coord_data volume is the only writable path (control, relay, gateway keys).
+    # Listens on 9443/tcp only, so it needs no capability. The coord_data
+    # volume is the only writable path (control key).
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     read_only: true
@@ -30,19 +32,15 @@ services:
       postgres:
         condition: service_healthy
     environment:
+      COORD_ROLE: control
       COORD_LISTEN: "0.0.0.0:9443"
       COORD_STORE_BACKEND: postgres
       # Caddy forwards device connections; trust its X-Forwarded-For so device
       # sign-in shows the real requester address.
       COORD_TRUSTED_PROXIES: ${EDGE_SUBNET:-10.250.251.0/24}
       COORD_CONTROL_KEY_PATH: /var/lib/coordinator/control.key
-      # Built-in DERP relay + STUN (ADR-0027). Empty = no relay region.
-      # The relay key is kept next to the control key (coord_data volume).
-      COORD_DERP_HOSTNAME: ${DERP_DOMAIN:-}
-      # Gateway (ADR-0029): HTTPS for named services, with the wildcard
-      # certificate that the gateway-certs service copies from Caddy
-      COORD_GATEWAY_CERT: /certs/tls.crt
-      COORD_GATEWAY_KEY: /certs/tls.key
+      # HTTPS service names (ADR-0038). The relay service runs the gateway.
+      COORD_SERVICE_DOMAIN: ${SERVICE_DOMAIN:-svc.${BASE_DOMAIN:?BASE_DOMAIN must be set}}
       # Devices without an auth key are sent here to sign in (ADR-0032)
       COORD_DEVICE_AUTH_URL: ${PUBLIC_URL:?PUBLIC_URL must be set}/device
       COORD_ADMIN_KEY: ${COORDINATOR_API_KEY:?COORDINATOR_API_KEY must be set}
@@ -50,6 +48,54 @@ services:
       RUST_LOG: "info"
     volumes:
       - coord_data:/var/lib/coordinator
+    expose:
+      - "9443"
+    networks:
+      - internal
+      - edge
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9443/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      # Room for first-start migrations
+      start_period: 30s
+
+  # ---------- Rust mesh coordinator: relay + gateway ----------------------
+  # DERP relay, STUN and the gateway for named HTTPS services (COORD_ROLE=relay,
+  # ADR-0027, ADR-0029, ADR-0038). No admin key and no control key: a leak from
+  # this internet-facing process exposes only the service certificate.
+  relay:
+    build:
+      context: ./coordinator
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    depends_on:
+      coordinator:
+        condition: service_healthy
+      relay-keys:
+        condition: service_completed_successfully
+    environment:
+      COORD_ROLE: relay
+      COORD_LISTEN: "0.0.0.0:9443"
+      COORD_STORE_BACKEND: postgres
+      COORD_DERP_HOSTNAME: ${DERP_DOMAIN:?DERP_DOMAIN must be set (relay and gateway)}
+      COORD_DERP_KEY_PATH: /var/lib/relay/derp.key
+      COORD_GATEWAY_SECRET_PATH: /var/lib/relay/gateway.key
+      # The gateway-certs service copies only the *.SERVICE_DOMAIN certificate
+      COORD_SERVICE_DOMAIN: ${SERVICE_DOMAIN:-svc.${BASE_DOMAIN:?BASE_DOMAIN must be set}}
+      COORD_GATEWAY_CERT: /certs/tls.crt
+      COORD_GATEWAY_KEY: /certs/tls.key
+      # The gateway registers its nodes, so it needs write access to the coordinator tables
+      DATABASE_URL: postgresql://${POSTGRES_USER:-atproto_tailnet}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@postgres:5432/${POSTGRES_DB:-atproto_tailnet}
+      RUST_LOG: "info"
+    volumes:
+      - relay_data:/var/lib/relay
       - gateway_certs:/certs:ro
     expose:
       - "9443"
@@ -64,16 +110,37 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
-      # Room for first-start migrations. The gateway certificate no longer
-      # delays start-up: the coordinator enables the gateway when it arrives.
       start_period: 30s
 
+  # ---------- Relay keys --------------------------------------------------
+  # One-time move: earlier versions kept derp.key and gateway.key next to the
+  # control key. The same gateway.key keeps the same gateway node in each tailnet.
+  relay-keys:
+    build:
+      context: ./coordinator
+      dockerfile: Dockerfile
+    user: root
+    restart: "no"
+    network_mode: none
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        umask 077
+        for k in derp.key gateway.key; do
+          if [ -f /old/$$k ] && [ ! -f /new/$$k ]; then
+            install -o coord -g coord -m 0600 /old/$$k /new/$$k && echo "moved $$k"
+          fi
+        done
+        chown coord:coord /new
+    volumes:
+      - coord_data:/old:ro
+      - relay_data:/new
+
   # ---------- Certificate for the gateway ---------------------------------
-  # Caddy obtains the wildcard certificate of BASE_DOMAIN (DNS-01 strategies
-  # only). Its files are readable by root only, so this small service copies
-  # them to a volume that the coordinator can read. It uses the coordinator
-  # image, so the owner of the copies is the coordinator's user. The
-  # coordinator loads the certificate again every few hours.
+  # Caddy obtains the wildcard certificate of SERVICE_DOMAIN (DNS-01 strategies
+  # only). Its files are readable by root only, so this service copies that
+  # one certificate to a volume that only the relay reads (ADR-0038).
   gateway-certs:
     build:
       context: ./coordinator
@@ -82,7 +149,7 @@ services:
     restart: unless-stopped
     network_mode: none
     environment:
-      BASE_DOMAIN: ${BASE_DOMAIN:?BASE_DOMAIN must be set}
+      SERVICE_DOMAIN: ${SERVICE_DOMAIN:-svc.${BASE_DOMAIN:?BASE_DOMAIN must be set}}
     entrypoint: ["/bin/sh", "/usr/local/bin/copy-gateway-cert.sh"]
     volumes:
       - ./deploy/copy-gateway-cert.sh:/usr/local/bin/copy-gateway-cert.sh:ro
@@ -188,6 +255,9 @@ services:
       CONTROL_DOMAIN: ${CONTROL_DOMAIN:-control.localhost}
       DERP_DOMAIN: ${DERP_DOMAIN:-derp.localhost}
       BASE_DOMAIN: ${BASE_DOMAIN:?BASE_DOMAIN must be set}
+      SERVICE_DOMAIN: ${SERVICE_DOMAIN:-svc.${BASE_DOMAIN:?BASE_DOMAIN must be set}}
+      # DERP and STUN run in the relay service
+      RELAY_UPSTREAM: relay:9443
       CF_API_TOKEN: ${CF_API_TOKEN:-}
       DO_AUTH_TOKEN: ${DO_AUTH_TOKEN:-}
       AWS_REGION: ${AWS_REGION:-}
@@ -216,6 +286,7 @@ services:
 
 volumes:
   coord_data:
+  relay_data:
   gateway_certs:
   pgdata:
   caddy_data:

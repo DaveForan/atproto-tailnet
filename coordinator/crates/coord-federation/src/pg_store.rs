@@ -1,7 +1,7 @@
 //! PostgreSQL implementation of [`FederationStore`].
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use coord_core::clock::OffsetDateTime;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -44,8 +44,8 @@ struct LinkRow {
     protocol_version: Option<String>,
     message: Option<String>,
     signed_request: Option<String>,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
+    created_at: OffsetDateTime,
+    updated_at: OffsetDateTime,
 }
 
 #[derive(sqlx::FromRow)]
@@ -60,9 +60,9 @@ struct SessionRow {
     protocol_version: Option<String>,
     exported_routes: Vec<String>,
     imported_routes: Vec<String>,
-    last_keepalive: Option<DateTime<Utc>>,
-    created_at: DateTime<Utc>,
-    updated_at: DateTime<Utc>,
+    last_keepalive: Option<OffsetDateTime>,
+    created_at: OffsetDateTime,
+    updated_at: OffsetDateTime,
 }
 
 #[derive(sqlx::FromRow)]
@@ -71,7 +71,7 @@ struct DidRow {
     did: String,
     public_key_jwk: serde_json::Value,
     encrypted_private_key: String,
-    created_at: DateTime<Utc>,
+    created_at: OffsetDateTime,
 }
 
 
@@ -630,7 +630,7 @@ mod tests {
 
     #[test]
     fn link_from_row_converts_correctly() {
-        let now = Utc::now();
+        let now = coord_core::clock::now();
         let row = LinkRow {
             id: Uuid::new_v4(),
             local_tenant_id: Uuid::new_v4(),
@@ -655,7 +655,7 @@ mod tests {
 
     #[test]
     fn session_from_row_converts_correctly() {
-        let now = Utc::now();
+        let now = coord_core::clock::now();
         let row = SessionRow {
             id: Uuid::new_v4(),
             federation_link_id: Uuid::new_v4(),
@@ -678,7 +678,7 @@ mod tests {
 
     #[test]
     fn did_from_row_converts_correctly() {
-        let now = Utc::now();
+        let now = coord_core::clock::now();
         let row = DidRow {
             tenant_id: Uuid::new_v4(),
             did: "did:web:collective.example".into(),

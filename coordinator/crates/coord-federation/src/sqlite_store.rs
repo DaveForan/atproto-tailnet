@@ -3,6 +3,7 @@
 use async_trait::async_trait;
 use sqlx::SqlitePool;
 use uuid::Uuid;
+use coord_core::clock::{self, OffsetDateTime};
 
 use coord_core::types::{
     BrokerSession, BrokerSessionStatus, CollectiveDid, FederationLink, LinkDirection, LinkId,
@@ -84,10 +85,8 @@ fn parse_uuid(s: &str) -> Uuid {
     Uuid::parse_str(s).unwrap_or_default()
 }
 
-fn parse_datetime(s: &str) -> chrono::DateTime<chrono::Utc> {
-    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
-        .map(|naive| naive.and_utc())
-        .unwrap_or_default()
+fn parse_datetime(s: &str) -> OffsetDateTime {
+    clock::parse_sqlite(s).unwrap_or(clock::EPOCH)
 }
 
 fn parse_string_array(s: &str) -> Vec<String> {
@@ -256,8 +255,8 @@ impl FederationStore for SqliteFederationStore {
             .bind(&link.protocol_version)
             .bind(&link.message)
             .bind(&link.signed_request)
-            .bind(link.created_at.format("%Y-%m-%d %H:%M:%S").to_string())
-            .bind(link.updated_at.format("%Y-%m-%d %H:%M:%S").to_string())
+            .bind(clock::to_sqlite(link.created_at))
+            .bind(clock::to_sqlite(link.updated_at))
             .fetch_one(&self.pool)
             .await.map_err(db)?;
 
@@ -372,9 +371,9 @@ impl FederationStore for SqliteFederationStore {
             .bind(&session.protocol_version)
             .bind(encode_string_array(&session.exported_routes))
             .bind(encode_string_array(&session.imported_routes))
-            .bind(session.last_keepalive.map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string()))
-            .bind(session.created_at.format("%Y-%m-%d %H:%M:%S").to_string())
-            .bind(session.updated_at.format("%Y-%m-%d %H:%M:%S").to_string())
+            .bind(session.last_keepalive.map(clock::to_sqlite))
+            .bind(clock::to_sqlite(session.created_at))
+            .bind(clock::to_sqlite(session.updated_at))
             .fetch_optional(&self.pool)
             .await.map_err(db)?;
 
@@ -498,7 +497,7 @@ impl FederationStore for SqliteFederationStore {
         .bind(&cdid.did)
         .bind(serde_json::to_string(&cdid.public_key_jwk).unwrap_or_default())
         .bind(&cdid.encrypted_private_key)
-        .bind(cdid.created_at.format("%Y-%m-%d %H:%M:%S").to_string())
+        .bind(clock::to_sqlite(cdid.created_at))
         .execute(&self.pool)
         .await.map_err(db)?;
 

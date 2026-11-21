@@ -10,6 +10,8 @@ pub use pg::PgStore;
 pub use sqlite::SqliteStore;
 pub use dispatch::Store;
 
+use coord_core::clock;
+
 const PEER_EVENT_CHANNEL_CAPACITY: usize = 256;
 
 /// An event from another coordinator replica (ADR-0034).
@@ -43,7 +45,7 @@ pub(crate) fn generation_to_db(generation: u64) -> Result<i64, coord_core::Coord
 }
 
 pub(crate) fn now_secs() -> i64 {
-    chrono::Utc::now().timestamp()
+    clock::now().unix_timestamp()
 }
 
 /// Columns read for a pending sign-in, in the order `sign_in_from_row` expects.
@@ -63,7 +65,7 @@ pub(crate) fn sign_in_from_row(row: SignInRow) -> Option<coord_core::PendingSign
         os,
         decision: decision.and_then(|d| serde_json::from_str(&d).ok()),
         requester_ip,
-        requested_at: chrono::DateTime::from_timestamp(started, 0).unwrap_or_default(),
+        requested_at: clock::from_unix(started).unwrap_or(clock::EPOCH),
     })
 }
 
@@ -145,6 +147,24 @@ pub(crate) fn check_new_parent(
         return Err(CoordError::Protocol("multi-level hierarchy not supported: the tenant has children".into()));
     }
     Ok(())
+}
+
+/// Checks the parent of a new tenant. `parent_is_child` is `None` when the parent does not exist.
+/// Call it under the hierarchy lock, so a parallel `set_tenant_parent` cannot change the answer.
+///
+/// # Errors
+/// `TenantNotFound(parent)` for a missing parent; `Protocol` when the parent is itself a child.
+pub(crate) fn check_create_parent(
+    parent: coord_core::TenantId,
+    parent_is_child: Option<bool>,
+) -> Result<(), coord_core::CoordError> {
+    match parent_is_child {
+        None => Err(coord_core::CoordError::TenantNotFound(parent)),
+        Some(true) => Err(coord_core::CoordError::Protocol(
+            "multi-level hierarchy not supported: parent is itself a child".into(),
+        )),
+        Some(false) => Ok(()),
+    }
 }
 
 pub(crate) fn generate_random_id() -> String {

@@ -1,5 +1,5 @@
 //! HTTPS for named services (ADR-0030).
-//! The gateway ends TLS with the wildcard certificate and routes by TLS server name to the service's device and port.
+//! The gateway ends TLS with the wildcard certificate of the service domain and routes by TLS server name to the service's device and port.
 //! It tells the application who is calling, in headers that a caller cannot set.
 
 use std::net::{Ipv4Addr, SocketAddrV4};
@@ -18,7 +18,8 @@ use hyper::service::service_fn;
 use hyper_util::rt::{TokioIo, TokioTimer};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::Mutex;
-use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
+use rustls_pki_types::pem::PemObject;
+use rustls_pki_types::{CertificateDer, PrivateKeyDer};
 use tokio_rustls::rustls::ServerConfig;
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, warn};
@@ -89,7 +90,13 @@ pub trait Services: Send + Sync + 'static {
 /// The gateway's TLS certificate. It reloads while connections are open, because renewal happens every few weeks.
 pub struct Certificate {
     config: RwLock<Arc<ServerConfig>>,
-    files: Option<(PathBuf, PathBuf)>,
+    files: Option<Files>,
+}
+
+struct Files {
+    cert: PathBuf,
+    key: PathBuf,
+    service_domain: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -100,6 +107,12 @@ pub enum CertificateError {
     NoCertificate(PathBuf),
     #[error("{0} has no private key")]
     NoKey(PathBuf),
+    #[error("the certificate is not valid X.509: {0}")]
+    Unparsable(String),
+    #[error("the certificate covers {0:?}, which is not a service name under {1:?}")]
+    OutOfScope(String, String),
+    #[error("the certificate names no DNS host")]
+    NoNames,
     #[error("the certificate and the key do not fit: {0}")]
     Tls(#[from] tokio_rustls::rustls::Error),
 }
@@ -115,25 +128,49 @@ fn server_config(chain: Vec<CertificateDer<'static>>, key: PrivateKeyDer<'static
     Ok(Arc::new(config))
 }
 
-fn read_files(cert: &PathBuf, key: &PathBuf) -> Result<Arc<ServerConfig>, CertificateError> {
+/// True for `*.<domain>` and for `<label>.<domain>` with exactly one label.
+fn is_service_name(name: &str, domain: &str) -> bool {
+    let Some(label) = name.strip_suffix(domain).and_then(|rest| rest.strip_suffix('.')) else { return false };
+    label == "*" || (!label.is_empty() && !label.contains(['.', '*']))
+}
+
+/// Refuses a leaf certificate that covers any name outside the service domain.
+/// # Security
+/// The gateway runs next to internet-facing code. Its key must not impersonate control, dashboard or tailnet hosts.
+pub fn check_scope(leaf: &CertificateDer<'_>, service_domain: &str) -> Result<(), CertificateError> {
+    use x509_parser::extensions::GeneralName;
+    let (_, cert) = x509_parser::parse_x509_certificate(leaf.as_ref()).map_err(|e| CertificateError::Unparsable(e.to_string()))?;
+    let san = cert.subject_alternative_name().map_err(|e| CertificateError::Unparsable(e.to_string()))?;
+    let names = san.map(|ext| ext.value.general_names.as_slice()).unwrap_or_default();
+    if names.is_empty() {
+        return Err(CertificateError::NoNames);
+    }
+    let domain = service_domain.to_ascii_lowercase();
+    for name in names {
+        match name {
+            GeneralName::DNSName(dns) if is_service_name(&dns.to_ascii_lowercase(), &domain) => {}
+            other => return Err(CertificateError::OutOfScope(other.to_string(), domain)),
+        }
+    }
+    Ok(())
+}
+
+fn read_files(files: &Files) -> Result<Arc<ServerConfig>, CertificateError> {
+    let Files { cert, key, service_domain } = files;
     let cert_pem = std::fs::read(cert).map_err(|e| CertificateError::Read(cert.clone(), e))?;
     let key_pem = std::fs::read(key).map_err(|e| CertificateError::Read(key.clone(), e))?;
-    let chain: Vec<_> = rustls_pemfile::certs(&mut cert_pem.as_slice()).filter_map(Result::ok).collect();
-    if chain.is_empty() {
-        return Err(CertificateError::NoCertificate(cert.clone()));
-    }
-    let key_der = rustls_pemfile::private_key(&mut key_pem.as_slice())
-        .ok()
-        .flatten()
-        .ok_or_else(|| CertificateError::NoKey(key.clone()))?;
+    let chain: Vec<_> = CertificateDer::pem_slice_iter(&cert_pem).filter_map(Result::ok).collect();
+    let leaf = chain.first().ok_or_else(|| CertificateError::NoCertificate(cert.clone()))?;
+    check_scope(leaf, service_domain)?;
+    let key_der = PrivateKeyDer::from_pem_slice(&key_pem).map_err(|_| CertificateError::NoKey(key.clone()))?;
     server_config(chain, key_der)
 }
 
 impl Certificate {
-    /// Loads a PEM certificate chain and its PEM private key.
-    pub fn from_files(cert: impl Into<PathBuf>, key: impl Into<PathBuf>) -> Result<Self, CertificateError> {
-        let (cert, key) = (cert.into(), key.into());
-        Ok(Self { config: RwLock::new(read_files(&cert, &key)?), files: Some((cert, key)) })
+    /// Loads a PEM certificate chain and its PEM private key. Every name of the leaf must be under `service_domain`.
+    pub fn from_files(cert: impl Into<PathBuf>, key: impl Into<PathBuf>, service_domain: &str) -> Result<Self, CertificateError> {
+        let files = Files { cert: cert.into(), key: key.into(), service_domain: service_domain.to_string() };
+        Ok(Self { config: RwLock::new(read_files(&files)?), files: Some(files) })
     }
 
     pub fn from_der(chain: Vec<CertificateDer<'static>>, key: PrivateKeyDer<'static>) -> Result<Self, CertificateError> {
@@ -142,8 +179,8 @@ impl Certificate {
 
     /// Reads the files again. On an error, the old certificate stays in use.
     pub fn reload(&self) -> Result<(), CertificateError> {
-        if let Some((cert, key)) = &self.files {
-            let fresh = read_files(cert, key)?;
+        if let Some(files) = &self.files {
+            let fresh = read_files(files)?;
             *self.config.write().unwrap_or_else(|e| e.into_inner()) = fresh;
         }
         Ok(())
@@ -441,4 +478,99 @@ pub fn spawn_reload(certificate: Arc<Certificate>, every: Duration) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rcgen::{BasicConstraints, CertificateParams, CertifiedIssuer, IsCa, KeyPair};
+
+    const SERVICES: &str = "svc.ts.example.com";
+
+    /// A leaf for `names`, signed by a CA: (chain PEM, key PEM).
+    fn chain_for(names: &[&str]) -> (String, String) {
+        let mut ca = CertificateParams::new(Vec::<String>::new()).unwrap();
+        ca.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let ca = CertifiedIssuer::self_signed(ca, KeyPair::generate().unwrap()).unwrap();
+        let key = KeyPair::generate().unwrap();
+        let leaf = CertificateParams::new(names.iter().map(|n| n.to_string()).collect::<Vec<_>>())
+            .unwrap()
+            .signed_by(&key, &ca)
+            .unwrap();
+        (format!("{}{}", leaf.pem(), ca.pem()), key.serialize_pem())
+    }
+
+    fn write(dir: &std::path::Path, chain: &str, key: &str) -> (PathBuf, PathBuf) {
+        let (c, k) = (dir.join("tls.crt"), dir.join("tls.key"));
+        std::fs::write(&c, chain).unwrap();
+        std::fs::write(&k, key).unwrap();
+        (c, k)
+    }
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("coord-gateway-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn loads_a_pem_chain_and_its_key() {
+        let dir = temp_dir("chain");
+        let (chain, key) = chain_for(&["*.svc.ts.example.com"]);
+        // Other PEM sections in the certificate file are ignored.
+        let (c, k) = write(&dir, &format!("{chain}{key}"), &key);
+        let cert = Certificate::from_files(&c, &k, SERVICES).unwrap();
+        let config = cert.acceptor();
+        assert_eq!(config.config().alpn_protocols, vec![b"http/1.1".to_vec()]);
+        let chain_len = CertificateDer::pem_slice_iter(chain.as_bytes()).count();
+        assert_eq!(chain_len, 2, "leaf and CA");
+        cert.reload().unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn refuses_missing_certificate_or_key() {
+        let dir = temp_dir("missing");
+        let (chain, key) = chain_for(&["*.svc.ts.example.com"]);
+        let (c, k) = write(&dir, &key, &key);
+        assert!(matches!(Certificate::from_files(&c, &k, SERVICES), Err(CertificateError::NoCertificate(_))));
+        let (c, k) = write(&dir, &chain, &chain);
+        assert!(matches!(Certificate::from_files(&c, &k, SERVICES), Err(CertificateError::NoKey(_))));
+        let (_, other_key) = chain_for(&["*.svc.ts.example.com"]);
+        let (c, k) = write(&dir, &chain, &other_key);
+        assert!(matches!(Certificate::from_files(&c, &k, SERVICES), Err(CertificateError::Tls(_))));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn accepts_only_names_under_the_service_domain() {
+        let scope = |names: &[&str]| {
+            let made = rcgen::generate_simple_self_signed(names.iter().map(|n| n.to_string()).collect::<Vec<_>>()).unwrap();
+            check_scope(made.cert.der(), SERVICES)
+        };
+        assert!(scope(&["*.svc.ts.example.com"]).is_ok());
+        assert!(scope(&["wiki.svc.ts.example.com", "*.svc.ts.example.com"]).is_ok());
+        assert!(scope(&["*.SVC.ts.example.com"]).is_ok(), "DNS names are case-insensitive");
+        // The control-plane wildcard: it covers every tailnet address.
+        assert!(matches!(scope(&["*.ts.example.com"]), Err(CertificateError::OutOfScope(..))));
+        assert!(matches!(scope(&["*.svc.ts.example.com", "app.example.com"]), Err(CertificateError::OutOfScope(..))));
+        assert!(matches!(scope(&["svc.ts.example.com"]), Err(CertificateError::OutOfScope(..))));
+        assert!(matches!(scope(&["a.b.svc.ts.example.com"]), Err(CertificateError::OutOfScope(..))));
+        assert!(matches!(scope(&["xsvc.ts.example.com"]), Err(CertificateError::OutOfScope(..))));
+        assert!(matches!(scope(&["10.0.0.1"]), Err(CertificateError::OutOfScope(..))), "an IP address is not a service name");
+    }
+
+    #[test]
+    fn a_reload_keeps_the_old_certificate_when_the_new_one_is_too_wide() {
+        let dir = temp_dir("reload");
+        let (chain, key) = chain_for(&["*.svc.ts.example.com"]);
+        let (c, k) = write(&dir, &chain, &key);
+        let cert = Certificate::from_files(&c, &k, SERVICES).unwrap();
+        let before = cert.acceptor().config().clone();
+        let (wide, wide_key) = chain_for(&["*.ts.example.com"]);
+        write(&dir, &wide, &wide_key);
+        assert!(matches!(cert.reload(), Err(CertificateError::OutOfScope(..))));
+        assert!(Arc::ptr_eq(&before, cert.acceptor().config()), "the scoped certificate stays in use");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

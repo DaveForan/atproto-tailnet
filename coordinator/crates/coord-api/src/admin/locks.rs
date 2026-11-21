@@ -5,6 +5,7 @@ use axum::Json;
 use std::sync::Arc;
 
 use coord_core::TenantId;
+use coord_core::clock::{self, Duration, OffsetDateTime};
 use crate::state::CoordinatorState;
 use super::{bad_request, existing_tenant, not_found};
 
@@ -20,7 +21,8 @@ pub struct OwnerLockBody {
 #[derive(serde::Deserialize)]
 pub struct RefusedQuery {
     /// Only attempts after this time.
-    pub since: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, with = "coord_core::clock::serde_rfc3339::option")]
+    pub since: Option<OffsetDateTime>,
 }
 
 /// GET /api/owner-locks/refused?since=… — machines refused by a machine lock,
@@ -35,7 +37,7 @@ pub async fn list_refused_machines(
             out.push((r.at, serde_json::json!({
                 "tenant_id": tenant_id.to_string(),
                 "owner": owner,
-                "at": r.at,
+                "at": clock::to_rfc3339_z(r.at),
                 "hostname": r.hostname,
                 "os": r.os,
                 "fingerprint": r.fingerprint,
@@ -88,7 +90,7 @@ async fn owner_lock_json(state: &CoordinatorState, tenant_id: TenantId, owner: &
         // An unreadable stored lock refuses every machine until it is set again or removed.
         "malformed": *read == coord_core::LockRead::Malformed,
         "node_ids": allowed,
-        "allow_one_until": lock.and_then(|l| l.allow_one_until),
+        "allow_one_until": lock.and_then(|l| l.allow_one_until).map(clock::to_rfc3339_z),
         "max_machines": lock.and_then(|l| l.max_machines),
         "refused": lock.map(|l| l.refused.clone()).unwrap_or_default(),
     })
@@ -193,7 +195,7 @@ pub async fn allow_one_machine(
         Malformed,
         Full,
     }
-    let until = chrono::Utc::now() + chrono::Duration::seconds(body.seconds);
+    let until = clock::now() + Duration::seconds(body.seconds);
     let result = state
         .store
         .update_owner_lock(tenant_id, &owner, move |read| match read {

@@ -29,7 +29,6 @@ tracing = { workspace = true }
 bytes = { workspace = true }
 hex = { workspace = true }
 ipnetwork = { workspace = true }
-chrono = { workspace = true }
 uuid = { workspace = true }
 zstd = { workspace = true }
 tokio-stream = { workspace = true }

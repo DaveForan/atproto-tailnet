@@ -11,7 +11,6 @@ coord-core = { workspace = true }
 serde = { workspace = true }
 # float_roundtrip: correctly-rounded float parsing, required for JCS parity with JS.
 serde_json = { workspace = true, features = ["float_roundtrip"] }
-chrono = { workspace = true }
 ipnetwork = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
@@ -29,7 +28,6 @@ base64 = "0.22"
 tokio = { workspace = true }
 sqlx = { workspace = true, features = ["migrate"] }
 serde_json = { workspace = true }
-chrono = { workspace = true }
 rand = { workspace = true }
 hex = { workspace = true }
 hmac = "0.12"

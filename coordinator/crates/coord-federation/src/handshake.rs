@@ -2,7 +2,7 @@
 //! Each function takes owned state and returns the next state plus any outbound message.
 
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use coord_core::clock::{self, Duration, OffsetDateTime};
 use rand::Rng;
 
 use coord_core::CoordError;
@@ -27,10 +27,10 @@ pub struct HandshakeState {
     pub negotiated_capabilities: Option<Vec<Capability>>,
     pub keepalive_seconds: Option<u32>,
     pub challenge_nonce: Option<String>,
-    pub challenge_expires_at: Option<DateTime<Utc>>,
+    pub challenge_expires_at: Option<OffsetDateTime>,
     pub error: Option<String>,
-    pub started_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    pub started_at: OffsetDateTime,
+    pub updated_at: OffsetDateTime,
 }
 
 
@@ -80,7 +80,7 @@ fn negotiate_version(remote: &str, local: &str) -> String {
 fn fail(mut state: HandshakeState, error: &str) -> (HandshakeState, String) {
     state.phase = HandshakePhase::Failed;
     state.error = Some(error.to_string());
-    state.updated_at = Utc::now();
+    state.updated_at = clock::now();
     (state, error.to_string())
 }
 
@@ -112,7 +112,7 @@ fn random_hex(n: usize) -> String {
 
 
 pub fn create_handshake(local_did: &str) -> HandshakeState {
-    let now = Utc::now();
+    let now = clock::now();
     HandshakeState {
         phase: HandshakePhase::Idle,
         local_did: local_did.to_string(),
@@ -140,7 +140,7 @@ pub async fn initiate_hello(
     capabilities: Vec<Capability>,
     callbacks: &dyn HandshakeCallbacks,
 ) -> Result<(HandshakeState, HelloMessage), CoordError> {
-    let timestamp = Utc::now().to_rfc3339();
+    let timestamp = clock::to_rfc3339(clock::now());
 
     let mut message = HelloMessage {
         collective_did: state.local_did.clone(),
@@ -158,7 +158,7 @@ pub async fn initiate_hello(
     state.phase = HandshakePhase::HelloSent;
     state.remote_did = Some(remote_did.to_string());
     state.negotiated_type = Some(fed_type);
-    state.updated_at = Utc::now();
+    state.updated_at = clock::now();
 
     Ok((state, message))
 }
@@ -183,7 +183,7 @@ pub async fn handle_hello(
     if !policy_ok {
         state.phase = HandshakePhase::Failed;
         state.error = Some("Policy denied federation".to_string());
-        state.updated_at = Utc::now();
+        state.updated_at = clock::now();
         return Err((state, "Policy denied federation".to_string()));
     }
 
@@ -210,17 +210,17 @@ pub async fn handle_hello(
     let nonce = random_hex(32);
 
     let expires_at =
-        Utc::now() + chrono::Duration::seconds(i64::from(CHALLENGE_EXPIRY_DEFAULT_SECONDS));
+        clock::now() + Duration::seconds(i64::from(CHALLENGE_EXPIRY_DEFAULT_SECONDS));
 
     let keepalive = DEFAULT_KEEPALIVE_SECONDS
         .max(*KEEPALIVE_RANGE.start())
         .min(*KEEPALIVE_RANGE.end());
 
-    let timestamp = Utc::now().to_rfc3339();
+    let timestamp = clock::to_rfc3339(clock::now());
     let mut message = ChallengeMessage {
         collective_did: state.local_did.clone(),
         nonce: nonce.clone(),
-        expires_at: expires_at.to_rfc3339(),
+        expires_at: clock::to_rfc3339(expires_at),
         accepted_type: hello.federation_type.clone(),
         accepted_cidrs: accepted_cidrs.clone(),
         accepted_capabilities: accepted_capabilities.clone(),
@@ -247,7 +247,7 @@ pub async fn handle_hello(
     state.negotiated_cidrs = Some(accepted_cidrs);
     state.negotiated_capabilities = Some(accepted_capabilities);
     state.keepalive_seconds = Some(keepalive);
-    state.updated_at = Utc::now();
+    state.updated_at = clock::now();
 
     Ok((state, message))
 }
@@ -263,7 +263,7 @@ pub async fn handle_challenge(
         let err = format!("Unexpected CHALLENGE in phase {:?}", state.phase);
         state.phase = HandshakePhase::Failed;
         state.error = Some("Unexpected CHALLENGE".to_string());
-        state.updated_at = Utc::now();
+        state.updated_at = clock::now();
         return Err((state, err));
     }
 
@@ -279,8 +279,8 @@ pub async fn handle_challenge(
     }
 
     // An unparseable expiry counts as expired.
-    match challenge.expires_at.parse::<DateTime<Utc>>() {
-        Ok(expires) if expires >= Utc::now() => {}
+    match clock::parse_rfc3339(&challenge.expires_at) {
+        Some(expires) if expires >= clock::now() => {}
         _ => return Err(fail(state, "Challenge expired")),
     }
 
@@ -297,7 +297,7 @@ pub async fn handle_challenge(
 
     let routes = callbacks.get_local_routes();
 
-    let timestamp = Utc::now().to_rfc3339();
+    let timestamp = clock::to_rfc3339(clock::now());
     let mut message = CommitMessage {
         collective_did: state.local_did.clone(),
         challenge_nonce: challenge.nonce.clone(),
@@ -321,7 +321,7 @@ pub async fn handle_challenge(
     state.negotiated_cidrs = Some(challenge.accepted_cidrs.clone());
     state.negotiated_capabilities = Some(challenge.accepted_capabilities.clone());
     state.keepalive_seconds = Some(challenge.negotiated_keepalive_seconds);
-    state.updated_at = Utc::now();
+    state.updated_at = clock::now();
 
     Ok((state, message))
 }
@@ -336,15 +336,15 @@ pub async fn handle_commit(
         let err = format!("Unexpected COMMIT in phase {:?}", state.phase);
         state.phase = HandshakePhase::Failed;
         state.error = Some("Unexpected COMMIT".to_string());
-        state.updated_at = Utc::now();
+        state.updated_at = clock::now();
         return Err((state, err));
     }
 
     if let Some(expires_at) = &state.challenge_expires_at
-        && *expires_at < Utc::now() {
+        && *expires_at < clock::now() {
             state.phase = HandshakePhase::Failed;
             state.error = Some("Challenge expired".to_string());
-            state.updated_at = Utc::now();
+            state.updated_at = clock::now();
             return Err((state, "Challenge expired before COMMIT received".to_string()));
         }
 
@@ -384,7 +384,7 @@ pub async fn handle_commit(
 
     let keepalive = state.keepalive_seconds.unwrap_or(DEFAULT_KEEPALIVE_SECONDS);
 
-    let timestamp = Utc::now().to_rfc3339();
+    let timestamp = clock::to_rfc3339(clock::now());
     let mut message = EstablishedMessage {
         session_id: session_id.clone(),
         collective_did: state.local_did.clone(),
@@ -404,7 +404,7 @@ pub async fn handle_commit(
 
     state.phase = HandshakePhase::Established;
     state.session_id = Some(session_id);
-    state.updated_at = Utc::now();
+    state.updated_at = clock::now();
 
     Ok((state, message))
 }
@@ -435,7 +435,7 @@ pub async fn handle_established(
     state.phase = HandshakePhase::Established;
     state.session_id = Some(established.session_id.clone());
     state.keepalive_seconds = Some(established.keepalive_interval_seconds);
-    state.updated_at = Utc::now();
+    state.updated_at = clock::now();
     state
 }
 
@@ -562,14 +562,14 @@ mod tests {
         let challenge = ChallengeMessage {
             collective_did: "did:web:remote".into(),
             nonce: "abc".into(),
-            expires_at: (Utc::now() + chrono::Duration::seconds(120)).to_rfc3339(),
+            expires_at: clock::to_rfc3339(clock::now() + Duration::seconds(120)),
             accepted_type: FederationType::Peer,
             accepted_cidrs: vec![],
             accepted_capabilities: vec![],
             negotiated_version: "1.0.0".into(),
             negotiated_keepalive_seconds: 60,
             signature: "sig".into(),
-            timestamp: Utc::now().to_rfc3339(),
+            timestamp: clock::to_rfc3339(clock::now()),
         };
 
         let result = handle_challenge(state, &challenge, &cb).await;
@@ -587,7 +587,7 @@ mod tests {
         state.remote_did = Some("did:web:remote".to_string());
         state.challenge_nonce = Some("a".repeat(64));
         state.challenge_expires_at =
-            Some(Utc::now() + chrono::Duration::seconds(120));
+            Some(clock::now() + Duration::seconds(120));
 
         let commit = CommitMessage {
             collective_did: "did:web:remote".into(),
@@ -595,7 +595,7 @@ mod tests {
             challenge_signature: "sig".into(),
             initial_routes: vec![],
             signature: "sig".into(),
-            timestamp: Utc::now().to_rfc3339(),
+            timestamp: clock::to_rfc3339(clock::now()),
         };
 
         let result = handle_commit(state, &commit, &cb).await;
@@ -614,7 +614,7 @@ mod tests {
             initial_routes: vec![],
             keepalive_interval_seconds: 60,
             signature: "sig".into(),
-            timestamp: Utc::now().to_rfc3339(),
+            timestamp: clock::to_rfc3339(clock::now()),
         };
 
         let state = handle_established(state, &established, &MockCallbacks).await;
@@ -659,7 +659,7 @@ mod tests {
             protocol_version: CFP_VERSION.into(),
             mesh_id: None,
             signature: "sig".into(),
-            timestamp: Utc::now().to_rfc3339(),
+            timestamp: clock::to_rfc3339(clock::now()),
         };
 
         let result = handle_hello(
@@ -910,7 +910,7 @@ mod tests {
             initial_routes: vec![],
             keepalive_interval_seconds: 60,
             signature: String::new(),
-            timestamp: Utc::now().to_rfc3339(),
+            timestamp: clock::to_rfc3339(clock::now()),
         };
         est.signature = mallory.sign(&message_signing_payload(&est).unwrap()).await.unwrap();
         let state = handle_established(state, &est, &alpha).await;

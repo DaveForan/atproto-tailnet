@@ -173,7 +173,7 @@ pub const EPHEMERAL_SWEEP_INTERVAL: std::time::Duration = std::time::Duration::f
 /// Delete ephemeral nodes that have been offline for at least `max_offline`.
 /// Returns the number of nodes removed (their peers get PeersRemoved deltas).
 pub async fn sweep_ephemeral_nodes(state: &Arc<CoordinatorState>, max_offline: std::time::Duration) -> usize {
-    let max_offline = chrono::Duration::from_std(max_offline).unwrap_or(chrono::Duration::MAX);
+    let max_offline = coord_core::clock::Duration::try_from(max_offline).unwrap_or(coord_core::clock::Duration::MAX);
     match state.store.delete_stale_ephemeral_nodes(max_offline).await {
         Ok(removed) => {
             if !removed.is_empty() {
@@ -204,8 +204,13 @@ static BOOT_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
 async fn health(axum::extract::State(state): axum::extract::State<Arc<CoordinatorState>>) -> axum::Json<serde_json::Value> {
     let boot_id = BOOT_ID.get_or_init(|| uuid::Uuid::new_v4().to_string());
-    // `gateway`: this process serves named HTTPS services (ADR-0030)
-    axum::Json(serde_json::json!({"status": "ok", "boot_id": boot_id, "gateway": state.gateways().is_some()}))
+    // `gateway`: the deployment serves named HTTPS services under `service_domain` (ADR-0030, ADR-0038)
+    axum::Json(serde_json::json!({
+        "status": "ok",
+        "boot_id": boot_id,
+        "gateway": state.serves_named_services(),
+        "service_domain": state.service_domain(),
+    }))
 }
 
 #[cfg(feature = "test-hooks")]

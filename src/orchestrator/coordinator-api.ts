@@ -155,12 +155,16 @@ export class CoordinatorApiClient {
 
 
   /** Returns null when the coordinator is unreachable or unhealthy. */
-  async probeHealth(timeoutMs = HEALTH_TIMEOUT_MS): Promise<{ bootId: string; gateway: boolean } | null> {
+  async probeHealth(timeoutMs = HEALTH_TIMEOUT_MS): Promise<{ bootId: string; gateway: boolean; serviceDomain: string | null } | null> {
     try {
       const res = await fetch(`${this.baseUrl}/health`, { signal: AbortSignal.timeout(timeoutMs) });
       if (!res.ok) return null;
-      const body = (await res.json().catch(() => ({}))) as { boot_id?: unknown; gateway?: unknown };
-      return { bootId: typeof body.boot_id === "string" ? body.boot_id : "unknown", gateway: body.gateway === true };
+      const body = (await res.json().catch(() => ({}))) as { boot_id?: unknown; gateway?: unknown; service_domain?: unknown };
+      return {
+        bootId: typeof body.boot_id === "string" ? body.boot_id : "unknown",
+        gateway: body.gateway === true,
+        serviceDomain: typeof body.service_domain === "string" && body.service_domain ? body.service_domain : null,
+      };
     } catch {
       return null;
     }

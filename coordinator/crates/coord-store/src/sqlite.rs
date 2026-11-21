@@ -7,6 +7,7 @@ use coord_core::{
     NodeRegistration, NodeSummary, PeerInfo, PreAuthGrant, PreAuthKeyInfo, PreAuthKeyOptions,
     StorageError, Tenant, TenantId,
 };
+use coord_core::clock::{self, Duration, OffsetDateTime};
 use crate::memory::PeerEvent;
 use crate::{generate_auth_key, generate_random_id};
 
@@ -93,34 +94,22 @@ impl SqliteStore {
         let parent_str = parent_id.map(|p| p.as_uuid().to_string());
         let federation_posture = posture.unwrap_or_default();
 
-        if let Some(ref pid_str) = parent_str {
-            let parent_row = sqlx::query_as::<_, (String, Option<String>)>(
-                "SELECT id, parent_id FROM coord_tenants WHERE id = ?1"
-            )
+        // Same lock as set_tenant_parent: the parent cannot become a child before the insert.
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await.map_err(db)?;
+        if let (Some(pid), Some(pid_str)) = (parent_id, &parent_str) {
+            let parent_row: Option<(Option<String>,)> = sqlx::query_as("SELECT parent_id FROM coord_tenants WHERE id = ?1")
                 .bind(pid_str)
-                .fetch_optional(&self.pool)
+                .fetch_optional(&mut *tx)
                 .await
                 .map_err(db)?;
-
-            match parent_row {
-                None => return Err(CoordError::TenantNotFound(parent_id.unwrap())),
-                Some((_, Some(_))) => {
-                    return Err(CoordError::Protocol(
-                        "multi-level hierarchy not supported: parent is itself a child".into(),
-                    ));
-                }
-                Some((_, None)) => {}
-            }
+            crate::check_create_parent(pid, parent_row.map(|(p,)| p.is_some()))?;
         }
 
-        let existing = sqlx::query_as::<_, (String,)>(
-            "SELECT slug FROM coord_tenants WHERE slug = ?1"
-        )
+        let existing: Option<(String,)> = sqlx::query_as("SELECT slug FROM coord_tenants WHERE slug = ?1")
             .bind(&slug)
-            .fetch_optional(&self.pool)
+            .fetch_optional(&mut *tx)
             .await
             .map_err(db)?;
-
         if existing.is_some() {
             return Err(CoordError::Protocol(format!("tenant slug '{}' already exists", slug)));
         }
@@ -132,9 +121,10 @@ impl SqliteStore {
             .bind(&slug)
             .bind(&parent_str)
             .bind(federation_posture.as_str())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(db)?;
+        tx.commit().await.map_err(db)?;
 
         Ok(Tenant {
             id,
@@ -143,7 +133,7 @@ impl SqliteStore {
             federation_posture,
             ipv4_prefix: coord_core::DEFAULT_IPV4_PREFIX.into(),
             ipv6_prefix: coord_core::DEFAULT_IPV6_PREFIX.into(),
-            created_at: chrono::Utc::now(),
+            created_at: clock::now(),
             suspended: false,
         })
     }
@@ -1314,9 +1304,9 @@ impl SqliteStore {
 
     pub async fn delete_stale_ephemeral_nodes(
         &self,
-        max_offline: chrono::Duration,
+        max_offline: Duration,
     ) -> Result<Vec<(TenantId, NodeId)>, CoordError> {
-        let cutoff = format_datetime(chrono::Utc::now() - max_offline);
+        let cutoff = format_datetime(clock::now() - max_offline);
         let mut rows: Vec<(i64, String)> = sqlx::query_as(
             "DELETE FROM coord_nodes WHERE ephemeral = 1 AND online = 0 AND last_seen <= ?1 \
              RETURNING id, tenant_id"
@@ -1513,14 +1503,10 @@ fn summary_row_to_summary(
 }
 
 /// Same text format as SQLite's `datetime('now')`, so string comparison works.
-fn format_datetime(dt: chrono::DateTime<chrono::Utc>) -> String {
-    dt.format("%Y-%m-%d %H:%M:%S").to_string()
+fn format_datetime(dt: OffsetDateTime) -> String {
+    clock::to_sqlite(dt)
 }
 
-fn parse_datetime(s: &str) -> chrono::DateTime<chrono::Utc> {
-    chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
-        .or_else(|_| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f"))
-        .or_else(|_| chrono::NaiveDateTime::parse_from_str(s, "%+"))
-        .map(|dt| dt.and_utc())
-        .unwrap_or_else(|_| chrono::Utc::now())
+fn parse_datetime(s: &str) -> OffsetDateTime {
+    clock::parse_sqlite(s).unwrap_or_else(clock::now)
 }

@@ -8,6 +8,7 @@ use tower::ServiceExt;
 use coord_api::CoordinatorState;
 #[allow(unused_imports)]
 use coord_federation::FederationStore;
+use coord_core::clock::{self, Duration, OffsetDateTime};
 
 const TEST_ADMIN_KEY: &str = "test-admin-key";
 
@@ -1316,7 +1317,7 @@ async fn register_collective_did(state: &Arc<CoordinatorState>, slug: &str, did:
         did: did.to_string(),
         public_key_jwk: serde_json::json!({"kty": "OKP", "crv": "Ed25519"}),
         encrypted_private_key: "encrypted-test-key".to_string(),
-        created_at: chrono::Utc::now(),
+        created_at: clock::now(),
     };
     state.federation_inbound().store().create_collective_did(cdid).await.unwrap();
     tenant.id
@@ -1332,7 +1333,7 @@ async fn federation_hello_missing_recipient_header() {
         "capabilities": [],
         "protocolVersion": "1.0",
         "signature": "sig",
-        "timestamp": chrono::Utc::now().to_rfc3339()
+        "timestamp": clock::to_rfc3339(clock::now())
     });
 
     let resp = app.oneshot(
@@ -1359,7 +1360,7 @@ async fn federation_hello_unknown_recipient() {
         "capabilities": [],
         "protocolVersion": "1.0",
         "signature": "sig",
-        "timestamp": chrono::Utc::now().to_rfc3339()
+        "timestamp": clock::to_rfc3339(clock::now())
     });
 
     let resp = app.oneshot(
@@ -1399,8 +1400,8 @@ async fn federation_hello_valid_returns_challenge() {
         protocol_version: Some("1.0".to_string()),
         message: None,
         signed_request: None,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
+        created_at: clock::now(),
+        updated_at: clock::now(),
     };
     state.federation_inbound().store().create_link(link).await.unwrap();
 
@@ -1411,7 +1412,7 @@ async fn federation_hello_valid_returns_challenge() {
         "capabilities": [],
         "protocolVersion": "1.0",
         "signature": "sig",
-        "timestamp": chrono::Utc::now().to_rfc3339()
+        "timestamp": clock::to_rfc3339(clock::now())
     });
 
     let resp = app.oneshot(
@@ -1447,7 +1448,7 @@ async fn federation_link_request_creates_pending() {
         "offeredCidrs": ["100.64.2.0/24"],
         "capabilities": [],
         "signature": "sig",
-        "timestamp": chrono::Utc::now().to_rfc3339()
+        "timestamp": clock::to_rfc3339(clock::now())
     });
 
     let resp = app.clone().oneshot(
@@ -1487,8 +1488,8 @@ async fn federation_link_request_rejects_when_active_link_exists() {
         protocol_version: Some("1.0".to_string()),
         message: None,
         signed_request: None,
-        created_at: chrono::Utc::now(),
-        updated_at: chrono::Utc::now(),
+        created_at: clock::now(),
+        updated_at: clock::now(),
     };
     state.federation_inbound().store().create_link(link).await.unwrap();
 
@@ -1502,7 +1503,7 @@ async fn federation_link_request_rejects_when_active_link_exists() {
         "offeredCidrs": ["100.64.3.0/24"],
         "capabilities": [],
         "signature": "sig",
-        "timestamp": chrono::Utc::now().to_rfc3339()
+        "timestamp": clock::to_rfc3339(clock::now())
     });
 
     let resp = app.clone().oneshot(
@@ -1526,7 +1527,7 @@ async fn federation_keepalive_missing_session_rejected() {
     let keepalive = serde_json::json!({
         "sessionId": uuid::Uuid::new_v4().to_string(),
         "sequenceNumber": 1,
-        "timestamp": chrono::Utc::now().to_rfc3339()
+        "timestamp": clock::to_rfc3339(clock::now())
     });
 
     let resp = app.oneshot(
@@ -1552,7 +1553,7 @@ async fn federation_revoke_missing_session_rejected() {
         "sessionId": uuid::Uuid::new_v4().to_string(),
         "permanent": false,
         "signature": "sig",
-        "timestamp": chrono::Utc::now().to_rfc3339()
+        "timestamp": clock::to_rfc3339(clock::now())
     });
 
     let resp = app.oneshot(
@@ -2093,8 +2094,8 @@ async fn preauth_key_create_validates_and_reports_expiry() {
     assert!(k["key"].as_str().unwrap().starts_with("tskey-auth-"));
     assert!(uuid::Uuid::parse_str(k["id"].as_str().unwrap()).is_ok());
     assert_eq!(k["tenant_id"], t.to_string());
-    let exp = chrono::DateTime::parse_from_rfc3339(k["expires_at"].as_str().unwrap()).unwrap();
-    let delta = exp.timestamp() - chrono::Utc::now().timestamp();
+    let exp = clock::parse_rfc3339(k["expires_at"].as_str().unwrap()).unwrap();
+    let delta = exp.unix_timestamp() - clock::now().unix_timestamp();
     assert!((3590..=3601).contains(&delta), "expires_at off: {delta}");
 
     let k = api_key(&app, serde_json::json!({ "tenant_id": t.to_string() })).await;
@@ -2121,7 +2122,7 @@ async fn expired_preauth_key_rejected_at_register() {
         .store()
         .create_preauth_key_with(t, coord_core::PreAuthKeyOptions {
             reusable: true,
-            expires_at: chrono::DateTime::from_timestamp(chrono::Utc::now().timestamp() - 1, 0),
+            expires_at: clock::from_unix(clock::now().unix_timestamp() - 1),
             ..Default::default()
         })
         .await
@@ -3732,16 +3733,16 @@ async fn machine_lock_cap_and_refused_listing() {
     assert_eq!((status, &body["code"]), (StatusCode::CONFLICT, &serde_json::json!("lock_full")));
 
     // Refused attempts are listed for the TS service, and `since` filters them
-    let before = chrono::Utc::now();
+    let before = clock::now();
     assert_eq!(register_routes(&state, 64, k, "intruder", None).await["MachineAuthorized"], false);
     let (_, all) = api_call(&app, "GET", "/api/owner-locks/refused".into(), None).await;
     let mine: Vec<_> = all["refused"].as_array().unwrap().iter().filter(|r| r["tenant_id"] == t.to_string()).collect();
     assert_eq!(mine.len(), 1);
     assert_eq!((&mine[0]["owner"], &mine[0]["hostname"]), (&serde_json::json!("alice"), &serde_json::json!("intruder")));
-    let since = |ts: chrono::DateTime<chrono::Utc>| format!("/api/owner-locks/refused?since={}", ts.to_rfc3339().replace('+', "%2B"));
+    let since = |ts: OffsetDateTime| format!("/api/owner-locks/refused?since={}", clock::to_rfc3339(ts).replace('+', "%2B"));
     let (_, recent) = api_call(&app, "GET", since(before), None).await;
     assert_eq!(recent["refused"].as_array().unwrap().len(), 1);
-    let (_, later) = api_call(&app, "GET", since(chrono::Utc::now() + chrono::Duration::seconds(5)), None).await;
+    let (_, later) = api_call(&app, "GET", since(clock::now() + Duration::seconds(5)), None).await;
     assert!(later["refused"].as_array().unwrap().is_empty());
 }
 
@@ -3994,7 +3995,7 @@ async fn pending_sign_in_reports_requester_ip_and_time() {
         "NodeKey": format!("nodekey:{}", hex::encode([135u8; 32])),
         "Hostinfo": { "Hostname": "phone", "OS": "iOS" }
     });
-    let before = chrono::Utc::now() - chrono::Duration::seconds(1);
+    let before = clock::now() - Duration::seconds(1);
     let out = coord_api::__test_handle_register_from(&state, &[134u8; 32], &body.to_string(), Some("203.0.113.7".parse().unwrap()))
         .await
         .unwrap();
@@ -4003,8 +4004,8 @@ async fn pending_sign_in_reports_requester_ip_and_time() {
     let (status, p) = api_call(&app, "GET", format!("/api/device-auth/{id}"), None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(p["requester_ip"], "203.0.113.7");
-    let at = chrono::DateTime::parse_from_rfc3339(p["requested_at"].as_str().unwrap()).unwrap();
-    assert!(at >= before && at <= chrono::Utc::now());
+    let at = clock::parse_rfc3339(p["requested_at"].as_str().unwrap()).unwrap();
+    assert!(at >= before && at <= clock::now());
 
     // Unknown address: null, not a made-up value
     let url = register_no_key(&state, 136, None).await["AuthURL"].as_str().unwrap().to_string();

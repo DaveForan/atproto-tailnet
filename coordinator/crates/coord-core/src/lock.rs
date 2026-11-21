@@ -2,7 +2,7 @@
 //! A lock refuses unlisted machine keys, even with a valid pre-auth key or approved sign-in.
 //! The Noise handshake proves the machine key, so it identifies the machine, not the account.
 
-use chrono::{DateTime, Utc};
+use crate::clock::OffsetDateTime;
 use serde::{Deserialize, Serialize};
 
 /// Refused attempts remembered per lock, newest last.
@@ -14,7 +14,8 @@ pub const MAX_ALLOW_WINDOW_SECS: i64 = 30 * 60;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefusedMachine {
-    pub at: DateTime<Utc>,
+    #[serde(with = "crate::clock::serde_rfc3339")]
+    pub at: OffsetDateTime,
     pub hostname: String,
     pub os: String,
     /// Short fingerprint of the refused machine key.
@@ -26,8 +27,8 @@ pub struct OwnerLock {
     /// Machine keys (lowercase hex) that may register.
     pub machines: Vec<String>,
     /// Until this time, the next new machine joins the set and the window closes.
-    #[serde(default)]
-    pub allow_one_until: Option<DateTime<Utc>>,
+    #[serde(default, with = "crate::clock::serde_rfc3339::option")]
+    pub allow_one_until: Option<OffsetDateTime>,
     #[serde(default)]
     pub refused: Vec<RefusedMachine>,
     /// Owner-set machine limit. `None` means [`MAX_LOCK_MACHINES`].
@@ -80,7 +81,7 @@ pub enum LockWrite {
 pub fn registration_check(
     read: LockRead,
     machine_key_hex: &str,
-    now: DateTime<Utc>,
+    now: OffsetDateTime,
     hostname: &str,
     os: &str,
     fingerprint: &str,
@@ -114,7 +115,7 @@ impl OwnerLock {
     pub fn check(
         &mut self,
         machine_key_hex: &str,
-        now: DateTime<Utc>,
+        now: OffsetDateTime,
         hostname: &str,
         os: &str,
         fingerprint: &str,
@@ -146,8 +147,8 @@ impl OwnerLock {
 mod tests {
     use super::*;
 
-    fn now() -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339("2026-11-20T12:00:00Z").unwrap().with_timezone(&Utc)
+    fn now() -> OffsetDateTime {
+        crate::clock::parse_rfc3339("2026-11-20T12:00:00Z").unwrap()
     }
 
     #[test]
@@ -165,7 +166,7 @@ mod tests {
     fn the_window_admits_exactly_one_new_machine() {
         let mut lock = OwnerLock {
             machines: vec!["aa".into()],
-            allow_one_until: Some(now() + chrono::Duration::minutes(10)),
+            allow_one_until: Some(now() + crate::clock::Duration::minutes(10)),
             ..Default::default()
         };
         assert_eq!(lock.check("bb", now(), "phone", "iOS", "f"), LockOutcome::AllowedNew);
@@ -178,7 +179,7 @@ mod tests {
     fn an_expired_window_admits_nobody_and_a_refusal_closes_it() {
         let mut lock = OwnerLock {
             machines: vec!["aa".into()],
-            allow_one_until: Some(now() - chrono::Duration::seconds(1)),
+            allow_one_until: Some(now() - crate::clock::Duration::seconds(1)),
             ..Default::default()
         };
         assert_eq!(lock.check("bb", now(), "late", "linux", "f"), LockOutcome::Refused);
@@ -189,7 +190,7 @@ mod tests {
     fn a_full_lock_admits_nobody_even_inside_the_window() {
         let mut lock = OwnerLock {
             machines: vec!["aa".into(), "bb".into()],
-            allow_one_until: Some(now() + chrono::Duration::minutes(10)),
+            allow_one_until: Some(now() + crate::clock::Duration::minutes(10)),
             max_machines: Some(2),
             ..Default::default()
         };
@@ -197,7 +198,7 @@ mod tests {
         assert_eq!(lock.check("cc", now(), "third", "linux", "f"), LockOutcome::Refused);
         assert_eq!(lock.check("aa", now(), "known", "linux", "f"), LockOutcome::Allowed);
         lock.max_machines = Some(3);
-        lock.allow_one_until = Some(now() + chrono::Duration::minutes(10));
+        lock.allow_one_until = Some(now() + crate::clock::Duration::minutes(10));
         assert_eq!(lock.check("cc", now(), "third", "linux", "f"), LockOutcome::AllowedNew);
     }
 

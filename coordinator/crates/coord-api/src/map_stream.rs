@@ -6,6 +6,7 @@ use std::time::Duration;
 use axum::http::{Response, StatusCode};
 use bytes::Bytes;
 use coord_core::{NodeId, TenantId};
+use coord_core::clock;
 use coord_store::PeerEvent;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
@@ -119,7 +120,7 @@ impl MapStream {
         let cutoff = coord_proto::map::MapResponse {
             peers_removed: Some(peers.iter().map(|p| p.node_id.as_i64()).collect()),
             packet_filter: Some(vec![]),
-            control_time: Some(chrono::Utc::now().to_rfc3339()),
+            control_time: Some(clock::to_rfc3339(clock::now())),
             ..Default::default()
         };
         if let Ok(json) = serde_json::to_string(&cutoff) {

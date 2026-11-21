@@ -6,11 +6,13 @@ import type { MyPost } from "../../services/boards";
 export function PrivateBoardCard({
   posts,
   baseDomain,
+  serviceDomain,
   onRemove,
   busy = false,
 }: {
   posts: MyPost[];
   baseDomain: string;
+  serviceDomain: string | null;
   onRemove: (postId: string) => void;
   busy?: boolean;
 }) {
@@ -28,8 +30,8 @@ export function PrivateBoardCard({
                 <span className="mono text-sm">{p.proto} {p.port}</span>
               </div>
               <p className="post-address">
-                {p.web ? (
-                  <a className="mono" href={`https://${p.name}.${baseDomain}`} target="_blank" rel="noreferrer">https://{p.name}.{baseDomain}</a>
+                {p.web && serviceDomain ? (
+                  <a className="mono" href={`https://${p.name}.${serviceDomain}`} target="_blank" rel="noreferrer">https://{p.name}.{serviceDomain}</a>
                 ) : (
                   <span className="mono">{p.name}.{baseDomain}</span>
                 )}

@@ -2,7 +2,7 @@
 //! They skip unless TEST_DATABASE_URL is set. With `CI` set, a missing URL fails instead.
 //! Example: TEST_DATABASE_URL=postgresql://atproto_tailnet:atproto_tailnet@localhost:5432/coord_test cargo test -p coord-federation --test pg_federation_store
 
-use chrono::Utc;
+use coord_core::clock;
 use coord_core::types::{
     BrokerSession, BrokerSessionStatus, CollectiveDid, FederationLink, LinkDirection, LinkId,
     LinkStatus, SessionId, TenantId,
@@ -56,7 +56,7 @@ async fn insert_tenant(pool: &PgPool, tenant_id: TenantId) {
 }
 
 fn make_link(tenant_id: TenantId, peer_did: &str, direction: LinkDirection) -> FederationLink {
-    let now = Utc::now();
+    let now = clock::now();
     FederationLink {
         id: LinkId::generate(),
         local_tenant_id: tenant_id,
@@ -76,7 +76,7 @@ fn make_link(tenant_id: TenantId, peer_did: &str, direction: LinkDirection) -> F
 }
 
 fn make_session(link: &FederationLink) -> BrokerSession {
-    let now = Utc::now();
+    let now = clock::now();
     BrokerSession {
         id: SessionId::generate(),
         federation_link_id: link.id,
@@ -449,7 +449,7 @@ async fn create_and_get_collective_did() {
         did: did_str.clone(),
         public_key_jwk: serde_json::json!({"kty": "OKP", "crv": "Ed25519", "x": "abc123"}),
         encrypted_private_key: "enc-key-data".into(),
-        created_at: Utc::now(),
+        created_at: clock::now(),
     };
 
     store.create_collective_did(cdid).await.unwrap();
@@ -471,7 +471,7 @@ async fn find_tenant_by_did() {
         did: did_str.clone(),
         public_key_jwk: serde_json::json!({"kty": "OKP"}),
         encrypted_private_key: "enc-data".into(),
-        created_at: Utc::now(),
+        created_at: clock::now(),
     };
     store.create_collective_did(cdid).await.unwrap();
 
@@ -496,7 +496,7 @@ async fn delete_collective_did() {
         did: unique("did:web:deleteme"),
         public_key_jwk: serde_json::json!({"kty": "OKP"}),
         encrypted_private_key: "enc-data".into(),
-        created_at: Utc::now(),
+        created_at: clock::now(),
     };
     store.create_collective_did(cdid).await.unwrap();
 
@@ -551,7 +551,7 @@ async fn cascade_delete_tenant_removes_links_and_sessions() {
         did: unique("did:web:cascade-did"),
         public_key_jwk: serde_json::json!({"kty": "OKP"}),
         encrypted_private_key: "enc".into(),
-        created_at: Utc::now(),
+        created_at: clock::now(),
     };
     store.create_collective_did(cdid).await.unwrap();
 

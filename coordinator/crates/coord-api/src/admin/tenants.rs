@@ -9,6 +9,7 @@ use coord_core::TenantId;
 use tracing::error;
 use crate::state::CoordinatorState;
 use coord_core::is_valid_slug;
+use coord_core::clock;
 use super::{bad_request, internal_error, not_found, parse_tenant_id};
 
 
@@ -40,7 +41,7 @@ impl From<coord_core::Tenant> for TenantResponse {
             federation_posture: t.federation_posture.as_str().to_string(),
             ipv4_prefix: t.ipv4_prefix,
             ipv6_prefix: t.ipv6_prefix,
-            created_at: t.created_at.to_rfc3339(),
+            created_at: clock::to_rfc3339(t.created_at),
             suspended: t.suspended,
         }
     }

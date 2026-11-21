@@ -65,7 +65,7 @@ const json = (method: string, body?: unknown): RequestInit => ({
 export const boardsService = {
   myDevices: (tid: string) => tenantApi<{ devices: MyDevice[]; supported: boolean }>(tid, "/my-devices"),
   publicBoard: (tid: string) => tenantApi<{ posts: PublicPost[] }>(tid, "/boards/public"),
-  myPosts: (tid: string) => tenantApi<{ baseDomain: string; httpsServices: boolean; posts: MyPost[] }>(tid, "/boards/mine"),
+  myPosts: (tid: string) => tenantApi<{ baseDomain: string; httpsServices: boolean; serviceDomain: string | null; posts: MyPost[] }>(tid, "/boards/mine"),
   pending: (tid: string) => tenantApi<{ posts: PendingPost[] }>(tid, "/boards/pending"),
   create: (tid: string, post: NewPost) => tenantApi<MyPost>(tid, "/boards/posts", json("POST", post)),
   remove: (tid: string, postId: string) => tenantApi(tid, `/boards/posts/${postId}`, json("DELETE")),

@@ -22,7 +22,7 @@ import { DeviceAccessCard } from "./boards/DeviceAccessCard";
 interface BoardsData {
   devices: { devices: MyDevice[]; supported: boolean };
   publicBoard: { posts: PublicPost[] };
-  mine: { baseDomain: string; httpsServices: boolean; posts: MyPost[] };
+  mine: { baseDomain: string; httpsServices: boolean; serviceDomain: string | null; posts: MyPost[] };
   pending: { posts: PendingPost[] };
   mode: { mode: "open" | "member"; canEdit: boolean };
   board: { text: string; canEdit: boolean; address: string };
@@ -31,7 +31,7 @@ interface BoardsData {
 const FALLBACK: BoardsData = {
   devices: { devices: [], supported: false },
   publicBoard: { posts: [] },
-  mine: { baseDomain: "", httpsServices: false, posts: [] },
+  mine: { baseDomain: "", httpsServices: false, serviceDomain: null, posts: [] },
   pending: { posts: [] },
   mode: { mode: "open", canEdit: false },
   board: { text: "", canEdit: false, address: "" },
@@ -97,7 +97,7 @@ export function BoardsTab() {
         />
       )}
 
-      <PrivateBoardCard posts={mine("private")} baseDomain={data.mine.baseDomain} onRemove={remove} busy={busy} />
+      <PrivateBoardCard posts={mine("private")} baseDomain={data.mine.baseDomain} serviceDomain={data.mine.serviceDomain} onRemove={remove} busy={busy} />
 
       <MyPublicServicesCard
         posts={mine("public")}
@@ -107,7 +107,7 @@ export function BoardsTab() {
       />
 
       <Card title="Add a service">
-        <NewServiceForm devices={data.devices.devices} baseDomain={data.mine.baseDomain} httpsServices={data.mine.httpsServices} onCreated={() => { void reload(); }} />
+        <NewServiceForm devices={data.devices.devices} baseDomain={data.mine.baseDomain} serviceDomain={data.mine.serviceDomain} httpsServices={data.mine.httpsServices} onCreated={() => { void reload(); }} />
       </Card>
 
       {data.board.canEdit && (

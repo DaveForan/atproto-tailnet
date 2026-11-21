@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::Utc;
+use coord_core::clock;
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
@@ -100,8 +100,8 @@ impl<S: FederationStore + ?Sized> BrokerService<S> {
                     exported_routes: link.local_cidrs.clone(),
                     imported_routes: vec![],
                     last_keepalive: None,
-                    created_at: Utc::now(),
-                    updated_at: Utc::now(),
+                    created_at: clock::now(),
+                    updated_at: clock::now(),
                 };
                 if let Some(created) = self.store.create_session_if_missing(session).await? {
                     info!(
@@ -164,9 +164,9 @@ impl<S: FederationStore + ?Sized> BrokerService<S> {
     /// Marks sessions degraded when their last keepalive exceeds `keepalive_stale`.
     async fn check_session_health(&self) -> Result<(), CoordError> {
         let sessions = self.store.list_sessions().await?;
-        let now = Utc::now();
+        let now = clock::now();
         let stale_threshold =
-            chrono::Duration::from_std(self.config.keepalive_stale).unwrap_or(chrono::Duration::seconds(90));
+            clock::Duration::try_from(self.config.keepalive_stale).unwrap_or(clock::Duration::seconds(90));
 
         for session in &sessions {
             if session.status != BrokerSessionStatus::Established {
@@ -412,7 +412,7 @@ mod tests {
     }
 
     fn make_active_link(tenant_id: TenantId) -> FederationLink {
-        let now = Utc::now();
+        let now = clock::now();
         FederationLink {
             id: LinkId::generate(),
             local_tenant_id: tenant_id,
@@ -432,7 +432,7 @@ mod tests {
     }
 
     fn make_session(link: &FederationLink) -> BrokerSession {
-        let now = Utc::now();
+        let now = clock::now();
         BrokerSession {
             id: SessionId::generate(),
             federation_link_id: link.id,
@@ -506,7 +506,7 @@ mod tests {
 
         // An established session with a stale keepalive.
         let mut session = make_session(&link);
-        session.last_keepalive = Some(Utc::now() - chrono::Duration::seconds(120));
+        session.last_keepalive = Some(clock::now() - clock::Duration::seconds(120));
         store.create_session_if_missing(session.clone()).await.unwrap();
 
         let config = BrokerConfig {
@@ -529,7 +529,7 @@ mod tests {
         store.create_link(link.clone()).await.unwrap();
 
         let mut session = make_session(&link);
-        session.last_keepalive = Some(Utc::now() - chrono::Duration::seconds(120));
+        session.last_keepalive = Some(clock::now() - clock::Duration::seconds(120));
         store.create_session_if_missing(session.clone()).await.unwrap();
 
         let config = BrokerConfig {

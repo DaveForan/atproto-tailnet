@@ -108,6 +108,8 @@ struct StoreServices {
     identity: Arc<IdentityRegistry>,
     tenant: TenantId,
     gateway: NodeId,
+    /// Service names are `<label>.<service_domain>` (ADR-0038).
+    service_domain: String,
 }
 
 /// The HTTPS service record named `label` that this caller may use.
@@ -129,13 +131,11 @@ impl Services for StoreServices {
         if self.store.is_tenant_suspended(self.tenant).await {
             return Err(Denied::NotFound);
         }
-        let dns = self.store.get_tenant_dns(self.tenant).await;
-        let label = dns
-            .base_domain
-            .as_deref()
-            .and_then(|base| server_name.strip_suffix(base))
+        let label = server_name
+            .strip_suffix(self.service_domain.as_str())
             .and_then(|rest| rest.strip_suffix('.'))
             .ok_or(Denied::NotFound)?;
+        let dns = self.store.get_tenant_dns(self.tenant).await;
         let peers = self.store.get_peers(self.tenant, self.gateway).await;
         let from = peers.iter().find(|p| first_addr(p) == Some(caller)).ok_or(Denied::NotFound)?;
         let record = pick_record(&dns.records, label, from.node_id.as_i64(), from.owner.as_deref()).ok_or(Denied::NotFound)?;
@@ -172,6 +172,7 @@ impl CoordinatorState {
     }
 
     async fn start_gateway(self: &Arc<Self>, gateways: &Arc<Gateways>, tenant: TenantId) -> Result<(), String> {
+        let service_domain = self.caches.gateways.service_domain().ok_or("no service domain (COORD_SERVICE_DOMAIN)")?.to_string();
         self.store.get_tenant(tenant).await.ok_or("tenant not found")?;
         let tenant_bytes = *tenant.as_uuid().as_bytes();
         let node_secret = coord_gateway::derive_key(&gateways.secret, &tenant_bytes, "node");
@@ -216,7 +217,7 @@ impl CoordinatorState {
         watch_devices(self.store.subscribe(), tenant, changed.clone());
         let devices = Arc::new(StoreDevices { store: self.store.clone(), tenant, gateway: node_id, changed });
         let stack = Tailnet::spawn(node_secret, addr, relay, devices);
-        let services = Arc::new(StoreServices { store: self.store.clone(), identity: self.caches.identity.clone(), tenant, gateway: node_id });
+        let services = Arc::new(StoreServices { store: self.store.clone(), identity: self.caches.identity.clone(), tenant, gateway: node_id, service_domain });
         let serving = stack.clone();
         let certificate = gateways.certificate.clone();
         tokio::spawn(async move {
@@ -228,6 +229,20 @@ impl CoordinatorState {
         info!(tenant = %tenant, node = node_id.as_i64(), %addr, "gateway joined the tailnet");
         self.notify_tenant_changed(tenant);
         Ok(())
+    }
+
+    /// Sets the domain of HTTPS service names (ADR-0038). Call once, before the gateways start and before any netmap.
+    pub fn set_service_domain(&self, domain: String) -> bool {
+        self.caches.gateways.set_service_domain(domain)
+    }
+
+    pub fn service_domain(&self) -> Option<&str> {
+        self.caches.gateways.service_domain()
+    }
+
+    /// True when this deployment serves named HTTPS services: here, or on a relay process when this process is control only.
+    pub fn serves_named_services(&self) -> bool {
+        self.gateways().is_some() || (!self.role.serves_relay() && self.caches.gateways.service_domain().is_some())
     }
 
     /// Start the gateways of all tenants that have HTTPS services. Call once at startup.
@@ -366,22 +381,24 @@ mod tests {
         known.users.insert("alice".into(), coord_netmap::UserIdentity { login_name: "alice.example.com".into(), display_name: String::new() });
         known.users.insert("bob".into(), coord_netmap::UserIdentity { login_name: "bob.example.com".into(), display_name: String::new() });
         identity.set_tenant(tenant, known);
-        let services = StoreServices { store: store.clone(), identity, tenant, gateway };
+        let services = StoreServices { store: store.clone(), identity, tenant, gateway, service_domain: "svc.ts.example.com".into() };
 
-        let route = services.route("wiki.ts.example.com", bob_ip).await.unwrap();
+        // The base domain is the control-plane namespace: the gateway does not serve it.
+        assert_eq!(services.route("wiki.ts.example.com", bob_ip).await, Err(Denied::NotFound));
+        let route = services.route("wiki.svc.ts.example.com", bob_ip).await.unwrap();
         assert_eq!(route.target, SocketAddrV4::new(alice_ip, 8080), "Mallory's private record does not shadow Alice's service");
         assert_eq!(route.user, "bob.example.com");
         assert_eq!(route.device, "bob-laptop");
 
         // Mallory sees her own record, but her name is unknown. No shared placeholder: a refusal.
-        assert_eq!(services.route("wiki.ts.example.com", mallory_ip).await, Err(Denied::UnknownUser));
+        assert_eq!(services.route("wiki.svc.ts.example.com", mallory_ip).await, Err(Denied::UnknownUser));
         // A device without an owner has no member identity at all
-        assert_eq!(services.route("wiki.ts.example.com", tagged_ip).await, Err(Denied::NoOwner));
-        assert_eq!(services.route("nothing.ts.example.com", bob_ip).await, Err(Denied::NotFound));
+        assert_eq!(services.route("wiki.svc.ts.example.com", tagged_ip).await, Err(Denied::NoOwner));
+        assert_eq!(services.route("nothing.svc.ts.example.com", bob_ip).await, Err(Denied::NotFound));
         assert_eq!(services.route("wiki.other.example", bob_ip).await, Err(Denied::NotFound));
 
         store.set_tenant_suspended(tenant, true).await.unwrap();
-        assert_eq!(services.route("wiki.ts.example.com", bob_ip).await, Err(Denied::NotFound));
+        assert_eq!(services.route("wiki.svc.ts.example.com", bob_ip).await, Err(Denied::NotFound));
     }
 
     #[tokio::test]

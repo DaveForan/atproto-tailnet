@@ -1,6 +1,6 @@
 //! Federation session lifecycle — keepalive and revocation (ADR-0014 sections 5-6).
 
-use chrono::{DateTime, Duration, Utc};
+use coord_core::clock::{self, Duration, OffsetDateTime};
 use serde::{Deserialize, Serialize};
 
 use crate::protocol::{
@@ -31,12 +31,16 @@ pub struct FederationSession {
     pub negotiated_cidrs: Vec<String>,
     pub capabilities: Vec<Capability>,
     pub keepalive_interval_seconds: u32,
-    pub last_keepalive_sent: DateTime<Utc>,
-    pub last_keepalive_received: DateTime<Utc>,
+    #[serde(with = "coord_core::clock::serde_rfc3339")]
+    pub last_keepalive_sent: OffsetDateTime,
+    #[serde(with = "coord_core::clock::serde_rfc3339")]
+    pub last_keepalive_received: OffsetDateTime,
     pub missed_keepalives: u32,
     pub sequence_number: u64,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    #[serde(with = "coord_core::clock::serde_rfc3339")]
+    pub created_at: OffsetDateTime,
+    #[serde(with = "coord_core::clock::serde_rfc3339")]
+    pub updated_at: OffsetDateTime,
 }
 
 
@@ -50,7 +54,7 @@ impl FederationSession {
         capabilities: Vec<Capability>,
         keepalive_seconds: u32,
     ) -> Self {
-        let now = Utc::now();
+        let now = clock::now();
         Self {
             session_id,
             local_did,
@@ -72,21 +76,21 @@ impl FederationSession {
     /// Generates a keepalive message, advancing the sequence counter.
     pub fn generate_keepalive(&mut self) -> KeepaliveMessage {
         self.sequence_number += 1;
-        let now = Utc::now();
+        let now = clock::now();
         self.last_keepalive_sent = now;
         self.updated_at = now;
 
         KeepaliveMessage {
             session_id: self.session_id.clone(),
             sequence_number: self.sequence_number,
-            timestamp: now.to_rfc3339(),
+            timestamp: clock::to_rfc3339(now),
             signature: None,
         }
     }
 
     /// Records that a keepalive was received from the remote peer.
     pub fn handle_keepalive_received(&mut self) {
-        let now = Utc::now();
+        let now = clock::now();
         self.last_keepalive_received = now;
         self.missed_keepalives = 0;
         if self.status == SessionStatus::Degraded {
@@ -98,7 +102,7 @@ impl FederationSession {
     /// Checks keepalive health from the time since the last received keepalive.
     /// Sets status to Degraded at 3+ missed intervals and Down at 5+.
     pub fn check_keepalive_health(&mut self) -> SessionStatus {
-        let now = Utc::now();
+        let now = clock::now();
         let interval_secs = if self.keepalive_interval_seconds > 0 {
             self.keepalive_interval_seconds
         } else {
@@ -107,8 +111,8 @@ impl FederationSession {
         let interval = Duration::seconds(i64::from(interval_secs));
         let elapsed = now - self.last_keepalive_received;
 
-        let missed_count = if interval.num_milliseconds() > 0 {
-            (elapsed.num_milliseconds() / interval.num_milliseconds()) as u32
+        let missed_count = if interval.whole_milliseconds() > 0 {
+            (elapsed.whole_milliseconds() / interval.whole_milliseconds()) as u32
         } else {
             0
         };
@@ -134,8 +138,8 @@ impl FederationSession {
         &mut self,
         reason: Option<String>,
         permanent: bool,
-    ) -> (RevokeMessage, DateTime<Utc>) {
-        let now = Utc::now();
+    ) -> (RevokeMessage, OffsetDateTime) {
+        let now = clock::now();
         self.status = SessionStatus::Draining;
         self.updated_at = now;
 
@@ -144,7 +148,7 @@ impl FederationSession {
             reason,
             permanent,
             signature: String::new(),
-            timestamp: now.to_rfc3339(),
+            timestamp: clock::to_rfc3339(now),
         };
 
         let drain_deadline = now + Duration::seconds(i64::from(DRAIN_PERIOD_SECONDS));
@@ -154,13 +158,13 @@ impl FederationSession {
     /// Finalizes a revoke after the drain period expires.
     pub fn finalize_revoke(&mut self) {
         self.status = SessionStatus::Revoked;
-        self.updated_at = Utc::now();
+        self.updated_at = clock::now();
     }
 
     /// Handles a revoke message from the remote peer.
     pub fn handle_remote_revoke(&mut self) {
         self.status = SessionStatus::Revoked;
-        self.updated_at = Utc::now();
+        self.updated_at = clock::now();
     }
 }
 
@@ -224,7 +228,7 @@ mod tests {
     fn check_health_degraded_after_3_missed() {
         let mut session = test_session();
         // 3 missed keepalives at 60 s each.
-        session.last_keepalive_received = Utc::now() - Duration::seconds(180);
+        session.last_keepalive_received = clock::now() - Duration::seconds(180);
         let status = session.check_keepalive_health();
         assert_eq!(status, SessionStatus::Degraded);
     }
@@ -233,7 +237,7 @@ mod tests {
     fn check_health_down_after_5_missed() {
         let mut session = test_session();
         // 5 missed keepalives at 60 s each.
-        session.last_keepalive_received = Utc::now() - Duration::seconds(300);
+        session.last_keepalive_received = clock::now() - Duration::seconds(300);
         let status = session.check_keepalive_health();
         assert_eq!(status, SessionStatus::Down);
     }
@@ -246,7 +250,7 @@ mod tests {
         assert_eq!(session.status, SessionStatus::Draining);
         assert_eq!(msg.session_id, "sess-test");
         assert!(!msg.permanent);
-        assert!(deadline > Utc::now());
+        assert!(deadline > clock::now());
 
         session.finalize_revoke();
         assert_eq!(session.status, SessionStatus::Revoked);

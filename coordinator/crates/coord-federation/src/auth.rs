@@ -6,7 +6,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
 
-use chrono::Utc;
+use coord_core::clock;
 
 use coord_core::CoordError;
 
@@ -133,13 +133,12 @@ pub fn is_valid_challenge_nonce(nonce: &str) -> bool {
 
 /// Checks whether a timestamp is within `MAX_MESSAGE_SKEW` of now.
 pub fn is_fresh(timestamp: &str) -> bool {
-    let parsed = match timestamp.parse::<chrono::DateTime<Utc>>() {
-        Ok(dt) => dt,
-        Err(_) => return false,
+    let Some(parsed) = clock::parse_rfc3339(timestamp) else {
+        return false;
     };
-    let now = Utc::now();
+    let now = clock::now();
     let diff = (now - parsed).abs();
-    diff <= chrono::Duration::from_std(MAX_MESSAGE_SKEW).unwrap_or(chrono::Duration::seconds(300))
+    diff <= clock::Duration::try_from(MAX_MESSAGE_SKEW).unwrap_or(clock::Duration::seconds(300))
 }
 
 /// Keeps only prefixes within the agreed CIDRs that the peer DID originates.
@@ -190,13 +189,13 @@ mod tests {
 
     #[test]
     fn is_fresh_current_timestamp() {
-        let now = Utc::now().to_rfc3339();
+        let now = clock::to_rfc3339(clock::now());
         assert!(is_fresh(&now));
     }
 
     #[test]
     fn is_fresh_old_timestamp() {
-        let old = (Utc::now() - chrono::Duration::seconds(600)).to_rfc3339();
+        let old = clock::to_rfc3339(clock::now() - clock::Duration::seconds(600));
         assert!(!is_fresh(&old));
     }
 
@@ -209,7 +208,7 @@ mod tests {
     #[test]
     fn is_fresh_within_skew() {
         // 4 minutes ago is inside the 5-minute skew.
-        let recent = (Utc::now() - chrono::Duration::seconds(240)).to_rfc3339();
+        let recent = clock::to_rfc3339(clock::now() - clock::Duration::seconds(240));
         assert!(is_fresh(&recent));
     }
 

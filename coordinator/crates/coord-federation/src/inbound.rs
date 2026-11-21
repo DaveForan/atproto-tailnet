@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{DateTime, Utc};
+use coord_core::clock::{self, OffsetDateTime};
 use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tracing::info;
@@ -91,7 +91,7 @@ struct PendingHandshake {
     link_id: LinkId,
     #[allow(dead_code)]
     remote_cidrs: Vec<String>,
-    expires_at: DateTime<Utc>,
+    expires_at: OffsetDateTime,
 }
 
 const MAX_DID_LEN: usize = 512;
@@ -339,13 +339,13 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
             local_tenant_id: recipient_tenant_id,
             link_id: link.id,
             remote_cidrs: hello.offered_cidrs,
-            expires_at: Utc::now() + chrono::Duration::from_std(HANDSHAKE_TIMEOUT)
-                .unwrap_or(chrono::Duration::seconds(300)),
+            expires_at: clock::now() + clock::Duration::try_from(HANDSHAKE_TIMEOUT)
+                .unwrap_or(clock::Duration::seconds(300)),
         };
 
         {
             let mut handshakes = self.pending_handshakes.lock().await;
-            let now = Utc::now();
+            let now = clock::now();
             handshakes.retain(|_, h| h.expires_at > now);
             // Bound memory: drop the soonest-expiring entries when full.
             while handshakes.len() >= MAX_PENDING_HANDSHAKES {
@@ -402,7 +402,7 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
             InboundError::NotFound("No pending handshake for this challenge nonce".into())
         })?;
 
-        if pending.expires_at < Utc::now() {
+        if pending.expires_at < clock::now() {
             return Err(InboundError::Gone("Handshake expired".into()));
         }
 
@@ -517,7 +517,7 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
         Ok(KeepaliveMessage {
             session_id: keepalive.session_id,
             sequence_number: keepalive.sequence_number,
-            timestamp: Utc::now().to_rfc3339(),
+            timestamp: clock::to_rfc3339(clock::now()),
             signature: None,
         })
     }
@@ -615,7 +615,7 @@ impl<S: FederationStore + ?Sized> InboundHandler<S> {
             .await
             .map_err(store_err)?;
 
-        let now = Utc::now();
+        let now = clock::now();
         let link = FederationLink {
             id: LinkId::generate(),
             local_tenant_id: recipient_tenant_id,
@@ -868,7 +868,7 @@ mod tests {
     }
 
     fn make_active_link(tenant_id: TenantId, peer_did: &str) -> FederationLink {
-        let now = Utc::now();
+        let now = clock::now();
         FederationLink {
             id: LinkId::generate(),
             local_tenant_id: tenant_id,
@@ -888,7 +888,7 @@ mod tests {
     }
 
     fn make_session_for_link(link: &FederationLink) -> BrokerSession {
-        let now = Utc::now();
+        let now = clock::now();
         BrokerSession {
             id: SessionId::generate(),
             federation_link_id: link.id,
@@ -924,7 +924,7 @@ mod tests {
             protocol_version: CFP_VERSION.to_string(),
             mesh_id: None,
             signature: "sig".to_string(),
-            timestamp: Utc::now().to_rfc3339(),
+            timestamp: clock::to_rfc3339(clock::now()),
         };
 
         let challenge = handler
@@ -962,8 +962,8 @@ mod tests {
             exported_routes: vec![],
             imported_routes: vec![],
             last_keepalive: None,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
+            created_at: clock::now(),
+            updated_at: clock::now(),
         };
         store.create_session_if_missing(session).await.unwrap();
 
@@ -978,7 +978,7 @@ mod tests {
             protocol_version: CFP_VERSION.to_string(),
             mesh_id: None,
             signature: "sig".to_string(),
-            timestamp: Utc::now().to_rfc3339(),
+            timestamp: clock::to_rfc3339(clock::now()),
         };
 
         let challenge = handler
@@ -992,7 +992,7 @@ mod tests {
             challenge_signature: "mock-sig".to_string(),
             initial_routes: vec![],
             signature: "sig".to_string(),
-            timestamp: Utc::now().to_rfc3339(),
+            timestamp: clock::to_rfc3339(clock::now()),
         };
 
         let established = handler
@@ -1024,7 +1024,7 @@ mod tests {
         let keepalive = KeepaliveMessage {
             session_id: "cfp-test-sess".to_string(),
             sequence_number: 42,
-            timestamp: Utc::now().to_rfc3339(),
+            timestamp: clock::to_rfc3339(clock::now()),
             signature: Some("sig".to_string()),
         };
 
@@ -1055,7 +1055,7 @@ mod tests {
             reason: Some("maintenance".to_string()),
             permanent: false,
             signature: "sig".to_string(),
-            timestamp: Utc::now().to_rfc3339(),
+            timestamp: clock::to_rfc3339(clock::now()),
         };
 
         handler.handle_revoke(tenant_id, revoke, &MockCallbacks).await.unwrap();
@@ -1081,7 +1081,7 @@ mod tests {
             capabilities: vec![Capability::RouteExchange],
             message: Some("Let's federate!".to_string()),
             signature: "sig".to_string(),
-            timestamp: Utc::now().to_rfc3339(),
+            timestamp: clock::to_rfc3339(clock::now()),
         };
 
         handler
@@ -1114,7 +1114,7 @@ mod tests {
             capabilities: vec![],
             message: None,
             signature: "sig".to_string(),
-            timestamp: Utc::now().to_rfc3339(),
+            timestamp: clock::to_rfc3339(clock::now()),
         };
 
         let result = handler.handle_link_request(tenant_id, msg, &MockCallbacks).await;
@@ -1144,7 +1144,7 @@ mod tests {
             reason: Some("done".to_string()),
             permanent: true,
             signature: "sig".to_string(),
-            timestamp: Utc::now().to_rfc3339(),
+            timestamp: clock::to_rfc3339(clock::now()),
         };
 
         handler.handle_link_revoke(tenant_id, msg, &MockCallbacks).await.unwrap();
@@ -1170,7 +1170,7 @@ mod tests {
             protocol_version: CFP_VERSION.to_string(),
             mesh_id: None,
             signature: "sig".to_string(),
-            timestamp: (Utc::now() - chrono::Duration::seconds(600)).to_rfc3339(),
+            timestamp: clock::to_rfc3339(clock::now() - clock::Duration::seconds(600)),
         };
 
         let result = handler
@@ -1219,7 +1219,7 @@ mod tests {
         let keepalive = KeepaliveMessage {
             session_id: "cfp-test-sess".to_string(),
             sequence_number: 1,
-            timestamp: Utc::now().to_rfc3339(),
+            timestamp: clock::to_rfc3339(clock::now()),
             signature: None,
         };
         match handler.handle_keepalive(tenant_id, keepalive, &MockCallbacks).await {
@@ -1248,7 +1248,7 @@ mod tests {
         let store = Arc::new(FederationMemoryStore::new());
         let tenant_id = TenantId::generate();
         let handler = InboundHandler::new(store.clone(), test_config());
-        let ts = Utc::now().to_rfc3339();
+        let ts = clock::to_rfc3339(clock::now());
 
         // More forged copies than the per-DID budget, all with the real id.
         for _ in 0..(RATE_LIMIT_MAX_HITS + 5) {
@@ -1275,14 +1275,14 @@ mod tests {
         let tenant_id = TenantId::generate();
         let handler = InboundHandler::new(store, test_config());
 
-        let mut msg = link_request("m-2", Utc::now().to_rfc3339());
+        let mut msg = link_request("m-2", clock::to_rfc3339(clock::now()));
         msg.offered_cidrs = vec!["0.0.0.0/0".into()];
         assert!(matches!(
             handler.handle_link_request(tenant_id, msg, &MockCallbacks).await,
             Err(InboundError::BadRequest(_))
         ));
 
-        let mut msg = link_request("m-3", Utc::now().to_rfc3339());
+        let mut msg = link_request("m-3", clock::to_rfc3339(clock::now()));
         msg.broker_url = "https://169.254.169.254".into();
         assert!(matches!(
             handler.handle_link_request(tenant_id, msg, &MockCallbacks).await,
@@ -1307,7 +1307,7 @@ mod tests {
             collective_name: "Acceptor".into(),
             accepted_cidrs: cidrs.iter().map(|c| c.to_string()).collect(),
             signature: "sig".into(),
-            timestamp: Utc::now().to_rfc3339(),
+            timestamp: clock::to_rfc3339(clock::now()),
         }
     }
 

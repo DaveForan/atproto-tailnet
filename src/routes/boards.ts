@@ -18,7 +18,7 @@ import {
 } from "./helpers.js";
 import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
-import { httpsServicesAvailable } from "../orchestrator/gateway.js";
+import { httpsServiceDomain, httpsServicesAvailable } from "../orchestrator/gateway.js";
 import { notify, notifyUser } from "../notifications/service.js";
 import { listTenantDevices, listUserDevices } from "../access/devices.js";
 import { syncTenantAccess } from "../access/sync.js";
@@ -142,6 +142,7 @@ boardsRouter.get("/api/tenants/:tenantId/boards/public", requireAuth, tenantGuar
     : [];
   const devices = await listTenantDevices(result.tenant).catch(() => []);
   const deviceById = new Map(devices.map((d) => [d.id, d]));
+  const serviceDomain = await httpsServiceDomain();
 
   res.json({
     posts: posts.map(({ post, authorHandle, authorName }) => {
@@ -161,7 +162,7 @@ boardsRouter.get("/api/tenants/:tenantId/boards/public", requireAuth, tenantGuar
         // The address is useful only once a device of the viewer is connected
         address: mine.length > 0 || isAuthor ? (device?.address ?? null) : null,
         // The web address works on the author's devices and on connected devices
-        url: post.web && post.name && (mine.length > 0 || isAuthor) ? `https://${post.name}.${config.baseDomain}` : null,
+        url: post.web && post.name && serviceDomain && (mine.length > 0 || isAuthor) ? `https://${post.name}.${serviceDomain}` : null,
         deviceOnline: device?.online ?? false,
         myConnectedDevices: mine,
         connectedDevices: isAuthor ? connections.filter((c) => c.postId === post.id).length : undefined,
@@ -197,6 +198,8 @@ boardsRouter.get("/api/tenants/:tenantId/boards/mine", requireAuth, tenantGuard(
     baseDomain: config.baseDomain,
     // The form offers "web address" only when the gateway can serve it
     httpsServices: await httpsServicesAvailable(),
+    // Web services are `<name>.<serviceDomain>`, never under baseDomain (ADR-0038)
+    serviceDomain: await httpsServiceDomain(),
     posts: posts.map((p) => ({
       ...p,
       device: deviceById.get(p.nodeId) ?? null,

@@ -53,5 +53,5 @@ pub struct PendingSignIn {
     /// trusted proxy, from X-Forwarded-For), when known.
     pub requester_ip: Option<String>,
     /// When the sign-in was started.
-    pub requested_at: chrono::DateTime<chrono::Utc>,
+    pub requested_at: crate::clock::OffsetDateTime,
 }

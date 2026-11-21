@@ -139,6 +139,17 @@ doctl compute domain records create "$DOMAIN" \
   --record-ttl 300
 ```
 
+Optional: wildcard A record for HTTPS service names (ADR-0038). Caddy gets the
+`*.svc.$TENANT_SUBDOMAIN` certificate through DNS-01 with or without it. With
+it, a service name gets the same 404 as an unknown name from the internet:
+```sh
+doctl compute domain records create "$DOMAIN" \
+  --record-type A \
+  --record-name "*.svc.$TENANT_SUBDOMAIN" \
+  --record-data "$DROPLET_IP" \
+  --record-ttl 300
+```
+
 ### 4. Wait for SSH access
 
 ```sh
@@ -361,6 +372,16 @@ echo | openssl s_client -connect "${APP_DOMAIN}:443" -servername "${APP_DOMAIN}"
 ```sh
 echo | openssl s_client -connect "anything.${BASE_DOMAIN}:443" -servername "anything.${BASE_DOMAIN}" 2>/dev/null | openssl x509 -noout -text | grep -A1 "Subject Alternative Name"
 # Expected: *.ts.example.com in the SAN list
+```
+
+The gateway certificate covers HTTPS service names only (ADR-0038). Check the
+copy that the relay reads:
+
+```sh
+ssh root@"$DROPLET_IP" "cd /opt/atproto-tailnet && docker compose -f docker-compose.coordinator.yml exec relay sh -c 'ls -l /certs'"
+# Expected: tls.key -rw------- coord, tls.crt -rw-r--r-- coord
+ssh root@"$DROPLET_IP" "cd /opt/atproto-tailnet && docker compose -f docker-compose.coordinator.yml logs relay | grep gateway"
+# Expected: "gateway enabled" or "gateway certificate arrived", with service_domain svc.<BASE_DOMAIN>
 ```
 
 ### Service logs

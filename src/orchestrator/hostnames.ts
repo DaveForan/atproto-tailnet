@@ -33,6 +33,8 @@ export const RESERVED_HOSTNAMES = new Set([
   "mcp", "operator", "support", "help", "security", "abuse", "postmaster", "hostmaster",
   "webmaster", "noc", "billing", "docs", "blog", "test", "staging", "dev",
   "tailscale", "headscale", "coordinator", "control", "controlplane",
+  // Default service domain `svc.<BASE_DOMAIN>` (ADR-0038)
+  "svc",
 ]);
 
 export type HostnameError =

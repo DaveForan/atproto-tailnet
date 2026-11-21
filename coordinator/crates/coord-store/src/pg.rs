@@ -7,7 +7,7 @@ use coord_core::{
     NodeRegistration, NodeSummary, PeerInfo, PreAuthGrant, PreAuthKeyInfo, PreAuthKeyOptions,
     StorageError, Tenant, TenantId,
 };
-use chrono::{DateTime, Utc};
+use coord_core::clock::{self, Duration, OffsetDateTime};
 use serde_json::Value as Json;
 use crate::memory::PeerEvent;
 use crate::RemoteEvent;
@@ -273,24 +273,20 @@ impl PgStore {
         let parent_uuid = parent_id.map(|p| *p.as_uuid());
         let federation_posture = posture.unwrap_or_default();
 
-        if let Some(pid) = parent_uuid {
-            let parent_row: Option<(uuid::Uuid, Option<uuid::Uuid>)> = sqlx::query_as(
-                "SELECT id, parent_id FROM coord_tenants WHERE id = $1"
-            )
-                .bind(pid)
-                .fetch_optional(&self.pool)
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        if let Some(pid) = parent_id {
+            // Same lock as set_tenant_parent: the parent cannot become a child before the insert.
+            sqlx::query("SELECT pg_advisory_xact_lock($1)")
+                .bind(HIERARCHY_LOCK_KEY)
+                .execute(&mut *tx)
                 .await
                 .map_err(db)?;
-
-            match parent_row {
-                None => return Err(CoordError::TenantNotFound(parent_id.unwrap())),
-                Some((_, Some(_))) => {
-                    return Err(CoordError::Protocol(
-                        "multi-level hierarchy not supported: parent is itself a child".into(),
-                    ));
-                }
-                Some((_, None)) => { /* ok: parent is a root tenant */ }
-            }
+            let parent_row: Option<(Option<uuid::Uuid>,)> = sqlx::query_as("SELECT parent_id FROM coord_tenants WHERE id = $1")
+                .bind(pid.as_uuid())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(db)?;
+            crate::check_create_parent(pid, parent_row.map(|(p,)| p.is_some()))?;
         }
 
         sqlx::query(
@@ -300,9 +296,10 @@ impl PgStore {
             .bind(&slug)
             .bind(parent_uuid)
             .bind(federation_posture.as_str())
-            .execute(&self.pool)
+            .execute(&mut *tx)
             .await
             .map_err(db)?;
+        tx.commit().await.map_err(db)?;
 
         Ok(Tenant {
             id,
@@ -311,7 +308,7 @@ impl PgStore {
             federation_posture,
             ipv4_prefix: coord_core::DEFAULT_IPV4_PREFIX.into(),
             ipv6_prefix: coord_core::DEFAULT_IPV6_PREFIX.into(),
-            created_at: chrono::Utc::now(),
+            created_at: clock::now(),
             suspended: false,
         })
     }
@@ -874,7 +871,7 @@ impl PgStore {
     }
 
     pub async fn list_preauth_keys(&self, tenant_id: TenantId) -> Vec<PreAuthKeyInfo> {
-        type Row = (uuid::Uuid, String, Option<String>, Json, bool, bool, bool, Option<DateTime<Utc>>, DateTime<Utc>, Option<DateTime<Utc>>);
+        type Row = (uuid::Uuid, String, Option<String>, Json, bool, bool, bool, Option<OffsetDateTime>, OffsetDateTime, Option<OffsetDateTime>);
         let rows = sqlx::query_as::<_, Row>(
             "SELECT id, key_prefix, owner, tags, reusable, ephemeral, used, expires_at, created_at, revoked_at \
              FROM coord_preauth_keys WHERE tenant_id = $1 ORDER BY created_at, id"
@@ -1478,9 +1475,9 @@ impl PgStore {
 
     pub async fn delete_stale_ephemeral_nodes(
         &self,
-        max_offline: chrono::Duration,
+        max_offline: Duration,
     ) -> Result<Vec<(TenantId, NodeId)>, CoordError> {
-        let cutoff = Utc::now() - max_offline;
+        let cutoff = clock::now() - max_offline;
         let mut rows: Vec<(i64, uuid::Uuid)> = sqlx::query_as(
             "DELETE FROM coord_nodes WHERE ephemeral = TRUE AND online = FALSE AND last_seen <= $1 \
              RETURNING id, tenant_id"
@@ -1573,7 +1570,7 @@ impl std::fmt::Debug for PgStore {
     }
 }
 
-type PeerRow = (i64, Vec<u8>, Vec<u8>, Option<String>, Json, String, String, bool, DateTime<Utc>, Json, Json, Option<String>);
+type PeerRow = (i64, Vec<u8>, Vec<u8>, Option<String>, Json, String, String, bool, OffsetDateTime, Json, Json, Option<String>);
 type SummaryRow = (i64, uuid::Uuid, String, String, bool, String, Option<String>, Json, bool, Json, Json);
 
 fn to_json(v: &[String]) -> Json {
@@ -1651,7 +1648,7 @@ fn summary_row_to_summary(
     })
 }
 
-type TenantRow = (uuid::Uuid, String, Option<uuid::Uuid>, String, String, String, DateTime<Utc>, bool);
+type TenantRow = (uuid::Uuid, String, Option<uuid::Uuid>, String, String, String, OffsetDateTime, bool);
 
 fn tenant_from_row(
     (id, slug, parent_uuid, posture_str, ipv4_prefix, ipv6_prefix, created_at, suspended): TenantRow,

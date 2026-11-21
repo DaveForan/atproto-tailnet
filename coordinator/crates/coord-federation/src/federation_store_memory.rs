@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 
 use async_trait::async_trait;
-use chrono::Utc;
+use coord_core::clock;
 
 use coord_core::types::{
     BrokerSession, BrokerSessionStatus, CollectiveDid, FederationLink, LinkDirection, LinkId,
@@ -94,7 +94,7 @@ impl FederationStore for FederationMemoryStore {
         let mut guard = self.links.write().unwrap_or_else(|e| e.into_inner());
         if let Some(link) = guard.get_mut(&id) {
             link.status = status;
-            link.updated_at = Utc::now();
+            link.updated_at = clock::now();
         }
         Ok(())
     }
@@ -112,7 +112,7 @@ impl FederationStore for FederationMemoryStore {
             link.peer_cidrs = peer_cidrs;
             link.peer_broker_url = Some(peer_broker_url);
             link.peer_name = Some(peer_name);
-            link.updated_at = Utc::now();
+            link.updated_at = clock::now();
         }
         Ok(())
     }
@@ -177,8 +177,8 @@ impl FederationStore for FederationMemoryStore {
             session.status = BrokerSessionStatus::Established;
             session.cfp_session_id = Some(cfp_session_id);
             session.imported_routes = imported_routes;
-            session.last_keepalive = Some(Utc::now());
-            session.updated_at = Utc::now();
+            session.last_keepalive = Some(clock::now());
+            session.updated_at = clock::now();
         }
         Ok(())
     }
@@ -186,8 +186,8 @@ impl FederationStore for FederationMemoryStore {
     async fn update_session_keepalive(&self, id: SessionId) -> Result<(), CoordError> {
         let mut guard = self.sessions.write().unwrap_or_else(|e| e.into_inner());
         if let Some(session) = guard.get_mut(&id) {
-            session.last_keepalive = Some(Utc::now());
-            session.updated_at = Utc::now();
+            session.last_keepalive = Some(clock::now());
+            session.updated_at = clock::now();
         }
         Ok(())
     }
@@ -204,7 +204,7 @@ impl FederationStore for FederationMemoryStore {
             if let Some(routes) = imported_routes {
                 session.imported_routes = routes;
             }
-            session.updated_at = Utc::now();
+            session.updated_at = clock::now();
         }
         Ok(())
     }
@@ -293,7 +293,7 @@ impl FederationStore for FederationMemoryStore {
             if let Some(link) = guard.get_mut(&id) {
                 link.status = LinkStatus::Rejected;
                 link.message = Some("Expired: too many pending requests".to_string());
-                link.updated_at = Utc::now();
+                link.updated_at = clock::now();
                 expired += 1;
             }
         }

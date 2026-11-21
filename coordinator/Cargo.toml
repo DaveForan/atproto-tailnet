@@ -51,8 +51,8 @@ tower-http = { version = "0.6", features = ["trace", "cors"] }
 http = "1"
 
 # Storage
-sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "postgres", "sqlite", "uuid", "chrono", "json"] }
-chrono = { version = "0.4", features = ["serde"] }
+sqlx = { version = "0.9", features = ["runtime-tokio", "tls-rustls-aws-lc-rs", "postgres", "sqlite", "uuid", "time", "json"] }
+time = { version = "0.3", features = ["macros", "parsing"] }
 
 # Workspace crates
 coord-core = { path = "crates/coord-core" }

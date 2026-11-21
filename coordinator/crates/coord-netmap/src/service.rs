@@ -5,6 +5,7 @@ use coord_acl::PolicyEngine;
 
 use coord_core::keys::{format_machine_key, format_node_key};
 use coord_core::{MachineKey, TenantId};
+use coord_core::clock;
 use coord_proto::map::{DerpMap, FilterRule, MapNode, MapResponse, UserProfile};
 use coord_store::{PeerEvent, Store};
 
@@ -155,7 +156,7 @@ impl NetmapService {
             peers_changed: None,
             peers_removed: None,
             derp_map: Some(derp_map),
-            dns_config: Some(dns_view(node_id.as_i64(), self_owner, &ipv4.to_string(), &peers, &dns, gateway)),
+            dns_config: Some(dns_view(node_id.as_i64(), self_owner, &ipv4.to_string(), &peers, &dns, gateway, self.gateways.service_domain())),
             // Member mode: per-device filter, where an empty list blocks everything.
             // Otherwise: the tenant's ACL policy, or allow-all.
             packet_filter: Some(member_filter.unwrap_or_else(|| {
@@ -165,7 +166,7 @@ impl NetmapService {
             domain: Some(domain),
             user_profiles: Some(user_profiles),
             keep_alive: None,
-            control_time: Some(chrono::Utc::now().to_rfc3339()),
+            control_time: Some(clock::to_rfc3339(clock::now())),
         })
     }
 
@@ -247,7 +248,7 @@ impl NetmapService {
                     user_profiles: Some(vec![self
                         .identity
                         .profile(detail.tenant_id, detail.attrs.owner.as_deref())]),
-                    control_time: Some(chrono::Utc::now().to_rfc3339()),
+                    control_time: Some(clock::to_rfc3339(clock::now())),
                     ..Default::default()
                 })
             }
@@ -260,7 +261,7 @@ impl NetmapService {
                     }
                 Some(MapResponse {
                 peers_removed: Some(vec![node_id.as_i64()]),
-                control_time: Some(chrono::Utc::now().to_rfc3339()),
+                control_time: Some(clock::to_rfc3339(clock::now())),
                 ..Default::default()
             })
             }
@@ -327,7 +328,7 @@ fn peer_info_to_map_node(p: &coord_core::PeerInfo, home_region: i32, dns: &coord
         home_derp: Some(derp_region),
         hostinfo: minimal_hostinfo(&node_label(&p.hostname, p.node_id.as_i64())),
         online: Some(p.online),
-        last_seen: p.last_seen.map(|t| t.to_rfc3339()),
+        last_seen: p.last_seen.map(clock::to_rfc3339),
         machine_authorized: Some(true),
         key_expiry: None,
     }

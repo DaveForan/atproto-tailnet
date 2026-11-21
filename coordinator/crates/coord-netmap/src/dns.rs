@@ -13,6 +13,7 @@ pub fn device_fqdn(label: &str, dns: &coord_core::TenantDns) -> String {
 
 /// The DNS configuration one device receives (ADR-0028).
 /// The split-DNS route needs upstreams. Without them, clients answer NXDOMAIN for every unrecorded name.
+/// HTTPS service names are under `service_domain` when it is set (ADR-0038).
 pub fn dns_view(
     self_id: i64,
     self_owner: Option<&str>,
@@ -20,6 +21,7 @@ pub fn dns_view(
     visible_peers: &[coord_core::PeerInfo],
     dns: &coord_core::TenantDns,
     gateway: Option<i64>,
+    service_domain: Option<&str>,
 ) -> DnsConfig {
     let Some(base) = dns.base_domain.as_deref() else {
         return DnsConfig { resolvers: Some(vec![]), domains: Some(vec![]), routes: None, proxied: None, extra_records: None };
@@ -41,7 +43,8 @@ pub fn dns_view(
                 (Some(_), Some(gw)) => gw,
                 _ => r.node,
             };
-            Some(DnsExtraRecord { name: format!("{}.{base}", r.name), value: address_of(node)? })
+            let domain = if r.port.is_some() { service_domain.unwrap_or(base) } else { base };
+            Some(DnsExtraRecord { name: format!("{}.{domain}", r.name), value: address_of(node)? })
         })
         .collect();
     let routes = (!dns.upstream.is_empty()).then(|| {
