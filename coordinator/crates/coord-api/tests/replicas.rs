@@ -275,7 +275,7 @@ async fn a_gateway_offer_with_the_keys_of_a_device_is_refused() {
     let device = control.store().get_node_by_machine_key(&machine).await.unwrap();
 
     // A compromised relay offers the machine key of Alice's device as its gateway.
-    let forged = coord_core::GatewayOffer { node_key: random_key(), machine_key: machine, disco_key: random_key(), region_id: 1 };
+    let forged = coord_core::GatewayOffer { node_key: random_key(), machine_key: machine, disco_key: random_key(), region_id: 1, endpoints: vec![] };
     control.store().offer_gateway(tenant, &forged).await.unwrap();
     let dns = serde_json::json!({ "base_domain": "ts.example.com", "records": [{ "name": "wiki", "node": device.as_i64(), "owner": "alice", "port": 8080 }] });
     let (status, _) = call(&app, "PUT", format!("/api/tenants/{tenant}/dns"), Some(dns)).await;

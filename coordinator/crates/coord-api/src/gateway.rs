@@ -10,7 +10,8 @@ use coord_core::{DnsRecord, NodeId, NodeInfo, NodeRegistration, PeerInfo, Tenant
 use coord_derp::Scope;
 use coord_gateway::netstack::NetStack;
 use coord_gateway::proxy::{self, Certificate, Denied, Route, Services};
-use coord_gateway::tunnel::{public_key, Devices, Tailnet};
+use coord_gateway::direct::DirectSocket;
+use coord_gateway::tunnel::{public_key, Devices, Direct, Tailnet};
 use coord_netmap::IdentityRegistry;
 use coord_store::{PeerEvent, Store};
 use tokio::sync::{broadcast, Notify};
@@ -19,6 +20,13 @@ use tracing::{error, info, warn};
 use crate::state::{CoordinatorState, CONFIG_GATEWAY};
 
 pub use coord_core::{GATEWAY_HOSTNAME, GATEWAY_TAG};
+
+/// Direct paths to the gateways of this process (ADR-0029 phase 2).
+pub struct GatewayDirect {
+    pub(crate) socket: Arc<DirectSocket>,
+    /// The addresses of the socket as devices see them. Empty: devices find no direct path.
+    pub(crate) endpoints: Vec<std::net::SocketAddr>,
+}
 
 /// What the coordinator needs to run gateways.
 pub struct Gateways {
@@ -44,6 +52,11 @@ impl Gateways {
     pub(crate) fn stop(&self, tenant: TenantId) {
         self.running.lock().unwrap_or_else(|e| e.into_inner()).remove(&tenant);
     }
+}
+
+/// The key in a `discokey:<hex>` value.
+fn disco_key(peer: &PeerInfo) -> Option<[u8; 32]> {
+    hex::decode(peer.disco_key.as_deref()?.strip_prefix("discokey:")?).ok()?.try_into().ok()
 }
 
 fn first_addr(peer: &PeerInfo) -> Option<Ipv4Addr> {
@@ -99,6 +112,11 @@ impl Devices for StoreDevices {
         let peers = self.store.get_peers(self.tenant, self.gateway).await;
         let peer = peers.iter().find(|p| first_addr(p) == Some(addr))?;
         peer.node_key.as_slice().try_into().ok()
+    }
+
+    async fn disco_keys(&self) -> Vec<([u8; 32], [u8; 32])> {
+        let peers = self.store.get_peers(self.tenant, self.gateway).await;
+        peers.iter().filter_map(|p| Some((disco_key(p)?, p.node_key.as_slice().try_into().ok()?))).collect()
     }
 }
 
@@ -194,11 +212,16 @@ impl CoordinatorState {
             node_key: key("node"),
             machine_key: key("machine"),
             // Devices need a disco key to treat the gateway as a peer.
-            // The gateway does not answer disco, so devices reach it through the relay.
-            disco_key: key("disco"),
+            // The gateway answers disco only when it has direct paths.
+            disco_key: coord_gateway::disco::public_key(&coord_gateway::derive_key(&gateways.secret, &tenant_bytes, "disco")),
             // Devices send to a peer through its home relay. The gateway's home relay is this process.
-            region_id: self.own_relay.as_ref().map(|r| r.region_id).unwrap_or(crate::state::BUILTIN_RELAY_REGION_ID),
+            region_id: self.relay_region(),
+            endpoints: self.gateway_direct.as_ref().map(|d| d.endpoints.clone()).unwrap_or_default(),
         }
+    }
+
+    fn relay_region(&self) -> i32 {
+        self.own_relay.as_ref().map(|r| r.region_id).unwrap_or(crate::state::BUILTIN_RELAY_REGION_ID)
     }
 
     /// Stores the keys of this process's gateway for `tenant`. Returns true when the stored offer is now ours.
@@ -223,11 +246,14 @@ impl CoordinatorState {
         let by_node_key = self.store.get_node_by_node_key(&offer.node_key).await;
         let by_machine_key = self.store.get_node_by_machine_key(&offer.machine_key).await;
         let current = self.caches.gateways.get(tenant);
+        // The offer is input: the type holds addresses only, and the number has a bound.
+        let endpoints: Vec<String> = offer.endpoints.iter().take(coord_core::MAX_GATEWAY_ENDPOINTS).map(|e| e.to_string()).collect();
         if let (Some(node), Some(machine)) = (by_node_key, by_machine_key)
             && node == machine
             && current == Some(node.as_i64())
+            && self.store.get_node_info(node).await.is_some_and(|n| n.info.endpoints == endpoints)
         {
-            return; // already registered with these keys
+            return; // already registered with these keys and endpoints
         }
         let nodes = self.store.list_nodes_for_tenant(tenant).await;
         for holder in [by_node_key, by_machine_key].into_iter().flatten() {
@@ -241,7 +267,7 @@ impl CoordinatorState {
             node_key: offer.node_key.to_vec(),
             machine_key: offer.machine_key.to_vec(),
             disco_key: Some(format!("discokey:{}", hex::encode(offer.disco_key))),
-            endpoints: vec![],
+            endpoints,
             hostname: GATEWAY_HOSTNAME.into(),
             os: "gateway".into(),
             ipv4: None,
@@ -299,7 +325,12 @@ impl CoordinatorState {
         let changed = Arc::new(Notify::new());
         watch_devices(self.store.subscribe(), tenant, changed.clone());
         let devices = Arc::new(StoreDevices { store: self.store.clone(), tenant, gateway: node_id, changed });
-        let stack = Tailnet::spawn(node_secret, addr, relay, devices);
+        let direct = self.gateway_direct.as_ref().map(|d| Direct {
+            port: d.socket.attach(),
+            disco_secret: coord_gateway::derive_key(&gateways.secret, &tenant_bytes, "disco"),
+            relay_region: u16::try_from(self.relay_region()).unwrap_or(0),
+        });
+        let stack = Tailnet::spawn_with(node_secret, addr, relay, devices, direct);
         let services = Arc::new(StoreServices { store: self.store.clone(), identity: self.caches.identity.clone(), tenant, gateway: node_id, service_domain });
         let serving = stack.clone();
         let certificate = gateways.certificate.clone();

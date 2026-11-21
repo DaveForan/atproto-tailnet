@@ -1055,12 +1055,18 @@ async fn a_gateway_offer_is_one_row_per_tenant_and_goes_with_the_tenant() {
         let s = &b.store;
         let t = tenant(s, "gw-offer").await;
         assert_eq!(s.get_gateway_offer(t).await, None, "{}", b.name);
-        let first = coord_core::GatewayOffer { node_key: [1; 32], machine_key: [2; 32], disco_key: [3; 32], region_id: 1 };
+        let first = coord_core::GatewayOffer { node_key: [1; 32], machine_key: [2; 32], disco_key: [3; 32], region_id: 1, endpoints: vec![] };
         s.offer_gateway(t, &first).await.unwrap();
         assert_eq!(s.get_gateway_offer(t).await, Some(first), "{}", b.name);
-        let second = coord_core::GatewayOffer { node_key: [4; 32], machine_key: [5; 32], disco_key: [6; 32], region_id: 7 };
+        let endpoints = vec!["203.0.113.7:41641".parse().unwrap(), "[2001:db8::7]:41641".parse().unwrap()];
+        let second = coord_core::GatewayOffer { node_key: [4; 32], machine_key: [5; 32], disco_key: [6; 32], region_id: 7, endpoints };
         s.offer_gateway(t, &second).await.unwrap();
         assert_eq!(s.get_gateway_offer(t).await, Some(second.clone()), "{}: a new offer replaces the old one", b.name);
+        let many = coord_core::GatewayOffer { endpoints: (1..=20u16).map(|p| std::net::SocketAddr::from(([203, 0, 113, 7], p))).collect(), ..second.clone() };
+        s.offer_gateway(t, &many).await.unwrap();
+        let kept = s.get_gateway_offer(t).await.unwrap().endpoints;
+        assert_eq!(kept, many.endpoints[..coord_core::MAX_GATEWAY_ENDPOINTS], "{}: an offer keeps a bounded number of endpoints", b.name);
+        s.offer_gateway(t, &second).await.unwrap();
 
         let missing = coord_core::TenantId::new(uuid::Uuid::new_v4());
         assert!(s.offer_gateway(missing, &second).await.is_err(), "{}: no offer for an unknown tenant", b.name);

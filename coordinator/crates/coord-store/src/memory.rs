@@ -248,7 +248,9 @@ impl MemoryStore {
         if !self.tenants.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&tenant_id) {
             return Err(CoordError::TenantNotFound(tenant_id));
         }
-        self.gateway_offers.lock().unwrap_or_else(|e| e.into_inner()).insert(tenant_id, offer.clone());
+        let mut offer = offer.clone();
+        offer.endpoints.truncate(coord_core::MAX_GATEWAY_ENDPOINTS);
+        self.gateway_offers.lock().unwrap_or_else(|e| e.into_inner()).insert(tenant_id, offer);
         Ok(())
     }
 

@@ -49,6 +49,8 @@ pub struct CoordinatorState {
     pub(crate) own_relay: Option<coord_core::RelayInfo>,
     /// Set when this process runs gateways (ADR-0029).
     pub(crate) gateways_cfg: std::sync::OnceLock<Arc<crate::gateway::Gateways>>,
+    /// Set when the gateways of this process answer disco and use UDP paths (ADR-0029 phase 2).
+    pub(crate) gateway_direct: Option<crate::gateway::GatewayDirect>,
     pub(crate) netmap: NetmapService,
     pub(crate) config_changed: broadcast::Sender<ConfigChange>,
     pub(crate) federation_inbound: Arc<InboundHandler<dyn FederationStore>>,
@@ -102,6 +104,7 @@ pub struct CoordinatorStateBuilder {
     admin_api_key: Option<String>,
     role: Role,
     gateway: Option<([u8; 32], Arc<coord_gateway::proxy::Certificate>)>,
+    gateway_direct: Option<crate::gateway::GatewayDirect>,
     federation_store: Option<Arc<dyn FederationStore>>,
     federation_callbacks: Option<Arc<dyn HandshakeCallbacks>>,
     federation_enabled: bool,
@@ -211,6 +214,13 @@ impl CoordinatorStateBuilder {
         self
     }
 
+    /// Direct paths to the gateways of this process: one UDP socket for all tailnets,
+    /// and the public addresses of that socket as devices must see them.
+    pub fn with_gateway_direct(mut self, socket: coord_gateway::direct::DirectSocket, endpoints: Vec<std::net::SocketAddr>) -> Self {
+        self.gateway_direct = Some(crate::gateway::GatewayDirect { socket: Arc::new(socket), endpoints });
+        self
+    }
+
     pub fn with_role(mut self, role: Role) -> Self {
         self.role = role;
         self
@@ -286,6 +296,7 @@ impl CoordinatorStateBuilder {
             role: self.role,
             own_relay: self.own_relay,
             gateways_cfg,
+            gateway_direct: self.gateway_direct,
             netmap,
             config_changed,
             federation_inbound: Arc::new(InboundHandler::new(fed_store.clone(), fed_config.clone())),
@@ -325,6 +336,7 @@ impl CoordinatorState {
             admin_api_key: None,
             role: Role::All,
             gateway: None,
+            gateway_direct: None,
             federation_store: None,
             federation_callbacks: None,
             federation_enabled: false,

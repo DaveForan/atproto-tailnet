@@ -271,8 +271,15 @@ mod generation_tests {
     }
 }
 
-/// A stored gateway offer: three hex keys and the relay region. `None` when a key is not 32 bytes.
-pub(crate) fn decode_gateway_offer((node_key, machine_key, disco_key, region_id): (String, String, String, i32)) -> Option<coord_core::GatewayOffer> {
+/// A stored gateway offer: three hex keys, the relay region and the endpoints. `None` when a key is not 32 bytes.
+pub(crate) fn decode_gateway_offer((node_key, machine_key, disco_key, region_id, endpoints): (String, String, String, i32, String)) -> Option<coord_core::GatewayOffer> {
     let key = |s: &str| -> Option<[u8; 32]> { hex::decode(s).ok()?.try_into().ok() };
-    Some(coord_core::GatewayOffer { node_key: key(&node_key)?, machine_key: key(&machine_key)?, disco_key: key(&disco_key)?, region_id })
+    let endpoints = endpoints.split(',').filter_map(|e| e.parse().ok()).take(coord_core::MAX_GATEWAY_ENDPOINTS).collect();
+    Some(coord_core::GatewayOffer { node_key: key(&node_key)?, machine_key: key(&machine_key)?, disco_key: key(&disco_key)?, region_id, endpoints })
+}
+
+/// The endpoints of a gateway offer as one column: addresses with commas between them.
+pub(crate) fn encode_gateway_endpoints(offer: &coord_core::GatewayOffer) -> String {
+    let endpoints: Vec<String> = offer.endpoints.iter().take(coord_core::MAX_GATEWAY_ENDPOINTS).map(|e| e.to_string()).collect();
+    endpoints.join(",")
 }

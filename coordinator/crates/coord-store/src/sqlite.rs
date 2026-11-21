@@ -343,15 +343,16 @@ impl SqliteStore {
 
     pub async fn offer_gateway(&self, tenant_id: TenantId, offer: &coord_core::GatewayOffer) -> Result<(), CoordError> {
         sqlx::query(
-            "INSERT INTO coord_gateway_offers (tenant_id, node_key, machine_key, disco_key, region_id) VALUES (?1, ?2, ?3, ?4, ?5) \
+            "INSERT INTO coord_gateway_offers (tenant_id, node_key, machine_key, disco_key, region_id, endpoints) VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
              ON CONFLICT (tenant_id) DO UPDATE SET node_key = excluded.node_key, machine_key = excluded.machine_key, \
-             disco_key = excluded.disco_key, region_id = excluded.region_id, updated_at = unixepoch()"
+             disco_key = excluded.disco_key, region_id = excluded.region_id, endpoints = excluded.endpoints, updated_at = unixepoch()"
         )
             .bind(tenant_id.as_uuid().to_string())
             .bind(hex::encode(offer.node_key))
             .bind(hex::encode(offer.machine_key))
             .bind(hex::encode(offer.disco_key))
             .bind(offer.region_id)
+            .bind(crate::encode_gateway_endpoints(offer))
             .execute(&self.pool)
             .await
             .map_err(db)?;
@@ -359,8 +360,8 @@ impl SqliteStore {
     }
 
     pub async fn get_gateway_offer(&self, tenant_id: TenantId) -> Option<coord_core::GatewayOffer> {
-        let row: Option<(String, String, String, i32)> = sqlx::query_as(
-            "SELECT node_key, machine_key, disco_key, region_id FROM coord_gateway_offers WHERE tenant_id = ?1"
+        let row: Option<(String, String, String, i32, String)> = sqlx::query_as(
+            "SELECT node_key, machine_key, disco_key, region_id, endpoints FROM coord_gateway_offers WHERE tenant_id = ?1"
         )
             .bind(tenant_id.as_uuid().to_string())
             .fetch_optional(&self.pool)

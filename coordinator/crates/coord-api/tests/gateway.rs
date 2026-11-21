@@ -2,17 +2,23 @@
 //! A published HTTPS service adds a gateway node, and permitted devices get its name and route.
 //! A request reaches the application with the caller's identity.
 
-use std::net::{Ipv4Addr, SocketAddrV4};
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use boringtun::noise::{Tunn, TunnResult};
+use boringtun::x25519::{PublicKey as X25519Public, StaticSecret};
 use coord_api::CoordinatorState;
+use coord_gateway::direct::DirectSocket;
 use coord_gateway::netstack::{Accepted, NetStack};
 use coord_gateway::proxy::Certificate;
 use coord_gateway::tunnel::{public_key, Devices, Tailnet};
+use crypto_box::aead::Aead;
+use crypto_box::{PublicKey, SalsaBox, SecretKey};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::UdpSocket;
 use tokio_rustls::rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use tokio_rustls::rustls::crypto::{ring, verify_tls12_signature, verify_tls13_signature, CryptoProvider};
 use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime};
@@ -42,15 +48,18 @@ impl ServerCertVerifier for AnyCert {
     }
 }
 
-fn setup() -> (axum::Router, Arc<CoordinatorState>) {
+fn certificate() -> Arc<Certificate> {
     let made = rcgen::generate_simple_self_signed(vec![format!("*.{SERVICES}")]).unwrap();
     let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(made.signing_key.serialize_der()));
-    let certificate = Arc::new(Certificate::from_der(vec![made.cert.der().clone()], key).unwrap());
+    Arc::new(Certificate::from_der(vec![made.cert.der().clone()], key).unwrap())
+}
+
+fn setup() -> (axum::Router, Arc<CoordinatorState>) {
     let state = Arc::new(
         CoordinatorState::builder(coord_noise::generate_control_key())
             .with_admin_api_key(Some(ADMIN_KEY.to_string()))
             .with_builtin_relay_region("derp.example.com", 3478)
-            .with_gateway([5; 32], certificate)
+            .with_gateway([5; 32], certificate())
             .build(),
     );
     assert!(state.set_service_domain(SERVICES.into()));
@@ -379,6 +388,347 @@ async fn the_gateway_relay_scope_follows_posture_suspension_and_parent() {
     let (status, _) = call(&app, "PUT", format!("/api/tenants/{c}/parent"), Some(serde_json::json!({ "parent_id": null }))).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(link(), None, "a detached child has no parent");
+}
+
+// ---- Direct paths (ADR-0029 phase 2) ----
+
+const DISCO_MAGIC: &[u8] = b"TS\xf0\x9f\x92\xac";
+
+async fn setup_direct() -> (axum::Router, Arc<CoordinatorState>, SocketAddr) {
+    let socket = DirectSocket::bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let udp = socket.local_addr().unwrap();
+    let state = Arc::new(
+        CoordinatorState::builder(coord_noise::generate_control_key())
+            .with_admin_api_key(Some(ADMIN_KEY.to_string()))
+            .with_builtin_relay_region("derp.example.com", 3478)
+            .with_gateway([5; 32], certificate())
+            .with_gateway_direct(socket, vec![udp])
+            .build(),
+    );
+    assert!(state.set_service_domain(SERVICES.into()));
+    (coord_api::router(state.clone()), state, udp)
+}
+
+/// The disco side of a test device. It makes the NaCl boxes itself, not with the gateway's code.
+struct Disco {
+    secret: SecretKey,
+    gateway: PublicKey,
+}
+
+impl Disco {
+    fn public(&self) -> [u8; 32] {
+        self.secret.public_key().to_bytes()
+    }
+
+    fn packet(&self, plain: &[u8]) -> Vec<u8> {
+        let nonce: [u8; 24] = rand::random();
+        let sealed = SalsaBox::new(&self.gateway, &self.secret).encrypt(crypto_box::Nonce::from_slice(&nonce), plain).unwrap();
+        [DISCO_MAGIC, &self.public(), &nonce, &sealed].concat()
+    }
+
+    fn ping(&self, tx: [u8; 12], node_key: Option<[u8; 32]>) -> Vec<u8> {
+        let mut plain = vec![1, 0];
+        plain.extend_from_slice(&tx);
+        plain.extend_from_slice(node_key.as_ref().map(|k| &k[..]).unwrap_or_default());
+        self.packet(&plain)
+    }
+
+    /// The transaction id and the source address in a pong from the gateway.
+    fn pong(&self, packet: &[u8]) -> Option<([u8; 12], SocketAddr)> {
+        let rest = packet.strip_prefix(DISCO_MAGIC)?;
+        if rest.len() < 56 || rest[..32] != self.gateway.to_bytes() {
+            return None;
+        }
+        let plain = SalsaBox::new(&self.gateway, &self.secret).decrypt(crypto_box::Nonce::from_slice(&rest[32..56]), &rest[56..]).ok()?;
+        if plain.len() != 2 + 12 + 18 || plain[..2] != [2, 0] {
+            return None;
+        }
+        let ip = std::net::Ipv6Addr::from(<[u8; 16]>::try_from(&plain[14..30]).unwrap());
+        let port = u16::from_be_bytes([plain[30], plain[31]]);
+        Some((plain[2..14].try_into().unwrap(), SocketAddr::new(std::net::IpAddr::V6(ip).to_canonical(), port)))
+    }
+}
+
+/// A tailnet with Alice's server behind `food-app`, Bob's laptop as a viewer, and a running gateway.
+struct DirectTailnet {
+    tenant: coord_core::TenantId,
+    app_dev: Device,
+    viewer: Device,
+    disco: Disco,
+    gateway_key: [u8; 32],
+    gateway_addr: Ipv4Addr,
+    viewer_map: serde_json::Value,
+}
+
+fn key_in(value: &serde_json::Value, prefix: &str) -> [u8; 32] {
+    hex::decode(value.as_str().unwrap().trim_start_matches(prefix)).unwrap().try_into().unwrap()
+}
+
+async fn announce_disco(state: &Arc<CoordinatorState>, d: &Device, disco: [u8; 32]) {
+    let body = serde_json::json!({
+        "Version": 2,
+        "NodeKey": format!("nodekey:{}", hex::encode(public_key(&d.secret))),
+        "DiscoKey": format!("discokey:{}", hex::encode(disco)),
+    });
+    coord_api::__test_handle_map(state, &d.machine, &body.to_string()).await.unwrap();
+}
+
+async fn tailnet_with_service(app: &axum::Router, state: &Arc<CoordinatorState>, slug: &str, seed: u8) -> DirectTailnet {
+    let tenant = state.store().create_tenant(slug.into(), None, None).await.unwrap().id;
+    let t = tenant.to_string();
+    call(app, "PUT", format!("/api/tenants/{t}/access"), Some(serde_json::json!({ "mode": "member" }))).await;
+    call(app, "PUT", format!("/api/tenants/{t}/identity"), Some(serde_json::json!({
+        "users": { "alice": { "login_name": "alice.example.com" }, "bob": { "login_name": "bob.example.com" } }
+    }))).await;
+    let app_dev = register(app, state, &t, "alice", seed, "alice-server").await;
+    let viewer = register(app, state, &t, "bob", seed + 1, "bob-laptop").await;
+    let dns = serde_json::json!({
+        "base_domain": BASE,
+        "records": [{ "name": "food-app", "node": app_dev.id, "owner": "alice", "nodes": [viewer.id], "port": 3000 }]
+    });
+    let (status, body) = call(app, "PUT", format!("/api/tenants/{t}/dns"), Some(dns)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    let viewer_map = netmap(state, &viewer).await;
+    let peer = &viewer_map["Peers"][0];
+    assert_eq!(peer["Hostinfo"]["Hostname"], "gateway");
+    let disco = Disco { secret: SecretKey::from_bytes([seed + 100; 32]), gateway: PublicKey::from_bytes(key_in(&peer["DiscoKey"], "discokey:")) };
+    // The gateway already runs: the new disco key must reach it as a change.
+    announce_disco(state, &viewer, disco.public()).await;
+    DirectTailnet {
+        tenant,
+        gateway_key: key_in(&peer["Key"], "nodekey:"),
+        gateway_addr: peer["Addresses"][0].as_str().unwrap().split('/').next().unwrap().parse().unwrap(),
+        app_dev,
+        viewer,
+        disco,
+        viewer_map,
+    }
+}
+
+async fn datagram(socket: &UdpSocket, wait: Duration) -> Option<Vec<u8>> {
+    let mut buf = [0u8; 2048];
+    let (len, _) = tokio::time::timeout(wait, socket.recv_from(&mut buf)).await.ok()?.ok()?;
+    Some(buf[..len].to_vec())
+}
+
+/// Pings until the gateway answers: it reads the disco keys of the tailnet a moment after a change.
+async fn ping_until_pong(socket: &UdpSocket, to: SocketAddr, disco: &Disco, node_key: [u8; 32]) -> ([u8; 12], SocketAddr, usize, usize) {
+    for attempt in 0..40u8 {
+        let tx = [attempt; 12];
+        let ping = disco.ping(tx, Some(node_key));
+        socket.send_to(&ping, to).await.unwrap();
+        if let Some(packet) = datagram(socket, Duration::from_millis(100)).await {
+            let (pong_tx, src) = disco.pong(&packet).expect("the answer to a ping is a pong for the device");
+            assert_eq!(pong_tx, tx, "the pong repeats the transaction id of the ping");
+            return (pong_tx, src, ping.len(), packet.len());
+        }
+    }
+    panic!("the gateway did not answer a valid ping");
+}
+
+/// A device with WireGuard on a UDP socket only: it has no relay connection.
+/// A socket sent to the returned channel replaces the first one, as when the device moves to another network.
+fn direct_device(d: &Device, gateway_key: [u8; 32], gateway_udp: SocketAddr, mut socket: Arc<UdpSocket>) -> (NetStack, tokio::sync::mpsc::Sender<Arc<UdpSocket>>) {
+    let (out, mut out_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(256);
+    let (roam, mut roamed) = tokio::sync::mpsc::channel::<Arc<UdpSocket>>(1);
+    let stack = NetStack::spawn(d.addr, out);
+    let inject = stack.clone();
+    let mut tunn = Tunn::new(StaticSecret::from(d.secret), X25519Public::from(gateway_key), None, None, 7, None);
+    tokio::spawn(async move {
+        let (mut wire, mut plain) = (vec![0u8; 2048], vec![0u8; 2048]);
+        let mut tick = tokio::time::interval(Duration::from_millis(100));
+        loop {
+            tokio::select! {
+                Some(new) = roamed.recv() => socket = new,
+                packet = out_rx.recv() => {
+                    let Some(packet) = packet else { return };
+                    if let TunnResult::WriteToNetwork(data) = tunn.encapsulate(&packet, &mut plain) {
+                        let _ = socket.send_to(data, gateway_udp).await;
+                    }
+                }
+                received = socket.recv_from(&mut wire) => {
+                    let Ok((len, from)) = received else { return };
+                    assert_eq!(from, gateway_udp, "the gateway answers from the socket it advertises");
+                    let mut input = &wire[..len];
+                    loop {
+                        match tunn.decapsulate(None, input, &mut plain) {
+                            TunnResult::WriteToNetwork(data) => {
+                                let _ = socket.send_to(data, gateway_udp).await;
+                                input = &[];
+                                continue;
+                            }
+                            TunnResult::WriteToTunnelV4(packet, _) => inject.inject(packet.to_vec()),
+                            _ => {}
+                        }
+                        break;
+                    }
+                }
+                _ = tick.tick() => {
+                    if let TunnResult::WriteToNetwork(data) = tunn.update_timers(&mut plain) {
+                        let _ = socket.send_to(data, gateway_udp).await;
+                    }
+                }
+            }
+        }
+    });
+    (stack, roam)
+}
+
+/// Alice's application: it answers each request with the gateway's identity headers.
+async fn serve_app(stack: &NetStack) {
+    let mut incoming = stack.listen(3000).await.unwrap();
+    tokio::spawn(async move {
+        while let Some(Accepted { mut stream, .. }) = incoming.recv().await {
+            tokio::spawn(async move {
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") {
+                    if stream.read_exact(&mut byte).await.is_err() {
+                        return;
+                    }
+                    head.push(byte[0]);
+                }
+                let head = String::from_utf8_lossy(&head).to_ascii_lowercase();
+                let body = head.lines().find(|l| l.starts_with("x-tailnet-user:")).unwrap_or("").to_string();
+                let _ = stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await;
+            });
+        }
+    });
+}
+
+#[tokio::test]
+async fn a_device_reaches_the_gateway_on_a_direct_udp_path() {
+    let (app, state, gateway_udp) = setup_direct().await;
+    let net = tailnet_with_service(&app, &state, "gw-direct", 41).await;
+    assert_eq!(net.viewer_map["Peers"][0]["Endpoints"], serde_json::json!([gateway_udp.to_string()]), "devices learn where to ping the gateway");
+
+    // The application is on the relay. The viewer has a UDP socket and nothing else.
+    let app_stack = online(&state, &net.tenant, &net.app_dev, &[(net.gateway_key, net.gateway_addr)]);
+    serve_app(&app_stack).await;
+    let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
+    let viewer_key = public_key(&net.viewer.secret);
+
+    let (_, src, ping_len, pong_len) = ping_until_pong(&socket, gateway_udp, &net.disco, viewer_key).await;
+    assert_eq!(src, socket.local_addr().unwrap(), "the pong tells the device its address as the gateway sees it");
+    assert!(pong_len <= ping_len, "a pong is never longer than its ping");
+
+    let (viewer_stack, roam) = direct_device(&net.viewer, net.gateway_key, gateway_udp, socket);
+    let answer = https_get(&viewer_stack, net.gateway_addr, "food-app.svc.ts.example.com", "/", "").await.unwrap();
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+    assert!(answer.contains("x-tailnet-user: bob.example.com"), "{answer}");
+
+    // The device moves to another address and sends no ping there.
+    // The session index finds the gateway, and the answers follow the new address.
+    roam.send(Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap())).await.unwrap();
+    let answer = https_get(&viewer_stack, net.gateway_addr, "food-app.svc.ts.example.com", "/", "").await.unwrap();
+    assert!(answer.starts_with("HTTP/1.1 200"), "after the move: {answer}");
+    assert!(state.relay().scope_of(&viewer_key).is_none(), "the viewer never was on the relay: the handshake and the data used UDP");
+}
+
+#[tokio::test]
+async fn the_gateway_answers_only_pings_that_a_device_of_its_tailnet_proves() {
+    let (app, state, gateway_udp) = setup_direct().await;
+    let net = tailnet_with_service(&app, &state, "gw-direct-a", 51).await;
+    let other = tailnet_with_service(&app, &state, "gw-direct-b", 61).await;
+    let viewer_key = public_key(&net.viewer.secret);
+    let socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let silent = Duration::from_millis(300);
+
+    // A disco key that no device has. This socket never sent a valid ping.
+    let stranger = Disco { secret: SecretKey::from_bytes([9; 32]), gateway: net.disco.gateway.clone() };
+    socket.send_to(&stranger.ping([1; 12], Some(viewer_key)), gateway_udp).await.unwrap();
+    assert!(datagram(&socket, silent).await.is_none(), "an unknown disco key gets no answer");
+
+    // A WireGuard handshake from an address that proved nothing.
+    let mut tunn = Tunn::new(StaticSecret::from(net.viewer.secret), X25519Public::from(net.gateway_key), None, None, 9, None);
+    let mut buf = [0u8; 256];
+    let TunnResult::WriteToNetwork(initiation) = tunn.format_handshake_initiation(&mut buf, false) else { panic!("no initiation") };
+    assert_eq!(initiation.len(), 148);
+    socket.send_to(initiation, gateway_udp).await.unwrap();
+    assert!(datagram(&socket, silent).await.is_none(), "a handshake needs a valid ping from the same address first");
+
+    // Both gateways run and answer their own devices.
+    ping_until_pong(&socket, gateway_udp, &net.disco, viewer_key).await;
+    let other_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    ping_until_pong(&other_socket, gateway_udp, &other.disco, public_key(&other.viewer.secret)).await;
+
+    // A device of another tailnet: its disco key is known to the socket, but not to this gateway.
+    let crossing = Disco { secret: other.disco.secret.clone(), gateway: net.disco.gateway.clone() };
+    socket.send_to(&crossing.ping([2; 12], Some(public_key(&other.viewer.secret))), gateway_udp).await.unwrap();
+    socket.send_to(&crossing.ping([3; 12], Some(viewer_key)), gateway_udp).await.unwrap();
+    assert!(datagram(&socket, silent).await.is_none(), "a device of another tailnet gets no answer");
+
+    // The right disco key, but no node key, or the node key of another device.
+    socket.send_to(&net.disco.ping([4; 12], None), gateway_udp).await.unwrap();
+    socket.send_to(&net.disco.ping([5; 12], Some(public_key(&net.app_dev.secret))), gateway_udp).await.unwrap();
+    assert!(datagram(&socket, silent).await.is_none(), "a UDP ping must name the node of its disco key");
+
+    // A changed box.
+    let mut changed = net.disco.ping([6; 12], Some(viewer_key));
+    *changed.last_mut().unwrap() ^= 1;
+    socket.send_to(&changed, gateway_udp).await.unwrap();
+    assert!(datagram(&socket, silent).await.is_none());
+
+    // A removed device gets no answer, at once.
+    state.store().delete_node(coord_core::NodeId::new(net.viewer.id)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    socket.send_to(&net.disco.ping([7; 12], Some(viewer_key)), gateway_udp).await.unwrap();
+    assert!(datagram(&socket, silent).await.is_none(), "a removed device gets no pong");
+}
+
+#[tokio::test]
+async fn a_ping_through_the_relay_gets_its_pong_through_the_relay() {
+    let (app, state, _) = setup_direct().await;
+    let net = tailnet_with_service(&app, &state, "gw-direct-relay", 71).await;
+    let scope = coord_derp::Scope { tenant: *net.tenant.as_uuid().as_bytes(), parent: None };
+    let relay = state.relay().attach_local(public_key(&net.viewer.secret), scope);
+    for attempt in 0..40u8 {
+        // No node key: the relay already proved it.
+        relay.send(net.gateway_key, net.disco.ping([attempt; 12], None).into());
+        if let Ok(Some((from, packet))) = tokio::time::timeout(Duration::from_millis(100), relay.recv()).await {
+            assert_eq!(from, net.gateway_key);
+            let (tx, src) = net.disco.pong(&packet).expect("a pong");
+            assert_eq!(tx, [attempt; 12]);
+            assert_eq!(src, "127.3.3.40:1".parse().unwrap(), "the source is the relay address that clients use for region 1");
+            return;
+        }
+    }
+    panic!("no pong through the relay");
+}
+
+#[tokio::test]
+async fn without_direct_paths_the_gateway_has_no_endpoint_and_ignores_disco() {
+    let (app, state) = setup();
+    let net = tailnet_with_service(&app, &state, "gw-relay-only", 81).await;
+    let endpoints = &net.viewer_map["Peers"][0]["Endpoints"];
+    assert!(endpoints.as_array().is_none_or(|e| e.is_empty()), "{endpoints}");
+    assert_eq!(state.store().get_gateway_offer(net.tenant).await.unwrap().endpoints, vec![]);
+
+    let scope = coord_derp::Scope { tenant: *net.tenant.as_uuid().as_bytes(), parent: None };
+    let relay = state.relay().attach_local(public_key(&net.viewer.secret), scope);
+    for attempt in 0..5u8 {
+        relay.send(net.gateway_key, net.disco.ping([attempt; 12], Some(public_key(&net.viewer.secret))).into());
+        assert!(tokio::time::timeout(Duration::from_millis(100), relay.recv()).await.is_err(), "the gateway is silent on disco");
+    }
+}
+
+#[tokio::test]
+async fn the_gateway_node_follows_the_endpoints_of_its_offer() {
+    let (app, state, gateway_udp) = setup_direct().await;
+    let net = tailnet_with_service(&app, &state, "gw-direct-offer", 91).await;
+    let offer = state.store().get_gateway_offer(net.tenant).await.unwrap();
+    assert_eq!(offer.endpoints, vec![gateway_udp]);
+
+    // The relay comes back with another public address: the node gets it, and keeps its id and address.
+    let moved: SocketAddr = "203.0.113.7:41641".parse().unwrap();
+    state.store().offer_gateway(net.tenant, &coord_core::GatewayOffer { endpoints: vec![moved], ..offer }).await.unwrap();
+    state.sync_gateway(net.tenant).await;
+    let peer = netmap(&state, &net.viewer).await["Peers"][0].clone();
+    assert_eq!(peer["Endpoints"], serde_json::json!([moved.to_string()]));
+    assert_eq!(peer["ID"], net.viewer_map["Peers"][0]["ID"]);
+    assert_eq!(peer["Addresses"], net.viewer_map["Peers"][0]["Addresses"]);
+    assert_eq!(state.gateways().unwrap().running_count(), 1);
 }
 
 // ADR-0030: a tailnet with its own ACL policy (open mode) still serves HTTPS services.

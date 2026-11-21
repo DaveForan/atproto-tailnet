@@ -29,4 +29,10 @@ pub struct GatewayOffer {
     pub disco_key: [u8; 32],
     /// The DERP region of the relay that runs the gateway.
     pub region_id: i32,
+    /// The public UDP addresses of the gateway (ADR-0029 phase 2). Empty: devices use the relay.
+    #[serde(default)]
+    pub endpoints: Vec<std::net::SocketAddr>,
 }
+
+/// The most endpoints a gateway offer can have.
+pub const MAX_GATEWAY_ENDPOINTS: usize = 8;

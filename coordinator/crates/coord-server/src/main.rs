@@ -286,6 +286,30 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Direct paths to the gateway (ADR-0029 phase 2). Off unless COORD_GATEWAY_UDP_LISTEN is set.
+    let gateway_direct = parse_gateway_direct(
+        std::env::var("COORD_GATEWAY_UDP_LISTEN").ok().as_deref(),
+        std::env::var("COORD_GATEWAY_ENDPOINTS").ok().as_deref(),
+    )?;
+    match gateway_direct {
+        Some((listen, endpoints)) if gateway_configured => {
+            let socket = coord_gateway::direct::DirectSocket::bind(listen)
+                .await
+                .map_err(|e| anyhow::anyhow!("cannot bind the gateway UDP socket on {listen}: {e}"))?;
+            if endpoints.is_empty() {
+                tracing::warn!(
+                    %listen,
+                    "COORD_GATEWAY_ENDPOINTS not set: the gateway listens on UDP, but devices get no address for it and keep using the relay"
+                );
+            } else {
+                tracing::info!(%listen, ?endpoints, "gateway direct paths enabled");
+            }
+            coordinator = coordinator.with_gateway_direct(socket, endpoints);
+        }
+        Some(_) => tracing::warn!("COORD_GATEWAY_UDP_LISTEN ignored: this process runs no gateway"),
+        None => {}
+    }
+
     // Interactive device sign-in (ADR-0032): where devices without a key are sent.
     let device_auth_url = std::env::var("COORD_DEVICE_AUTH_URL").ok().filter(|u| !u.is_empty());
     match &device_auth_url {
@@ -515,9 +539,54 @@ fn write_secret_file(path: &str, contents: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The UDP address of the gateway socket and the endpoints to advertise. `None`: direct paths are off.
+fn parse_gateway_direct(listen: Option<&str>, endpoints: Option<&str>) -> anyhow::Result<Option<(SocketAddr, Vec<SocketAddr>)>> {
+    let Some(listen) = listen.map(str::trim).filter(|l| !l.is_empty()) else {
+        return Ok(None);
+    };
+    let listen: SocketAddr = listen.parse().map_err(|e| anyhow::anyhow!("invalid COORD_GATEWAY_UDP_LISTEN {listen:?}: {e}"))?;
+    let mut parsed = Vec::new();
+    for endpoint in endpoints.unwrap_or_default().split(',').map(str::trim).filter(|e| !e.is_empty()) {
+        let addr: SocketAddr = endpoint.parse().map_err(|e| anyhow::anyhow!("invalid COORD_GATEWAY_ENDPOINTS entry {endpoint:?}: {e}"))?;
+        if addr.ip().is_unspecified() || addr.port() == 0 {
+            anyhow::bail!("COORD_GATEWAY_ENDPOINTS entry {endpoint:?} is not an address that devices can send to");
+        }
+        if !parsed.contains(&addr) {
+            parsed.push(addr);
+        }
+    }
+    if parsed.len() > coord_core::MAX_GATEWAY_ENDPOINTS {
+        anyhow::bail!("COORD_GATEWAY_ENDPOINTS has more than {} entries", coord_core::MAX_GATEWAY_ENDPOINTS);
+    }
+    Ok(Some((listen, parsed)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gateway_direct_paths_are_off_unless_a_listen_address_is_set() {
+        assert_eq!(parse_gateway_direct(None, None).unwrap(), None);
+        assert_eq!(parse_gateway_direct(Some(""), None).unwrap(), None);
+        assert_eq!(parse_gateway_direct(Some("  "), Some("203.0.113.7:41641")).unwrap(), None, "endpoints alone turn nothing on");
+
+        let listen: SocketAddr = "0.0.0.0:41641".parse().unwrap();
+        assert_eq!(parse_gateway_direct(Some("0.0.0.0:41641"), None).unwrap(), Some((listen, vec![])));
+        assert_eq!(parse_gateway_direct(Some("0.0.0.0:41641"), Some("")).unwrap(), Some((listen, vec![])));
+        let endpoints: Vec<SocketAddr> = vec!["203.0.113.7:41641".parse().unwrap(), "[2001:db8::7]:41641".parse().unwrap()];
+        assert_eq!(
+            parse_gateway_direct(Some("0.0.0.0:41641"), Some("203.0.113.7:41641, [2001:db8::7]:41641,203.0.113.7:41641")).unwrap(),
+            Some((listen, endpoints))
+        );
+
+        assert!(parse_gateway_direct(Some("41641"), None).is_err());
+        assert!(parse_gateway_direct(Some("0.0.0.0:41641"), Some("gateway.example.com:41641")).is_err(), "a name is not an address");
+        assert!(parse_gateway_direct(Some("0.0.0.0:41641"), Some("0.0.0.0:41641")).is_err());
+        assert!(parse_gateway_direct(Some("0.0.0.0:41641"), Some("203.0.113.7:0")).is_err());
+        let many: Vec<String> = (1..=9).map(|p| format!("203.0.113.7:{p}")).collect();
+        assert!(parse_gateway_direct(Some("0.0.0.0:41641"), Some(&many.join(","))).is_err());
+    }
 
     #[test]
     fn service_domain_validation() {

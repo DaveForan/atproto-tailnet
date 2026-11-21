@@ -43,6 +43,7 @@ test-hooks = []
 coord-api = { path = ".", features = ["test-hooks"] }
 tower = { workspace = true }
 crypto_box = { version = "0.9", features = ["salsa20"] }
+boringtun = { version = "0.7", default-features = false }
 reqwest = { version = "0.12", features = ["json"] }
 h2 = "0.4"
 snow = { workspace = true }

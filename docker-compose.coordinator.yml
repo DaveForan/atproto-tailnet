@@ -91,6 +91,10 @@ services:
       COORD_SERVICE_DOMAIN: ${SERVICE_DOMAIN:-svc.${BASE_DOMAIN:?BASE_DOMAIN must be set}}
       COORD_GATEWAY_CERT: /certs/tls.crt
       COORD_GATEWAY_KEY: /certs/tls.key
+      # Direct paths to the gateway (ADR-0029 phase 2). Off when empty.
+      # The UDP port is not published here: see "Direct paths to the gateway" in docs/deployment.md.
+      COORD_GATEWAY_UDP_LISTEN: ${GATEWAY_UDP_LISTEN:-}
+      COORD_GATEWAY_ENDPOINTS: ${GATEWAY_ENDPOINTS:-}
       # A least-privilege database role (service relay-db-role): the relay reads
       # devices and tailnets, and writes only its own rows.
       DATABASE_URL_FILE: /var/lib/relay/database-url
