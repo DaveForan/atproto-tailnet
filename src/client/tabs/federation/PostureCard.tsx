@@ -15,7 +15,6 @@ export function PostureCard({ fed }: { fed: Federation }) {
             onChange={(e) => setPosture(e.target.value)}
           >
             <option value="open">Open</option>
-            <option value="selective">Selective</option>
             <option value="closed">Closed</option>
           </select>
           <button type="submit" disabled={busy || !canManage}>

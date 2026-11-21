@@ -357,19 +357,6 @@ export async function destroyInstance(containerId: string): Promise<void> {
   await container.remove();
 }
 
-/** Check whether a container is running, stopped, or gone entirely. */
-export async function getInstanceStatus(
-  containerId: string,
-): Promise<"running" | "stopped" | "missing"> {
-  try {
-    const container = docker.getContainer(containerId);
-    const info = await container.inspect();
-    return info.State.Running ? "running" : "stopped";
-  } catch {
-    return "missing";
-  }
-}
-
 /** Start a previously stopped Headscale container. */
 export async function startInstance(containerId: string): Promise<void> {
   const container = docker.getContainer(containerId);
@@ -399,40 +386,3 @@ function isNotModified(err: unknown): boolean {
   return (err as { statusCode?: number } | null)?.statusCode === 304;
 }
 
-/** Create a Headscale user inside a running container via `headscale users create`. */
-export async function createUserInInstance(
-  containerId: string,
-  username: string,
-): Promise<void> {
-  const container = docker.getContainer(containerId);
-  await execInContainer(container, [
-    "headscale",
-    "users",
-    "create",
-    username,
-  ]);
-}
-
-/** Generate a 24-hour pre-auth key for a user via `headscale preauthkeys create`. */
-export async function createPreAuthKeyInInstance(
-  containerId: string,
-  username: string,
-): Promise<string> {
-  const container = docker.getContainer(containerId);
-  const { stdout, stderr, exitCode } = await execInContainer(container, [
-    "headscale",
-    "preauthkeys",
-    "create",
-    "--user",
-    username,
-    "--expiration",
-    "24h",
-  ]);
-  const key = stdout.split("\n").map((l) => l.trim()).filter(Boolean).pop() ?? "";
-  if (exitCode !== 0 || !key) {
-    throw new Error(
-      `headscale preauthkeys create failed (exit ${exitCode}): ${stderr || "no output"}`,
-    );
-  }
-  return key;
-}

@@ -59,7 +59,7 @@ export function useFederation() {
 
   const [acceptCidrs, setAcceptCidrs] = useState<Record<string, string>>({});
 
-  const [posture, setPosture] = useState("selective");
+  const [posture, setPosture] = useState("closed");
   const [scopes, setScopes] = useState<FederationScope[]>(["regional"]);
   const [region, setRegion] = useState("");
   const [lat, setLat] = useState("");

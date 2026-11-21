@@ -21,6 +21,7 @@ import { notifyUser } from "../notifications/service.js";
 import { listUserDevices } from "../access/devices.js";
 import { syncTenantAccess } from "../access/sync.js";
 import { stepUpForSession } from "../auth/step-up.js";
+import { parseBody } from "./validation.js";
 
 export const sharingRouter = Router();
 
@@ -364,11 +365,8 @@ const shareBody = z.object({
 sharingRouter.post("/api/tenants/:tenantId/shares", requireAuth, stepUpForSession, memberNotLockedDown, async (req, res) => {
   const m = tenantCtx(res);
   const tenantId = m.tenant.id;
-  const parsed = shareBody.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
-    return;
-  }
+  const parsed = parseBody(shareBody, req, res);
+  if (!parsed) return;
   const d = parsed.data;
   if (d.friendId === m.userId || !(await areFriends(tenantId, m.userId, d.friendId))) {
     res.status(403).json({ error: "You can only share with a friend", code: "not_friends" });
@@ -457,11 +455,8 @@ sharingRouter.post("/api/tenants/:tenantId/shares/:shareId/accept", requireAuth,
     res.status(404).json({ error: "Share not found" });
     return;
   }
-  const parsed = acceptBody.safeParse(req.body ?? {});
-  if (!parsed.success) {
-    res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
-    return;
-  }
+  const parsed = parseBody(acceptBody, req, res, { emptyAsObject: true });
+  if (!parsed) return;
   if (!(await areFriends(tenantId, share.ownerId, share.guestId))) {
     await db.update(deviceShares).set({ status: "ended", endedAt: new Date() }).where(eq(deviceShares.id, share.id));
     res.status(409).json({ error: "You are no longer friends" });

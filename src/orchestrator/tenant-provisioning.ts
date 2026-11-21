@@ -1,10 +1,7 @@
 /**
  * @module orchestrator/tenant-provisioning
- * Creating a tailnet: the tenant row, system roles, originator membership and
- * public address ({@link provisionTenant}), then its control plane
- * ({@link provisionTenantInstance}: a coordinator tenant or a Headscale
- * container). Used by first sign-in, `POST /api/tenants/mine` and
- * sub-collective creation.
+ * Creates a tailnet: the database records ({@link createTenantRecord}), then
+ * its control plane ({@link provisionTenantInstance}), after the commit.
  */
 
 import { eq } from "drizzle-orm";
@@ -39,92 +36,116 @@ async function generateUniqueSlug(): Promise<string> {
   throw new Error("Could not generate unique slug");
 }
 
+type Tenant = typeof tenants.$inferSelect;
+
+export interface NewTenantRecord {
+  ownerUserId: string;
+  name: string;
+  /** Sub-collectives inherit hierarchy, IP allocation and caps from the parent. */
+  parent?: Tenant;
+  /** Fixed internal slug; omitted means a fresh opaque slug per attempt. */
+  slug?: string;
+  /** First public address; omitted means a random friendly name. */
+  hostname?: string;
+}
+
+/** Attempts per tenant insert; the port, slug or hostname can race with another insert. */
+const INSERT_ATTEMPTS = 3;
+
 /**
- * Creates a top-level tenant owned by `user` (roles, originator membership)
- * and provisions its control plane asynchronously. Callers must have checked
- * {@link canCreateTailnet}. The first operator tailnet becomes the instance
- * default (with join requests on) when no default is set.
+ * Inserts the tenant row, its public address, the system roles, the default
+ * role and the originator membership in one transaction.
+ * Errors: a unique violation (23505) after the last attempt, or any other database error.
+ */
+export async function createTenantRecord(rec: NewTenantRecord): Promise<Tenant> {
+  const { parent } = rec;
+  const prefixes = await allocateTenantPrefixes();
+  for (let attempt = 0; ; attempt++) {
+    const slug = rec.slug ?? (await generateUniqueSlug());
+    const hostname = rec.hostname ?? (await generateAvailableFriendlyName());
+    // Coordinator tenants have no Headscale container, so they get a
+    // placeholder port instead of one from the range.
+    const port = await allocateTenantPort(!useCoordinator);
+    try {
+      return await db.transaction(async (tx) => {
+        const [tenant] = await tx
+          .insert(tenants)
+          .values({
+            slug,
+            name: rec.name,
+            ownerUserId: rec.ownerUserId,
+            port,
+            apiKey: "",
+            status: "provisioning",
+            accessMode: useCoordinator ? "member" : "open",
+            ipv4Prefix: prefixes.ipv4Prefix,
+            ipv6Prefix: prefixes.ipv6Prefix,
+            ...(parent && {
+              parentId: parent.id,
+              path: parent.path ? `${parent.path}.${slug}` : slug,
+              depth: parent.depth + 1,
+              maxSubCollectives: 10,
+              ipAllocation: parent.ipAllocation,
+              // An unlimited (0) child under a capped parent would bypass the parent's caps
+              maxDevices: parent.maxDevices,
+              maxMembers: parent.maxMembers,
+            }),
+          })
+          .returning();
+        await registerInitialHostname(tenant.id, hostname, tx);
+
+        const [originatorRole] = await tx
+          .insert(roles)
+          .values({
+            tenantId: tenant.id,
+            name: "originator",
+            description: "Full control over the tailnet",
+            permissions: [...ORIGINATOR_PERMISSIONS],
+            isSystem: true,
+          })
+          .returning();
+        const [citizenRole] = await tx
+          .insert(roles)
+          .values({
+            tenantId: tenant.id,
+            name: "citizen",
+            description: "Default role for new members",
+            permissions: [...DEFAULT_CITIZEN_PERMISSIONS],
+            isSystem: true,
+          })
+          .returning();
+        await tx
+          .update(tenants)
+          .set({ defaultRoleId: citizenRole.id, updatedAt: new Date() })
+          .where(eq(tenants.id, tenant.id));
+
+        await tx.insert(memberships).values({
+          userId: rec.ownerUserId,
+          tenantId: tenant.id,
+          roleId: originatorRole.id,
+          isOriginator: true,
+        });
+        return { ...tenant, defaultRoleId: citizenRole.id };
+      });
+    } catch (err: unknown) {
+      if ((err as { code?: string }).code !== "23505" || attempt === INSERT_ATTEMPTS - 1) throw err;
+    }
+  }
+}
+
+/**
+ * Creates a top-level tenant owned by `user` and provisions its control plane
+ * after the commit. Callers must have checked {@link canCreateTailnet}. The
+ * first operator tailnet becomes the instance default when none is set.
  */
 export async function provisionTenant(
   user: typeof users.$inferSelect,
   displayName: string,
-  handle: string,
   opts: { name?: string } = {},
-): Promise<typeof tenants.$inferSelect> {
-  const prefixes = await allocateTenantPrefixes();
-
-  let tenant: typeof tenants.$inferSelect | undefined;
-  let slug = "";
-  let port = 0;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    // Re-derive both unique values on every attempt (either can race)
-    slug = await generateUniqueSlug();
-    // Coordinator-mode tenants have no Headscale container, so they get a
-    // synthetic placeholder instead of consuming a real port from the range.
-    port = await allocateTenantPort(!useCoordinator);
-    try {
-      const [inserted] = await db
-        .insert(tenants)
-        .values({
-          slug,
-          name: opts.name ?? `${displayName}'s tailnet`,
-          ownerUserId: user.id,
-          port,
-          apiKey: "",
-          status: "provisioning",
-          accessMode: useCoordinator ? "member" : "open",
-          ipv4Prefix: prefixes.ipv4Prefix,
-          ipv6Prefix: prefixes.ipv6Prefix,
-        })
-        .returning();
-      tenant = inserted;
-      break;
-    } catch (err: unknown) {
-      const pgErr = err as { code?: string };
-      if (attempt === 2 || pgErr.code !== "23505") throw err;
-    }
-  }
-  if (!tenant) throw new Error("Failed to create tenant after retries");
-  // Public address: a random friendly name the originator is asked to change
-  // in the setup wizard. The internal slug is never routed publicly.
-  await registerInitialHostname(tenant.id, await generateAvailableFriendlyName());
-
-  // Create system roles
-  const [originatorRole] = await db
-    .insert(roles)
-    .values({
-      tenantId: tenant.id,
-      name: "originator",
-      description: "Full control over the tailnet",
-      permissions: [...ORIGINATOR_PERMISSIONS],
-      isSystem: true,
-    })
-    .returning();
-
-  const [citizenRole] = await db
-    .insert(roles)
-    .values({
-      tenantId: tenant.id,
-      name: "citizen",
-      description: "Default role for new members",
-      permissions: [...DEFAULT_CITIZEN_PERMISSIONS],
-      isSystem: true,
-    })
-    .returning();
-
-  // Set citizen as the default role for new members
-  await db
-    .update(tenants)
-    .set({ defaultRoleId: citizenRole.id })
-    .where(eq(tenants.id, tenant.id));
-
-  // Create originator membership
-  await db.insert(memberships).values({
-    userId: user.id,
-    tenantId: tenant.id,
-    role: "owner",
-    roleId: originatorRole.id,
-    isOriginator: true,
+): Promise<Tenant> {
+  const tenant = await createTenantRecord({
+    ownerUserId: user.id,
+    name: opts.name ?? `${displayName}'s tailnet`,
   });
 
   try {
@@ -134,23 +155,15 @@ export async function provisionTenant(
   }
 
   setImmediate(() => {
-    void provisionTenantInstance(tenant!.id, slug, port);
+    void provisionTenantInstance(tenant.id, tenant.slug, tenant.port);
   });
   return tenant;
 }
 
 /**
- * Bring a tenant's control-plane instance up and mark the tenant running.
- *
- * In coordinator mode: creates the tenant in the Rust coordinator via REST,
- * stores the coordinator-side tenant UUID, sets default policy.
- *
- * In Headscale mode: starts a Docker container (or adopts a leftover one),
- * stores its API key, installs the default ACL policy.
- *
- * Both modes sync Caddy routes at the end. On failure the tenant is marked "error".
- * Sub-collectives pass the parent's coordinator tenant id so the coordinator
- * knows the hierarchy (route aggregation, federation posture).
+ * Brings up the tenant's control plane (coordinator tenant or Headscale
+ * container), marks it running and syncs Caddy. On failure the tenant is
+ * marked "error". Sub-collectives pass the parent's coordinator tenant id.
  */
 export async function provisionTenantInstance(
   tenantId: string,
@@ -211,11 +224,11 @@ async function provisionViaCoordinator(
       acls: [{ action: "accept", src: ["*"], dst: ["*:*"] }],
     });
   } catch (err) {
-    // Compensating delete — best effort
+    // Best-effort compensating delete; the original error is the one to report
     try {
       await getCoordinatorClient({ coordinatorTenantId: coordTenant.id }).deleteTenant();
     } catch {
-      // Best-effort cleanup; log the original error
+      // ignored
     }
     throw err;
   }

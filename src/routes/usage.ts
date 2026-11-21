@@ -20,6 +20,7 @@ import { tenantGuard, tenantCtx } from "./guard.js";
 import { MAX_LIMIT, checkChildLimit, countMembers, isOverLimit } from "./limits.js";
 import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
+import { parseBody } from "./validation.js";
 
 export const usageRouter = Router();
 
@@ -97,13 +98,8 @@ usageRouter.put(
     const tenantId = param(req, "tenantId");
     const result = tenantCtx(res);
 
-    const parsed = limitsBody.safeParse(req.body);
-    if (!parsed.success) {
-      res
-        .status(400)
-        .json({ error: "Invalid body", details: parsed.error.issues });
-      return;
-    }
+    const parsed = parseBody(limitsBody, req, res);
+    if (!parsed) return;
 
     const { maxDevices, maxMembers } = parsed.data;
 

@@ -9,7 +9,6 @@ import type {
   CredentialVerificationResult,
   HolderBindingChallenge,
   HolderBindingProof,
-  CredentialBundle,
 } from "./types.js";
 
 type VerifyKey = jose.CryptoKey | jose.KeyObject;
@@ -76,39 +75,6 @@ export async function verifyCredential(
   }
 }
 
-export async function verifyBundle(
-  bundle: CredentialBundle,
-  resolver: PublicKeyResolver,
-): Promise<{
-  valid: boolean;
-  results: CredentialVerificationResult[];
-  errors: string[];
-}> {
-  const results: CredentialVerificationResult[] = [];
-  const errors: string[] = [];
-
-  for (const cred of bundle.credentials) {
-    const result = await verifyCredential(cred.jwt, resolver);
-    results.push(result);
-
-    if (!result.valid) {
-      errors.push(`${cred.type}: ${result.error}`);
-      continue;
-    }
-
-    if (result.subject !== bundle.holder) {
-      errors.push(`${cred.type}: subject ${result.subject} does not match bundle holder ${bundle.holder}`);
-      result.valid = false;
-    }
-  }
-
-  return {
-    valid: errors.length === 0,
-    results,
-    errors,
-  };
-}
-
 /** Format of nonces minted by `generateHolderChallenge` (32 bytes, base64url). */
 const HOLDER_NONCE_RE = /^[A-Za-z0-9_-]{43}$/;
 
@@ -152,32 +118,5 @@ export async function verifyHolderBinding(
     return { valid: true };
   } catch {
     return { valid: false, error: "Signature verification failed" };
-  }
-}
-
-/**
- * Ask an issuer's status endpoint whether a credential is revoked. Credential
- * ids are only unique per issuer, so the issuer DID is part of the query.
- */
-export async function verifyCredentialStatus(
-  statusEndpoint: string,
-  credentialId: string,
-  issuerDid: string,
-): Promise<{ valid: boolean; checked: string }> {
-  try {
-    const url = `${statusEndpoint}/${encodeURIComponent(credentialId)}?issuer=${encodeURIComponent(issuerDid)}`;
-    const res = await fetch(url, {
-      signal: AbortSignal.timeout(5000),
-    });
-    if (!res.ok) {
-      return { valid: false, checked: new Date().toISOString() };
-    }
-    const data = (await res.json()) as { status: string; checked: string };
-    return {
-      valid: data.status === "valid",
-      checked: data.checked,
-    };
-  } catch {
-    return { valid: false, checked: new Date().toISOString() };
   }
 }

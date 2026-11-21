@@ -2,8 +2,7 @@
  * @module routes/devices
  * Device and member management: list Headscale nodes grouped by user,
  * generate pre-auth keys (with optional device-approval flow), remove
- * individual nodes, list members, and kick members (cascading cleanup
- * of devices, services, board posts, and approvals).
+ * individual nodes, list members, and kick members (cascading cleanup).
  */
 
 import { Router } from "express";
@@ -22,11 +21,8 @@ import {
   requireAuth,
   param,
   hasPermission,
-  isLockedDown,
   toHsUsername,
   authUserId,
-  isDeviceLocked,
-  DEVICE_LOCKED_ERROR,
 } from "./helpers.js";
 import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
@@ -35,7 +31,8 @@ import { stepUpForSession } from "../auth/step-up.js";
 import { logger } from "../logger.js";
 import { tenantLoginServerFor } from "../orchestrator/hostnames.js";
 import { notify } from "../notifications/service.js";
-import { enforceDeviceLimit } from "./limits.js";
+import { sendDeviceRefusal } from "./limits.js";
+import { deviceAdmission } from "../access/admission.js";
 import {
   issueMemberKey,
   revokeControlKey,
@@ -46,6 +43,7 @@ import {
   type AuthKeyView,
 } from "../access/keys.js";
 import type { ControlPreAuthKeyInfo } from "../orchestrator/control-client.js";
+import { parseBody } from "./validation.js";
 
 /**
  * Router for device listing, auth-key generation, node removal,
@@ -152,16 +150,16 @@ devicesRouter.post(
       return;
     }
 
-    if (isLockedDown(result.tenant)) {
-      res.status(403).json({ error: "Tenant is in lockdown mode" });
+    const client = getControlClient(result.tenant);
+    const userId = authUserId(req);
+    const refusal = await deviceAdmission(result.tenant, result.membership, userId, client);
+    if (refusal && refusal !== "approval_required") {
+      sendDeviceRefusal(res, result.tenant, refusal);
       return;
     }
 
-    const parsedBody = authKeyBody.safeParse(req.body ?? {});
-    if (!parsedBody.success) {
-      res.status(400).json({ error: "Invalid body", details: parsedBody.error.issues });
-      return;
-    }
+    const parsedBody = parseBody(authKeyBody, req, res, { emptyAsObject: true });
+    if (!parsedBody) return;
 
     const keyOptionsError = memberKeyOptionsError(
       parsedBody.data,
@@ -172,7 +170,6 @@ devicesRouter.post(
       return;
     }
 
-    const userId = authUserId(req);
     const [user] = await db
       .select()
       .from(users)
@@ -183,15 +180,7 @@ devicesRouter.post(
         ? "owner"
         : toHsUsername(user.handle);
 
-    if (await isDeviceLocked(tenantId, userId)) {
-      res.status(403).json({ error: DEVICE_LOCKED_ERROR });
-      return;
-    }
-
-    const client = getControlClient(result.tenant);
-    if (!(await enforceDeviceLimit(res, result.tenant, client))) return;
-
-    if (result.tenant.requireDeviceApproval && !result.membership.isOriginator) {
+    if (refusal === "approval_required") {
       const [approval] = await db
         .insert(deviceApprovals)
         .values({

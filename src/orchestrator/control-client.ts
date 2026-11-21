@@ -32,10 +32,10 @@ export type {
 };
 
 export interface ControlClient {
-  createUser(name: string): Promise<HeadscaleUser>;
-  listUsers(): Promise<HeadscaleUser[]>;
-  getUserByName(name: string): Promise<HeadscaleUser | null>;
-  deleteUser(name: string): Promise<void>;
+  /** Headscale namespaces; the coordinator has none and leaves these out. */
+  createUser?(name: string): Promise<HeadscaleUser>;
+  listUsers?(): Promise<HeadscaleUser[]>;
+  deleteUser?(name: string): Promise<void>;
   /** `owner` is recorded by the coordinator (node ownership); Headscale ignores it. */
   createPreAuthKey(
     userName: string,

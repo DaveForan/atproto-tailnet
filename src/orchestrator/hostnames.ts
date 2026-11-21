@@ -22,6 +22,9 @@ import { tenants, tenantHostnames } from "../db/schema.js";
 import { sharedControlUrl, tenantPublicUrl } from "../config.js";
 import { useCoordinator } from "./control-client.js";
 
+/** The db client or an open transaction. */
+export type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+
 /** One DNS label: lowercase letters, digits, inner hyphens, 1-63 chars. */
 const LABEL_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
@@ -202,8 +205,12 @@ export async function hostnameAvailableFor(name: string, tenantId: string, now =
 }
 
 /** Record a new tenant's first primary public name. */
-export async function registerInitialHostname(tenantId: string, name: string): Promise<void> {
-  await db
+export async function registerInitialHostname(
+  tenantId: string,
+  name: string,
+  executor: DbExecutor = db,
+): Promise<void> {
+  await executor
     .insert(tenantHostnames)
     .values({ slug: name, tenantId, isPrimary: true })
     .onConflictDoNothing();

@@ -18,7 +18,7 @@ import { fetchAccountProfile } from "../identity/account.js";
 import { db } from "../db/index.js";
 import { users, memberships } from "../db/schema.js";
 import { logger } from "../logger.js";
-import { establishPendingSession, establishSession, trustedDeviceCount } from "./device-trust.js";
+import { establishPendingSession, establishSession, trustedDeviceCount } from "../auth/session.js";
 import { canCreateTailnet, withTailnetCreationLock } from "../operator/policy.js";
 import { provisionTenant } from "../orchestrator/tenant-provisioning.js";
 
@@ -221,7 +221,7 @@ authRouter.get("/auth/callback", async (req, res) => {
         .where(eq(memberships.userId, user.id))
         .limit(1);
       if (!anyMembership && (await canCreateTailnet(user))) {
-        await provisionTenant(user, displayName, handle);
+        await provisionTenant(user, displayName);
       }
     });
 

@@ -24,6 +24,7 @@ import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
 import { stepUpForSession } from "../auth/step-up.js";
 import { logger } from "../logger.js";
+import { parseBody } from "./validation.js";
 
 /** True when the tenant has a reachable control plane to read/write policy on. */
 function instanceAvailable(tenant: {
@@ -84,7 +85,7 @@ aclRouter.get(
         ? await getCoordinatorClient(result.tenant).getHeadscalePolicy()
         : await client.getPolicy();
 
-      const users = await client.listUsers();
+      const users = (await client.listUsers?.()) ?? [];
       const userNames = users.map((u) => u.name);
 
       res.json({ policy, users: userNames });
@@ -109,13 +110,8 @@ aclRouter.put(
       return;
     }
 
-    const parsed = aclPolicySchema.safeParse(req.body);
-    if (!parsed.success) {
-      res
-        .status(400)
-        .json({ error: "Invalid body", details: parsed.error.issues });
-      return;
-    }
+    const parsed = parseBody(aclPolicySchema, req, res);
+    if (!parsed) return;
 
     try {
       const client = getControlClient(result.tenant);

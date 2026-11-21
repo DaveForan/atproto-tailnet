@@ -1,13 +1,9 @@
 /**
  * @module members/permissions
- *
- * Every discrete permission that can be granted via a role.
- *
- * Permissions are stored as a JSONB string array on each role row. The
- * originator membership bypasses this array entirely — see
- * `hasPermission` in `routes/helpers.ts`. When adding a new permission,
- * append it here **and** add a label in {@link PERMISSION_LABELS}.
+ * Every permission a role can grant. A new permission also needs a label in {@link PERMISSION_LABELS}.
  */
+import { z } from "zod";
+
 export const ALL_PERMISSIONS = [
   "invite",
   "kick",
@@ -57,3 +53,22 @@ export const ORIGINATOR_PERMISSIONS: readonly Permission[] = ALL_PERMISSIONS;
 
 /** Citizen system role starts with no extra permissions. */
 export const DEFAULT_CITIZEN_PERMISSIONS: readonly Permission[] = [];
+
+/**
+ * Permissions a member effectively holds: all for originators, else the
+ * known permissions of the role, narrowed to an agent token's scope.
+ */
+export function effectivePermissions(
+  membership: { isOriginator: boolean },
+  role: { permissions: unknown } | null,
+  tokenScope?: readonly string[] | null,
+): Permission[] {
+  const known = ALL_PERMISSIONS as readonly string[];
+  const base: Permission[] = membership.isOriginator
+    ? [...ALL_PERMISSIONS]
+    : ((role?.permissions ?? []) as string[]).filter((p): p is Permission => known.includes(p));
+  return tokenScope ? base.filter((p) => tokenScope.includes(p)) : base;
+}
+
+/** A list of known permission names (request bodies). */
+export const permissionsSchema = z.array(z.enum(ALL_PERMISSIONS));

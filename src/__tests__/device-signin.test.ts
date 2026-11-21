@@ -7,14 +7,14 @@ vi.hoisted(() => {
   process.env.COORDINATOR_API_KEY = "k".repeat(40);
 });
 
-const { results, coord, enforceDeviceLimit } = vi.hoisted(() => ({
+const { results, coord, nodes } = vi.hoisted(() => ({
   results: [] as unknown[],
   coord: {
     getDeviceAuth: vi.fn(),
     approveDeviceAuth: vi.fn(async () => {}),
     denyDeviceAuth: vi.fn(async () => {}),
   },
-  enforceDeviceLimit: vi.fn(async (..._args: unknown[]) => true),
+  nodes: [] as unknown[],
 }));
 
 vi.mock("../db/index.js", () => {
@@ -40,7 +40,7 @@ vi.mock("../orchestrator/coordinator-api.js", () => ({
 }));
 vi.mock("../orchestrator/control-client.js", () => ({
   useCoordinator: true,
-  getControlClient: () => ({}),
+  getControlClient: () => ({ listNodes: async () => nodes }),
   getCoordinatorClient: () => ({
     getDeviceAuth: coord.getDeviceAuth,
     approveDeviceAuth: coord.approveDeviceAuth,
@@ -48,7 +48,7 @@ vi.mock("../orchestrator/control-client.js", () => ({
   }),
 }));
 vi.mock("../orchestrator/coordinator-identity.js", () => ({ pushTenantIdentity: vi.fn(async () => {}) }));
-vi.mock("../routes/limits.js", () => ({ enforceDeviceLimit }));
+vi.mock("../notifications/service.js", () => ({ notify: vi.fn() }));
 const { logAudit } = vi.hoisted(() => ({ logAudit: vi.fn() }));
 vi.mock("../audit/log.js", () => ({ logAudit }));
 
@@ -97,7 +97,7 @@ async function call(method: string, path: string, body?: unknown, headers: Recor
 beforeEach(() => {
   results.length = 0;
   vi.clearAllMocks();
-  enforceDeviceLimit.mockResolvedValue(true);
+  nodes.length = 0;
   coord.getDeviceAuth.mockResolvedValue({
     hostname: "phone", os: "iOS", fingerprint: "aaaa-bbbb-cccc-dddd", pending: true, registered_tenant_id: null,
     requester_ip: "203.0.113.7", requested_at: new Date(Date.now() - 30_000).toISOString(),
@@ -162,18 +162,19 @@ describe("device sign-in", () => {
     expect((await call("POST", `${ID}/approve`, { tenantId: T, confirm: true })).status).toBe(200);
   });
 
-  it("refuses a device-locked member and a tailnet at its device limit", async () => {
-    results.push(ctx(), [{ id: "lock" }]);
-    expect((await call("POST", `${ID}/approve`, { tenantId: T, confirm: true })).status).toBe(403);
-
-    enforceDeviceLimit.mockImplementation(async (...args: unknown[]) => {
-      const res = args[0] as { status: (c: number) => { json: (b: unknown) => void } };
-      res.status(403).json({ error: "limit", code: "device_limit" });
-      return false;
-    });
-    results.push(ctx(), []);
-    expect((await call("POST", `${ID}/approve`, { tenantId: T, confirm: true })).json.code).toBe("device_limit");
+  it("refuses a tailnet at its device limit", async () => {
+    nodes.push({ id: "1" });
+    results.push(ctx({ maxDevices: 1 }));
+    const r = await call("POST", `${ID}/approve`, { tenantId: T, confirm: true });
+    expect(r.status).toBe(403);
+    expect(r.json).toEqual({ error: "Device limit reached (1)", code: "device_limit" });
     expect(coord.approveDeviceAuth).not.toHaveBeenCalled();
+  });
+
+  it("does not read Headscale device locks (coordinator mode has machine locks)", async () => {
+    results.push(ctx(), [{ id: "lock" }]);
+    expect((await call("POST", `${ID}/approve`, { tenantId: T, confirm: true })).status).toBe(200);
+    expect(results).toEqual([[{ id: "lock" }]]);
   });
 
   it("a link the coordinator no longer knows is 404", async () => {

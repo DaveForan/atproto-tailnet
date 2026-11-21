@@ -314,7 +314,7 @@ invitationsRouter.post(
 
     try {
       const client = getControlClient(tenant);
-      await client.createUser(hsUsername);
+      await client.createUser?.(hsUsername);
     } catch {
       // User might already exist if they were previously a member
     }
@@ -322,7 +322,6 @@ invitationsRouter.post(
     await db.insert(memberships).values({
       userId: user.id,
       tenantId: tenant.id,
-      role: "member",
       roleId: tenant.defaultRoleId,
       isOriginator: false,
     }).onConflictDoNothing();

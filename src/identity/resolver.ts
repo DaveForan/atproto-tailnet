@@ -1,7 +1,6 @@
 /**
  * @module identity/resolver
- * DID resolution for did:web and did:plc methods (ADR-0017).
- * Implements PublicKeyResolver interface for credential verification.
+ * did:web and did:plc resolution for credential verification (ADR-0017).
  */
 
 import * as jose from "jose";
@@ -41,17 +40,9 @@ export const MAX_DID_DOC_BYTES = 256 * 1024;
 
 export interface DIDResolverOptions {
   cacheTtlMs?: number;
-  /**
-   * Public key for DIDs this instance hosts itself. Consulted first and never
-   * cached, so key rotation takes effect immediately and no HTTP round-trip
-   * to ourselves is needed.
-   */
+  /** Key for DIDs this instance hosts. Consulted first and never cached, so rotation applies at once. */
   localLookup?: (did: string) => Promise<jose.JWK | null>;
-  /**
-   * Whether a did:web host may be fetched. DIDs arrive from unauthenticated
-   * callers, so the default refuses anything that resolves to a non-public
-   * address (SSRF guard).
-   */
+  /** Whether a did:web host may be fetched. Security: the default refuses non-public addresses (SSRF). */
   hostCheck?: (host: string) => Promise<boolean>;
 }
 
@@ -81,14 +72,14 @@ export class DIDResolver implements PublicKeyResolver {
       return cached.key;
     }
 
-    let key: VerifyKey | null = null;
+    const doc = await fetchDidDocument(did, { hostCheck: this.hostCheck });
+    if (!doc) return null;
 
-    if (did.startsWith("did:web:")) {
-      key = await this.resolveDidWeb(did);
-    } else if (did.startsWith("did:plc:")) {
-      key = await this.resolveDidPlc(did);
-    } else {
-      logger.warn({ did }, "unsupported DID method");
+    let key: VerifyKey | null = null;
+    try {
+      key = await extractSigningKey(doc);
+    } catch (err) {
+      logger.warn({ did, err }, "DID document has no usable signing key");
       return null;
     }
 
@@ -97,49 +88,6 @@ export class DIDResolver implements PublicKeyResolver {
     }
 
     return key;
-  }
-
-  private async resolveDidWeb(did: string): Promise<VerifyKey | null> {
-    try {
-      const url = didWebToUrl(did);
-      if (!(await this.hostCheck(new URL(url).host))) {
-        logger.warn({ did }, "did:web host refused (not a public address)");
-        return null;
-      }
-
-      const doc = (await this.getDidWebJson(did, url)) as DIDDocument | null;
-      if (!doc) return null;
-      if (doc.id !== did) {
-        logger.warn({ did, docId: doc.id }, "did:web document id mismatch");
-        return null;
-      }
-      return extractSigningKey(doc);
-    } catch (err) {
-      logger.warn({ did, err }, "did:web resolution error");
-      return null;
-    }
-  }
-
-  private async resolveDidPlc(did: string): Promise<VerifyKey | null> {
-    try {
-      const url = `${PLC_DIRECTORY}/${encodeURIComponent(did)}`;
-      const res = await fetch(url, {
-        signal: AbortSignal.timeout(RESOLUTION_TIMEOUT_MS),
-        headers: { Accept: "application/did+json,application/json" },
-        redirect: "error",
-      });
-
-      if (!res.ok) {
-        logger.warn({ did, status: res.status }, "did:plc resolution failed");
-        return null;
-      }
-
-      const doc = (await res.json()) as DIDDocument;
-      return extractSigningKey(doc);
-    } catch (err) {
-      logger.warn({ did, err }, "did:plc resolution error");
-      return null;
-    }
   }
 
   private cacheKey(did: string, key: VerifyKey): void {
@@ -153,11 +101,7 @@ export class DIDResolver implements PublicKeyResolver {
     });
   }
 
-  /**
-   * Resolve a specific verification method from a DID document, returning the
-   * key with its algorithm and method ID. Used for method-specific resolution
-   * (e.g. `#atproto` for ES256K/ES256 account keys).
-   */
+  /** Resolve one verification method (e.g. `#atproto`) with its algorithm and method ID. */
   async resolveTyped(
     did: string,
     opts?: { methodId?: string; algorithms?: string[] },
@@ -168,7 +112,7 @@ export class DIDResolver implements PublicKeyResolver {
     const cached = this.typedCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) return cached.resolved;
 
-    // For local collectives, resolve as EdDSA (they always use #signing-key)
+    // Local collectives always sign with an EdDSA `#signing-key`.
     if (this.localLookup && (!opts?.methodId || opts.methodId === "#signing-key")) {
       const jwk = await this.localLookup(did);
       if (jwk) {
@@ -181,7 +125,7 @@ export class DIDResolver implements PublicKeyResolver {
       }
     }
 
-    const doc = await this.fetchDidDocument(did);
+    const doc = await fetchDidDocument(did, { hostCheck: this.hostCheck });
     if (!doc) return null;
 
     const resolved = await extractTypedKey(doc, opts);
@@ -189,82 +133,6 @@ export class DIDResolver implements PublicKeyResolver {
       this.cacheTypedKey(cacheKey, resolved);
     }
     return resolved;
-  }
-
-  private async fetchDidDocument(did: string): Promise<DIDDocument | null> {
-    if (did.startsWith("did:web:")) return this.fetchDidWebDoc(did);
-    if (did.startsWith("did:plc:")) return this.fetchDidPlcDoc(did);
-    logger.warn({ did }, "unsupported DID method");
-    return null;
-  }
-
-  /**
-   * GET a did:web document. With the default host policy (production) this
-   * goes through {@link guardedGetJson}: the public-address check is repeated
-   * at connect time (no DNS-rebinding window) and the body is size-capped.
-   * A custom `hostCheck` (tests) uses plain `fetch`.
-   */
-  private async getDidWebJson(did: string, url: string): Promise<unknown | null> {
-    if (this.hostCheck === isPublicHost) {
-      const out = await guardedGetJson(url, {
-        timeoutMs: RESOLUTION_TIMEOUT_MS,
-        maxBytes: MAX_DID_DOC_BYTES,
-      });
-      if (!out.ok) {
-        logger.warn({ did, status: out.status }, "did:web resolution failed");
-        return null;
-      }
-      return out.json;
-    }
-    const res = await fetch(url, {
-      signal: AbortSignal.timeout(RESOLUTION_TIMEOUT_MS),
-      headers: { Accept: "application/did+json,application/json" },
-      redirect: "error",
-    });
-    if (!res.ok) {
-      logger.warn({ did, status: res.status }, "did:web resolution failed");
-      return null;
-    }
-    return res.json();
-  }
-
-  private async fetchDidWebDoc(did: string): Promise<DIDDocument | null> {
-    try {
-      const url = didWebToUrl(did);
-      if (!(await this.hostCheck(new URL(url).host))) {
-        logger.warn({ did }, "did:web host refused (not a public address)");
-        return null;
-      }
-      const doc = (await this.getDidWebJson(did, url)) as DIDDocument | null;
-      if (!doc) return null;
-      if (doc.id !== did) {
-        logger.warn({ did, docId: doc.id }, "did:web document id mismatch");
-        return null;
-      }
-      return doc;
-    } catch (err) {
-      logger.warn({ did, err }, "did:web resolution error");
-      return null;
-    }
-  }
-
-  private async fetchDidPlcDoc(did: string): Promise<DIDDocument | null> {
-    try {
-      const url = `${PLC_DIRECTORY}/${encodeURIComponent(did)}`;
-      const res = await fetch(url, {
-        signal: AbortSignal.timeout(RESOLUTION_TIMEOUT_MS),
-        headers: { Accept: "application/did+json,application/json" },
-        redirect: "error",
-      });
-      if (!res.ok) {
-        logger.warn({ did, status: res.status }, "did:plc resolution failed");
-        return null;
-      }
-      return (await res.json()) as DIDDocument;
-    } catch (err) {
-      logger.warn({ did, err }, "did:plc resolution error");
-      return null;
-    }
   }
 
   private cacheTypedKey(cacheKey: string, resolved: ResolvedKey): void {
@@ -299,11 +167,100 @@ interface VerificationMethod {
   publicKeyMultibase?: string;
 }
 
-interface DIDDocument {
+export interface DIDDocument {
   id: string;
+  alsoKnownAs?: unknown;
   verificationMethod?: VerificationMethod[];
   authentication?: (string | VerificationMethod)[];
   assertionMethod?: (string | VerificationMethod)[];
+}
+
+const DID_DOC_ACCEPT = "application/did+json,application/json";
+
+/**
+ * The DID document for a did:web or did:plc DID, or null. Never throws.
+ * Security: did:web hosts must pass `hostCheck` (default: public addresses only).
+ */
+export async function fetchDidDocument(
+  did: string,
+  opts?: { hostCheck?: (host: string) => Promise<boolean> },
+): Promise<DIDDocument | null> {
+  const hostCheck = opts?.hostCheck ?? isPublicHost;
+  let doc: unknown;
+  if (did.startsWith("did:web:")) {
+    doc = await fetchDidWebJson(did, hostCheck);
+    if (isDocObject(doc) && doc.id !== did) {
+      logger.warn({ did, docId: doc.id }, "did:web document id mismatch");
+      return null;
+    }
+  } else if (did.startsWith("did:plc:")) {
+    doc = await fetchDidPlcJson(did);
+  } else {
+    logger.warn({ did }, "unsupported DID method");
+    return null;
+  }
+  return isDocObject(doc) ? doc : null;
+}
+
+function isDocObject(doc: unknown): doc is DIDDocument {
+  return typeof doc === "object" && doc !== null && !Array.isArray(doc);
+}
+
+// The default policy fetches through guardedGetJson: connect-time address check and size cap.
+// A custom `hostCheck` (tests only) uses plain `fetch`.
+async function fetchDidWebJson(
+  did: string,
+  hostCheck: (host: string) => Promise<boolean>,
+): Promise<unknown> {
+  try {
+    const url = didWebToUrl(did);
+    if (!(await hostCheck(new URL(url).host))) {
+      logger.warn({ did }, "did:web host refused (not a public address)");
+      return null;
+    }
+    if (hostCheck === isPublicHost) {
+      const out = await guardedGetJson(url, {
+        timeoutMs: RESOLUTION_TIMEOUT_MS,
+        maxBytes: MAX_DID_DOC_BYTES,
+      });
+      if (!out.ok) {
+        logger.warn({ did, status: out.status }, "did:web resolution failed");
+        return null;
+      }
+      return out.json;
+    }
+    const res = await fetch(url, {
+      signal: AbortSignal.timeout(RESOLUTION_TIMEOUT_MS),
+      headers: { Accept: DID_DOC_ACCEPT },
+      redirect: "error",
+    });
+    if (!res.ok) {
+      logger.warn({ did, status: res.status }, "did:web resolution failed");
+      return null;
+    }
+    return await res.json();
+  } catch (err) {
+    logger.warn({ did, err }, "did:web resolution error");
+    return null;
+  }
+}
+
+async function fetchDidPlcJson(did: string): Promise<unknown> {
+  try {
+    const res = await fetch(`${PLC_DIRECTORY}/${encodeURIComponent(did)}`, {
+      signal: AbortSignal.timeout(RESOLUTION_TIMEOUT_MS),
+      headers: { Accept: DID_DOC_ACCEPT },
+      redirect: "error",
+    });
+    if (!res.ok) {
+      logger.warn({ did, status: res.status }, "did:plc resolution failed");
+      return null;
+    }
+    return await res.json();
+  } catch (err) {
+    logger.warn({ did, err }, "did:plc resolution error");
+    return null;
+  }
 }
 
 export function didWebToUrl(did: string): string {
@@ -327,11 +284,7 @@ async function importEd25519Jwk(jwk: jose.JWK): Promise<VerifyKey | null> {
   }
 }
 
-/**
- * Pick the document's Ed25519 key: assertion/authentication methods first,
- * then any verification method. Keys in other formats (e.g. the secp256k1
- * `publicKeyMultibase` keys of did:plc accounts) are not supported.
- */
+/** The document's Ed25519 key: assertion/authentication methods first, then any method. JWK only. */
 async function extractSigningKey(doc: DIDDocument): Promise<VerifyKey | null> {
   const methods = doc.verificationMethod ?? [];
   const preferred = (doc.assertionMethod ?? doc.authentication ?? []).map((ref) =>
@@ -478,11 +431,7 @@ export function isPublicAddress(address: string): boolean {
   return !NON_PUBLIC.check(address, family === 4 ? "ipv4" : "ipv6");
 }
 
-/**
- * Default did:web host policy: HTTPS default port only, and every address the
- * name resolves to must be public. The fetch repeats the check at connect
- * time ({@link guardedGetJson}), refuses redirects and caps the body size.
- */
+/** Default did:web host policy: HTTPS default port only, and every resolved address must be public. */
 export async function isPublicHost(host: string): Promise<boolean> {
   let hostname: string;
   try {
@@ -496,12 +445,7 @@ export async function isPublicHost(host: string): Promise<boolean> {
   return resolvesToPublicAddresses(hostname);
 }
 
-/**
- * True when `hostname` (an IP literal, bracketed or not, or a DNS name) is a
- * public address, or resolves only to public addresses. Rejects private,
- * loopback, link-local, CGNAT, unspecified, ULA, multicast and IPv4-mapped
- * forms of any of those. Unresolvable names are rejected.
- */
+/** True when `hostname` (IP literal or DNS name) is, or resolves only to, public addresses. */
 export async function resolvesToPublicAddresses(hostname: string): Promise<boolean> {
   const bare = hostname.replace(/^\[|\]$/g, "");
   if (!bare) return false;
@@ -542,10 +486,7 @@ export function getResolver(): DIDResolver {
   return defaultResolver;
 }
 
-/**
- * DNS lookup that refuses non-public answers. Used at connect time so a
- * DNS-rebinding answer cannot slip a private address in after validation.
- */
+/** Connect-time DNS lookup that refuses non-public answers, so DNS rebinding cannot pass validation. */
 export function guardedLookup(
   hostname: string,
   options: dns.LookupOptions,
@@ -573,11 +514,8 @@ export interface GuardedResponse {
 }
 
 /**
- * HTTPS request to an untrusted host: public addresses only (checked at
- * connect time by {@link guardedLookup}, so a DNS-rebinding answer after an
- * earlier check cannot reach an internal service), no redirects, timeout, and
- * a body size cap. The body of a non-2xx answer is never read, so a remote
- * error page cannot leak into our error messages.
+ * HTTPS request to an untrusted host: public addresses only, no redirects, timeout and size cap.
+ * Security: a non-2xx body is never read, so remote error pages cannot leak into our errors.
  */
 export function guardedRequest(
   url: string,
@@ -639,26 +577,20 @@ export function guardedRequest(
   });
 }
 
-/**
- * HTTPS GET of a JSON document from an untrusted host, through
- * {@link guardedRequest}.
- */
+/** HTTPS GET of a JSON document from an untrusted host, through {@link guardedRequest}. */
 export async function guardedGetJson(
   url: string,
   opts: { timeoutMs: number; maxBytes: number },
 ): Promise<{ ok: boolean; status: number; json: unknown }> {
   const res = await guardedRequest(url, {
-    headers: { Accept: "application/did+json,application/json" },
+    headers: { Accept: DID_DOC_ACCEPT },
     timeoutMs: opts.timeoutMs,
     maxBytes: opts.maxBytes,
   });
   return { ok: res.ok, status: res.status, json: res.ok ? JSON.parse(res.text) : null };
 }
 
-/**
- * A short error text for a failed outbound request, safe to show: never the
- * remote body or internal details.
- */
+/** Short error text for a failed outbound request. It never contains the remote body. */
 export function outboundErrorText(err: unknown): string {
   const e = err as { code?: string; name?: string; message?: string } | null;
   if (e?.code === "EPRIVATE" || /non-public/.test(e?.message ?? "")) return "address not allowed";

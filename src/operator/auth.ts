@@ -21,14 +21,6 @@ export function currentUserId(req: Request): string | null {
   }
 }
 
-/** True when the request is an operator acting as themselves (not via an agent token). */
-export async function isOperatorRequest(req: Request): Promise<boolean> {
-  if (req.agentToken) return false;
-  if (req.mcpAuth && !req.mcpAuth.operator) return false;
-  if (!currentUserId(req)) return false;
-  return isOperatorDid(await authUserDid(req));
-}
-
 /** Express guard for /api/operator/*: 401 anonymous, 403 agent tokens and non-operators. */
 export async function requireOperator(
   req: Request,

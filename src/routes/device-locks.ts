@@ -1,7 +1,8 @@
 /**
  * @module routes/device-locks
- * Device locks (Headscale mode): lock a member to their current devices,
- * remove a lock (`lock_devices`, step-up) and read a member's lock state.
+ * Device locks (Headscale mode): lock a member to their current devices
+ * (self or `lock_devices`, step-up), remove a lock (`lock_devices`, step-up)
+ * and read a member's lock state.
  */
 
 import { Router } from "express";
@@ -13,7 +14,6 @@ import { getControlClient, useCoordinator } from "../orchestrator/control-client
 import {
   requireAuth,
   param,
-  getTenantForUser,
   hasPermission,
   toHsUsername,
   authUserId,
@@ -22,31 +22,28 @@ import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
 import { stepUpForSession } from "../auth/step-up.js";
 import { logger } from "../logger.js";
+import { parseBody } from "./validation.js";
 
 export const deviceLocksRouter = Router();
+
+/** Coordinator mode has the per-member machine lock (ADR-0035 §2) instead. */
+const COORDINATOR_MODE_ERROR = "Device locks exist only in Headscale mode. Use the machine lock in coordinator mode.";
 
 const deviceLockBody = z.object({
   userId: z.string().uuid(),
 });
 
-// ── Device locks ────────────────────────────────────────────────────
-
 deviceLocksRouter.post(
   "/api/tenants/:tenantId/device-locks",
   requireAuth,
+  stepUpForSession,
+  // No lockdown check: a lock only reduces access, which lockdown must allow.
+  tenantGuard(),
   async (req, res) => {
     const tenantId = param(req, "tenantId");
-    const parsed = deviceLockBody.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
-      return;
-    }
-
-    const result = await getTenantForUser(tenantId, authUserId(req));
-    if (!result) {
-      res.status(404).json({ error: "Tenant not found" });
-      return;
-    }
+    const result = tenantCtx(res);
+    const parsed = parseBody(deviceLockBody, req, res);
+    if (!parsed) return;
 
     const targetUserId = parsed.data.userId;
     const isSelf = targetUserId === authUserId(req);
@@ -56,7 +53,7 @@ deviceLocksRouter.post(
     }
 
     if (useCoordinator) {
-      res.status(501).json({ error: "Device locks are not supported in coordinator mode — nodes are not user-scoped" });
+      res.status(501).json({ error: COORDINATOR_MODE_ERROR });
       return;
     }
 
@@ -143,15 +140,12 @@ deviceLocksRouter.delete(
   async (req, res) => {
     const tenantId = param(req, "tenantId");
 
-    const parsed = deviceLockBody.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
-      return;
-    }
+    const parsed = parseBody(deviceLockBody, req, res);
+    if (!parsed) return;
     const targetUserId = parsed.data.userId;
 
     if (useCoordinator) {
-      res.status(501).json({ error: "Device locks are not supported in coordinator mode — nodes are not user-scoped" });
+      res.status(501).json({ error: COORDINATOR_MODE_ERROR });
       return;
     }
 

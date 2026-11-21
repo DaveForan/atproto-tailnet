@@ -51,8 +51,9 @@ import {
 } from "./helpers.js";
 import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
-import { ALL_PERMISSIONS } from "../members/permissions.js";
+import { effectivePermissions, permissionsSchema } from "../members/permissions.js";
 import { stepUpForSession } from "../auth/step-up.js";
+import { parseBody } from "./validation.js";
 
 export const agentsRouter = Router();
 
@@ -61,9 +62,7 @@ const MAX_EXPIRY_DAYS = 365;
 
 const createTokenBody = z.object({
   name: z.string().min(1).max(100),
-  permissions: z.array(
-    z.enum(ALL_PERMISSIONS as unknown as [string, ...string[]]),
-  ),
+  permissions: permissionsSchema,
   expiresInDays: z.number().int().min(1).max(MAX_EXPIRY_DAYS),
 });
 
@@ -114,21 +113,12 @@ agentsRouter.post(
       return;
     }
 
-    const parsed = createTokenBody.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
-      return;
-    }
+    const parsed = parseBody(createTokenBody, req, res);
+    if (!parsed) return;
 
-    // Validate that requested permissions don't exceed the creator's own permissions
-    let userPerms: string[] = result.membership.isOriginator
-      ? [...ALL_PERMISSIONS]
-      : ((result.role?.permissions ?? []) as string[]);
-    if (req.agentToken) {
-      userPerms = userPerms.filter((p) => (req.agentToken!.permissions as string[]).includes(p));
-    }
-
-    const exceeds = parsed.data.permissions.filter((p) => !userPerms.includes(p));
+    // Agent tokens were refused above, so no token scope applies here
+    const held = new Set<string>(effectivePermissions(result.membership, result.role));
+    const exceeds = parsed.data.permissions.filter((p) => !held.has(p));
     if (exceeds.length > 0) {
       res.status(403).json({
         error: "Cannot grant permissions you don't have: " + exceeds.join(", "),

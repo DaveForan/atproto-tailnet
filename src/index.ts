@@ -1,20 +1,8 @@
 /**
  * @module index
- *
- * Application entry point. Assembles Express middleware, mounts route modules,
- * configures session store, rate limiting, and the agent token middleware chain.
- *
- * Middleware order (for `/api/*` routes):
- * 1. Security headers
- * 2. JSON body parser
- * 3. Session (PostgreSQL-backed via connect-pg-simple)
- * 4. CSRF token endpoint + validation middleware
- * 5. Dashboard router (HTML, no auth required)
- * 6. Auth rate limiter + auth router
- * 7. API rate limiter
- * 8. {@link resolveAgentToken} — Bearer token → agent context
- * 9. {@link enforceAgentScope} — tenant UUID match for agent tokens
- * 10. All API route modules
+ * Entry point: middleware, route modules, background loops and graceful shutdown.
+ * Order for `/api/*`: headers, JSON parsers (federation messages first, 64 KiB),
+ * session, CSRF, dashboard, auth, rate limits, resolveAgentToken, enforceAgentScope, routes.
  */
 import express from "express";
 import type { Request, Response, NextFunction } from "express";
@@ -23,9 +11,8 @@ import connectPgSimple from "connect-pg-simple";
 import rateLimit from "express-rate-limit";
 import { randomBytes } from "node:crypto";
 import { config, sessionCookieName } from "./config.js";
-import { db, pool } from "./db/index.js";
-import { tenants } from "./db/schema.js";
-import { and, eq, ne } from "drizzle-orm";
+import { pool } from "./db/index.js";
+import { createShutdown } from "./shutdown.js";
 import { authRouter } from "./routes/auth.js";
 import { apiRouter, tlsCertAllowedForSlug } from "./routes/api.js";
 import { hostnamesRouter } from "./routes/hostnames.js";
@@ -36,7 +23,8 @@ import { boardsRouter } from "./routes/boards.js";
 import { sharingRouter } from "./routes/sharing.js";
 import { machineLockRouter } from "./routes/machine-lock.js";
 import { deviceSignInRouter } from "./routes/device-signin.js";
-import { deviceTrustRouter, enforceDeviceEnrollment } from "./routes/device-trust.js";
+import { deviceTrustRouter } from "./routes/device-trust.js";
+import { enforceDeviceEnrollment } from "./auth/session.js";
 import { agentsRouter } from "./routes/agents.js";
 import { aclRouter } from "./routes/acl.js";
 import { derpRouter } from "./routes/derp.js";
@@ -47,16 +35,16 @@ import { federationRouter } from "./routes/federation.js";
 import { collectivesRouter } from "./routes/collectives.js";
 import { traversalRouter } from "./routes/traversal.js";
 import { credentialsRouter } from "./routes/credentials.js";
-import { federationMessagesRouter } from "./routes/federation-messages.js";
+import { federationBodyParser, federationMessagesRouter } from "./routes/federation-messages.js";
 import { dashboardRouter } from "./routes/dashboard.js";
 import { operatorRouter, instanceRouter } from "./routes/operator.js";
 import { enforceOperatorState } from "./operator/access.js";
 import { resolveAgentToken, enforceAgentScope, csrfTokenMatches } from "./routes/helpers.js";
 import { oauthRouter, mcpRouter, isInternalMcpCall } from "./mcp/index.js";
 import { mcpConnectionsRouter } from "./routes/mcp-connections.js";
-import { startHealthMonitor } from "./orchestrator/monitor.js";
-import { startBroker } from "./orchestrator/federation-broker.js";
-import { startAbuseSweep } from "./federation/abuse.js";
+import { startHealthMonitor, stopHealthMonitor } from "./orchestrator/monitor.js";
+import { startBroker, stopBroker } from "./orchestrator/federation-broker.js";
+import { startAbuseSweep, stopAbuseSweep } from "./federation/abuse.js";
 import { reconcileTenantRouting } from "./orchestrator/caddy.js";
 import { logger } from "./logger.js";
 import { purgeStoredOAuthSessions } from "./auth/atproto.js";
@@ -113,6 +101,9 @@ app.use((_req: Request, res: Response, next: NextFunction) => {
   next();
 });
 
+// Federation messages get their own, smaller body limit. This parser runs
+// first, so the global parser skips the already-parsed body.
+app.use("/api/federation/messages", federationBodyParser);
 app.use(express.json());
 
 const PgStore = connectPgSimple(session);
@@ -231,7 +222,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 });
 
 import path from "node:path";
-import { startLeaderElection } from "./orchestrator/leader.js";
+import { startLeaderElection, stopLeaderElection } from "./orchestrator/leader.js";
 app.use(express.static(path.join(import.meta.dirname, "..", "public")));
 app.use(dashboardRouter);
 // Remote MCP server + its OAuth endpoints (own rate limits; before the
@@ -293,7 +284,7 @@ app.use(traversalRouter);
 app.use(credentialsRouter);
 app.use(hostnamesRouter);
 
-app.listen(config.port, () => {
+const server = app.listen(config.port, () => {
   logger.info({ port: config.port, url: config.publicUrl }, "atproto-tailnet running");
   // One replica does the background work; the others take over if it stops
   void startLeaderElection();
@@ -306,3 +297,12 @@ app.listen(config.port, () => {
     .then((n) => n > 0 && logger.info({ sessions: n }, "revoked stored OAuth sessions"))
     .catch((err) => logger.warn({ err }, "failed to purge stored OAuth sessions"));
 });
+
+const shutdown = createShutdown({
+  server,
+  stopLoops: [stopBroker, stopAbuseSweep, stopHealthMonitor, stopLeaderElection],
+  closePool: () => pool.end(),
+  exit: (code) => process.exit(code),
+});
+process.once("SIGTERM", () => void shutdown("SIGTERM"));
+process.once("SIGINT", () => void shutdown("SIGINT"));

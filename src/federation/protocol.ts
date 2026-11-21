@@ -4,12 +4,9 @@
  */
 
 export const CFP_VERSION = "1.0.0";
-export const MAX_MESSAGE_BYTES = 1_048_576; // 1MB
 export const DEFAULT_KEEPALIVE_SECONDS = 60;
 export const KEEPALIVE_RANGE = { min: 10, max: 300 } as const;
-export const HELLO_RATE_LIMIT_PER_DID = 10; // per minute
 export const CHALLENGE_EXPIRY_DEFAULT_SECONDS = 120;
-export const CHALLENGE_EXPIRY_MAX_SECONDS = 600;
 export const DRAIN_PERIOD_SECONDS = 30;
 
 export type FederationType = "peer" | "parent-child" | "transit" | "mesh";

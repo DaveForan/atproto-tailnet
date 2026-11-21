@@ -129,52 +129,6 @@ async function brokerTick(): Promise<void> {
 
 // ── Link ↔ session reconciliation ────────────────────────────────────────
 
-/**
- * One tenant's view of a federation link.
- *
- * In the per-side schema each link row IS one side, so this is a thin
- * projection with a default broker URL filled in when the link has none.
- */
-export interface LinkSide {
-  localTenantId: string;
-  peerDid: string;
-  /** CIDRs this side shares with the peer. */
-  localCidrs: string[];
-  /** CIDRs the peer agreed to share with this side. */
-  peerCidrs: string[];
-  /** Base URL of the peer's broker. */
-  peerBrokerUrl: string;
-}
-
-/**
- * Extract the local side's view from a federation link. In the per-side
- * schema each link row already represents one side, so this just projects
- * the relevant fields and fills in a default broker URL.
- *
- * The `_localTenantId` parameter is accepted for call-site compatibility
- * but is not used — the link's own `localTenantId` is authoritative.
- */
-export function linkSide(
-  link: Pick<
-    FederationLink,
-    | "localTenantId"
-    | "peerDid"
-    | "localCidrs"
-    | "peerCidrs"
-    | "peerBrokerUrl"
-  >,
-  _localTenantId?: string,
-  defaultEndpoint: string = config.publicUrl,
-): LinkSide {
-  return {
-    localTenantId: link.localTenantId,
-    peerDid: link.peerDid,
-    localCidrs: link.localCidrs,
-    peerCidrs: link.peerCidrs,
-    peerBrokerUrl: link.peerBrokerUrl ?? defaultEndpoint,
-  };
-}
-
 async function reconcileActiveSessions(): Promise<void> {
   const activeLinks = await db
     .select()
@@ -538,15 +492,6 @@ export function collectiveDidHost(): string {
   return encodeURIComponent(new URL(config.publicUrl).host);
 }
 
-export async function getCollectiveDid(tenantId: string): Promise<string | null> {
-  const [row] = await db
-    .select({ did: collectiveDids.did })
-    .from(collectiveDids)
-    .where(eq(collectiveDids.tenantId, tenantId))
-    .limit(1);
-  return row?.did ?? null;
-}
-
 export async function ensureCollectiveDid(
   tenantId: string,
   domain: string = collectiveDidHost(),
@@ -639,26 +584,6 @@ export async function signAsCollective(
 }
 
 // ── Outbound handshake ───────────────────────────────────────────────────
-
-/** The active federation link from a local tenant to a specific peer DID. */
-export async function findActiveLink(
-  localTenantId: string,
-  peerDid: string,
-): Promise<FederationLink | null> {
-  const [link] = await db
-    .select()
-    .from(federationLinks)
-    .where(
-      and(
-        eq(federationLinks.status, "active"),
-        eq(federationLinks.localTenantId, localTenantId),
-        eq(federationLinks.peerDid, peerDid),
-      ),
-    )
-    .limit(1);
-
-  return link ?? null;
-}
 
 /**
  * Record a completed handshake on `localTenantId`'s session for the link and
@@ -1005,6 +930,19 @@ interface AutoApproverApi {
   setAutoApprovers(approvers: CoordinatorAutoApprovers): Promise<unknown>;
 }
 
+/** The DB row is the source of truth: the monitor replays it after a coordinator restart. */
+async function storeAndPushAutoApprovers(
+  tenantId: string,
+  client: AutoApproverApi,
+  next: CoordinatorAutoApprovers,
+): Promise<void> {
+  await db
+    .update(tenants)
+    .set({ coordinatorAutoApprovers: next, updatedAt: new Date() })
+    .where(eq(tenants.id, tenantId));
+  await client.setAutoApprovers(next);
+}
+
 function withRelayApprovers(routes: RouteApprovers | undefined, cidrs: string[]): RouteApprovers {
   const next = { ...(routes ?? {}) };
   for (const cidr of cidrs) {
@@ -1126,7 +1064,7 @@ async function updateRouteApprovals(
       mode === "add"
         ? addFederatedRoutesToAutoApprovers(current, cidrs)
         : removeFederatedRoutesFromAutoApprovers(current, cidrs);
-    if (!sameAutoApprovers(current, next)) await client.setAutoApprovers(next);
+    if (!sameAutoApprovers(current, next)) await storeAndPushAutoApprovers(tenantId, client, next);
     return true;
   }
 
@@ -1212,7 +1150,7 @@ async function reconcileCoordinatorAutoApprovers(): Promise<void> {
       const current = normalizeAutoApprovers(await client.getAutoApprovers());
       const next = reconcileFederatedAutoApprovers(current, [...imported]);
       if (!sameAutoApprovers(current, next)) {
-        await client.setAutoApprovers(next);
+        await storeAndPushAutoApprovers(tenantId, client, next);
         logger.info({ tenantId, cidrs: [...imported] }, "re-asserted federated route auto-approvals on the coordinator");
       }
     } catch (err) {

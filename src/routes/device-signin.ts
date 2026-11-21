@@ -4,8 +4,8 @@
  * to `/device/<id>`; the signed-in member chooses a tailnet and approves, and
  * the coordinator then lets the waiting device in as that member's device.
  *
- * Every check of the auth-key path applies: membership, lockdown, device
- * locks, the device limit and device approval.
+ * The checks of the auth-key path apply (membership, lockdown, device limit,
+ * device approval). Device locks are Headscale-only, so they never apply here.
  */
 
 import { Router } from "express";
@@ -14,12 +14,13 @@ import { z } from "zod";
 import { and, eq, ne } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { tenants, memberships } from "../db/schema.js";
-import { requireSession, param, getTenantForUser, isLockedDown, isDeviceLocked, DEVICE_LOCKED_ERROR } from "./helpers.js";
+import { requireSession, param, getTenantForUser, isLockedDown } from "./helpers.js";
 import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
-import { enforceDeviceLimit } from "./limits.js";
+import { sendDeviceRefusal } from "./limits.js";
+import { deviceAdmission } from "../access/admission.js";
 import type { CoordinatorApiClient } from "../orchestrator/coordinator-api.js";
-import { getControlClient, getCoordinatorClient, useCoordinator } from "../orchestrator/control-client.js";
+import { getCoordinatorClient, useCoordinator } from "../orchestrator/control-client.js";
 import { pushTenantIdentity } from "../orchestrator/coordinator-identity.js";
 import { stepUpForSession } from "../auth/step-up.js";
 
@@ -136,22 +137,11 @@ deviceSignInRouter.post("/api/device-auth/:id/approve", requireSession, approveL
     res.status(404).json({ error: "Tenant not found" });
     return;
   }
-  if (isLockedDown(result.tenant)) {
-    res.status(403).json({ error: "Tenant is in lockdown mode" });
+  const refusal = await deviceAdmission(result.tenant, result.membership, userId);
+  if (refusal) {
+    sendDeviceRefusal(res, result.tenant, refusal);
     return;
   }
-  if (result.tenant.requireDeviceApproval && !result.membership.isOriginator) {
-    res.status(403).json({
-      error: "This tailnet requires device approval. Ask for a key in the Add Device tab",
-      code: "approval_required",
-    });
-    return;
-  }
-  if (await isDeviceLocked(result.tenant.id, userId)) {
-    res.status(403).json({ error: DEVICE_LOCKED_ERROR });
-    return;
-  }
-  if (!(await enforceDeviceLimit(res, result.tenant, getControlClient(result.tenant)))) return;
 
   // So the device shows the tailnet name and the member's handle at once
   await pushTenantIdentity(result.tenant.id, result.tenant.coordinatorTenantId).catch((err) =>

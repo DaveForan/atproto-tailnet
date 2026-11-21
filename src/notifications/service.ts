@@ -130,9 +130,7 @@ export async function createNotification(
 
     const recipients = selectRecipients(members as RecipientCandidate[], type);
     const createdAt = new Date();
-    const title = content.title.slice(0, 200);
-    const body = (content.body ?? "").slice(0, 2000);
-    const link = content.link ?? null;
+    const { title, body, link } = clip(content);
 
     if (recipients.length > 0) {
       await db.insert(notifications).values(
@@ -158,18 +156,46 @@ export async function createNotification(
   }
 }
 
-/** Fire-and-forget wrapper for route handlers — never blocks or throws. */
+/** Types of notifications addressed to one member. */
+export const USER_NOTIFICATION_TYPES = [
+  "device_trust",
+  "friend_request",
+  "friend_accepted",
+  "friend_removed",
+  "machine_refused",
+  "service_post_approved",
+  "service_post_rejected",
+  "service_post_removed",
+  "share_offered",
+  "share_requested",
+  "share_active",
+  "share_ended",
+] as const;
+
+export type UserNotificationType = (typeof USER_NOTIFICATION_TYPES)[number];
+
+/** Same limits as {@link createNotification}. */
+function clip(content: NotificationContent): { title: string; body: string; link: string | null } {
+  return { title: content.title.slice(0, 200), body: (content.body ?? "").slice(0, 2000), link: content.link ?? null };
+}
+
 /**
- * Notify one member (friend requests, shares, review outcomes). Fire and
+ * Notifies one member (friend requests, shares, review outcomes). Fire and
  * forget: a failed notification never fails the action that caused it.
  */
-export function notifyUser(tenantId: string, userId: string, type: string, content: NotificationContent): void {
+export function notifyUser(
+  tenantId: string,
+  userId: string,
+  type: UserNotificationType,
+  content: NotificationContent,
+): void {
   void db
     .insert(notifications)
-    .values({ tenantId, userId, type, title: content.title, body: content.body ?? "", link: content.link ?? null })
+    .values({ tenantId, userId, type, ...clip(content) })
     .catch((err: unknown) => logger.warn({ tenantId, type, err }, "failed to create notification"));
 }
 
+/** Fire-and-forget wrapper for route handlers; never blocks or throws. */
 export function notify(
   tenantId: string,
   type: NotificationType,

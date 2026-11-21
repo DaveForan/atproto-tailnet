@@ -1,7 +1,6 @@
 /**
  * @module members/cascade
- * Member removal: everything a member leaves behind in one tailnet (devices,
- * keys, machine lock, approvals, posts, services, access state, membership).
+ * Removes everything a member leaves behind in one tailnet.
  */
 
 import { and, eq } from "drizzle-orm";
@@ -11,9 +10,6 @@ import {
   memberships,
   users,
   deviceApprovals,
-  serviceDevices,
-  services,
-  boardPosts,
 } from "../db/schema.js";
 import { getControlClient, getCoordinatorClient, useCoordinator } from "../orchestrator/control-client.js";
 import { toHsUsername } from "../identity/handles.js";
@@ -22,13 +18,7 @@ import { removeMemberAccessState } from "../access/devices.js";
 import { syncTenantAccess } from "../access/sync.js";
 import { logger } from "../logger.js";
 
-/**
- * The kick cascade: revoke the member's keys and delete their devices (both
- * control-plane modes), reject their pending device approvals, remove their
- * board posts, services and service devices, then delete the membership.
- * Callers do the permission/originator checks and the audit entry. Shared by
- * the kick route (routes/devices.ts) and the operator "disable user" action.
- */
+/** Removes a member from a tenant. Callers do the permission checks and write the audit entry. */
 export async function removeMemberCascade(
   tenant: typeof tenants.$inferSelect,
   removedUserId: string,
@@ -42,7 +32,6 @@ export async function removeMemberCascade(
     .from(users)
     .where(eq(users.id, removedUserId));
 
-  // Remove their devices and revoke their keys (both control-plane modes)
   let access: Awaited<ReturnType<typeof revokeMemberAccess>> | null = null;
   if (removedUser) {
     let client: ReturnType<typeof getControlClient> | null = null;
@@ -77,36 +66,6 @@ export async function removeMemberCascade(
         eq(deviceApprovals.status, "pending"),
       ),
     );
-
-  // Soft-delete board posts by this user
-  await db
-    .update(boardPosts)
-    .set({ status: "removed", updatedAt: new Date() })
-    .where(
-      and(
-        eq(boardPosts.tenantId, tenantId),
-        eq(boardPosts.authorId, removedUserId),
-        eq(boardPosts.status, "active"),
-      ),
-    );
-
-  // Remove services owned by this user (board posts already cleaned above)
-  const userServices = await db
-    .select({ id: services.id })
-    .from(services)
-    .where(and(eq(services.tenantId, tenantId), eq(services.ownerId, removedUserId)));
-  for (const svc of userServices) {
-    await db
-      .update(boardPosts)
-      .set({ status: "removed", updatedAt: new Date() })
-      .where(and(eq(boardPosts.serviceId, svc.id), eq(boardPosts.status, "active")));
-    await db.delete(services).where(eq(services.id, svc.id));
-  }
-
-  // Remove service devices owned by this user
-  await db
-    .delete(serviceDevices)
-    .where(and(eq(serviceDevices.tenantId, tenantId), eq(serviceDevices.ownerId, removedUserId)));
 
   // Posts, connections, friendships and shares of the member (ADR-0036)
   await removeMemberAccessState(tenantId, removedUserId);

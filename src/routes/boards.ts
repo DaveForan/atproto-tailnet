@@ -31,6 +31,7 @@ import { validateHostname, tenantIdForPublicLink, primaryHostname } from "../orc
 import { lintBoardText, parseBoardText, renderBoardHtml } from "../shared/board-text.js";
 import { config } from "../config.js";
 import { useCoordinator } from "../orchestrator/control-client.js";
+import { parseBody } from "./validation.js";
 
 export const boardsRouter = Router();
 
@@ -230,11 +231,8 @@ boardsRouter.get("/api/tenants/:tenantId/boards/pending", requireAuth, reviewGua
 boardsRouter.post("/api/tenants/:tenantId/boards/posts", requireAuth, tenantGuard({ notLockedDown: true }), async (req, res) => {
   const userId = authUserId(req);
   const result = tenantCtx(res);
-  const parsed = postBody.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
-    return;
-  }
+  const parsed = parseBody(postBody, req, res);
+  if (!parsed) return;
   const data = parsed.data;
   const named = serviceName(data.name, data.board === "private");
   if ("error" in named) {
@@ -336,11 +334,8 @@ boardsRouter.patch("/api/tenants/:tenantId/boards/posts/:postId", requireAuth, t
     res.status(403).json({ error: "Tenant is in lockdown mode" });
     return;
   }
-  const parsed = postPatch.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
-    return;
-  }
+  const parsed = parseBody(postPatch, req, res);
+  if (!parsed) return;
   const data = parsed.data;
   const updates: Partial<Post> = { updatedAt: new Date() };
   if (data.title !== undefined) updates.title = data.title;
@@ -533,13 +528,12 @@ boardsRouter.put("/api/tenants/:tenantId/boards/posts/:postId/connections", requ
     res.status(404).json({ error: "Post not found" });
     return;
   }
-  const parsed = z
-    .object({ nodeIds: z.array(z.string().regex(/^[1-9]\d{0,15}$/)).max(MAX_CONNECTED_DEVICES) })
-    .safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
-    return;
-  }
+  const parsed = parseBody(
+    z.object({ nodeIds: z.array(z.string().regex(/^[1-9]\d{0,15}$/)).max(MAX_CONNECTED_DEVICES) }),
+    req,
+    res,
+  );
+  if (!parsed) return;
   const wanted = [...new Set(parsed.data.nodeIds)];
   if (wanted.length > 0 && isLockedDown(result.tenant)) {
     res.status(403).json({ error: "Tenant is in lockdown mode" });

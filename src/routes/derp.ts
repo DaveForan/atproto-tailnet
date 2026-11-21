@@ -24,6 +24,7 @@ import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
 import { getCoordinatorClient, useCoordinator } from "../orchestrator/control-client.js";
+import { parseBody } from "./validation.js";
 
 export const derpRouter = Router();
 
@@ -74,11 +75,8 @@ derpRouter.put(
     const result = tenantCtx(res);
 
     if (useCoordinator) {
-      const parsed = derpConfigBody.safeParse(req.body);
-      if (!parsed.success) {
-        res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
-        return;
-      }
+      const parsed = parseBody(derpConfigBody, req, res);
+      if (!parsed) return;
       const { tenant } = result;
       if (!tenant.coordinatorTenantId) {
         res.status(409).json({ error: "Tenant is not registered with the coordinator yet" });
@@ -114,13 +112,8 @@ derpRouter.put(
       return;
     }
 
-    const parsed = derpConfigBody.safeParse(req.body);
-    if (!parsed.success) {
-      res
-        .status(400)
-        .json({ error: "Invalid body", details: parsed.error.issues });
-      return;
-    }
+    const parsed = parseBody(derpConfigBody, req, res);
+    if (!parsed) return;
 
     const { tenant } = result;
     const regions: DerpRegion[] =

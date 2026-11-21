@@ -18,6 +18,7 @@ import {
   authUserId,
 } from "./helpers.js";
 import { tenantGuard, tenantCtx } from "./guard.js";
+import { parseBody } from "./validation.js";
 
 export const notificationsRouter = Router();
 
@@ -68,11 +69,8 @@ notificationsRouter.post(
     const tenantId = param(req, "tenantId");
     const userId = authUserId(req);
 
-    const parsed = readBody.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
-      return;
-    }
+    const parsed = parseBody(readBody, req, res);
+    if (!parsed) return;
 
     await markRead(tenantId, userId, "ids" in parsed.data ? parsed.data.ids : undefined);
     res.json({ unreadCount: await unreadCount(tenantId, userId) });

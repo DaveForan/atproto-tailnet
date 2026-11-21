@@ -2,7 +2,6 @@ import { describe, it, expect } from "vitest";
 import {
   parseCidr,
   cidrsOverlap,
-  validateOfferedCidrs,
   checkCidrOverlaps,
   isDefaultRoute,
   validateLocalOffer,
@@ -100,45 +99,6 @@ describe("cidrsOverlap", () => {
     const small = parseCidr("100.64.1.0/24")!;
     expect(cidrsOverlap(big, small)).toBe(true);
     expect(cidrsOverlap(small, big)).toBe(true);
-  });
-});
-
-describe("validateOfferedCidrs", () => {
-  it("accepts CIDRs within tenant range", () => {
-    const { valid, errors } = validateOfferedCidrs(
-      ["100.64.1.0/24", "100.64.1.128/25"],
-      "100.64.1.0/24",
-      null,
-    );
-    expect(errors).toEqual([]);
-    expect(valid).toHaveLength(2);
-  });
-
-  it("rejects CIDRs outside tenant range", () => {
-    const { valid, errors } = validateOfferedCidrs(
-      ["10.0.0.0/8"],
-      "100.64.1.0/24",
-      null,
-    );
-    expect(errors).toHaveLength(1);
-    expect(errors[0]).toContain("not within");
-    expect(valid).toHaveLength(0);
-  });
-
-  it("rejects invalid CIDR strings", () => {
-    const { errors } = validateOfferedCidrs(["garbage"], null, null);
-    expect(errors).toHaveLength(1);
-    expect(errors[0]).toContain("Invalid CIDR");
-  });
-
-  it("allows any CIDR when tenant has no range set", () => {
-    const { valid, errors } = validateOfferedCidrs(
-      ["10.0.0.0/24"],
-      null,
-      null,
-    );
-    expect(errors).toEqual([]);
-    expect(valid).toHaveLength(1);
   });
 });
 

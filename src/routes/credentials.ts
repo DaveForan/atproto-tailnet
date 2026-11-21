@@ -24,7 +24,7 @@ import {
   missingPermissions,
 } from "./helpers.js";
 import { tenantGuard, tenantCtx } from "./guard.js";
-import { ALL_PERMISSIONS } from "../members/permissions.js";
+import { ALL_PERMISSIONS, effectivePermissions } from "../members/permissions.js";
 import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
 import {
@@ -62,14 +62,6 @@ async function loadSubjectMember(tenantId: string, did: string) {
     .leftJoin(roles, eq(memberships.roleId, roles.id))
     .where(and(eq(memberships.tenantId, tenantId), eq(users.did, did)));
   return row ?? null;
-}
-
-/** Permissions a member holds (originators hold all). */
-function memberPermissions(
-  m: { membership: typeof memberships.$inferSelect; role: typeof roles.$inferSelect | null },
-): string[] {
-  if (m.membership.isOriginator) return [...ALL_PERMISSIONS];
-  return ((m.role?.permissions ?? []) as string[]).filter((p) => (ALL_PERMISSIONS as readonly string[]).includes(p));
 }
 
 /** Parse a permission list from an array or a comma-separated string. */
@@ -173,7 +165,7 @@ credentialsRouter.post(
     // The attestation states what the subject's role actually grants. An
     // optional list narrows it; it can never add permissions the subject's
     // role lacks, or that the caller does not hold.
-    const held = memberPermissions(subject);
+    const held: string[] = effectivePermissions(subject.membership, subject.role);
     const requested = req.body?.permissions ?? req.body?.roleName;
     const asked = requested === undefined || requested === "" ? held : permissionList(requested);
     if (!asked) {
@@ -255,7 +247,7 @@ credentialsRouter.post(
       return;
     }
     // A capability may only delegate what both the subject and the caller hold.
-    const subjectHeld = memberPermissions(subject);
+    const subjectHeld: string[] = effectivePermissions(subject.membership, subject.role);
     const notHeldBySubject = scope.filter((p) => !subjectHeld.includes(p));
     if (notHeldBySubject.length > 0) {
       res.status(400).json({ error: "The subject's role does not grant these capabilities", permissions: notHeldBySubject });

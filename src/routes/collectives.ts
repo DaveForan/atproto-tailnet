@@ -8,7 +8,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { eq, and, ne, sql, like } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { tenants, memberships, roles } from "../db/schema.js";
+import { tenants } from "../db/schema.js";
 import {
   requireAuth,
   param,
@@ -18,12 +18,10 @@ import {
 import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
-import { allocateTenantPort } from "../orchestrator/ports.js";
-import { allocateTenantPrefixes } from "../orchestrator/prefix-allocator.js";
-import { ALL_PERMISSIONS } from "../members/permissions.js";
 import { useCoordinator } from "../orchestrator/control-client.js";
-import { provisionTenantInstance } from "../orchestrator/tenant-provisioning.js";
-import { hostnameAvailableFor, registerInitialHostname, validateHostname } from "../orchestrator/hostnames.js";
+import { createTenantRecord, provisionTenantInstance } from "../orchestrator/tenant-provisioning.js";
+import { rebuildDescendantPaths } from "../orchestrator/tenant-hierarchy.js";
+import { hostnameAvailableFor, validateHostname } from "../orchestrator/hostnames.js";
 import { MAX_LIMIT, checkChildLimit } from "./limits.js";
 import {
   canCreateTailnet,
@@ -31,6 +29,7 @@ import {
   isOperatorDid,
   listTopLevelTenants,
 } from "../operator/policy.js";
+import { parseBody } from "./validation.js";
 
 export const collectivesRouter = Router();
 
@@ -43,7 +42,7 @@ export const collectivesRouter = Router();
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
 const MAX_DEPTH = 5;
 
-const createSubCollectiveBody = z.object({
+export const createSubCollectiveBody = z.object({
   name: z.string().min(1).max(100),
   slug: z.string().min(2).max(40).regex(SLUG_RE, "Slug must be lowercase letters, digits and inner hyphens only"),
 });
@@ -137,11 +136,8 @@ collectivesRouter.post(
     const userId = authUserId(req);
     const result = tenantCtx(res);
 
-    const parsed = createSubCollectiveBody.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
-      return;
-    }
+    const parsed = parseBody(createSubCollectiveBody, req, res);
+    if (!parsed) return;
 
     const { tenant } = result;
 
@@ -217,82 +213,11 @@ collectivesRouter.post(
       return;
     }
 
-    const childPath = tenant.path ? `${tenant.path}.${slug}` : slug;
-    const childDepth = tenant.depth + 1;
-    const prefixes = await allocateTenantPrefixes();
-
     try {
-      let child: typeof tenants.$inferSelect | undefined;
-      for (let attempt = 0; attempt < 3 && !child; attempt++) {
-        try {
-          [child] = await db
-            .insert(tenants)
-            .values({
-              name,
-              slug,
-              ownerUserId: userId,
-              // Provisioned like a top-level tenant: Headscale mode needs a real port
-              port: await allocateTenantPort(!useCoordinator),
-              apiKey: "",
-              status: "provisioning",
-              accessMode: useCoordinator ? "member" : "open",
-              parentId: tenantId,
-              path: childPath,
-              depth: childDepth,
-              maxSubCollectives: 10,
-              ipv4Prefix: prefixes.ipv4Prefix,
-              ipv6Prefix: prefixes.ipv6Prefix,
-              ipAllocation: tenant.ipAllocation,
-              // Inherit the parent's caps: an unlimited (0) child under a
-              // capped parent would bypass the parent's limits.
-              maxDevices: tenant.maxDevices,
-              maxMembers: tenant.maxMembers,
-            })
-            .returning();
-        } catch (err: unknown) {
-          if ((err as { code?: string }).code !== "23505" || attempt === 2) throw err;
-        }
-      }
-      if (!child) throw new Error("Failed to insert sub-collective");
-      await registerInitialHostname(child.id, child.slug);
-
-      const [originatorRole] = await db
-        .insert(roles)
-        .values({
-          tenantId: child.id,
-          name: "originator",
-          permissions: ALL_PERMISSIONS as unknown as string[],
-          isSystem: true,
-        })
-        .returning();
-
-      const [citizenRole] = await db
-        .insert(roles)
-        .values({
-          tenantId: child.id,
-          name: "citizen",
-          permissions: [],
-          isSystem: true,
-        })
-        .returning();
-
-      await db
-        .update(tenants)
-        .set({ defaultRoleId: citizenRole.id, updatedAt: new Date() })
-        .where(eq(tenants.id, child.id));
-
-      await db.insert(memberships).values({
-        userId,
-        tenantId: child.id,
-        roleId: originatorRole.id,
-        isOriginator: true,
-      });
-
-      // Bring up its control plane exactly like a top-level tenant (async;
-      // the dashboard polls until status leaves "provisioning").
-      const created = child;
+      const child = await createTenantRecord({ ownerUserId: userId, name, parent: tenant, slug, hostname: slug });
+      // The dashboard polls until the status leaves "provisioning"
       setImmediate(() => {
-        void provisionTenantInstance(created.id, created.slug, created.port, {
+        void provisionTenantInstance(child.id, child.slug, child.port, {
           parentCoordinatorTenantId: tenant.coordinatorTenantId,
         });
       });
@@ -303,7 +228,7 @@ collectivesRouter.post(
         action: "sub_collective_created",
         targetType: "tenant",
         targetId: child.id,
-        metadata: { childSlug: slug, childName: name, depth: childDepth },
+        metadata: { childSlug: slug, childName: name, depth: child.depth },
       });
 
       res.status(201).json({
@@ -311,8 +236,8 @@ collectivesRouter.post(
         slug: child.slug,
         name: child.name,
         parentId: tenantId,
-        path: childPath,
-        depth: childDepth,
+        path: child.path,
+        depth: child.depth,
         status: child.status,
       });
     } catch (err) {
@@ -433,11 +358,8 @@ collectivesRouter.put(
     const tenantId = param(req, "tenantId");
     const userId = authUserId(req);
 
-    const parsed = floorPolicyBody.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
-      return;
-    }
+    const parsed = parseBody(floorPolicyBody, req, res);
+    if (!parsed) return;
 
     await db
       .update(tenants)
@@ -525,11 +447,8 @@ collectivesRouter.put(
     const userId = authUserId(req);
     const result = tenantCtx(res);
 
-    const parsed = quotaBody.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
-      return;
-    }
+    const parsed = parseBody(quotaBody, req, res);
+    if (!parsed) return;
 
     const [child] = await db
       .select()
@@ -633,24 +552,3 @@ collectivesRouter.get(
     });
   },
 );
-
-async function rebuildDescendantPaths(
-  parentId: string,
-  parentPath: string,
-  parentDepth: number,
-): Promise<void> {
-  const children = await db
-    .select({ id: tenants.id, slug: tenants.slug })
-    .from(tenants)
-    .where(and(eq(tenants.parentId, parentId), ne(tenants.status, "deleted")));
-
-  for (const child of children) {
-    const childPath = `${parentPath}.${child.slug}`;
-    const childDepth = parentDepth + 1;
-    await db
-      .update(tenants)
-      .set({ path: childPath, depth: childDepth, updatedAt: new Date() })
-      .where(eq(tenants.id, child.id));
-    await rebuildDescendantPaths(child.id, childPath, childDepth);
-  }
-}

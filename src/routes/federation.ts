@@ -45,6 +45,7 @@ import { scopeDeclarationSchema } from "../federation/scoping.js";
 import { signedPayload } from "../federation/auth.js";
 import { discoverPeer } from "../federation/discovery.js";
 import { outboxStatus, parseOutboxEntry } from "../federation/outbox.js";
+import { parseBody } from "./validation.js";
 
 /**
  * Message id of the peer's LINK_REQUEST stored on an incoming link, which our
@@ -118,13 +119,8 @@ federationRouter.post(
     const tenantId = param(req, "tenantId");
     const result = tenantCtx(res);
 
-    const parsed = createFederationBody.safeParse(req.body);
-    if (!parsed.success) {
-      res
-        .status(400)
-        .json({ error: "Invalid body", details: parsed.error.issues });
-      return;
-    }
+    const parsed = parseBody(createFederationBody, req, res);
+    if (!parsed) return;
 
     // `slug@host` names a collective by its instance. If its DID turns out to
     // be hosted here, the same-instance path below handles it.
@@ -382,13 +378,8 @@ federationRouter.post(
     const linkId = param(req, "linkId");
     const result = tenantCtx(res);
 
-    const parsed = respondBody.safeParse(req.body);
-    if (!parsed.success) {
-      res
-        .status(400)
-        .json({ error: "Invalid body", details: parsed.error.issues });
-      return;
-    }
+    const parsed = parseBody(respondBody, req, res);
+    if (!parsed) return;
 
     // Find the local (incoming) link row for this tenant. Only the side that
     // received the request may accept it — never the requester itself.
@@ -1023,8 +1014,11 @@ federationRouter.put(
 // ── Federation posture management ───────────────────────────────────────
 
 const postureBody = z.object({
-  posture: z.enum(["closed", "selective", "open"]),
+  posture: z.enum(["closed", "open"]),
 });
+
+/** The coordinator refuses "selective" with this message; the service answers the same. */
+const SELECTIVE_POSTURE_ERROR = "selective posture is not implemented";
 
 federationRouter.get(
   "/api/tenants/:tenantId/federation/posture",
@@ -1045,11 +1039,12 @@ federationRouter.put(
     const tenantId = param(req, "tenantId");
     const result = tenantCtx(res);
 
-    const parsed = postureBody.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
+    if ((req.body as { posture?: unknown } | undefined)?.posture === "selective") {
+      res.status(400).json({ error: SELECTIVE_POSTURE_ERROR });
       return;
     }
+    const parsed = parseBody(postureBody, req, res);
+    if (!parsed) return;
 
     if (useCoordinator) {
       await getCoordinatorClient(result.tenant).setPosture(parsed.data.posture);

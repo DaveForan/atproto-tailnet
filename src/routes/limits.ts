@@ -1,8 +1,7 @@
 /**
  * @module routes/limits
- * Admin-set caps (replacing the old fake "plans"): maxDevices / maxMembers,
- * 0 = unlimited. Enforced at auth-key issuance, device-approval approval,
- * invitation acceptance and join-request approval.
+ * Admin-set caps maxDevices / maxMembers (0 = unlimited) and the HTTP answers
+ * for refused devices and members.
  */
 
 import type { Response } from "express";
@@ -10,15 +9,14 @@ import { eq, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { memberships, tenants } from "../db/schema.js";
 import type { ControlClient } from "../orchestrator/control-client.js";
-import { notify } from "../notifications/service.js";
-import { logger } from "../logger.js";
+import { deviceLimitRefusal, isAtCapacity, type DeviceRefusal } from "../access/admission.js";
+import { LOCKDOWN_ERROR } from "./guard.js";
+
+type Tenant = typeof tenants.$inferSelect;
 
 export const MAX_LIMIT = 10_000;
 
-/** True when a cap is set (> 0) and `count` has reached it. */
-export function isAtCapacity(count: number, max: number): boolean {
-  return max > 0 && count >= max;
-}
+export { isAtCapacity };
 
 /** True when a cap is set and `count` is over it (usage `overLimit`). */
 export function isOverLimit(count: number, max: number): boolean {
@@ -52,42 +50,41 @@ export async function countMembers(tenantId: string): Promise<number> {
   return row?.count ?? 0;
 }
 
-/**
- * Enforce maxDevices before a new pre-auth key is minted. Sends the 403
- * (`code: "device_limit"`) / 502 response itself and raises a (deduplicated)
- * device_limit_reached notification; returns false when the caller must stop.
- */
-export async function enforceDeviceLimit(
-  res: Response,
-  tenant: typeof tenants.$inferSelect,
-  client: ControlClient,
-): Promise<boolean> {
-  if (tenant.maxDevices <= 0) return true;
-  let count: number;
-  try {
-    count = (await client.listNodes()).length;
-  } catch (err) {
-    logger.error({ tenantId: tenant.id, err }, "failed to count devices for limit check");
-    res.status(502).json({ error: "Failed to verify the device limit" });
-    return false;
-  }
-  if (!isAtCapacity(count, tenant.maxDevices)) return true;
+/** Message returned when key generation is blocked by a device lock. */
+export const DEVICE_LOCKED_ERROR = "Session is locked to specific devices. Remove lock to add new devices.";
 
-  notify(
-    tenant.id,
-    "device_limit_reached",
-    {
-      title: "Device limit reached",
-      body: `${tenant.name} has ${count} of ${tenant.maxDevices} devices — a new device was refused. Remove devices or raise the limit.`,
-      link: "/#usage",
-    },
-    { dedupeWindowMs: 60 * 60 * 1000 },
-  );
-  res.status(403).json({
-    error: `Device limit reached (${tenant.maxDevices})`,
-    code: "device_limit",
-  });
-  return false;
+/**
+ * Sends the response for a refused device. `approval_required` is answered
+ * only by routes that cannot create an approval request (device sign-in).
+ */
+export function sendDeviceRefusal(res: Response, tenant: Tenant, refusal: DeviceRefusal): void {
+  switch (refusal) {
+    case "locked_down":
+      res.status(403).json({ error: LOCKDOWN_ERROR });
+      return;
+    case "device_locked":
+      res.status(403).json({ error: DEVICE_LOCKED_ERROR });
+      return;
+    case "device_limit":
+      res.status(403).json({ error: `Device limit reached (${tenant.maxDevices})`, code: "device_limit" });
+      return;
+    case "limit_unverified":
+      res.status(502).json({ error: "Failed to verify the device limit" });
+      return;
+    case "approval_required":
+      res.status(403).json({
+        error: "This tailnet requires device approval. Ask for a key in the Add Device tab",
+        code: "approval_required",
+      });
+      return;
+  }
+}
+
+/** Checks maxDevices and sends the refusal; false when the caller must stop. */
+export async function enforceDeviceLimit(res: Response, tenant: Tenant, client: ControlClient): Promise<boolean> {
+  const refusal = await deviceLimitRefusal(tenant, client);
+  if (refusal) sendDeviceRefusal(res, tenant, refusal);
+  return !refusal;
 }
 
 /**
@@ -96,7 +93,7 @@ export async function enforceDeviceLimit(
  */
 export async function enforceMemberLimit(
   res: Response,
-  tenant: typeof tenants.$inferSelect,
+  tenant: Tenant,
 ): Promise<boolean> {
   if (tenant.maxMembers <= 0) return true;
   const count = await countMembers(tenant.id);

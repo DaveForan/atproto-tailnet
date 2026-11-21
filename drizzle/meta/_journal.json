@@ -260,6 +260,20 @@
       "when": 1794028817001,
       "tag": "0036_audit_device_signin",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1794028818001,
+      "tag": "0037_drop_legacy_services",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1794028818002,
+      "tag": "0038_posture_closed_default",
+      "breakpoints": true
     }
   ]
 }

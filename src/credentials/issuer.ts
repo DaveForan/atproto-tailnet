@@ -27,23 +27,6 @@ export interface IssuerKeyPair {
   did: string;
 }
 
-export async function generateIssuerKeyPair(did: string): Promise<IssuerKeyPair> {
-  const { privateKey, publicKey } = await jose.generateKeyPair("EdDSA", {
-    crv: "Ed25519",
-  });
-  return { privateKey, publicKey, did };
-}
-
-export async function importIssuerKeyPair(
-  did: string,
-  privateKeyJwk: jose.JWK,
-  publicKeyJwk: jose.JWK,
-): Promise<IssuerKeyPair> {
-  const privateKey = await jose.importJWK(privateKeyJwk, "EdDSA");
-  const publicKey = await jose.importJWK(publicKeyJwk, "EdDSA");
-  return { privateKey: privateKey as SigningKey, publicKey: publicKey as SigningKey, did };
-}
-
 async function signCredentialJwt(
   issuer: IssuerKeyPair,
   subject: string,

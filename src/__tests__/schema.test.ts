@@ -1,22 +1,13 @@
-/**
- * Tests for the Drizzle schema types and enum value arrays.
- *
- * Validates DerpRegion interface shape (via runtime object checks),
- * and ensures all pgEnum value arrays have no duplicates.
- */
+/** Drizzle schema: DerpRegion shape and enum value arrays. */
 
 import { describe, it, expect } from "vitest";
 import type { DerpRegion, DerpRegionNode } from "../db/schema.js";
 import {
   tenantStatusEnum,
-  memberRoleEnum,
   invitationStatusEnum,
   auditActionEnum,
   deviceApprovalStatusEnum,
   joinRequestStatusEnum,
-  serviceDeviceStatusEnum,
-  serviceStatusEnum,
-  boardPostStatusEnum,
   agentTokenStatusEnum,
   federationStatusEnum,
 } from "../db/schema.js";
@@ -74,14 +65,10 @@ describe("DerpRegion type shape", () => {
 describe("enum value arrays have no duplicates", () => {
   const enums: Record<string, { enumValues: readonly string[] }> = {
     tenantStatusEnum,
-    memberRoleEnum,
     invitationStatusEnum,
     auditActionEnum,
     deviceApprovalStatusEnum,
     joinRequestStatusEnum,
-    serviceDeviceStatusEnum,
-    serviceStatusEnum,
-    boardPostStatusEnum,
     agentTokenStatusEnum,
     federationStatusEnum,
   };
@@ -118,5 +105,15 @@ describe("enum value arrays have no duplicates", () => {
       "active",
       "revoked",
     ]);
+  });
+});
+
+describe("legacy schema", () => {
+  it("no longer exports the dropped tables and enums", async () => {
+    const schema: Record<string, unknown> = await import("../db/schema.js");
+    for (const name of ["services", "serviceDevices", "boardPosts", "serviceStatusEnum", "serviceDeviceStatusEnum", "boardPostStatusEnum", "memberRoleEnum"]) {
+      expect(schema[name]).toBeUndefined();
+    }
+    expect("role" in (schema.memberships as object)).toBe(false);
   });
 });

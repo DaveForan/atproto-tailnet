@@ -34,11 +34,12 @@ import {
 } from "../operator/lifecycle.js";
 import { authUserId, param } from "./helpers.js";
 import { logAudit } from "../audit/log.js";
-import { deleteTenantInstance } from "./api.js";
+import { deleteTenantInstance } from "../orchestrator/tenant-deletion.js";
 import { ACCOUNT_DID_RE, normalizeAccountDid, resolveDidToHandle, resolveHandleToDid } from "../identity/handles.js";
 import { logger } from "../logger.js";
 import { primaryHostname } from "../orchestrator/hostnames.js";
 import { stepUpForSession } from "../auth/step-up.js";
+import { parseBody } from "./validation.js";
 
 /** Router for /api/operator/* (all routes behind requireOperator). */
 export const operatorRouter = Router();
@@ -193,11 +194,8 @@ const settingsBody = z
   .strict();
 
 operatorRouter.put("/api/operator/settings", async (req, res) => {
-  const parsed = settingsBody.safeParse(req.body ?? {});
-  if (!parsed.success) {
-    res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
-    return;
-  }
+  const parsed = parseBody(settingsBody, req, res, { emptyAsObject: true });
+  if (!parsed) return;
   const patch = parsed.data;
 
   if (patch.defaultTailnetId) {
@@ -278,11 +276,8 @@ const creatorBody = z
   .strict();
 
 operatorRouter.post("/api/operator/tailnet-creators", async (req, res) => {
-  const parsed = creatorBody.safeParse(req.body ?? {});
-  if (!parsed.success) {
-    res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
-    return;
-  }
+  const parsed = parseBody(creatorBody, req, res, { emptyAsObject: true });
+  if (!parsed) return;
   const { did: didIn, handle: handleIn } = parsed.data;
   if (Boolean(didIn) === Boolean(handleIn)) {
     res.status(400).json({ error: "Provide exactly one of did or handle" });

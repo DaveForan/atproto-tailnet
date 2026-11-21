@@ -3,8 +3,6 @@
  * CIDR parsing, normalization, and overlap checking for federation links (ADR-0019 §6).
  */
 
-import { logger } from "../logger.js";
-
 export interface ParsedCidr {
   prefix: string;
   address: bigint;
@@ -125,49 +123,6 @@ export function cidrsOverlap(a: ParsedCidr, b: ParsedCidr): boolean {
       : ((1n << BigInt(totalBits)) - 1n) << BigInt(totalBits - narrowerBits);
 
   return (a.address & compareMask) === (b.address & compareMask);
-}
-
-export function validateOfferedCidrs(
-  offered: string[],
-  tenantIpv4Prefix: string | null,
-  tenantIpv6Prefix: string | null,
-): { valid: ParsedCidr[]; errors: string[] } {
-  const valid: ParsedCidr[] = [];
-  const errors: string[] = [];
-
-  const tenantRanges: ParsedCidr[] = [];
-  if (tenantIpv4Prefix) {
-    const parsed = parseCidr(tenantIpv4Prefix);
-    if (parsed) tenantRanges.push(parsed);
-  }
-  if (tenantIpv6Prefix) {
-    const parsed = parseCidr(tenantIpv6Prefix);
-    if (parsed) tenantRanges.push(parsed);
-  }
-
-  for (const cidr of offered) {
-    const parsed = parseCidr(cidr);
-    if (!parsed) {
-      errors.push(`Invalid CIDR: ${cidr}`);
-      continue;
-    }
-
-    if (tenantRanges.length > 0) {
-      const withinOwn = tenantRanges.some(
-        (range) => range.family === parsed.family && isSubnetOf(parsed, range),
-      );
-      if (!withinOwn) {
-        errors.push(
-          `${parsed.normalized} is not within your tenant's IP range`,
-        );
-        continue;
-      }
-    }
-
-    valid.push(parsed);
-  }
-
-  return { valid, errors };
 }
 
 export function checkCidrOverlaps(

@@ -15,7 +15,7 @@
  * members. Transmitted key order is irrelevant (see federation/auth.ts).
  */
 
-import { Router, type Request, type Response } from "express";
+import express, { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { eq, and, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
@@ -51,6 +51,7 @@ import {
   linkRequestByDid,
   linkRequestByIp,
   linkMessageReplay,
+  MAX_FEDERATION_BODY_BYTES,
   MAX_PENDING_PER_COLLECTIVE,
 } from "../federation/abuse.js";
 import type {
@@ -65,6 +66,9 @@ import type {
 } from "../federation/protocol.js";
 
 export const federationMessagesRouter = Router();
+
+/** JSON parser for CFP messages; mount it on the message path before the global parser. */
+export const federationBodyParser = express.json({ limit: MAX_FEDERATION_BODY_BYTES });
 
 // ── Message shapes (untrusted input) ─────────────────────────────────────
 

@@ -104,12 +104,9 @@ import express from "express";
 import type { Request, Response, NextFunction } from "express";
 import { PgDialect } from "drizzle-orm/pg-core";
 import type { SQL } from "drizzle-orm";
-import {
-  apiRouter,
-  deleteTenantInstance,
-  tlsCertAllowedForSlug,
-  MAX_PENDING_JOIN_REQUESTS,
-} from "../routes/api.js";
+import { apiRouter, tlsCertAllowedForSlug } from "../routes/api.js";
+import { deleteTenantInstance } from "../orchestrator/tenant-deletion.js";
+import { joinRequestsRouter, MAX_PENDING_JOIN_REQUESTS } from "../routes/join-requests.js";
 import { collectivesRouter } from "../routes/collectives.js";
 import { invitationsRouter } from "../routes/invitations.js";
 import { normalizeAccountDid, resolveHandleToDid } from "../identity/handles.js";
@@ -141,6 +138,7 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
   next();
 });
 app.use(apiRouter);
+app.use(joinRequestsRouter);
 app.use(collectivesRouter);
 app.use(invitationsRouter);
 app.use(dashboardRouter);
@@ -251,6 +249,18 @@ describe("join requests", () => {
     expect((await call("POST", path, BOB, {})).status).toBe(404);
     results.push([tenantRow({ status: "deleted" })]);
     expect((await call("POST", path, BOB, {})).status).toBe(404);
+  });
+
+  it("validates the message before any lookup (optional, at most 500 characters)", async () => {
+    const r = await call("POST", path, BOB, { message: "x".repeat(501) });
+    expect(r.status).toBe(400);
+    expect(r.json.error).toBe("Invalid body");
+    expect((await call("POST", path, BOB, { message: 42 })).status).toBe(400);
+    expect(writes.some((w) => w.op === "insert")).toBe(false);
+
+    results.push([tenantRow()], [], [], [{ pending: 0 }], [{ id: "jr1" }], [{ handle: "bob.test" }]);
+    expect((await call("POST", path, BOB, { message: "hello" })).status).toBe(201);
+    expect(writes.find((w) => w.op === "insert" && w.table === "join_requests")?.arg).toMatchObject({ message: "hello" });
   });
 
   it("one pending request per requester (409)", async () => {
@@ -491,5 +501,25 @@ describe("tlsCertAllowedForSlug", () => {
 
     results.push([{ tenantId: TENANT }], [{ id: TENANT }]);
     expect(await tlsCertAllowedForSlug("acme")).toBe(true);
+  });
+});
+
+// ── Federation posture: selective is not implemented ──
+describe("PUT /api/tenants/:id/federation/posture", () => {
+  const membership = [{ tenant: tenantRow(), membership: { isOriginator: true, roleId: null }, role: null }];
+
+  it("refuses selective with the coordinator's message and stores nothing", async () => {
+    results.push(membership);
+    const r = await call("PUT", `/api/tenants/${TENANT}/federation/posture`, BOB, { posture: "selective" });
+    expect(r.status).toBe(400);
+    expect(r.json).toEqual({ error: "selective posture is not implemented" });
+    expect(writes.some((w) => w.op === "update" && w.table === "tenants" && w.method === "set")).toBe(false);
+  });
+
+  it("accepts closed and open", async () => {
+    results.push(membership);
+    const r = await call("PUT", `/api/tenants/${TENANT}/federation/posture`, BOB, { posture: "closed" });
+    expect(r.status).toBe(200);
+    expect(r.json).toEqual({ posture: "closed" });
   });
 });

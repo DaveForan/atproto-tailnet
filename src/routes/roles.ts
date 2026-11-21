@@ -13,20 +13,21 @@ import { requireAuth, param, missingPermissions, authUserId } from "./helpers.js
 import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
 import { stepUpForSession } from "../auth/step-up.js";
-import { ALL_PERMISSIONS } from "../members/permissions.js";
+import { permissionsSchema } from "../members/permissions.js";
+import { parseBody } from "./validation.js";
 
 export const rolesRouter = Router();
 
 const roleBody = z.object({
   name: z.string().min(1).max(50),
   description: z.string().max(200).optional(),
-  permissions: z.array(z.enum(ALL_PERMISSIONS as unknown as [string, ...string[]])),
+  permissions: permissionsSchema,
 });
 
 const roleUpdateBody = z.object({
   name: z.string().min(1).max(50).optional(),
   description: z.string().max(200).optional(),
-  permissions: z.array(z.enum(ALL_PERMISSIONS as unknown as [string, ...string[]])).optional(),
+  permissions: permissionsSchema.optional(),
 });
 
 const assignRoleBody = z.object({
@@ -65,11 +66,8 @@ rolesRouter.post(
     const tenantId = param(req, "tenantId");
     const result = tenantCtx(res);
 
-    const parsed = roleBody.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
-      return;
-    }
+    const parsed = parseBody(roleBody, req, res);
+    if (!parsed) return;
 
     // Anti-escalation: a caller may only grant permissions they effectively hold
     const lacking = missingPermissions(result.membership, result.role, parsed.data.permissions, req);
@@ -137,11 +135,8 @@ rolesRouter.patch(
       return;
     }
 
-    const parsed = roleUpdateBody.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
-      return;
-    }
+    const parsed = parseBody(roleUpdateBody, req, res);
+    if (!parsed) return;
 
     // System roles cannot be renamed
     if (targetRole.isSystem && parsed.data.name && parsed.data.name !== targetRole.name) {
@@ -287,11 +282,8 @@ rolesRouter.put(
     const targetUserId = param(req, "userId");
     const result = tenantCtx(res);
 
-    const parsed = assignRoleBody.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
-      return;
-    }
+    const parsed = parseBody(assignRoleBody, req, res);
+    if (!parsed) return;
 
     const [targetMembership] = await db
       .select()
@@ -371,11 +363,8 @@ rolesRouter.patch(
     const tenantId = param(req, "tenantId");
     const result = tenantCtx(res);
 
-    const parsed = defaultRoleBody.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
-      return;
-    }
+    const parsed = parseBody(defaultRoleBody, req, res);
+    if (!parsed) return;
 
     const [targetRole] = await db
       .select()

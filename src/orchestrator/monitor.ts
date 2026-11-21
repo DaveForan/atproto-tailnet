@@ -158,7 +158,7 @@ export async function resyncCoordinatorState(): Promise<boolean> {
       }
 
       if (t.coordinatorAutoApprovers) {
-        await client.pushAutoApprovers(t.coordinatorAutoApprovers);
+        await client.setAutoApprovers(t.coordinatorAutoApprovers);
       }
 
       await pushTenantIdentity(t.id, t.coordinatorTenantId!);
@@ -299,12 +299,15 @@ export async function recordUsageSnapshots(): Promise<void> {
   }
 }
 
+let monitorTimer: ReturnType<typeof setInterval> | null = null;
+
 /** Start the background health-check interval. Call once after server listen. */
 export function startHealthMonitor(intervalMs = 60_000): void {
+  if (monitorTimer) return;
   logger.info({ intervalMs }, "starting health monitor");
   let tick = 0;
   let sweeping = false;
-  setInterval(async () => {
+  monitorTimer = setInterval(async () => {
     // With several replicas, only the leader does the sweep (ADR-0034)
     if (!isLeader()) return;
     // Never start a sweep while the previous one is still running
@@ -351,4 +354,10 @@ export function startHealthMonitor(intervalMs = 60_000): void {
       sweeping = false;
     }
   }, intervalMs);
+}
+
+/** Stop the health-check interval; a sweep already running finishes on its own. */
+export function stopHealthMonitor(): void {
+  if (monitorTimer) clearInterval(monitorTimer);
+  monitorTimer = null;
 }

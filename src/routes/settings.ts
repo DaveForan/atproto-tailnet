@@ -18,6 +18,7 @@ import { logger } from "../logger.js";
 import { config } from "../config.js";
 import { validateWebhookUrl } from "../notifications/webhook.js";
 import { revokeAllTenantKeys } from "../access/keys.js";
+import { parseBody } from "./validation.js";
 
 export const settingsRouter = Router();
 
@@ -88,11 +89,8 @@ settingsRouter.patch(
   async (req, res) => {
     const result = tenantCtx(res);
 
-    const parsed = settingsBody.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: "Invalid body", details: parsed.error.issues });
-      return;
-    }
+    const parsed = parseBody(settingsBody, req, res);
+    if (!parsed) return;
 
     const updates: Record<string, unknown> = { updatedAt: new Date() };
 

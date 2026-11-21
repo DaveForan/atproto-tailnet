@@ -1,7 +1,6 @@
 /**
  * Security fixes on sensitive routes:
- * - ADR-0035 step-up on device sign-in approval, auth-key creation, role
- *   changes, ACL writes, tailnet deletion and lock removal;
+ * - ADR-0035 step-up on every sensitive route, before the tenant guard;
  * - GET /api/tenants for an agent token lists only its own tailnet and never
  *   the coordinator's internal tenant id;
  * - constant-time CSRF token check.
@@ -57,6 +56,9 @@ import { devicesRouter } from "../routes/devices.js";
 import { securityRouter } from "../routes/security.js";
 import { aclRouter } from "../routes/acl.js";
 import { deviceSignInRouter } from "../routes/device-signin.js";
+import { agentsRouter } from "../routes/agents.js";
+import { hostnamesRouter } from "../routes/hostnames.js";
+import { sharingRouter } from "../routes/sharing.js";
 import { csrfTokenMatches } from "../routes/helpers.js";
 
 type Layer = {
@@ -75,28 +77,55 @@ function findRoute(stack: Layer[], method: string, path: string): Layer | undefi
   return undefined;
 }
 
-/** True when `method path` on the router runs `stepUpForSession` before its handler. */
-function hasStepUp(router: Router, method: string, path: string): boolean {
+/** Handlers in the order the route runs them. */
+function chain(router: Router, method: string, path: string): unknown[] {
   const layer = findRoute(router.stack as unknown as Layer[], method, path);
   if (!layer?.route) throw new Error(`route not found: ${method} ${path}`);
-  return layer.route.stack.some((l) => l.handle === stepUpForSession);
+  return layer.route.stack.map((l) => l.handle);
+}
+
+/** True when `method path` on the router runs `stepUpForSession` before its handler. */
+function hasStepUp(router: Router, method: string, path: string): boolean {
+  return chain(router, method, path).includes(stepUpForSession);
+}
+
+/** Index of the tenantGuard middleware in the chain, or -1. */
+function guardIndex(handles: unknown[]): number {
+  return handles.findIndex((h) => (h as { name?: string }).name === "tenantGuardMiddleware");
 }
 
 describe("step-up on sensitive routes (ADR-0035)", () => {
-  it.each([
-    [deviceSignInRouter, "post", "/api/device-auth/:id/approve"],
+  const tenantRoutes = [
     [devicesRouter, "post", "/api/tenants/:tenantId/devices/auth-key"],
     [securityRouter, "post", "/api/tenants/:tenantId/roles"],
     [securityRouter, "patch", "/api/tenants/:tenantId/roles/:roleId"],
     [securityRouter, "delete", "/api/tenants/:tenantId/roles/:roleId"],
     [securityRouter, "put", "/api/tenants/:tenantId/members/:userId/role"],
     [securityRouter, "patch", "/api/tenants/:tenantId/default-role"],
+    [securityRouter, "post", "/api/tenants/:tenantId/device-locks"],
     [securityRouter, "delete", "/api/tenants/:tenantId/device-locks"],
     [securityRouter, "post", "/api/tenants/:tenantId/device-approvals/:approvalId/approve"],
     [aclRouter, "put", "/api/tenants/:tenantId/acl"],
     [apiRouter, "delete", "/api/tenants/:id"],
-  ] as const)("%#: %s %s needs a fresh device proof", (router, method, path) => {
-    expect(hasStepUp(router as unknown as Router, method, path)).toBe(true);
+    [agentsRouter, "post", "/api/tenants/:tenantId/agent-tokens"],
+    [hostnamesRouter, "put", "/api/tenants/:tenantId/hostnames/primary"],
+    [hostnamesRouter, "delete", "/api/tenants/:tenantId/hostnames/:name"],
+    [sharingRouter, "post", "/api/tenants/:tenantId/shares"],
+    [sharingRouter, "post", "/api/tenants/:tenantId/shares/:shareId/accept"],
+  ] as const;
+
+  it.each([...tenantRoutes, [deviceSignInRouter, "post", "/api/device-auth/:id/approve"]] as const)(
+    "%#: %s %s needs a fresh device proof",
+    (router, method, path) => {
+      expect(hasStepUp(router as unknown as Router, method, path)).toBe(true);
+    },
+  );
+
+  it.each(tenantRoutes)("%#: %s %s runs step-up before tenantGuard", (router, method, path) => {
+    const handles = chain(router as unknown as Router, method, path);
+    const guard = guardIndex(handles);
+    expect(guard).toBeGreaterThan(-1);
+    expect(handles.indexOf(stepUpForSession)).toBeLessThan(guard);
   });
 
   it("reads stay without step-up", () => {

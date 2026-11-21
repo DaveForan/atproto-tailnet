@@ -50,7 +50,8 @@ vi.mock("../notifications/service.js", () => ({ notifyUser: vi.fn() }));
 
 import express from "express";
 import type { Request, Response, NextFunction } from "express";
-import { deviceTrustRouter, enforceDeviceEnrollment } from "../routes/device-trust.js";
+import { deviceTrustRouter } from "../routes/device-trust.js";
+import { enforceDeviceEnrollment } from "../auth/session.js";
 import { hashDeviceCookie } from "../auth/device-trust.js";
 import { stepUpMissing } from "../auth/step-up.js";
 
@@ -478,7 +479,7 @@ describe("device cookie and profile", () => {
 
 describe("sign-in on hold notice", () => {
   it("a pending session tells the owner, with the browser and the address", async () => {
-    const { establishPendingSession } = await import("../routes/device-trust.js");
+    const { establishPendingSession } = await import("../auth/session.js");
     const sess: Record<string, unknown> = {};
     const req = {
       headers: { "user-agent": WIN_CHROME },
@@ -499,7 +500,7 @@ describe("sign-in on hold notice", () => {
   });
 
   it("a user in no tailnet still gets a pending session", async () => {
-    const { establishPendingSession } = await import("../routes/device-trust.js");
+    const { establishPendingSession } = await import("../auth/session.js");
     const sess: Record<string, unknown> = {};
     const req = { headers: {}, session: Object.assign(sess, { regenerate: (cb: () => void) => cb(), save: (cb: () => void) => cb() }) };
     results.push([]);

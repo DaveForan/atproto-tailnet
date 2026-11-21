@@ -26,6 +26,7 @@ import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
 import { useCoordinator } from "../orchestrator/control-client.js";
+import { parseBody } from "./validation.js";
 
 export const ipConfigRouter = Router();
 
@@ -72,13 +73,8 @@ ipConfigRouter.put(
       return;
     }
 
-    const parsed = ipConfigBody.safeParse(req.body);
-    if (!parsed.success) {
-      res
-        .status(400)
-        .json({ error: "Invalid body", details: parsed.error.issues });
-      return;
-    }
+    const parsed = parseBody(ipConfigBody, req, res);
+    if (!parsed) return;
 
     const { tenant } = result;
     const ipv4Prefix = parsed.data.ipv4Prefix ?? tenant.ipv4Prefix;

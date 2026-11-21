@@ -1,16 +1,13 @@
 import { describe, it, expect } from "vitest";
 import {
-  generateIssuerKeyPair,
   issueMembershipCredential,
   issueRoleAttestation,
   issueCapabilityToken,
   assembleBundle,
   generateHolderChallenge,
 } from "../credentials/issuer.js";
-import {
-  verifyCredential,
-  verifyBundle,
-} from "../credentials/verifier.js";
+import { verifyCredential } from "../credentials/verifier.js";
+import { generateIssuerKeyPair, verifyBundle } from "./helpers/credentials.js";
 import type { PublicKeyResolver } from "../credentials/verifier.js";
 import type { IssuerKeyPair } from "../credentials/issuer.js";
 

@@ -1,24 +1,15 @@
 /**
  * @module identity/handles
- * AT Proto handle <-> DID resolution and account-DID normalisation, shared by
- * invitations, operator tailnet creators and public profile lookup. Needs no
- * access to the account: DNS TXT, HTTPS .well-known, DID documents and the
- * Bluesky public API only.
+ * AT Proto handle <-> DID resolution and account-DID normalisation from public sources only.
  */
 
 import { resolveTxt } from "node:dns/promises";
 import { eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { users } from "../db/schema.js";
-import {
-  didWebToUrl,
-  guardedGetJson,
-  guardedRequest,
-  MAX_DID_DOC_BYTES,
-  resolvesToPublicAddresses,
-} from "./resolver.js";
+import { fetchDidDocument, guardedRequest, resolvesToPublicAddresses } from "./resolver.js";
 
-/** Syntactic AT Proto handle check — rejects non-handle input before any DNS/HTTP lookup. */
+/** Syntactic AT Proto handle check, applied before any DNS/HTTP lookup. */
 export const HANDLE_RE =
   /^([a-zA-Z0-9]([a-zA-Z0-9-]*[a-zA-Z0-9])?\.)+[a-zA-Z]{2,}$/;
 
@@ -26,10 +17,8 @@ export const HANDLE_RE =
 export const ACCOUNT_DID_RE = /^did:(plc:[a-z2-7]{24}|web:[a-zA-Z0-9._%:-]{1,253})$/;
 
 /**
- * Canonical form of an account DID so an invitation matches the DID the
- * invitee signs in with: the did:web host part is case-insensitive (lowercased,
- * percent-escapes uppercased); path segments and did:plc ids are left as-is
- * (did:plc is lowercase by construction).
+ * Canonical account DID, so an invitation matches the DID the invitee signs in with.
+ * Only the did:web host changes: it is case-insensitive. did:plc is lowercase by construction.
  */
 export function normalizeAccountDid(did: string): string {
   if (!did.startsWith("did:web:")) return did;
@@ -38,16 +27,9 @@ export function normalizeAccountDid(did: string): string {
   return ["did:web:" + normHost, ...path].join(":");
 }
 
-/** Timeout for every outbound identity lookup. */
 const RESOLVE_TIMEOUT_MS = 5000;
 
-
-/**
- * Best-effort DID → handle for display. Uses a known user row, else the
- * did:plc document's `alsoKnownAs`, else the Bluesky public profile; the
- * candidate handle is only trusted if it resolves back to the same DID.
- * Returns null when no verified handle is found.
- */
+/** Best-effort DID -> verified handle for display (known user row first), or null. */
 export async function resolveDidToHandle(did: string): Promise<string | null> {
   const [known] = await db.select({ handle: users.handle }).from(users).where(eq(users.did, did));
   if (known) return known.handle;
@@ -63,43 +45,15 @@ export function handleFromDidDocument(doc: unknown): string | null {
   return handle && HANDLE_RE.test(handle) ? handle : null;
 }
 
-/** The DID document for a did:plc or did:web account, or null. Never throws. */
-async function fetchDidDocument(did: string): Promise<unknown | null> {
-  try {
-    if (did.startsWith("did:plc:")) {
-      const res = await fetch(`https://plc.directory/${encodeURIComponent(did)}`, {
-        signal: AbortSignal.timeout(RESOLVE_TIMEOUT_MS),
-        redirect: "error",
-      });
-      return res.ok ? await res.json() : null;
-    }
-    if (did.startsWith("did:web:")) {
-      // The host is chosen by the account: public addresses only (checked at
-      // connect time), no redirects, size-capped.
-      const out = await guardedGetJson(didWebToUrl(did), {
-        timeoutMs: RESOLVE_TIMEOUT_MS,
-        maxBytes: MAX_DID_DOC_BYTES,
-      });
-      return out.ok ? out.json : null;
-    }
-  } catch {
-    // unreachable or malformed
-  }
-  return null;
-}
-
 /**
- * The account's current handle from public sources (its DID document, then
- * the Bluesky public API as a fallback), accepted only if the handle resolves back to the same
- * DID. Needs no access to the account.
+ * The account's handle from its DID document, else the Bluesky public API.
+ * Security: the handle is accepted only if it resolves back to the same DID.
  */
 export async function lookupVerifiedHandle(did: string): Promise<string | null> {
-  // The account's own DID document is the authority for its handle
-  // (`alsoKnownAs: ["at://<handle>"]`): the PLC directory for did:plc, the
-  // account's own host for did:web. Works for accounts on any PDS.
+  // The account's own DID document is the authority for its handle, on any PDS.
   let candidate = handleFromDidDocument(await fetchDidDocument(did));
   if (!candidate) {
-    // Fallback only: Bluesky's index (covers accounts it has seen)
+    // Bluesky's index covers only accounts it has seen.
     try {
       const res = await fetch(
         `https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile?actor=${encodeURIComponent(did)}`,
@@ -118,10 +72,7 @@ export async function lookupVerifiedHandle(did: string): Promise<string | null> 
   return back && normalizeAccountDid(back) === normalizeAccountDid(did) ? candidate : null;
 }
 
-/**
- * Resolves an AT Proto handle to its DID (DNS TXT → HTTPS .well-known →
- * Bluesky public API). Shared by invitations and operator tailnet creators.
- */
+/** Resolve an AT Proto handle to its DID: DNS TXT, then HTTPS .well-known, then the Bluesky public API. */
 export async function resolveHandleToDid(handle: string): Promise<string | null> {
   const cleanHandle = handle.replace(/^@/, "");
 
@@ -137,14 +88,11 @@ export async function resolveHandleToDid(handle: string): Promise<string | null>
       if (did.startsWith("did:")) return did;
     }
   } catch {
-    // DNS resolution failed, try HTTP
+    // fall through to HTTPS
   }
 
-  // The handle is user input: only fetch its .well-known when every address
-  // it resolves to is public (no probing of internal services), with a
-  // timeout and no redirects. The check is repeated at connect time
-  // (`guardedRequest`), so a DNS answer that changes after it cannot reach
-  // an internal address.
+  // The handle is user input: fetch only public addresses (SSRF).
+  // guardedRequest repeats the check at connect time against DNS rebinding.
   try {
     if (await resolvesToPublicAddresses(cleanHandle)) {
       const res = await guardedRequest(`https://${cleanHandle}/.well-known/atproto-did`, {
