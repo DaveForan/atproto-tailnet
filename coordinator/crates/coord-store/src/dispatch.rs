@@ -639,6 +639,14 @@ impl Store {
         }
     }
 
+    pub async fn begin_node_session(&self, node_id: NodeId) -> Result<u64, CoordError> {
+        match self {
+            Store::Memory(m) => m.begin_node_session(node_id),
+            Store::Pg(p) => p.begin_node_session(node_id).await,
+            Store::Sqlite(s) => s.begin_node_session(node_id).await,
+        }
+    }
+
     pub async fn get_tenant_route_snapshot(
         &self,
         tenant_id: TenantId,

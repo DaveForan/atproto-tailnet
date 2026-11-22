@@ -2891,6 +2891,30 @@ async fn noise_h2_caps_streams_and_body_size() {
 }
 
 #[tokio::test]
+async fn map_stream_marks_a_reconnected_node_online() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "reconnect").await;
+    let key = api_key(&app, serde_json::json!({ "tenant_id": t.to_string() })).await;
+    register_routes(&state, 170, key["key"].as_str().unwrap(), "roamer", None).await;
+    let id = coord_core::NodeId::new(node_id_of(&state, 170).await);
+    let online = || async { state.store().list_nodes_for_tenant(t).await.into_iter().find(|n| n.id == id).unwrap().online };
+
+    // The first connection ended (generation 1 from registration).
+    state.store().set_node_offline_if_current(id, 1).await.unwrap();
+    assert!(!online().await);
+
+    // The device comes back with a map stream only.
+    let _stream = open_stream(&state, 170).await;
+    assert!(online().await, "a streaming map must mark the node online");
+
+    // The old connection's late disconnect handler is stale now.
+    state.store().set_node_offline_if_current(id, 1).await.unwrap();
+    assert!(online().await);
+    state.store().set_node_offline_if_current(id, 2).await.unwrap();
+    assert!(!online().await);
+}
+
+#[tokio::test]
 async fn suspension_tells_clients_to_drop_peers_before_cutting_the_stream() {
     let (app, state) = setup();
     let t = create_test_tenant(&state, "cutoff").await;

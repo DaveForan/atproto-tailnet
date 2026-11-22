@@ -417,6 +417,33 @@ async fn ephemeral_sweep() {
 }
 
 #[tokio::test]
+async fn map_session_marks_online_and_owns_the_generation() {
+    for b in backends().await {
+        let s = &b.store;
+        let t = tenant(s, "session").await;
+        let mk = rand_bytes::<32>();
+        let (id, _, g1) = s.register_node(t, mk, info("laptop", mk)).await.unwrap();
+        let online = |nodes: Vec<coord_core::NodeSummary>| nodes.into_iter().find(|n| n.id == id).unwrap().online;
+
+        s.set_node_offline_if_current(id, g1).await.unwrap();
+        assert!(!online(s.list_nodes_for_tenant(t).await), "{}", b.name);
+
+        // A reconnect opens a map stream without registering again.
+        let g2 = s.begin_node_session(id).await.unwrap();
+        assert!(g2 > g1, "{}", b.name);
+        assert!(online(s.list_nodes_for_tenant(t).await), "{}", b.name);
+
+        // The old connection's late disconnect must not undo it.
+        s.set_node_offline_if_current(id, g1).await.unwrap();
+        assert!(online(s.list_nodes_for_tenant(t).await), "{}", b.name);
+        s.set_node_offline_if_current(id, g2).await.unwrap();
+        assert!(!online(s.list_nodes_for_tenant(t).await), "{}", b.name);
+
+        assert!(s.begin_node_session(coord_core::NodeId::new(i64::MAX)).await.is_err(), "{}", b.name);
+    }
+}
+
+#[tokio::test]
 async fn tenant_suspension_round_trip() {
     for b in backends().await {
         let s = &b.store;

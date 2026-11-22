@@ -1454,6 +1454,27 @@ impl PgStore {
         Ok(())
     }
 
+    /// Starts a map session of a known node: online, new generation. Returns the generation.
+    pub async fn begin_node_session(&self, node_id: NodeId) -> Result<u64, CoordError> {
+        let row: Option<(uuid::Uuid, i64)> = sqlx::query_as(
+            "UPDATE coord_nodes SET online = TRUE, last_seen = NOW(), \
+             session_generation = session_generation + 1 \
+             WHERE id = $1 RETURNING tenant_id, session_generation"
+        )
+            .bind(node_id.as_i64())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db)?;
+        let Some((tenant_uuid, generation)) = row else {
+            return Err(CoordError::Protocol(format!("node {node_id} not found")));
+        };
+        self.emit(PeerEvent::NodeUpdated {
+            tenant_id: TenantId::new(tenant_uuid),
+            node_id,
+        }).await;
+        crate::generation_from_db(generation)
+    }
+
     pub async fn set_advertised_routes(&self, node_id: NodeId, routes: Vec<String>) -> Result<bool, CoordError> {
         self.set_routes_column(node_id, "advertised_routes", routes).await
     }

@@ -912,6 +912,25 @@ impl MemoryStore {
         Ok(())
     }
 
+    /// Starts a map session of a known node: online, new generation. Returns the generation.
+    pub fn begin_node_session(&self, node_id: NodeId) -> Result<u64, CoordError> {
+        let mut nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(node) = nodes.get_mut(&node_id) else {
+            return Err(CoordError::Protocol(format!("node {node_id} not found")));
+        };
+        node.online = true;
+        node.last_seen = clock::now();
+        node.session_generation += 1;
+        let generation = node.session_generation;
+        let tid = node.tenant_id;
+        drop(nodes);
+        let _ = self.peer_tx.send(PeerEvent::NodeUpdated {
+            tenant_id: tid,
+            node_id,
+        });
+        Ok(generation)
+    }
+
     /// Replace a node's advertised routes. Returns true if they changed.
     pub fn set_advertised_routes(&self, node_id: NodeId, routes: Vec<String>) -> Result<bool, CoordError> {
         self.update_attrs(node_id, |a| {

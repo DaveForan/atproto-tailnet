@@ -310,7 +310,7 @@ async fn handle_control_request(
             if !authed.load(Ordering::Acquire) && state.store.get_node_by_machine_key(&machine_key).await.is_some() {
                 authed.store(true, Ordering::Release);
             }
-            Ok(handle_map_request(state, machine_key, &body_str).await)
+            Ok(handle_map_request(state, machine_key, &session_gen, &body_str).await)
         }
         _ => Ok(json_error(StatusCode::NOT_FOUND, "not found")),
     }
@@ -365,6 +365,7 @@ pub(crate) fn frame_map_response(json_bytes: &[u8]) -> Result<Vec<u8>, std::io::
 pub(crate) async fn handle_map_request(
     state: Arc<CoordinatorState>,
     machine_key: [u8; 32],
+    session_gen: &AtomicU64,
     body: &str,
 ) -> Response<BoxBody> {
     let req: coord_proto::map::MapRequest = match serde_json::from_str(body) {
@@ -383,6 +384,16 @@ pub(crate) async fn handle_map_request(
         }
 
     let is_streaming = req.stream.unwrap_or(false);
+
+    // A reconnecting device opens a map stream without registering again.
+    // The stream is its session: mark it online and own the generation, so this
+    // connection's end marks it offline only while no newer session exists.
+    if is_streaming {
+        match state.store.begin_node_session(node_id).await {
+            Ok(generation) => session_gen.store(generation, Ordering::Release),
+            Err(e) => warn!(error = %e, node = %node_id, "begin_node_session failed"),
+        }
+    }
 
     if !is_streaming {
         match control::handle_map(&state, &machine_key, body).await {

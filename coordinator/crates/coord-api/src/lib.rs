@@ -254,7 +254,7 @@ pub async fn __test_map_request(
     machine_key: [u8; 32],
     body: &str,
 ) -> axum::http::Response<http_body_util::combinators::BoxBody<bytes::Bytes, std::io::Error>> {
-    noise_handler::handle_map_request(state, machine_key, body).await
+    noise_handler::handle_map_request(state, machine_key, &std::sync::atomic::AtomicU64::new(0), body).await
 }
 
 /// Serves control HTTP/2 over an in-memory duplex, without the Noise layer.

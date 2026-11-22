@@ -1278,6 +1278,29 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// Starts a map session of a known node: online, new generation. Returns the generation.
+    pub async fn begin_node_session(&self, node_id: NodeId) -> Result<u64, CoordError> {
+        let row: Option<(String, i64)> = sqlx::query_as(
+            "UPDATE coord_nodes SET online = 1, last_seen = datetime('now'), \
+             session_generation = session_generation + 1 \
+             WHERE id = ?1 RETURNING tenant_id, session_generation"
+        )
+            .bind(node_id.as_i64())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db)?;
+        let Some((tenant_str, generation)) = row else {
+            return Err(CoordError::Protocol(format!("node {node_id} not found")));
+        };
+        if let Ok(uuid) = uuid::Uuid::parse_str(&tenant_str) {
+            let _ = self.peer_tx.send(PeerEvent::NodeUpdated {
+                tenant_id: TenantId::new(uuid),
+                node_id,
+            });
+        }
+        crate::generation_from_db(generation)
+    }
+
     pub async fn set_advertised_routes(&self, node_id: NodeId, routes: Vec<String>) -> Result<bool, CoordError> {
         self.set_routes_column(node_id, "advertised_routes", routes).await
     }
