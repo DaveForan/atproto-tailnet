@@ -144,7 +144,8 @@ export const relayNodes = pgTable(
       .notNull()
       .references(() => brokerSessions.id),
     containerId: text("container_id"),
-    headscaleNodeId: text("headscale_node_id"),
+    /** The relay half's node in the coordinator. */
+    controlNodeId: text("control_node_id"),
     localNodeId: text("local_node_id"),
     remoteNodeId: text("remote_node_id"),
     wireguardPublicKey: text("wireguard_public_key"),

@@ -17,7 +17,7 @@ import { logger } from "../logger.js";
 import { sendDeviceRefusal } from "./limits.js";
 import { deviceAdmission } from "../access/admission.js";
 import type { CoordinatorApiClient } from "../orchestrator/coordinator-api.js";
-import { getCoordinatorClient, useCoordinator } from "../orchestrator/control-client.js";
+import { getCoordinatorClient } from "../orchestrator/control-client.js";
 import { pushTenantIdentity } from "../orchestrator/coordinator-identity.js";
 import { stepUpForSession } from "../auth/step-up.js";
 import { holdAfterOwnerFor } from "../access/device-holds.js";
@@ -61,16 +61,12 @@ export const DEVICE_SIGNIN_APPROVE_LIMIT = 10;
 const viewLimiter = perUser(DEVICE_SIGNIN_VIEW_LIMIT);
 const approveLimiter = perUser(DEVICE_SIGNIN_APPROVE_LIMIT);
 
-/** Admin client for calls that are not scoped to one tenant. */
-function coordinator(): CoordinatorApiClient | null {
-  return useCoordinator ? getCoordinatorClient() : null;
-}
-
 /** The pending sign-in and the tailnets the caller could add the device to. */
 deviceSignInRouter.get("/api/device-auth/:id", requireSession, viewLimiter, async (req, res) => {
   const id = param(req, "id");
-  const coord = coordinator();
-  if (!coord || !ID_RE.test(id)) {
+  // The pending sign-in belongs to no tenant yet
+  const coord = getCoordinatorClient();
+  if (!ID_RE.test(id)) {
     res.status(404).json({ error: "Sign-in link not found or expired" });
     return;
   }
@@ -116,8 +112,9 @@ deviceSignInRouter.get("/api/device-auth/:id", requireSession, viewLimiter, asyn
 
 deviceSignInRouter.post("/api/device-auth/:id/approve", requireSession, approveLimiter, stepUpForSession, async (req, res) => {
   const id = param(req, "id");
-  const coord = coordinator();
-  if (!coord || !ID_RE.test(id)) {
+  // The pending sign-in belongs to no tenant yet
+  const coord = getCoordinatorClient();
+  if (!ID_RE.test(id)) {
     res.status(404).json({ error: "Sign-in link not found or expired" });
     return;
   }
@@ -141,7 +138,7 @@ deviceSignInRouter.post("/api/device-auth/:id/approve", requireSession, approveL
     res.status(404).json({ error: "Tenant not found" });
     return;
   }
-  const refusal = await deviceAdmission(result.tenant, result.membership, userId);
+  const refusal = await deviceAdmission(result.tenant);
   if (refusal) {
     sendDeviceRefusal(res, result.tenant, refusal);
     return;
@@ -185,8 +182,9 @@ deviceSignInRouter.post("/api/device-auth/:id/approve", requireSession, approveL
 
 deviceSignInRouter.post("/api/device-auth/:id/deny", requireSession, async (req, res) => {
   const id = param(req, "id");
-  const coord = coordinator();
-  if (!coord || !ID_RE.test(id)) {
+  // The pending sign-in belongs to no tenant yet
+  const coord = getCoordinatorClient();
+  if (!ID_RE.test(id)) {
     res.status(404).json({ error: "Sign-in link not found or expired" });
     return;
   }

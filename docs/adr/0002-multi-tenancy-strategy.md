@@ -3,6 +3,8 @@
 **Status:** Accepted
 **Date:** 2026-10-23
 
+> Note (2026-11-26): the Headscale mode was removed (ADR-0040). The coordinator is the only control plane.
+
 ## Context
 
 Headscale is single-tenant by design: one instance runs one tailnet. The maintainers rejected multi-tenancy as out of scope (issue #2711). Our service needs multiple isolated tailnets.

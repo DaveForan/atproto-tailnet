@@ -3,11 +3,11 @@
 # atproto-tailnet restore
 #
 # Restores a backup archive created by backup.sh. Stops the app, restores
-# the database and Headscale data, then restarts everything.
+# the database and the Caddy data, then restarts everything.
 #
 # Usage:
 #   ./scripts/restore.sh backups/atproto-tailnet-20261102-193000.tar.gz
-#   COMPOSE_FILE=docker-compose.production.yml ./scripts/restore.sh backup.tar.gz
+#   COMPOSE_FILE=docker-compose.coordinator.dev.yml ./scripts/restore.sh backup.tar.gz
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
@@ -17,7 +17,7 @@ if [ $# -lt 1 ]; then
 fi
 
 ARCHIVE="$1"
-COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.production.yml}"
+COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.coordinator.yml}"
 PG_USER="${POSTGRES_USER:-atproto_tailnet}"
 PG_DB="${POSTGRES_DB:-atproto_tailnet}"
 
@@ -37,7 +37,7 @@ if [ -z "${BACKUP_DIR}" ]; then
 fi
 
 echo ""
-echo "WARNING: This will overwrite the current database and Headscale data."
+echo "WARNING: This will overwrite the current database."
 echo "         The app will be stopped during restore."
 read -r -p "Continue? [y/N] " confirm
 if [[ ! "${confirm}" =~ ^[Yy]$ ]]; then
@@ -60,22 +60,6 @@ if [ -f "${BACKUP_DIR}/database.dump" ]; then
   echo "    Database restored"
 else
   echo "    No database dump found, skipping"
-fi
-
-if [ -f "${BACKUP_DIR}/headscale-data.tar.gz" ]; then
-  echo "==> Restoring Headscale data..."
-  docker compose -f "${COMPOSE_FILE}" exec -T app \
-    sh -c 'rm -rf /data/headscale/* && tar xzf - -C /data' \
-    < "${BACKUP_DIR}/headscale-data.tar.gz" 2>/dev/null || {
-    echo "    App container not running, trying local restore..."
-    HEADSCALE_DATA="${HEADSCALE_DATA_DIR:-./data/headscale}"
-    mkdir -p "${HEADSCALE_DATA}"
-    tar xzf "${BACKUP_DIR}/headscale-data.tar.gz" -C "$(dirname "${HEADSCALE_DATA}")"
-    echo "    Headscale data restored to ${HEADSCALE_DATA}"
-  }
-  echo "    Headscale data restored"
-else
-  echo "    No Headscale data found, skipping"
 fi
 
 if [ -f "${BACKUP_DIR}/caddy-data.tar.gz" ]; then

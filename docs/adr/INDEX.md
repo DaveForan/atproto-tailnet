@@ -51,6 +51,7 @@ Any state can move to **Deferred** (still on the roadmap; work is paused). A Pro
 | 0037 | Keep separate PostgreSQL and SQLite store implementations | 2026-11-20 | — | 0023, 0034 |
 | 0038 | Scope of the gateway certificate | 2026-11-20 | — | 0029, 0030, 0034 |
 | 0039 | Every new device waits for admission | 2026-11-25 | — | 0023, 0032, 0035 |
+| 0040 | Remove the Headscale mode | 2026-11-26 | — | 0023, 0039 |
 
 ### Proposed
 

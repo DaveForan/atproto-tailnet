@@ -34,7 +34,7 @@ import {
 } from "../orchestrator/federation-broker.js";
 import { collectiveDids } from "../db/schema.js";
 import { config } from "../config.js";
-import { getCoordinatorClient, useCoordinator } from "../orchestrator/control-client.js";
+import { getCoordinatorClient } from "../orchestrator/control-client.js";
 import { CFP_VERSION } from "../federation/protocol.js";
 import { scopeDeclarationSchema } from "../federation/scoping.js";
 import { signedPayload } from "../federation/auth.js";
@@ -1022,9 +1022,11 @@ federationRouter.put(
     const parsed = parseBody(postureBody, req, res);
     if (!parsed) return;
 
-    if (useCoordinator) {
-      await getCoordinatorClient(result.tenant).setPosture(parsed.data.posture);
+    if (!result.tenant.coordinatorTenantId) {
+      res.status(409).json({ error: "This tailnet is not ready yet", code: "not_ready" });
+      return;
     }
+    await getCoordinatorClient(result.tenant).setPosture(parsed.data.posture);
 
     await db
       .update(tenants)

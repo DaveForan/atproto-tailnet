@@ -80,8 +80,6 @@ case "${CMD}" in
     echo ""
     echo "    railway connect postgres"
     echo "    pg_dump -U atproto_tailnet -d atproto_tailnet -F c > backup.dump"
-    echo ""
-    echo "    Headscale data backups require SSH/exec access to the container."
     ;;
 
   restart)

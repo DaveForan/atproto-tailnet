@@ -8,7 +8,7 @@ import type { Response } from "express";
 import { eq, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { memberships, tenants } from "../db/schema.js";
-import type { ControlClient } from "../orchestrator/control-client.js";
+import type { CoordinatorApiClient } from "../orchestrator/coordinator-api.js";
 import { deviceLimitRefusal, isAtCapacity, type DeviceRefusal } from "../access/admission.js";
 import { LOCKDOWN_ERROR } from "./guard.js";
 
@@ -47,20 +47,11 @@ export async function countMembers(tenantId: string): Promise<number> {
   return row?.count ?? 0;
 }
 
-/** Message returned when key generation is blocked by a device lock. */
-export const DEVICE_LOCKED_ERROR = "Session is locked to specific devices. Remove lock to add new devices.";
-
-/**
- * Sends the response for a refused device. `approval_required` is answered
- * only by routes that cannot create an approval request (device sign-in).
- */
+/** Sends the response for a refused device. */
 export function sendDeviceRefusal(res: Response, tenant: Tenant, refusal: DeviceRefusal): void {
   switch (refusal) {
     case "locked_down":
       res.status(403).json({ error: LOCKDOWN_ERROR });
-      return;
-    case "device_locked":
-      res.status(403).json({ error: DEVICE_LOCKED_ERROR });
       return;
     case "device_limit":
       res.status(403).json({ error: `Device limit reached (${tenant.maxDevices})`, code: "device_limit" });
@@ -68,17 +59,11 @@ export function sendDeviceRefusal(res: Response, tenant: Tenant, refusal: Device
     case "limit_unverified":
       res.status(502).json({ error: "Failed to verify the device limit" });
       return;
-    case "approval_required":
-      res.status(403).json({
-        error: "This tailnet requires device approval. Ask for a key on the Devices page",
-        code: "approval_required",
-      });
-      return;
   }
 }
 
 /** Checks maxDevices and sends the refusal; false when the caller must stop. */
-export async function enforceDeviceLimit(res: Response, tenant: Tenant, client: ControlClient): Promise<boolean> {
+export async function enforceDeviceLimit(res: Response, tenant: Tenant, client: CoordinatorApiClient): Promise<boolean> {
   const refusal = await deviceLimitRefusal(tenant, client);
   if (refusal) sendDeviceRefusal(res, tenant, refusal);
   return !refusal;

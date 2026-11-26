@@ -51,7 +51,7 @@ import { securityRouter } from "../routes/security.js";
 import { devicesRouter } from "../routes/devices.js";
 
 const TENANT = "11111111-1111-4111-8111-111111111111";
-const tenant = { id: TENANT, defaultRoleId: "44444444-4444-4444-8444-444444444444", lastActivityAt: new Date(), lockdownMode: false };
+const tenant = { id: TENANT, defaultRoleId: "44444444-4444-4444-8444-444444444444", lockdownMode: false };
 const managerRole = { id: "22222222-2222-4222-8222-222222222222", tenantId: TENANT, name: "Role manager", isSystem: false, permissions: ["manage_roles", "invite"] };
 const adminRole = { id: "33333333-3333-4333-8333-333333333333", tenantId: TENANT, name: "Admin", isSystem: false, permissions: ["manage_roles", "invite", "kick", "manage_settings", "manage_acl"] };
 const citizenRole = { id: "44444444-4444-4444-8444-444444444444", tenantId: TENANT, name: "citizen", isSystem: true, permissions: ["invite"] };

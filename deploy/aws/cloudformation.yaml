@@ -1,8 +1,8 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   atproto-tailnet -- EC2 + RDS deployment.
-  Provisions a Docker-ready EC2 instance with Docker socket access (required
-  for per-tenant Headscale containers) and a managed RDS PostgreSQL database.
+  Provisions a Docker-ready EC2 instance for the compose stack
+  (docker-compose.coordinator.yml) and a managed RDS PostgreSQL database.
 
 Parameters:
   InstanceType:
@@ -42,6 +42,12 @@ Parameters:
     NoEcho: true
     MinLength: 32
     Description: Session signing secret (>= 32 characters)
+
+  CoordinatorApiKey:
+    Type: String
+    NoEcho: true
+    MinLength: 32
+    Description: Admin key shared by the service and the coordinator (>= 32 characters)
 
   PublicUrl:
     Type: String
@@ -92,11 +98,11 @@ Resources:
           ToPort: 443
           CidrIp: 0.0.0.0/0
           Description: HTTP/3 QUIC
-        - IpProtocol: tcp
-          FromPort: 10001
-          ToPort: 10100
+        - IpProtocol: udp
+          FromPort: 3478
+          ToPort: 3478
           CidrIp: 0.0.0.0/0
-          Description: Headscale tenant ports
+          Description: STUN (built-in relay)
       Tags:
         - Key: Name
           Value: atproto-tailnet-app-sg
@@ -184,7 +190,6 @@ Resources:
           mkdir -p $MOUNT
           mount $DEVICE $MOUNT
           echo "$DEVICE $MOUNT ext4 defaults,nofail 0 2" >> /etc/fstab
-          mkdir -p $MOUNT/headscale
 
           # Install Docker from Docker's signed apt repository (not the
           # get.docker.com script). The key fingerprint is checked first.
@@ -217,18 +222,16 @@ Resources:
           PORT=3000
           PUBLIC_URL=${PublicUrl}
           BASE_DOMAIN=${BaseDomain}
-          HEADSCALE_IMAGE=headscale/headscale:0.29.1
-          HEADSCALE_PORT_RANGE_START=10001
-          HEADSCALE_PORT_RANGE_END=10100
-          HEADSCALE_HOST_DATA_DIR=/data/headscale
-          CADDY_ADMIN_URL=http://caddy:2019
+          COORDINATOR_URL=http://coordinator:9443
+          COORDINATOR_API_KEY=${CoordinatorApiKey}
           LOG_LEVEL=info
           CF_API_TOKEN=${CfApiToken}
           POSTGRES_PASSWORD=${DBPassword}
           ENVEOF
 
-          # Start services (skip local postgres -- using RDS)
-          docker compose -f docker-compose.production.yml up -d app caddy
+          # The first start fails until APP_DOMAIN and DERP_DOMAIN are in .env
+          # (see deploy/aws/README.md). Do not stop the instance bootstrap for it.
+          docker compose -f docker-compose.coordinator.yml up -d || true
       Tags:
         - Key: Name
           Value: atproto-tailnet

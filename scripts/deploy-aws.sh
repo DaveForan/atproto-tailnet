@@ -180,7 +180,7 @@ case "${CMD}" in
       exit 1
     fi
     echo "==> Tailing logs on ${IP}..."
-    ssh "ubuntu@${IP}" "cd /opt/atproto-tailnet && docker compose -f docker-compose.production.yml logs -f --tail=100 app"
+    ssh "ubuntu@${IP}" "cd /opt/atproto-tailnet && docker compose -f docker-compose.coordinator.yml logs -f --tail=100 app"
     ;;
 
   update)
@@ -195,10 +195,10 @@ case "${CMD}" in
       set -euo pipefail
       cd /opt/atproto-tailnet
       git pull origin main
-      docker compose -f docker-compose.production.yml build app
-      docker compose -f docker-compose.production.yml up -d app
+      docker compose -f docker-compose.coordinator.yml build app
+      docker compose -f docker-compose.coordinator.yml up -d app
       echo "Update complete."
-      docker compose -f docker-compose.production.yml ps
+      docker compose -f docker-compose.coordinator.yml ps
 REMOTE
     ;;
 

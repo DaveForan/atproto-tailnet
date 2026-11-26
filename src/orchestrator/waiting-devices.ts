@@ -8,8 +8,8 @@ import { and, eq, inArray, isNotNull } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { tenants, waitingDevices } from "../db/schema.js";
 import { getCoordinatorClient } from "./control-client.js";
-import type { HeadscaleNode } from "./headscale-api.js";
-import { holdOf, isAdmitted, tenantMembers } from "../access/device-holds.js";
+import type { ControlNode } from "./control-types.js";
+import { isAdmitted, tenantMembers } from "../access/device-holds.js";
 import { notify, notifyUser } from "../notifications/service.js";
 import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
@@ -25,14 +25,14 @@ export interface WaitingRow {
 
 export interface WaitingPlan {
   /** Devices whose wait starts now. */
-  started: HeadscaleNode[];
+  started: ControlNode[];
   /** Rows of devices that no longer wait, or that wait for another owner. */
   ended: string[];
   /** Devices that waited too long. */
-  expired: HeadscaleNode[];
+  expired: ControlNode[];
 }
 
-const ownerOf = (n: HeadscaleNode) => n.user?.name ?? null;
+const ownerOf = (n: ControlNode) => n.user?.name ?? null;
 
 /** When a wait that began at `firstSeenAt` ends. */
 export function waitExpiry(firstSeenAt: Date, hours: number): Date {
@@ -40,7 +40,7 @@ export function waitExpiry(firstSeenAt: Date, hours: number): Date {
 }
 
 /** Compares the devices of a tailnet with the waits on record. Pure. */
-export function planWaiting(nodes: HeadscaleNode[], rows: WaitingRow[], hours: number, now: Date): WaitingPlan {
+export function planWaiting(nodes: ControlNode[], rows: WaitingRow[], hours: number, now: Date): WaitingPlan {
   const waiting = new Map(nodes.filter((n) => !isAdmitted(n)).map((n) => [String(n.id), n]));
   const plan: WaitingPlan = { started: [], ended: [], expired: [] };
   const known = new Set<string>();
@@ -57,7 +57,7 @@ export function planWaiting(nodes: HeadscaleNode[], rows: WaitingRow[], hours: n
   return plan;
 }
 
-const label = (n: HeadscaleNode) => `${n.givenName || n.name} (${n.os || "unknown system"}, key ${n.fingerprint ?? "unknown"})`;
+const label = (n: ControlNode) => `${n.givenName || n.name} (${n.os || "unknown system"}, key ${n.fingerprint ?? "unknown"})`;
 
 /** One round for every coordinator tailnet. A failure in one tailnet does not stop the others. */
 export async function sweepWaitingDevices(now: Date = new Date()): Promise<void> {
@@ -119,7 +119,7 @@ async function sweepTenant(
   for (const node of plan.started) {
     const owner = ownerOf(node);
     // A device that already waits for an approver was announced when its owner admitted it
-    if (holdOf(node) !== "owner") continue;
+    if (node.hold !== "owner") continue;
     if (owner && handles.has(owner)) {
       notifyUser(tenant.id, owner, "device_waiting", {
         title: "A new device waits for you",

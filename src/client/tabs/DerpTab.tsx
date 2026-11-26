@@ -1,6 +1,5 @@
 import { useId, useState } from "react";
 import { networkService } from "../services/network";
-import { useTenant } from "../hooks/session";
 import { useTenantData } from "../hooks/useTenantData";
 import { useToast } from "../components/Toast";
 import { useTenantMutation } from "../hooks/useMutation";
@@ -13,7 +12,6 @@ import type { DerpConfig, DerpNode, DerpRegion } from "../lib/types";
 import { LoadError } from "../components/LoadError";
 
 export function DerpTab() {
-  const { currentTenant } = useTenant();
   const { toast } = useToast();
   const { data, loading, error, reload } = useTenantData<DerpConfig | null>(
     (tid) => networkService.getDerp(tid),
@@ -24,7 +22,6 @@ export function DerpTab() {
   const { mutate, busy } = useTenantMutation({ reload });
   const [config, setConfig] = useState<DerpConfig>({
     regions: [],
-    embeddedDerpEnabled: false,
     usePublicDerp: true,
   });
   // Each loaded config replaces the edits once
@@ -90,17 +87,6 @@ export function DerpTab() {
             checked={config.usePublicDerp}
             onChange={(v) => setConfig((c) => ({ ...c, usePublicDerp: v }))}
           />
-          {/* The coordinator runs the relays itself; the server forces this off there */}
-          {!currentTenant?.coordinatorMode && (
-            <Toggle
-              label="Embedded DERP server"
-              description="Run a DERP relay inside this Headscale container (requires restart)"
-              checked={config.embeddedDerpEnabled}
-              onChange={(v) =>
-                setConfig((c) => ({ ...c, embeddedDerpEnabled: v }))
-              }
-            />
-          )}
         </div>
       </Card>
 

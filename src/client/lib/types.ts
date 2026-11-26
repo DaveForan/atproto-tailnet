@@ -16,13 +16,10 @@ export interface Tenant {
   id: string;
   name: string;
   slug: string;
-  status: "provisioning" | "running" | "stopped" | "error";
+  status: "provisioning" | "running" | "error";
   isOriginator: boolean;
   roleId?: string;
   roleName?: string;
-  coordinatorTenantId?: string;
-  /** The instance runs the Rust coordinator (no per-tailnet Headscale container). */
-  coordinatorMode?: boolean;
   suspended?: boolean;
   /** Primary public address label (`<address>.<BASE_DOMAIN>`). */
   address?: string;
@@ -65,7 +62,6 @@ export interface Settings {
   boardEnabled: boolean;
   maxBoardPosts: number;
   maxBoardPostsDisplayed: number;
-  hibernateAfterDays: number;
   notificationWebhookUrl?: string | null;
   hasWebhookSecret?: boolean;
 }
@@ -225,7 +221,6 @@ export interface OwnDeviceApproval {
   locked: boolean;
   /** After the caller admits a new device, another member must admit it too. */
   needsApprover?: boolean;
-  supported?: boolean;
 }
 
 export interface WaitingDevices {
@@ -281,7 +276,8 @@ export interface WebhookTestResult {
 }
 
 export interface DeviceGroup {
-  hsUsername: string;
+  /** The owner's user id, or "unassigned". */
+  key: string;
   devices: Device[];
 }
 
@@ -299,7 +295,6 @@ export interface Member {
   isOriginator: boolean;
   roleId?: string;
   roleName?: string;
-  isLocked?: boolean;
 }
 
 export interface FederationLink {
@@ -351,7 +346,6 @@ export interface DerpNode {
 
 export interface DerpConfig {
   regions: DerpRegion[];
-  embeddedDerpEnabled: boolean;
   usePublicDerp: boolean;
 }
 
@@ -414,14 +408,6 @@ export interface AuditLogPage {
   total: number;
 }
 
-export interface DeviceApproval {
-  id: string;
-  requesterHandle: string;
-  requesterDisplayName?: string | null;
-  status: "pending" | "approved" | "rejected";
-  requestedAt: string;
-}
-
 export interface JoinRequest {
   id: string;
   requesterHandle: string;
@@ -434,7 +420,6 @@ export interface JoinRequest {
 export interface IpConfig {
   ipv4Prefix: string;
   ipv6Prefix: string;
-  ipAllocation: "sequential" | "random";
 }
 
 export interface Stats {
@@ -515,14 +500,11 @@ export interface TraversalEvalResult {
   detail?: string;
 }
 
-export interface DeviceLockInfo {
-  memberId: string;
-  locked: boolean;
+export interface AuthKeyResponse {
+  key: string;
+  command: string;
+  loginServer: string;
 }
-
-export type AuthKeyResponse =
-  | { key: string; command: string; loginServer: string }
-  | { approvalId: string; status: "pending_approval" };
 
 export interface AuthKeyOptions {
   reusable?: boolean;
@@ -532,7 +514,6 @@ export interface AuthKeyOptions {
 // The ACL policy in flattened form.
 export interface AclData {
   acls: AclRule[];
-  groups: Record<string, string[]>;
   hosts: Record<string, string>;
   tagOwners?: Record<string, string[]>;
   autoApprovers?: Record<string, string[]>;
@@ -540,7 +521,6 @@ export interface AclData {
 
 export interface AclGetResponse {
   policy: AclData;
-  users: string[];
 }
 
 export interface CredentialResult {

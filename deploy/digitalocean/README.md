@@ -1,9 +1,9 @@
 # Deploying atproto-tailnet on DigitalOcean
 
 DigitalOcean has two deployment options. The Droplet approach is
-**recommended**. One Droplet runs the full coordinator-mode stack
+**recommended**. One Droplet runs the full stack
 (`docker-compose.coordinator.yml`): the TypeScript service, the Rust
-coordinator, PostgreSQL and Caddy. The coordinator mode does not need the
+coordinator, PostgreSQL and Caddy. The service does not need the
 Docker socket.
 
 ## Option 1: Droplet (recommended)
@@ -138,16 +138,14 @@ To copy the control key, see
 
 ## Option 2: App Platform (limited)
 
-DigitalOcean App Platform gives managed deployments with built-in Postgres,
-but it **does not give Docker socket access**. The spec in
-`deploy/digitalocean/.do/app.yaml` deploys only the web tier in legacy
-Headscale mode. Because of this, Headscale container management does not work
-natively. The spec does not run the coordinator, and it does not set
-`OPERATOR_DIDS` or `TRUST_PROXY`. Add them before you use it.
+DigitalOcean App Platform gives managed deployments with built-in Postgres.
+The spec in `deploy/digitalocean/.do/app.yaml` deploys only the web tier.
+The spec does not run the coordinator, the relay or Caddy. The service refuses
+to start without `COORDINATOR_URL` and `COORDINATOR_API_KEY`, so you must run
+a coordinator yourself and set both. The spec does not set `OPERATOR_DIDS` or
+`TRUST_PROXY`. Add them before you use it.
 
-Use the Droplet option for a working instance. A remote Docker daemon
-(`DOCKER_HOST`) does not work, because the app gives Docker host paths for the
-tenant data.
+Use the Droplet option for a working instance.
 
 ### Deploy
 
@@ -157,10 +155,8 @@ doctl apps create --spec deploy/digitalocean/.do/app.yaml
 
 ### Limitations
 
-- No Docker socket: the app cannot create or manage Headscale containers
-- No host-level port binding: Headscale ports 10001-10100 are not available
+- No coordinator: you must run the Rust coordinator and the relay elsewhere
 - No wildcard TLS: you need an external proxy for `*.ts.yourdomain.com`
-- No persistent filesystem: the Headscale data directory needs external storage
 
 ### Cost estimate
 

@@ -18,7 +18,7 @@ use crate::protocol::Capability;
 use crate::store::FederationStore;
 
 
-/// Tag used in Headscale ACL auto-approvers for federation relay routes.
+/// Tag used in ACL policy file auto-approvers for federation relay routes.
 pub const FEDERATION_RELAY_TAG: &str = "tag:federation-relay";
 
 
@@ -302,7 +302,7 @@ impl<S: FederationStore + ?Sized> BrokerService<S> {
 }
 
 
-/// Adds `tag:federation-relay` as a route auto-approver for each CIDR in a Headscale ACL policy.
+/// Adds `tag:federation-relay` as a route auto-approver for each CIDR in an ACL policy file.
 pub fn add_federated_routes_to_policy(
     policy: &serde_json::Value,
     cidrs: &[String],

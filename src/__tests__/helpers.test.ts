@@ -1,49 +1,7 @@
-/** Pure helpers from routes/helpers.ts: toHsUsername, tenantLoginServer and param. */
+/** Pure helpers from routes/helpers.ts: tenantLoginServer and param. */
 
 import { describe, it, expect } from "vitest";
-import { toHsUsername, tenantLoginServer, param } from "../routes/helpers.js";
-
-describe("toHsUsername", () => {
-  it("converts a simple handle to lowercase", () => {
-    expect(toHsUsername("alice.bsky.social")).toBe("alice-bsky-social");
-  });
-
-  it("converts an uppercase handle to lowercase", () => {
-    expect(toHsUsername("Alice.BSky.Social")).toBe("alice-bsky-social");
-  });
-
-  it("replaces dots with hyphens", () => {
-    expect(toHsUsername("my.handle.example.com")).toBe(
-      "my-handle-example-com",
-    );
-  });
-
-  it("strips leading and trailing hyphens", () => {
-    expect(toHsUsername(".leading.dot")).toBe("leading-dot");
-    expect(toHsUsername("trailing.dot.")).toBe("trailing-dot");
-  });
-
-  it("collapses consecutive non-alphanumeric characters into one hyphen", () => {
-    expect(toHsUsername("foo...bar")).toBe("foo-bar");
-    expect(toHsUsername("foo--bar")).toBe("foo-bar");
-  });
-
-  it("handles a minimal single-label handle", () => {
-    expect(toHsUsername("alice")).toBe("alice");
-  });
-
-  it("strips special characters", () => {
-    expect(toHsUsername("user@name!test")).toBe("user-name-test");
-  });
-
-  it("returns empty string for all-special-character input", () => {
-    expect(toHsUsername("...")).toBe("");
-  });
-
-  it("handles numeric handles", () => {
-    expect(toHsUsername("12345")).toBe("12345");
-  });
-});
+import { tenantLoginServer, param } from "../routes/helpers.js";
 
 describe("tenantLoginServer", () => {
   // config defaults: publicUrl = "http://localhost:3000", baseDomain = "ts.localhost"

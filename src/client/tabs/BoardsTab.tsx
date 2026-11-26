@@ -17,7 +17,7 @@ import { BoardSettingsCard } from "./boards/BoardSettingsCard";
 import { PendingPostsCard } from "./boards/PendingPostsCard";
 
 interface BoardsData {
-  devices: { devices: MyDevice[]; supported: boolean };
+  devices: { devices: MyDevice[] };
   publicBoard: { posts: PublicPost[] };
   mine: { baseDomain: string; httpsServices: boolean; serviceDomain: string | null; posts: MyPost[] };
   mode: { mode: "open" | "member"; canEdit: boolean };
@@ -26,7 +26,7 @@ interface BoardsData {
 }
 
 const FALLBACK: BoardsData = {
-  devices: { devices: [], supported: false },
+  devices: { devices: [] },
   publicBoard: { posts: [] },
   mine: { baseDomain: "", httpsServices: false, serviceDomain: null, posts: [] },
   mode: { mode: "open", canEdit: false },
@@ -70,11 +70,6 @@ export function BoardsTab() {
       <SubNav tab="board" label="Services sections" sections={sections} open={open} counts={{ queue: attention.posts.length }} />
       <div className="tab-content">
         <LoadError error={error} onRetry={reload} />
-        {!data.devices.supported && (
-          <p className="notice" role="status">
-            Boards open ports between devices only with the coordinator control plane. This instance uses the legacy mode.
-          </p>
-        )}
 
         {open?.id === "mine" ? (
           <>

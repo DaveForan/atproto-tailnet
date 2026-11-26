@@ -22,9 +22,9 @@ export const auditActionEnum = pgEnum("audit_action", [
   "member_permissions_updated", // Unused. PostgreSQL cannot drop enum values.
   "device_auth_key_created",
   "device_removed",
-  "device_approval_requested",
-  "device_approved",
-  "device_rejected",
+  "device_approval_requested", // Unused. PostgreSQL cannot drop enum values.
+  "device_approved", // Unused. PostgreSQL cannot drop enum values.
+  "device_rejected", // Unused. PostgreSQL cannot drop enum values.
   "device_locked",
   "device_unlocked",
   "tenant_settings_updated",
@@ -56,12 +56,12 @@ export const auditActionEnum = pgEnum("audit_action", [
   "agent_token_created",
   "agent_token_revoked",
   "tenant_deleted",
-  "tenant_started",
-  "tenant_stopped",
-  "tenant_hibernated",
+  "tenant_started", // Unused. PostgreSQL cannot drop enum values.
+  "tenant_stopped", // Unused. PostgreSQL cannot drop enum values.
+  "tenant_hibernated", // Unused. PostgreSQL cannot drop enum values.
   "acl_updated",
   "derp_updated",
-  "ip_config_updated",
+  "ip_config_updated", // Unused. PostgreSQL cannot drop enum values.
   "route_enabled",
   "route_disabled",
   "route_deleted",

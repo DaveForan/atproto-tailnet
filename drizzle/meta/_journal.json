@@ -316,6 +316,13 @@
       "when": 1794547218003,
       "tag": "0044_waiting_device_expiry",
       "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1794633618003,
+      "tag": "0045_remove_headscale_mode",
+      "breakpoints": true
     }
   ]
 }

@@ -21,20 +21,20 @@ The platform has a purpose-built Rust mesh coordinator (which replaces [Headscal
 - **Join requests** — on the public `/join/<slug>` page, and for the default tailnet. Limits: 50 pending for each tailnet, one pending for each person, 24-hour cooldown after a rejection.
 - **Remote MCP server** — connect Claude as a custom connector at `https://<APP_DOMAIN>/mcp`. OAuth with Bluesky sign-in. Operator tools are an opt-in. See [docs/site/guides/mcp.md](docs/site/guides/mcp.md).
 - **Isolated networks** — each tenant has its own subdomain, with its own ACL, DERP map, and IP ranges
-- **Role-based access** — 17 granular permissions, custom roles, originator protection
+- **Role-based access** — 16 granular permissions, custom roles, originator protection
 - **Device admission and notifications** — every new device waits until its owner admits that exact machine; a tailnet can add a second approval; a notification bell, and an optional signed webhook
 - **Auth keys** — list and revoke keys. Removing a member also removes their devices and keys.
 - **Device and member limits** — the originator sets them, and the service enforces them. There are no plans.
-- **Device locking** — bind members to specified machines
+- **Machine lock** — a member locks their own devices in a tailnet to chosen machines
 - **Lockdown mode** — emergency freeze of all joins, invitations, and new devices
 - **Service registry and public board** — register services and publish them at `/board/<slug>`
-- **ACL management** — editor for access control rules (coordinator mode supports IP, CIDR and host rules)
+- **ACL management** — editor for access control rules (IP, CIDR and host rules)
 - **Custom DERP relays** — relay regions for each tenant
 - **Exit nodes and subnet routers** — approve and withdraw advertised routes
 - **Usage metering** — live counts and 7-day history
 - **Agent API tokens** — scoped Bearer tokens for automation
-- **Health monitoring, hibernation, structured logging, full audit log**
-- **Federation (off by default)** — the code for links between networks exists. It stays off because its data plane needs Docker and cross-instance traffic is not implemented.
+- **Health monitoring, structured logging, full audit log**
+- **Federation (off by default)** — the code for links between networks exists. It stays off because its data plane needs Docker and cross-instance traffic is not implemented. Only a federating instance needs the Docker socket.
 
 ## Architecture
 
@@ -45,14 +45,14 @@ The platform has a purpose-built Rust mesh coordinator (which replaces [Headscal
 | Dashboard | React 19 / esbuild / lazy-loaded pages / typed service layer |
 | Database | PostgreSQL (service layer) or SQLite (coordinator standalone) |
 | Auth | `@atproto/oauth-client-node` |
-| Control plane | Rust coordinator (Noise IK protocol, multi-tenant) or Headscale (legacy, one Docker container for each tenant) |
+| Control plane | Rust coordinator (Noise IK protocol, multi-tenant) |
 | MCP | Remote MCP server (`/mcp`) with its own OAuth authorization server |
 | Federation | Collective Federation Protocol (CFP). Off by default |
 | Reverse proxy | Caddy (dynamic subdomains through the admin API) |
 
 The coordinator speaks the Tailscale control protocol (Noise IK handshake, register/map over HTTP/2). It adds native multi-tenancy and sub-collective hierarchy. The coordinator can run standalone with SQLite (no external dependencies) or share PostgreSQL with the TypeScript service. The TypeScript service handles AT Proto OAuth, the dashboard, and orchestration. It talks to the coordinator through the REST admin API of the coordinator.
 
-Each tenant has its own subdomain (`<slug>.<base-domain>`). Caddy routes the subdomain. In coordinator mode, a tenant subdomain serves only `/key`, `/ts2021` and `/health`.
+Each tenant has its own subdomain (`<slug>.<base-domain>`). Caddy routes the subdomain. A tenant subdomain serves only `/key`, `/ts2021` and `/health`.
 
 ## Quick start
 
@@ -67,7 +67,7 @@ Each tenant has its own subdomain (`<slug>.<base-domain>`). Caddy routes the sub
 git clone https://github.com/DaveForan/atproto-tailnet.git
 cd atproto-tailnet
 cp .env.example .env          # then set OPERATOR_DIDS=<your DID> in .env
-docker compose up -d          # PostgreSQL + Caddy
+docker compose -f docker-compose.coordinator.dev.yml up -d   # coordinator + PostgreSQL + Caddy
 npm install                   # install dependencies
 npm run build:client          # build the React dashboard
 npm run db:migrate            # apply database migrations
@@ -78,23 +78,12 @@ Open `http://127.0.0.1:3000` and sign in with your Bluesky handle. Use the IP ad
 
 Only operators get a tailnet. Put your own DID in `OPERATOR_DIDS` before you sign in. To find your DID, run `curl "https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle?handle=you.bsky.social"`.
 
-### Coordinator mode (recommended)
+The Rust coordinator is the control plane. The service refuses to start without `COORDINATOR_URL` and `COORDINATOR_API_KEY`. `.env.example` has the values for the local stack.
 
-```sh
-# Rust coordinator + Postgres + Caddy in Docker; TS service on host
-docker compose -f docker-compose.coordinator.dev.yml up -d
-# Add to .env: COORDINATOR_URL=http://localhost:9443  COORDINATOR_API_KEY=dev-coordinator-key-local-only-0000000000
-npm run dev
-```
-
-Devices connect with `tailscale up --login-server http://<slug>.ts.localhost:8180`.
-
-### Legacy Headscale mode
-
-Caddy serves the Headscale instance of each tailnet at `http://<slug>.ts.localhost:8180`. Note these two limits when you connect a device locally:
+Devices connect with `tailscale up --login-server http://<tailnet-address>.ts.localhost:8180`. Note these two limits when you connect a device locally:
 
 - It works only from the same machine, because `*.localhost` resolves to loopback.
-- The URL uses plain HTTP. After a dropped connection, the Tailscale client retries over HTTPS on port 443. Nothing local answers on that port. A device can stay offline after Caddy or the tailnet restarts. To fix this, restart `tailscaled` on the device, or start it with `TS_FORCE_NOISE_443=false`. This limit does not apply to an HTTPS deployment.
+- The URL uses plain HTTP. After a dropped connection, the Tailscale client retries over HTTPS on port 443. Nothing local answers on that port. A device can stay offline after Caddy or the coordinator restarts. To fix this, restart `tailscaled` on the device, or start it with `TS_FORCE_NOISE_443=false`. This limit does not apply to an HTTPS deployment.
 
 > **Note:** If you set `NODE_ENV=production` globally, use `npm install --include=dev` instead. The dev server and build tools are in devDependencies.
 
@@ -174,14 +163,13 @@ src/                      — TypeScript service layer
     lib/                  — Types, constants, utilities
   auth/atproto.ts         — AT Proto OAuth setup
   config.ts               — Zod-validated env config
-  db/schema.ts            — Drizzle schema (30 tables)
+  db/schema.ts            — Drizzle schema (28 tables)
   orchestrator/
-    headscale.ts          — Docker lifecycle management
-    headscale-api.ts      — Headscale REST client
-    control-client.ts     — ControlClient factory (coordinator or Headscale)
+    control-client.ts     — getCoordinatorClient: the coordinator admin API client
+    control-types.ts      — Shared types (ControlNode, ControlPreAuthKey, ControlRoute)
     caddy.ts              — Caddy admin API
     federation-broker.ts  — Federation broker loop + collective DID lifecycle
-    monitor.ts            — Health check loop + auto-restart
+    monitor.ts            — Health check loop; re-sends per-tenant state when the coordinator restarts
   routes/                 — Express routes (auth, API, operator, notifications, dashboard HTML shell, etc.)
   operator/               — Instance policy: operators, tailnet creators, suspension, disabled users
   oauth/                  — OAuth authorization server for the MCP endpoint
@@ -199,9 +187,9 @@ docs/adr/                 — Architecture Decision Records
 
 Instance operators come from `OPERATOR_DIDS`. They are the only users with instance powers (see [ADR-0025](docs/adr/0025-instance-operators-and-mcp-access.md)).
 
-Inside a tenant, the permission system has 17 discrete permissions. You assign the permissions through custom roles:
+Inside a tenant, the permission system has 16 discrete permissions. You assign the permissions through custom roles:
 
-`invite` · `kick` · `manage_roles` · `manage_settings` · `approve_devices` · `approve_joins` · `approve_services` · `lock_devices` · `view_audit_log` · `manage_devices` · `manage_services` · `manage_board` · `create_posts` · `create_agent_tokens` · `manage_agent_tokens` · `manage_acl` · `manage_sub_collectives`
+`invite` · `kick` · `manage_roles` · `manage_settings` · `approve_devices` · `approve_joins` · `approve_services` · `view_audit_log` · `manage_devices` · `manage_services` · `manage_board` · `create_posts` · `create_agent_tokens` · `manage_agent_tokens` · `manage_acl` · `manage_sub_collectives`
 
 The tenant originator has all permissions implicitly. Nobody can kick or demote the originator. Lockdown mode freezes all external access. An agent token applies to a single tenant, has a subset of permissions, and must have an expiry. An MCP token acts as the user, works only through the `/mcp` tools, and gets operator tools only with an explicit opt-in.
 
@@ -210,7 +198,7 @@ The tenant originator has all permissions implicitly. Nobody can kick or demote 
 The TypeScript service layer includes these items:
 
 - AT Proto auth, instance operators, and invite-only access
-- Invitations, join requests, roles, device approval, notifications, limits, and lockdown
+- Invitations, join requests, roles, device admission, notifications, limits, and lockdown
 - Services, board, agent tokens, ACL, DERP, routes, and health monitoring
 - The remote MCP server with OAuth
 - A React 19 dashboard with 8 lazy-loaded pages
@@ -221,9 +209,9 @@ The Rust coordinator includes these items:
 - Multi-tenant store (Memory, PostgreSQL, or SQLite)
 - Admin REST API with per-tenant DERP, route approval, auto-approvers, and suspension
 - Sub-collective hierarchy
-- Coordinator mode integration with the TS service
+- Integration with the TS service through the admin REST API
 
-Federation code exists in both layers, but it is off by default (`FEDERATION_ENABLED`, `COORD_FEDERATION_ENABLED`). Links carry no traffic in the coordinator stack yet.
+Federation code exists in both layers, but it is off by default (`FEDERATION_ENABLED`, `COORD_FEDERATION_ENABLED`). Links carry no traffic yet.
 
 ## License
 

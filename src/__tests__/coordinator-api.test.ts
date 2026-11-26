@@ -35,7 +35,7 @@ describe("CoordinatorApiClient", () => {
 
   it("refuses tenant-scoped calls on an instance-level client before any request", async () => {
     await expect(instance.listNodes()).rejects.toThrow(/instance-level client/);
-    await expect(instance.createPreAuthKey("x")).rejects.toThrow(/instance-level client/);
+    await expect(instance.createPreAuthKey()).rejects.toThrow(/instance-level client/);
     await expect(instance.deleteNode("1")).rejects.toThrow(/instance-level client/);
     await expect(instance.setAutoApprovers({ routes: {}, exit_node: [] })).rejects.toThrow(/instance-level client/);
     expect(fetchMock).not.toHaveBeenCalled();

@@ -12,36 +12,17 @@ import { deviceService } from "../services/devices";
 import type { Member } from "../lib/types";
 import { LoadError } from "../components/LoadError";
 
-interface MembersData {
-  members: Member[];
-  /** Device lock per member id; empty without `lock_devices`. */
-  locks: Map<string, boolean>;
-}
-
-async function loadMembers(tid: string, withLocks: boolean): Promise<MembersData> {
-  const members = (await deviceService.getMembers(tid)) ?? [];
-  const locks = new Map<string, boolean>();
-  if (withLocks && members.length > 0) {
-    const results = await Promise.all(
-      members.map((m) => deviceService.getDeviceLock(tid, m.id).then((res) => [m.id, res?.locked ?? false] as const)),
-    );
-    for (const [id, locked] of results) locks.set(id, locked);
-  }
-  return { members, locks };
-}
+const NO_MEMBERS: Member[] = [];
 
 export function MembersTab() {
-  const { hasPerm, roles, reloadTenants, currentTenant } = useSession();
+  const { hasPerm, roles, reloadTenants } = useSession();
   const { setTab } = useTabRoute();
-  // The coordinator has no admin-set device lock: each member locks their own devices
-  const canLock = hasPerm("lock_devices") && !currentTenant?.coordinatorMode;
-  const { data, loading, error: loadError, reload } = useTenantData<MembersData>(
-    (tid) => loadMembers(tid, canLock),
-    { members: [], locks: new Map() },
-    [canLock],
+  const { data: members, loading, error: loadError, reload } = useTenantData<Member[]>(
+    (tid) => deviceService.getMembers(tid),
+    NO_MEMBERS,
+    [],
     { keepPreviousOnReload: true },
   );
-  const { members, locks: lockInfo } = data;
 
   const { mutate, busy } = useTenantMutation();
   const confirm = useConfirm();
@@ -53,13 +34,6 @@ export function MembersTab() {
     await mutate(
       (tid) => deviceService.setMemberRole(tid, memberId, roleId),
       { successMsg: "Role updated", reload: reloadAfterMutate },
-    );
-  };
-
-  const handleToggleLock = async (memberId: string, currentlyLocked: boolean) => {
-    await mutate(
-      (tid) => (currentlyLocked ? deviceService.unlockDevice(tid, memberId) : deviceService.lockDevice(tid, memberId)),
-      { successMsg: currentlyLocked ? "Devices unlocked" : "Devices locked", reload },
     );
   };
 
@@ -119,7 +93,6 @@ export function MembersTab() {
         <ul className="item-list">
           {members.map((member) => {
             const avatar = safeUrl(member.avatarUrl);
-            const isLocked = lockInfo.get(member.id) ?? member.isLocked ?? false;
             const canAct = !member.isOriginator;
 
             return (
@@ -138,13 +111,12 @@ export function MembersTab() {
                       ) : (
                         <Badge variant="role">{member.roleName || "citizen"}</Badge>
                       )}
-                      {isLocked && <Badge variant="warning">locked</Badge>}
                     </span>
                     <span className="item-detail">@{member.handle}</span>
                   </div>
                 </div>
 
-                {canAct && (hasPerm("manage_roles") || canLock || hasPerm("kick") || hasPerm("manage_devices")) && (
+                {canAct && (hasPerm("manage_roles") || hasPerm("kick") || hasPerm("manage_devices")) && (
                   <div className="item-actions">
                     {hasPerm("manage_roles") && (
                       <select
@@ -162,19 +134,7 @@ export function MembersTab() {
                       </select>
                     )}
 
-                    {canLock && (
-                      <button
-                        type="button"
-                        className={`btn-sm ${isLocked ? "btn-warning" : "btn-ghost"}`}
-                        disabled={busy}
-                        aria-label={`${isLocked ? "Unlock" : "Lock"} devices of @${member.handle}`}
-                        onClick={() => handleToggleLock(member.id, isLocked)}
-                      >
-                        {isLocked ? "Unlock" : "Lock"}
-                      </button>
-                    )}
-
-                    {hasPerm("manage_devices") && currentTenant?.coordinatorMode && (
+                    {hasPerm("manage_devices") && (
                       <button
                         type="button"
                         className="btn-sm btn-ghost"

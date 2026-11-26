@@ -1,6 +1,6 @@
 /**
  * @module routes/acl
- * ACL policy read and update (manage_acl). Coordinator mode translates it to `{default_deny, rules}`
+ * ACL policy read and update (manage_acl). The service translates it to `{default_deny, rules}`
  * and answers 400 when the policy cannot be expressed exactly.
  */
 
@@ -9,7 +9,7 @@ import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { tenants } from "../db/schema.js";
-import { getControlClient, getCoordinatorClient, useCoordinator } from "../orchestrator/control-client.js";
+import { getCoordinatorClient } from "../orchestrator/control-client.js";
 import { AclTranslationError } from "../orchestrator/coordinator-acl.js";
 import {
   requireAuth,
@@ -21,16 +21,6 @@ import { logAudit } from "../audit/log.js";
 import { stepUpForSession } from "../auth/step-up.js";
 import { logger } from "../logger.js";
 import { parseBody } from "./validation.js";
-
-/** True when the tenant has a reachable control plane to read/write policy on. */
-function instanceAvailable(tenant: {
-  apiKey: string;
-  port: number;
-  coordinatorTenantId: string | null;
-}): boolean {
-  if (useCoordinator) return Boolean(tenant.coordinatorTenantId);
-  return Boolean(tenant.apiKey && tenant.port > 0);
-}
 
 export const aclRouter = Router({ caseSensitive: true });
 
@@ -67,26 +57,17 @@ aclRouter.get(
     const tenantId = param(req, "tenantId");
     const result = tenantCtx(res);
 
-    if (!instanceAvailable(result.tenant)) {
+    if (!result.tenant.coordinatorTenantId) {
       res.status(503).json({ error: "Tenant instance not available" });
       return;
     }
 
     try {
-      const client = getControlClient(result.tenant);
-      // Coordinator stores {default_deny, rules}; render it in the Headscale
-      // shape the dashboard understands.
-      const policy = useCoordinator
-        ? await getCoordinatorClient(result.tenant).getHeadscalePolicy()
-        : await client.getPolicy();
-
-      const users = (await client.listUsers?.()) ?? [];
-      const userNames = users.map((u) => u.name);
-
-      res.json({ policy, users: userNames });
+      // The coordinator stores {default_deny, rules}. The dashboard edits the Tailscale ACL policy file format.
+      res.json({ policy: await getCoordinatorClient(result.tenant).getAclPolicyFile() });
     } catch (err) {
       logger.error({ tenantId, err }, "failed to fetch ACL policy");
-      res.status(502).json({ error: "Failed to fetch policy from Headscale" });
+      res.status(502).json({ error: "Failed to fetch the policy" });
     }
   },
 );
@@ -100,7 +81,7 @@ aclRouter.put(
     const tenantId = param(req, "tenantId");
     const result = tenantCtx(res);
 
-    if (!instanceAvailable(result.tenant)) {
+    if (!result.tenant.coordinatorTenantId) {
       res.status(503).json({ error: "Tenant instance not available" });
       return;
     }
@@ -109,18 +90,12 @@ aclRouter.put(
     if (!parsed) return;
 
     try {
-      const client = getControlClient(result.tenant);
-      if (useCoordinator) {
-        // Translate to the coordinator model; constructs it can't express
-        // (groups, tags, autoApprovers, user sources) are rejected below.
-        await getCoordinatorClient(result.tenant).setHeadscalePolicy(parsed.data);
-        await db
-          .update(tenants)
-          .set({ coordinatorAclPolicy: parsed.data, updatedAt: new Date() })
-          .where(eq(tenants.id, tenantId));
-      } else {
-        await client.setPolicy(parsed.data);
-      }
+      // Constructs that the coordinator model cannot express (groups, tags, autoApprovers, user sources) are refused below.
+      await getCoordinatorClient(result.tenant).setAclPolicyFile(parsed.data);
+      await db
+        .update(tenants)
+        .set({ coordinatorAclPolicy: parsed.data, updatedAt: new Date() })
+        .where(eq(tenants.id, tenantId));
 
       logAudit({
         tenantId,
@@ -141,7 +116,7 @@ aclRouter.put(
         return;
       }
       logger.error({ tenantId, err }, "failed to update ACL policy");
-      res.status(502).json({ error: "Failed to push policy to Headscale" });
+      res.status(502).json({ error: "Failed to save the policy" });
     }
   },
 );

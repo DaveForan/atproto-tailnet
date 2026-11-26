@@ -1,6 +1,6 @@
 /**
  * @module routes/device-holds
- * Devices that wait for admission (coordinator mode): list, admit and refuse.
+ * Devices that wait for admission: list, admit and refuse.
  * The owner admits their own machine. With the tailnet's second step, an approver admits it too.
  */
 
@@ -10,16 +10,15 @@ import { z } from "zod";
 import { db } from "../db/index.js";
 import { memberships, waitingDevices } from "../db/schema.js";
 import { waitExpiry } from "../orchestrator/waiting-devices.js";
-import { getCoordinatorClient, useCoordinator } from "../orchestrator/control-client.js";
-import type { HeadscaleNode } from "../orchestrator/headscale-api.js";
-import type { RequestHandler } from "express";
+import { getCoordinatorClient } from "../orchestrator/control-client.js";
+import type { ControlNode } from "../orchestrator/control-types.js";
 import { requireAuth, requireSession, param, hasPermission, authUserId, isLockedDown, sendNotApplied } from "./helpers.js";
 import { tenantGuard, tenantCtx } from "./guard.js";
 import { stepUpForSession } from "../auth/step-up.js";
 import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
 import { notify } from "../notifications/service.js";
-import { admitStep, holdOf, isAdmitted, tenantMembers, hasOtherApprover, holdAfterOwnerFor, type TenantMembers } from "../access/device-holds.js";
+import { admitStep, isAdmitted, tenantMembers, hasOtherApprover, holdAfterOwnerFor, type TenantMembers } from "../access/device-holds.js";
 import { isAtCapacity } from "../access/admission.js";
 import { sendDeviceRefusal } from "./limits.js";
 import { syncTenantAccess } from "../access/sync.js";
@@ -29,20 +28,14 @@ export const deviceHoldsRouter = Router({ caseSensitive: true });
 
 const NO_AGENT = "Agent tokens cannot admit devices";
 
-/** Holds exist in coordinator mode only. */
-const coordinatorOnly: RequestHandler = (_req, res, next) => {
-  if (useCoordinator) return next();
-  res.status(501).json({ error: "Devices wait for admission in coordinator mode only" });
-};
-
-function waitingView(n: HeadscaleNode, { handles }: TenantMembers, canAdmit: boolean, expiresAt: Date | null) {
+function waitingView(n: ControlNode, { handles }: TenantMembers, canAdmit: boolean, expiresAt: Date | null) {
   const ownerId = n.user?.name ?? null;
   return {
     id: n.id,
     name: n.givenName || n.name,
     os: n.os ?? "",
     fingerprint: n.fingerprint ?? "",
-    hold: holdOf(n),
+    hold: n.hold,
     canAdmit,
     /** When the device is removed if nobody admits it. Null until the monitor has seen it. */
     expiresAt: expiresAt?.toISOString() ?? null,
@@ -51,10 +44,10 @@ function waitingView(n: HeadscaleNode, { handles }: TenantMembers, canAdmit: boo
 }
 
 /** The caller's next step for one device: the list and the admit route use the same rule. */
-function stepFor(n: HeadscaleNode, members: TenantMembers, userId: string, canApprove: boolean, secondApproval: boolean) {
+function stepFor(n: ControlNode, members: TenantMembers, userId: string, canApprove: boolean, secondApproval: boolean) {
   const ownerId = n.user?.name ?? null;
   return admitStep({
-    hold: holdOf(n),
+    hold: n.hold,
     isOwner: ownerId === userId,
     ownerIsMember: !!ownerId && members.handles.has(ownerId),
     canApprove,
@@ -70,10 +63,6 @@ deviceHoldsRouter.get(
   tenantGuard(),
   async (req, res) => {
     const result = tenantCtx(res);
-    if (!useCoordinator) {
-      res.json({ mine: [], queue: [] });
-      return;
-    }
     try {
       const userId = authUserId(req);
       const nodes = (await getCoordinatorClient(result.tenant).listNodes()).filter((n) => !isAdmitted(n));
@@ -84,7 +73,7 @@ deviceHoldsRouter.get(
         .from(waitingDevices)
         .where(eq(waitingDevices.tenantId, result.tenant.id));
       const since = new Map(seen.map((r) => [r.nodeId, r.firstSeenAt]));
-      const view = (n: HeadscaleNode) => {
+      const view = (n: ControlNode) => {
         const first = since.get(String(n.id));
         return waitingView(
           n,
@@ -93,7 +82,7 @@ deviceHoldsRouter.get(
           first ? waitExpiry(first, result.tenant.waitingDeviceHours) : null,
         );
       };
-      const ownerless = (n: HeadscaleNode) => !n.user?.name || !members.handles.has(n.user.name);
+      const ownerless = (n: ControlNode) => !n.user?.name || !members.handles.has(n.user.name);
       res.json({
         mine: nodes.filter((n) => n.user?.name === userId).map(view),
         queue: canApprove ? nodes.filter((n) => n.user?.name !== userId && (n.hold === "approver" || ownerless(n))).map(view) : [],
@@ -110,14 +99,13 @@ deviceHoldsRouter.post(
   requireSession,
   stepUpForSession,
   tenantGuard({ noAgentToken: NO_AGENT, notLockedDown: true }),
-  coordinatorOnly,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const nodeId = param(req, "nodeId");
     const result = tenantCtx(res);
     const userId = authUserId(req);
     const client = getCoordinatorClient(result.tenant);
-    let nodes: HeadscaleNode[];
+    let nodes: ControlNode[];
     try {
       nodes = await client.listNodes();
     } catch (err) {
@@ -132,7 +120,7 @@ deviceHoldsRouter.post(
     }
     const members = await tenantMembers(tenantId);
     const ownerId = node.user?.name ?? null;
-    const hold = holdOf(node);
+    const { hold } = node;
     const step = stepFor(node, members, userId, hasPermission(result.membership, result.role, "approve_devices", req), result.tenant.requireDeviceApproval);
     if ("refusal" in step) {
       if (step.refusal === "not_waiting") {
@@ -184,7 +172,6 @@ deviceHoldsRouter.post(
   "/api/tenants/:tenantId/devices/:nodeId/refuse",
   requireSession,
   tenantGuard({ noAgentToken: NO_AGENT }),
-  coordinatorOnly,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const nodeId = param(req, "nodeId");
@@ -229,7 +216,7 @@ deviceHoldsRouter.get("/api/tenants/:tenantId/device-approval/mine", requireAuth
   const locked = tenant.requireDeviceApproval;
   // `needsApprover`: after the caller admits a new device, another member must admit it too
   const needsApprover = (await holdAfterOwnerFor(tenant, hasPermission(membership, role, "approve_devices", req), userId)) === "approver";
-  res.json({ on: locked || membership.approveOwnDevices, locked, needsApprover, supported: useCoordinator });
+  res.json({ on: locked || membership.approveOwnDevices, locked, needsApprover });
 });
 
 /**
@@ -242,7 +229,6 @@ deviceHoldsRouter.put(
   requireSession,
   stepUpForSession,
   tenantGuard({ noAgentToken: "Only the member can change the approval of their own devices" }),
-  coordinatorOnly,
   async (req, res) => {
     const result = tenantCtx(res);
     const parsed = z.object({ on: z.boolean() }).safeParse(req.body);
@@ -290,7 +276,6 @@ deviceHoldsRouter.post(
   "/api/tenants/:tenantId/members/:userId/devices/invalidate",
   requireAuth,
   tenantGuard(),
-  coordinatorOnly,
   async (req, res) => {
     const tenantId = param(req, "tenantId");
     const targetId = param(req, "userId");
@@ -308,7 +293,7 @@ deviceHoldsRouter.post(
       res.status(404).json({ error: "Member not found" });
       return;
     }
-    const out = await revokeMemberAccess({ tenantId, client: getCoordinatorClient(result.tenant), userId: targetId, hsUsername: "" });
+    const out = await revokeMemberAccess({ tenantId, client: getCoordinatorClient(result.tenant), userId: targetId });
     await syncTenantAccess(tenantId);
     logAudit({
       tenantId,

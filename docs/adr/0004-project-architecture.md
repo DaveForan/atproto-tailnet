@@ -3,6 +3,8 @@
 **Status:** Accepted
 **Date:** 2026-10-23
 
+> Note (2026-11-26): the Headscale mode was removed (ADR-0040). The coordinator is the only control plane.
+
 ## Context
 
 We need a service layer between AT Proto OAuth (identity) and the Headscale instances (networking). The service layer handles these functions:

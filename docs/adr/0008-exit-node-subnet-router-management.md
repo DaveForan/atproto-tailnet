@@ -3,6 +3,8 @@
 **Status:** Accepted
 **Date:** 2026-11-02
 
+> Note (2026-11-26): the Headscale mode was removed (ADR-0040). The coordinator is the only control plane.
+
 ## Context
 
 Tailscale devices can advertise routes to the network. Subnet routers

@@ -32,7 +32,6 @@ vi.mock("../db/index.js", () => {
   return { db: { select: () => chain("select"), insert: () => chain("insert"), update: () => chain("update"), delete: () => chain("delete") }, pool: {} };
 });
 vi.mock("../orchestrator/control-client.js", () => ({
-  useCoordinator: true,
   getCoordinatorClient: () => ({ listNodes: async () => h.nodes, deleteNode: h.deleteNode }),
 }));
 vi.mock("../notifications/service.js", () => ({ notifyUser: h.notifyUser, notify: h.notify }));

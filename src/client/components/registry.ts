@@ -42,8 +42,7 @@ export const settingsSections: SettingsSection[] = [
   { id: "acl", label: "Access rules", gate: perm("manage_acl") },
   { id: "relays", label: "Relays", gate: perm("manage_acl") },
   { id: "routes", label: "Routes", gate: perm("manage_devices") },
-  // The coordinator assigns address ranges itself; the IP ranges API answers 501 there
-  { id: "ipconfig", label: "IP ranges", gate: (hp, _s, t) => hp("manage_settings") && !t?.coordinatorMode },
+  { id: "ipconfig", label: "IP ranges", gate: perm("manage_settings") },
   { id: "agents", label: "Agent tokens", gate: (_hp, s) => !!s?.allowAgentTokens },
   { id: "collectives", label: "Sub-collectives", gate: perm("manage_sub_collectives") },
   { id: "audit", label: "Audit log", gate: perm("view_audit_log") },

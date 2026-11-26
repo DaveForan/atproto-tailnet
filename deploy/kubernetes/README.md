@@ -149,6 +149,29 @@ For a new version: push new images, change the tags in the overlay, and run
 the same four commands. The coordinator applies its own migrations at start
 and takes a lock, so its replicas can start together.
 
+### A version that removes database columns
+
+The four commands replace the app pods one by one while the Job migrates.
+That is safe when a migration only adds things. A migration that removes
+columns or tables breaks the old app pods that still run: they read the
+removed columns and answer errors until Kubernetes replaces them.
+
+Migration `0045_remove_headscale_mode` (ADR-0040) is such a migration. For a
+version that contains one, stop the old app pods first. The dashboard and the
+API are down for the time of the migration. Devices that are connected stay
+connected, because the coordinator and the relays keep running.
+
+```sh
+kubectl -n atproto-tailnet scale deploy/tailnet-app --replicas=0
+kubectl -n atproto-tailnet rollout status deploy/tailnet-app
+kubectl -n atproto-tailnet delete job tailnet-migrate --ignore-not-found
+kubectl apply -k deploy/kubernetes/overlays/mine
+kubectl -n atproto-tailnet wait --for=condition=complete job/tailnet-migrate --timeout=5m
+kubectl -n atproto-tailnet rollout status deploy/tailnet-app deploy/tailnet-control statefulset/tailnet-relay
+```
+
+`kubectl apply` sets the replica count of the overlay again.
+
 ## Check
 
 ```sh

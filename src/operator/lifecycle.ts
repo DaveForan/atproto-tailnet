@@ -8,11 +8,9 @@ import { and, eq, inArray, ne } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { agentTokens, invitations, joinRequests, memberships, tenants, users } from "../db/schema.js";
 import { oauthProvider } from "../oauth/index.js";
-import { getControlClient, getCoordinatorClient, useCoordinator } from "../orchestrator/control-client.js";
-import { startInstance, stopInstance } from "../orchestrator/headscale.js";
+import { getCoordinatorClient } from "../orchestrator/control-client.js";
 import { removeMemberCascade } from "../members/cascade.js";
 import { revokeMemberAccess } from "../access/keys.js";
-import { toHsUsername } from "../identity/handles.js";
 import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
 
@@ -31,8 +29,7 @@ export class OperatorActionError extends Error {
 
 /**
  * Suspends or unsuspends one tenant: control plane first, then the DB flag, so a failure leaves nothing half-applied.
- * - Coordinator mode: the coordinator rejects the tenant's nodes and refuses new keys.
- * - Headscale mode: the container stops or starts; `status` follows, so the monitor leaves it alone.
+ * The coordinator then rejects the tenant's nodes and refuses new keys.
  * `suspendedByParentId` records a cascade (see {@link setTenantSuspendedCascade}).
  * `lenient` (cascade only): a tenant not yet on the coordinator has no nodes, so only the DB flag changes.
  */
@@ -44,21 +41,10 @@ export async function setTenantSuspended(
   if (tenant.status === "deleted") {
     throw new OperatorActionError("Tenant not found", 404);
   }
-  let status = tenant.status;
-  if (useCoordinator) {
-    if (tenant.coordinatorTenantId) {
-      await getCoordinatorClient(tenant).setSuspended(suspended);
-    } else if (!opts.lenient) {
-      throw new OperatorActionError("Tenant is not provisioned on the coordinator yet", 409);
-    }
-  } else if (tenant.containerId) {
-    if (suspended) {
-      await stopInstance(tenant.containerId);
-      status = "stopped";
-    } else {
-      await startInstance(tenant.containerId);
-      status = "running";
-    }
+  if (tenant.coordinatorTenantId) {
+    await getCoordinatorClient(tenant).setSuspended(suspended);
+  } else if (!opts.lenient) {
+    throw new OperatorActionError("Tenant is not provisioned on the coordinator yet", 409);
   }
 
   const [updated] = await db
@@ -66,7 +52,6 @@ export async function setTenantSuspended(
     .set({
       suspended,
       suspendedByParentId: suspended ? (opts.suspendedByParentId ?? null) : null,
-      status,
       updatedAt: new Date(),
     })
     .where(eq(tenants.id, tenant.id))
@@ -264,19 +249,10 @@ export async function disableUser(targetUserId: string, actorUserId: string): Pr
   for (const { tenant, isOriginator } of rows) {
     try {
       if (isOriginator) {
-        const [user] = await db.select().from(users).where(eq(users.id, targetUserId));
-        let client: ReturnType<typeof getControlClient> | null = null;
-        try {
-          if (tenant.apiKey || useCoordinator) client = getControlClient(tenant);
-        } catch (err) {
-          logger.error({ tenantId: tenant.id, err }, "no control client for disable cleanup");
-        }
-        const access = await revokeMemberAccess({
-          tenantId: tenant.id,
-          client,
-          userId: targetUserId,
-          hsUsername: toHsUsername(user?.handle ?? ""),
-        });
+        // A tailnet that the coordinator does not have yet has no devices and no keys
+        const access = tenant.coordinatorTenantId
+          ? await revokeMemberAccess({ tenantId: tenant.id, client: getCoordinatorClient(tenant), userId: targetUserId })
+          : { devicesDeleted: 0, keysRevoked: 0, errors: [] };
         out.ownedTenants.push({
           tenantId: tenant.id,
           devicesDeleted: access.devicesDeleted,

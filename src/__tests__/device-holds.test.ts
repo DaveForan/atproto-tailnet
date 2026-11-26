@@ -30,8 +30,6 @@ vi.mock("../db/index.js", () => {
   return { db: { select: () => chain(), insert: () => chain(), update: () => chain(), delete: () => chain() }, pool: {} };
 });
 vi.mock("../orchestrator/control-client.js", () => ({
-  useCoordinator: true,
-  getControlClient: () => ({ listNodes: async () => nodes }),
   getCoordinatorClient: () => ({ listNodes: async () => nodes, setNodeHold: coord.setNodeHold, deleteNode: coord.deleteNode }),
 }));
 vi.mock("../notifications/service.js", () => ({ notify }));
@@ -45,7 +43,7 @@ import { admitStep, holdAfterOwner } from "../access/device-holds.js";
 const T = "11111111-1111-4111-8111-111111111111";
 const tenant = (over: Record<string, unknown> = {}) => ({
   id: T, name: "Harbor", coordinatorTenantId: "c-1", suspended: false, lockdownMode: false,
-  requireDeviceApproval: false, maxDevices: 0, lastActivityAt: new Date(), ...over,
+  requireDeviceApproval: false, maxDevices: 0, ...over,
 });
 /** The tenant lookup, then the member list of the tailnet. */
 const as = (t: Record<string, unknown> = {}, opts: { originator?: boolean; permissions?: string[]; approvers?: string[] } = {}) => {

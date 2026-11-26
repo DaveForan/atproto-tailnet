@@ -1,5 +1,5 @@
-# Coordinator-mode production Caddyfile — same TLS strategy mechanism as
-# Caddyfile.production. Mount a strategy directory at /etc/caddy/tls-strategy/.
+# Production Caddyfile. The TLS strategy is chosen at deploy time: mount a
+# strategy directory at /etc/caddy/tls-strategy/ (global.caddy + site.caddy).
 # See caddy/tls-strategies/ for available strategies.
 {
 	# Set per deployment; docker-compose.coordinator.yml binds it to the

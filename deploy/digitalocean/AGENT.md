@@ -4,7 +4,7 @@ Machine-readable instructions for an AI agent. The agent deploys atproto-tailnet
 
 ## Overview
 
-- **What**: A single Droplet that runs the full coordinator-mode stack (TypeScript service, Rust coordinator, PostgreSQL, and Caddy)
+- **What**: A single Droplet that runs the full stack (TypeScript service, Rust coordinator, PostgreSQL, and Caddy)
 - **Provider**: DigitalOcean (compute and DNS in one API)
 - **TLS strategy**: `digitalocean` -- DNS-01 wildcard with the DO API token
 - **Compose file**: `docker-compose.coordinator.yml`
@@ -249,7 +249,7 @@ EOF
 ssh root@"$DROPLET_IP" "chmod 600 /opt/atproto-tailnet/.env"
 ```
 
-Do not set `FEDERATION_ENABLED`. Federation is off by default. Its data plane needs Docker (Headscale mode). The coordinator stack does not send traffic between instances, so federation links carry no traffic. The app still uses `FEDERATION_KEY_ENCRYPTION_KEY` for collective signing keys and credentials.
+Do not set `FEDERATION_ENABLED`. Federation is off by default. It is deferred (ADR-0033). Its relay containers need the Docker socket, and the stack does not send traffic between instances, so federation links carry no traffic. The app still uses `FEDERATION_KEY_ENCRYPTION_KEY` for collective signing keys and credentials.
 
 ### 8. Generate the AT Protocol OAuth key
 

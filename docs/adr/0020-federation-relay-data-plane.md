@@ -5,6 +5,8 @@
 **Priority:** P0
 **Depends On:** ADR-0006 (IP ranges), ADR-0010 (federation control plane), ADR-0016 (federation transport), ADR-0019 (cross-instance links)
 
+> Note (2026-11-26): the Headscale mode was removed (ADR-0040). The coordinator is the only control plane.
+
 ## Context
 
 Federation currently stops at the control plane. Two collectives can complete a

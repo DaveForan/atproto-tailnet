@@ -65,9 +65,7 @@ export async function createRelayHalf(cfg: RelayHalfConfig): Promise<string> {
         "net.ipv6.conf.all.forwarding": "1",
       },
       RestartPolicy: { Name: "unless-stopped" },
-      ...(config.headscale.network
-        ? { NetworkMode: config.headscale.network }
-        : {}),
+      ...(config.federationRelayNetwork ? { NetworkMode: config.federationRelayNetwork } : {}),
     },
   });
 

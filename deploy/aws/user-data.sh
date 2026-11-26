@@ -119,7 +119,7 @@ EOF
 fi
 
 # ---------- Start stack ---------------------------------------------------
-echo "==> Building and starting services (coordinator mode)"
+echo "==> Building and starting services"
 docker compose -f docker-compose.coordinator.yml build
 docker compose -f docker-compose.coordinator.yml up -d
 

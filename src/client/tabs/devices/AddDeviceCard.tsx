@@ -22,10 +22,8 @@ interface IssuedKey {
 
 /** The way for most people: sign in on the device itself. No key, no command on phones. */
 export function SignInDeviceCard() {
-  const { currentTenant } = useSession();
   const { data: loginServer } = useTenantData<string | null>((tid) => deviceService.getLoginServer(tid), null);
   const { data: approval } = useTenantData((tid) => deviceService.ownApproval(tid), null);
-  if (!currentTenant?.coordinatorMode) return null;
   const needsApprover = !!approval?.needsApprover;
   return (
     <Card title="Sign in on the device">
@@ -75,9 +73,8 @@ export function AddDeviceCard({ onIssued }: { onIssued?: () => void }) {
   const { toast, toastFailure } = useToast();
   const { data: approval } = useTenantData((tid) => deviceService.ownApproval(tid), null);
   // Until the answer is known, say the safer thing: the device waits
-  const waits = !!currentTenant?.coordinatorMode && approval?.on !== false;
+  const waits = approval?.on !== false;
   const [issued, setIssued] = useState<IssuedKey | null>(null);
-  const [pending, setPending] = useState(false);
   const [limitError, setLimitError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [reusable, setReusable] = useState(false);
@@ -94,13 +91,6 @@ export function AddDeviceCard({ onIssued }: { onIssued?: () => void }) {
         : { reusable: false, expiresInHours: Math.min(expiresInHours, 24) };
       const result = await deviceService.generateAuthKey(currentTenant.id, opts);
       if (!result) return;
-      if ("approvalId" in result) {
-        setIssued(null);
-        setPending(true);
-        toast("Approval requested");
-        return;
-      }
-      setPending(false);
       setIssued({
         command: result.command || `tailscale up --login-server ${result.loginServer} --authkey ${result.key}`,
         reusable: opts.reusable,
@@ -123,8 +113,7 @@ export function AddDeviceCard({ onIssued }: { onIssued?: () => void }) {
           device.{" "}
           {waits
             ? "A key does not admit a device: after the command, the device waits on Overview until you admit it there."
-            : currentTenant?.coordinatorMode &&
-              "You turned off the approval of your new devices, so the key alone gives the device access. Keep the key secret."}
+            : "You turned off the approval of your new devices, so the key alone gives the device access. Keep the key secret."}
         </p>
 
         <form className="form-stack" onSubmit={handleGenerate}>
@@ -160,13 +149,6 @@ export function AddDeviceCard({ onIssued }: { onIssued?: () => void }) {
                 <button type="button" className="btn-sm btn-ghost" onClick={() => setTab("settings", "limits")}>View limits</button>
               )}
             </div>
-          )}
-
-          {pending && (
-            <p className="notice" role="status">
-              Device approval is required on this tailnet. Your request was sent to the
-              admins; you will be able to connect once it is approved.
-            </p>
           )}
 
           {issued && (

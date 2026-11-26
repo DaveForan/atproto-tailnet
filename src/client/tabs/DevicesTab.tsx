@@ -21,10 +21,10 @@ import { useTabRoute } from "../hooks/useTabRoute";
 
 const KEYS_FALLBACK: { keys: AuthKeyInfo[] } = { keys: [] };
 
-/** A group is one owner's devices; devices without an owner keep the control server's name. */
+/** A group is one owner's devices. */
 function ownerLabel(group: DevicesData["byUser"][number]): string {
   const handle = group.devices[0]?.owner?.handle;
-  return handle ? `@${handle}` : group.hsUsername;
+  return handle ? `@${handle}` : "No owner";
 }
 
 export function DevicesTab() {
@@ -99,7 +99,7 @@ function DeviceList() {
           </EmptyState>
         ) : (
           devices.byUser.map((group) => (
-            <section key={group.hsUsername} className="item-group" aria-label={`Devices of ${ownerLabel(group)}`}>
+            <section key={group.key} className="item-group" aria-label={`Devices of ${ownerLabel(group)}`}>
               <h4 className="group-heading">{ownerLabel(group)}</h4>
               <ul className="item-list">
                 {group.devices.map((device) => {
@@ -146,7 +146,7 @@ function DeviceList() {
   );
 }
 
-/** Who reaches the caller's devices. Legacy mode has no such list, so a failed load shows nothing. */
+/** Who reaches the caller's devices. */
 function ReachSection() {
   const { data, error, reload } = useTenantData<MyAccess | null>((tid) => sharingService.myAccess(tid), null);
   const { mutate, busy } = useTenantMutation({ onError: "That did not work", reload });

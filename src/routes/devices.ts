@@ -3,7 +3,6 @@
  * Devices and members: list nodes, issue pre-auth keys (optional approval), remove nodes, kick members.
  */
 
-import { holdOf } from "../access/device-holds.js";
 import { Router } from "express";
 import { z } from "zod";
 import { eq, and, desc } from "drizzle-orm";
@@ -12,15 +11,13 @@ import {
   memberships,
   roles,
   users,
-  deviceApprovals,
   authKeys,
 } from "../db/schema.js";
-import { getControlClient, useCoordinator } from "../orchestrator/control-client.js";
+import { getCoordinatorClient } from "../orchestrator/control-client.js";
 import {
   requireAuth,
   param,
   hasPermission,
-  toHsUsername,
   authUserId,
   permissionsAbove,
   rolePermissions,
@@ -31,19 +28,17 @@ import { removeMemberCascade } from "../members/cascade.js";
 import { stepUpForSession } from "../auth/step-up.js";
 import { logger } from "../logger.js";
 import { tenantLoginServerFor } from "../orchestrator/hostnames.js";
-import { notify } from "../notifications/service.js";
 import { sendDeviceRefusal } from "./limits.js";
 import { deviceAdmission } from "../access/admission.js";
 import {
   issueMemberKey,
-  revokeControlKey,
   filterVisibleKeys,
   memberKeyOptionsError,
   DEFAULT_KEY_HOURS,
   MAX_KEY_HOURS,
   type AuthKeyView,
 } from "../access/keys.js";
-import type { ControlPreAuthKeyInfo } from "../orchestrator/control-client.js";
+import type { ControlPreAuthKeyInfo } from "../orchestrator/control-types.js";
 import { parseBody } from "./validation.js";
 
 export const devicesRouter = Router({ caseSensitive: true });
@@ -60,59 +55,36 @@ devicesRouter.get(
   async (req, res) => {
     const result = tenantCtx(res);
 
-    const client = getControlClient(result.tenant);
+    const client = getCoordinatorClient(result.tenant);
 
     try {
       const nodes = await client.listNodes();
 
-      const grouped = new Map<
-        string,
-        { hsUsername: string; devices: typeof mapped }
-      >();
-
       const memberRows = await db
-        .select({
-          userId: users.id,
-          handle: users.handle,
-          isOriginator: memberships.isOriginator,
-        })
+        .select({ userId: users.id, handle: users.handle })
         .from(memberships)
         .innerJoin(users, eq(memberships.userId, users.id))
         .where(eq(memberships.tenantId, result.tenant.id));
       const byId = new Map(memberRows.map((m) => [m.userId, m]));
-      const byHsName = new Map(
-        memberRows.map((m) => [m.isOriginator ? "owner" : toHsUsername(m.handle), m]),
-      );
 
-      const mapped = nodes.map((n) => {
-        // Coordinator nodes carry our user id as owner; Headscale nodes a Headscale user name
-        const member = n.user?.name
-          ? (useCoordinator ? byId.get(n.user.name) : byHsName.get(n.user.name))
-          : undefined;
-        const owner = member ? { userId: member.userId, handle: member.handle } : null;
-        const userLabel = useCoordinator
-          ? (member ? (member.isOriginator ? "owner" : toHsUsername(member.handle)) : "unassigned")
-          : (n.user?.name ?? "unknown");
-        return {
+      // One group per owner. `key` is the owner's user id, or "unassigned" for a device without an owner here.
+      const grouped = new Map<string, { key: string; devices: unknown[] }>();
+      for (const n of nodes) {
+        const member = n.user?.name ? byId.get(n.user.name) : undefined;
+        const key = member?.userId ?? "unassigned";
+        if (!grouped.has(key)) grouped.set(key, { key, devices: [] });
+        grouped.get(key)!.devices.push({
           id: n.id,
           name: n.givenName || n.name,
           ipAddresses: n.ipAddresses ?? [],
           online: n.online ?? false,
           lastSeen: n.lastSeen,
           machineKey: n.machineKey ?? null,
-          hold: holdOf(n),
+          hold: n.hold,
           fingerprint: n.fingerprint ?? null,
           os: n.os ?? null,
-          user: userLabel,
-          owner,
-        };
-      });
-
-      for (const d of mapped) {
-        if (!grouped.has(d.user)) {
-          grouped.set(d.user, { hsUsername: d.user, devices: [] });
-        }
-        grouped.get(d.user)!.devices.push(d);
+          owner: member ? { userId: member.userId, handle: member.handle } : null,
+        });
       }
 
       res.json({
@@ -121,7 +93,7 @@ devicesRouter.get(
       });
     } catch (err) {
       logger.error({ err }, "failed to list devices");
-      res.status(502).json({ error: "Failed to reach Headscale instance" });
+      res.status(502).json({ error: "Failed to reach the control server" });
     }
   },
 );
@@ -145,15 +117,14 @@ devicesRouter.post(
       return;
     }
 
-    if (!result.tenant.apiKey) {
-      res.status(500).json({ error: "Tenant instance not available" });
+    if (!result.tenant.coordinatorTenantId) {
+      res.status(409).json({ error: "This tailnet is not ready yet", code: "not_ready" });
       return;
     }
-
-    const client = getControlClient(result.tenant);
+    const client = getCoordinatorClient(result.tenant);
     const userId = authUserId(req);
-    const refusal = await deviceAdmission(result.tenant, result.membership, userId, client);
-    if (refusal && refusal !== "approval_required") {
+    const refusal = await deviceAdmission(result.tenant, client);
+    if (refusal) {
       sendDeviceRefusal(res, result.tenant, refusal);
       return;
     }
@@ -170,54 +141,11 @@ devicesRouter.post(
       return;
     }
 
-    const [user] = await db
-      .select()
-      .from(users)
-      .where(eq(users.id, userId));
-
-    const hsUsername =
-      result.membership.isOriginator
-        ? "owner"
-        : toHsUsername(user.handle);
-
-    if (refusal === "approval_required") {
-      const [approval] = await db
-        .insert(deviceApprovals)
-        .values({
-          tenantId,
-          requesterId: userId,
-          hsUsername,
-          expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000),
-        })
-        .returning();
-
-      logAudit({
-        tenantId,
-        actorUserId: userId,
-        action: "device_approval_requested",
-        targetType: "device_approval",
-        targetId: approval.id,
-      });
-
-      notify(tenantId, "device_approval_requested", {
-        title: "Device approval requested",
-        body: `@${user.handle} wants to add a device to ${result.tenant.name}.`,
-        link: "/#security",
-      });
-
-      res.status(202).json({
-        approvalId: approval.id,
-        status: "pending_approval",
-      });
-      return;
-    }
-
     try {
       const authKey = await issueMemberKey({
         tenant: result.tenant,
         client,
         userId,
-        hsUsername,
         reusable: parsedBody.data.reusable,
         expiresInHours: parsedBody.data.expiresInHours,
       });
@@ -258,22 +186,12 @@ devicesRouter.delete(
     const nodeId = param(req, "nodeId");
     const result = tenantCtx(res);
 
-    const client = getControlClient(result.tenant);
+    const client = getCoordinatorClient(result.tenant);
 
     if (!hasPermission(result.membership, result.role, "manage_devices", req)) {
       try {
         const node = await client.getNode(nodeId);
-        const [user] = await db
-          .select()
-          .from(users)
-          .where(eq(users.id, authUserId(req)));
-        // Coordinator nodes are owned by our user id; Headscale nodes by a Headscale user
-        const expectedOwner = useCoordinator
-          ? authUserId(req)
-          : result.membership.isOriginator
-            ? "owner"
-            : toHsUsername(user.handle);
-        if (!node.user?.name || node.user.name !== expectedOwner) {
+        if (node.user?.name !== authUserId(req)) {
           res.status(403).json({ error: "Can only remove your own devices" });
           return;
         }
@@ -333,12 +251,10 @@ devicesRouter.get(
 
     // Live state (used / revoked / expired) from the control plane, best effort
     let live: ControlPreAuthKeyInfo[] | null = null;
-    if (result.tenant.apiKey || useCoordinator) {
-      try {
-        live = await getControlClient(result.tenant).listPreAuthKeys();
-      } catch (err) {
-        logger.warn({ tenantId, err }, "failed to list control-plane keys");
-      }
+    try {
+      live = await getCoordinatorClient(result.tenant).listPreAuthKeys();
+    } catch (err) {
+      logger.warn({ tenantId, err }, "failed to list control-plane keys");
     }
     const liveById = new Map((live ?? []).map((k) => [k.id, k]));
     const now = Date.now();
@@ -428,8 +344,8 @@ devicesRouter.delete(
     }
 
     try {
-      if (controlKeyId && (result.tenant.apiKey || useCoordinator)) {
-        await revokeControlKey(getControlClient(result.tenant), controlKeyId);
+      if (controlKeyId) {
+        await getCoordinatorClient(result.tenant).revokePreAuthKey(controlKeyId);
       }
       if (recordId) {
         await db

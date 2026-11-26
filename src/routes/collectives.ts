@@ -18,7 +18,7 @@ import {
 import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
-import { getCoordinatorClient, useCoordinator } from "../orchestrator/control-client.js";
+import { getCoordinatorClient } from "../orchestrator/control-client.js";
 import { createTenantRecord, provisionTenantInstance } from "../orchestrator/tenant-provisioning.js";
 import { rebuildDescendantPaths } from "../orchestrator/tenant-hierarchy.js";
 import { hostnameAvailableFor, validateHostname } from "../orchestrator/hostnames.js";
@@ -34,7 +34,7 @@ import { parseBody } from "./validation.js";
 export const collectivesRouter = Router({ caseSensitive: true });
 
 /**
- * The slug must be a DNS label: it becomes `<slug>.<BASE_DOMAIN>`, a container name and the coordinator slug.
+ * The slug must be a DNS label: it becomes `<slug>.<BASE_DOMAIN>` and the coordinator slug.
  * The coordinator requires ^[a-z0-9][a-z0-9-]{0,62}$. No dots: the materialized path uses "." as separator.
  */
 const SLUG_RE = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
@@ -170,7 +170,7 @@ collectivesRouter.post(
       return;
     }
 
-    if (useCoordinator && !tenant.coordinatorTenantId) {
+    if (!tenant.coordinatorTenantId) {
       res.status(409).json({ error: "Parent collective is not provisioned yet" });
       return;
     }
@@ -215,7 +215,7 @@ collectivesRouter.post(
       const child = await createTenantRecord({ ownerUserId: userId, name, parent: tenant, slug, hostname: slug });
       // The dashboard polls until the status leaves "provisioning"
       setImmediate(() => {
-        void provisionTenantInstance(child.id, child.slug, child.port, {
+        void provisionTenantInstance(child.id, child.slug, {
           parentCoordinatorTenantId: tenant.coordinatorTenantId,
         });
       });
@@ -262,24 +262,21 @@ async function moveToTopLevel(
   parentId: string,
   res: Response,
 ): Promise<boolean> {
-  let parentCoordinatorId: string | null = null;
-  if (useCoordinator) {
-    if (!child.coordinatorTenantId) {
-      res.status(409).json({ error: "The collective is not provisioned yet" });
-      return false;
-    }
-    const [parent] = await db
-      .select({ coordinatorTenantId: tenants.coordinatorTenantId })
-      .from(tenants)
-      .where(eq(tenants.id, parentId));
-    parentCoordinatorId = parent?.coordinatorTenantId ?? null;
-    try {
-      await getCoordinatorClient(child).setParent(null);
-    } catch (err) {
-      logger.error({ tenantId: child.id, err }, "coordinator refused to clear the parent");
-      res.status(502).json({ error: "Could not update the control plane" });
-      return false;
-    }
+  if (!child.coordinatorTenantId) {
+    res.status(409).json({ error: "The collective is not provisioned yet" });
+    return false;
+  }
+  const [parent] = await db
+    .select({ coordinatorTenantId: tenants.coordinatorTenantId })
+    .from(tenants)
+    .where(eq(tenants.id, parentId));
+  const parentCoordinatorId = parent?.coordinatorTenantId ?? null;
+  try {
+    await getCoordinatorClient(child).setParent(null);
+  } catch (err) {
+    logger.error({ tenantId: child.id, err }, "coordinator refused to clear the parent");
+    res.status(502).json({ error: "Could not update the control plane" });
+    return false;
   }
   try {
     await db
@@ -290,7 +287,7 @@ async function moveToTopLevel(
     return true;
   } catch (err) {
     logger.error({ tenantId: child.id, err }, "failed to store the detached collective");
-    if (useCoordinator && parentCoordinatorId) {
+    if (parentCoordinatorId) {
       await getCoordinatorClient(child)
         .setParent(parentCoordinatorId)
         .catch((e: unknown) => logger.error({ tenantId: child.id, err: e }, "failed to restore the coordinator parent"));

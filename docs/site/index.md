@@ -18,7 +18,7 @@ The code also contains a federation protocol between networks. It is off by defa
     <p>Start a local instance in less than 10 minutes.</p>
   </a>
   <a href="guides/coordinator" class="card" style="text-decoration:none;color:inherit">
-    <h3>Coordinator Mode</h3>
+    <h3>The Coordinator</h3>
     <p>Deploy the Rust mesh coordinator for production.</p>
   </a>
   <a href="guides/mcp" class="card" style="text-decoration:none;color:inherit">
@@ -59,17 +59,17 @@ The code also contains a federation protocol between networks. It is off by defa
 
 5. **Manage from Claude (optional)** --- Add `https://<APP_DOMAIN>/mcp` as a custom connector in Claude. Claude signs in as you and has your permissions.
 
-## Operating modes
+## Control plane
 
-The platform supports two control plane backends:
+The control plane is one Rust coordinator for all tailnets:
 
-| | Coordinator (recommended) | Legacy Headscale |
-|---|---|---|
-| **Backend** | Single Rust binary | One Docker container per tenant |
-| **Protocol** | Noise IK + HTTP/2 | Headscale gRPC-gateway |
-| **Multi-tenant** | Native, in-process | Container isolation |
-| **Federation** | Off by default (no traffic yet) | Off by default |
-| **Dependencies** | PostgreSQL or SQLite, Caddy | PostgreSQL, Caddy, Docker socket |
-| **Resource usage** | ~16 MB per instance | ~50 MB per tenant container |
+| | Coordinator |
+|---|---|
+| **Backend** | Single Rust binary |
+| **Protocol** | Noise IK + HTTP/2 |
+| **Multi-tenant** | Native, in-process |
+| **Federation** | Off by default (no traffic yet) |
+| **Dependencies** | PostgreSQL or SQLite, Caddy |
+| **Resource usage** | ~16 MB per instance |
 
-Use coordinator mode for new deployments. The project maintains the legacy Headscale mode for existing installations.
+The service does not use Docker to manage tailnets. See the [coordinator guide](guides/coordinator).

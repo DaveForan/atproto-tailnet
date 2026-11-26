@@ -39,7 +39,7 @@ export function MachineLockCard({ tenantId, onChanged }: { tenantId: string; onC
     if (ok) onChanged?.();
   };
 
-  if (!state || !state.supported) return null;
+  if (!state) return null;
 
   const windowOpen = state.allowOneUntil !== null && new Date(state.allowOneUntil).getTime() > Date.now();
   const dropped = state.devices.filter((d) => !keep.has(d.id));

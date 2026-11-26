@@ -38,7 +38,7 @@ const tenant = (over: Record<string, unknown> = {}) =>
   ({ id: "t1", name: "Acme", maxDevices: 0, maxMembers: 0, ...over }) as never;
 
 const clientWith = (n: number) =>
-  ({ listNodes: vi.fn(async () => Array.from({ length: n }, (_, i) => ({ id: String(i), name: "n" }))) }) as never;
+  ({ listNodes: vi.fn(async () => Array.from({ length: n }, (_, i) => ({ id: String(i), name: "n", hold: "none" }))) }) as never;
 
 describe("cap arithmetic", () => {
   it("0 means unlimited", () => {

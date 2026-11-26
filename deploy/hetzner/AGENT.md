@@ -4,10 +4,10 @@ Machine-readable deployment guide for AI agents.
 
 ## Overview
 
-- A single Hetzner Cloud server (cx22 or cx32) in coordinator mode
+- A single Hetzner Cloud server (cx22 or cx32)
 - TLS strategy: `hetzner` (DNS-01 wildcard with the Hetzner DNS API)
 - Compose file: `docker-compose.coordinator.yml`
-- No Docker socket mount needed (the coordinator replaces the Headscale container of each tenant)
+- No Docker socket mount needed (one Rust coordinator serves all tailnets)
 - Cost: ~EUR 4-8/month (cx22 = EUR 3.98, cx32 = EUR 7.11)
 
 ## Prerequisites
@@ -238,7 +238,7 @@ Restrict the file permissions:
 chmod 600 /opt/atproto-tailnet/.env
 ```
 
-Federation is off by default. Its data plane needs Docker (Headscale mode), and the coordinator stack does not send traffic between instances.
+Federation is off by default. It is deferred (ADR-0033): its relay containers need the Docker socket, and the stack does not send traffic between instances.
 
 Generate `ATPROTO_PRIVATE_KEY` on the server, after `.env` exists. Production sign-in fails without it. The command uses the `jose` dependency in the app image:
 

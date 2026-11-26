@@ -15,8 +15,8 @@ All configuration comes from environment variables. A Zod schema in `src/config.
 | `PORT` | No | `3000` | HTTP listen port for the TypeScript service |
 | `PUBLIC_URL` | Yes (production) | `http://localhost:3000` | Public URL of the dashboard, for example `https://tailnets.example.com`. For local development use `http://127.0.0.1:3000`, because AT Proto OAuth redirects loopback clients to the IP address |
 | `BASE_DOMAIN` | No | `ts.localhost` | Wildcard domain for tailnet addresses (`<address>.<BASE_DOMAIN>`), used in join and board links and by legacy login servers |
-| `CONTROL_DOMAIN` | No | *(none)* | Coordinator mode: hostname of the one login server that all tailnets use, for example `control.yourdomain.com`. It needs a DNS A record. It must not be `BASE_DOMAIN` or a name under it |
-| `TAILNET_DNS_UPSTREAM` | No | *(none)* | Coordinator mode: IP addresses (comma-separated) of the resolvers that devices use for names under `BASE_DOMAIN` that have no record. Empty: devices use their own resolvers |
+| `CONTROL_DOMAIN` | No | *(none)* | Hostname of the one login server that all tailnets use, for example `control.yourdomain.com`. It needs a DNS A record. It must not be `BASE_DOMAIN` or a name under it |
+| `TAILNET_DNS_UPSTREAM` | No | *(none)* | IP addresses (comma-separated) of the resolvers that devices use for names under `BASE_DOMAIN` that have no record. Empty: devices use their own resolvers |
 | `DERP_DOMAIN` | No | *(none)* | Docker stack: public hostname of the built-in DERP relay (sets `COORD_DERP_HOSTNAME`). It needs a DNS A record and open UDP port 3478 |
 | `TENANT_PUBLIC_PORT` | No | *(from URL)* | Port in the device connection URLs. Set to `8180` for local dev with Caddy. Leave it unset in production |
 | `TRUST_PROXY` | Behind a proxy | `0` | Number of reverse-proxy hops to trust for `X-Forwarded-*` (0 to 5). Set `1` behind Caddy. Without it, the browser does not send the secure session cookie and sign-in fails. All rate limits also see one client. The Docker Compose files set `1` |
@@ -38,24 +38,16 @@ Set `OPERATOR_DIDS` before the first sign-in. To find your DID, run this command
 curl "https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle?handle=you.bsky.social"
 ```
 
-## Coordinator mode
+## Coordinator
+
+The Rust coordinator is the control plane. The service refuses to start without these two variables.
 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `COORDINATOR_URL` | No | --- | Enables coordinator mode when set. URL of the Rust coordinator (e.g., `http://coordinator:9443`). Must use `http` or `https` |
-| `COORDINATOR_API_KEY` | When `COORDINATOR_URL` set | --- | Bearer token for the coordinator admin API. Must be equal to `COORD_ADMIN_KEY` on the coordinator |
+| `COORDINATOR_URL` | Yes | --- | URL of the Rust coordinator (e.g., `http://coordinator:9443`). Must use `http` or `https` |
+| `COORDINATOR_API_KEY` | Yes | --- | Bearer token for the coordinator admin API. Must be equal to `COORD_ADMIN_KEY` on the coordinator |
 
-## Legacy Headscale mode
-
-The service uses these variables only when `COORDINATOR_URL` is **not** set:
-
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `HEADSCALE_IMAGE` | No | `headscale/headscale:0.29.1` | Docker image for tenant Headscale containers |
-| `HEADSCALE_PORT_RANGE_START` | No | `10001` | First port in the allocation pool |
-| `HEADSCALE_PORT_RANGE_END` | No | `10100` | Last port (inclusive) |
-| `HEADSCALE_DATA_DIR` | No | `./data/headscale` | Host directory for persistent Headscale data |
-| `HEADSCALE_NETWORK` | No | *(unset)* | Docker network shared with Caddy. The example files set `atproto-tailnet-tenants`. When it is unset, Caddy must run on the host |
+The variables `HEADSCALE_IMAGE`, `HEADSCALE_PORT_RANGE_START`, `HEADSCALE_PORT_RANGE_END` and `HEADSCALE_DATA_DIR` no longer exist (ADR-0040). Remove them from `.env`. `HEADSCALE_NETWORK` has the new name `FEDERATION_RELAY_NETWORK` (see [Federation](#federation)). A standard instance does not need the Docker socket.
 
 ## Authentication
 
@@ -92,11 +84,12 @@ Set `WEBHOOK_ALLOW_PRIVATE=true` only for single-organisation self-hosting, for 
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `FEDERATION_ENABLED` | No | `false` | Turns on federation (links between tailnets). Keep it off |
+| `FEDERATION_RELAY_NETWORK` | No | *(unset)* | Docker network that the federation relay containers join. Used only with `FEDERATION_ENABLED=true` |
 | `FEDERATION_KEY_ENCRYPTION_KEY` | Recommended | --- | 64 hex characters (32 bytes). AES-256-GCM key that encrypts collective signing keys at rest. Without it, the service stores these keys without encryption. Collective keys also sign credentials, so set it even when federation is off |
 
-Federation is off by default. The code exists, but links carry no traffic in the coordinator stack:
+Federation is off by default and deferred (ADR-0033). The code exists, but links carry no traffic:
 
-- The federation data plane needs Docker (Headscale mode).
+- The federation relay containers need Docker. The service needs the Docker socket only when `FEDERATION_ENABLED=true`, and the compose stack does not mount it.
 - Cross-instance traffic is not implemented.
 
 When `FEDERATION_ENABLED` is not `true`, the federation and traversal API paths return 404. The broker does not start. The dashboard hides the **Federation**, **Traversal policy** and **Credentials** settings sections. The service still serves collective DID documents for credentials.
@@ -123,8 +116,8 @@ To generate a secret, run `openssl rand -hex 32`. The DigitalOcean setup script 
 | `APP_DOMAIN` | Yes (production) | `tailnets.example.com` | Domain of the dashboard, the API and `/mcp`. Caddy uses it. The service does not derive it from `PUBLIC_URL`, so keep both equal |
 | `CADDY_DNS_PLUGINS` | When DNS-01 | --- | Space-separated Go module paths for Caddy DNS modules (e.g., `github.com/caddy-dns/route53`). Docker Compose builds Caddy with these modules |
 | `CADDY_CERTS_DIR` | When `manual` | `./caddy/certs` | Folder with `wildcard.pem` and `wildcard.key`. Compose mounts it read-only at `/etc/caddy/certs` |
-| `CADDY_HTTP_PORT` | No | `80` | Host port for HTTP (coordinator compose file) |
-| `CADDY_HTTPS_PORT` | No | `443` | Host port for HTTPS, TCP and UDP (coordinator compose file) |
+| `CADDY_HTTP_PORT` | No | `80` | Host port for HTTP (`docker-compose.coordinator.yml`) |
+| `CADDY_HTTPS_PORT` | No | `443` | Host port for HTTPS, TCP and UDP (`docker-compose.coordinator.yml`) |
 
 ### TLS strategies
 
@@ -180,23 +173,20 @@ store_backend = "sqlite"      # "sqlite", "postgres", or "memory"
 
 ## Docker Compose files
 
-| File | Mode | Use case |
-|------|------|----------|
-| `docker-compose.yml` | Legacy Headscale | Local development |
-| `docker-compose.coordinator.dev.yml` | Coordinator | Local development |
-| `docker-compose.coordinator.yml` | Coordinator | Production |
-| `docker-compose.production.yml` | Legacy Headscale | Production |
+| File | Use case |
+|------|----------|
+| `docker-compose.coordinator.dev.yml` | Local development (coordinator, PostgreSQL and Caddy in Docker; the service on the host) |
+| `docker-compose.coordinator.yml` | Production (full stack) |
 
 ## Caddyfiles
 
-| File | Mode | Description |
-|------|------|-------------|
-| `Caddyfile` | Legacy dev | HTTP on `:80`, proxies to `host.docker.internal:3000` |
-| `Caddyfile.coordinator` | Coordinator dev | HTTP on `:80`, proxies to `app:3000` |
-| `Caddyfile.production` | Legacy prod | HTTPS with pluggable TLS strategy (imports from mounted `tls-strategy/`) |
-| `Caddyfile.coordinator.production` | Coordinator prod | HTTPS with pluggable TLS strategy (imports from mounted `tls-strategy/`) |
+| File | Use | Description |
+|------|-----|-------------|
+| `Caddyfile` | Local development | HTTP on `:80`, proxies to `host.docker.internal:3000` (the service on the host) |
+| `Caddyfile.coordinator` | Local, service in Docker | HTTP on `:80`, proxies to `app:3000` |
+| `Caddyfile.coordinator.production` | Production | HTTPS with pluggable TLS strategy (imports from mounted `tls-strategy/`) |
 
-All Caddyfiles name the server `tailnet_proxy`. The TypeScript service manages one route (`@id: tailnet_tenants`) through the Caddy admin API. This route sends tenant subdomains to the correct backend.
+All Caddyfiles name the server `tailnet_proxy`. The TypeScript service manages one route (`@id: tailnet_tenants`) through the Caddy admin API. This route sends tenant subdomains to the coordinator.
 
 ## npm scripts
 

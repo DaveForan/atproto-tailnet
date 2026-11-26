@@ -1,11 +1,11 @@
 # AWS Deployment — Agent Instructions
 
 Machine-readable deployment guide for atproto-tailnet on AWS.
-This guide uses coordinator mode with Route53 DNS-01 wildcard TLS.
+This guide uses Route53 DNS-01 wildcard TLS.
 
 ## Overview
 
-- EC2 instance (t3.medium) + Route53 DNS, coordinator mode
+- EC2 instance (t3.medium) + Route53 DNS
 - TLS strategy: `route53` (DNS-01 wildcard certs through the AWS API, with an instance role or access keys)
 - Compose file: `docker-compose.coordinator.yml` (Rust coordinator, no Docker socket needed)
 - Cost: ~$30-50/month (EC2 and Postgres in a container; add ~$15 for optional RDS)
@@ -191,7 +191,7 @@ ssh -i ~/.ssh/"$KEY_PAIR_NAME".pem ubuntu@"$EIP" "sudo chmod 600 /opt/atproto-ta
 
 If you use an EC2 instance role instead of access keys, leave `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` empty.
 
-Do not set `FEDERATION_ENABLED`. Federation is off by default. Its data plane needs Docker (Headscale mode), and the coordinator stack does not send traffic between instances. The app still uses `FEDERATION_KEY_ENCRYPTION_KEY` for collective signing keys and credentials.
+Do not set `FEDERATION_ENABLED`. Federation is off by default. It is deferred (ADR-0033): its relay containers need the Docker socket, and the stack does not send traffic between instances. The app still uses `FEDERATION_KEY_ENCRYPTION_KEY` for collective signing keys and credentials.
 
 Generate `ATPROTO_PRIVATE_KEY` on the instance, after `.env` exists. Production sign-in fails without it. The command uses the `jose` dependency in the app image:
 
@@ -237,10 +237,10 @@ Back up the `pgdata` and `coord_data` Docker volumes. `coord_data` holds the coo
 
 This path uses the existing `cloudformation.yaml` template. Read these limits before you use it:
 
-- The template deploys the legacy Headscale mode with `docker-compose.production.yml`. It does not deploy coordinator mode. For coordinator mode, use Path A.
-- The security group opens SSH (22) to `0.0.0.0/0` and the Headscale ports 10001-10100.
-- The template creates an RDS instance. `docker-compose.production.yml` sets `DATABASE_URL` to the `postgres` container, so the app does not use RDS.
-- The generated `.env` has no `APP_DOMAIN`, `OPERATOR_DIDS`, or `ATPROTO_PRIVATE_KEY`. You must add them.
+- The template uses `docker-compose.coordinator.yml`, the same stack as Path A. Path A is the tested path.
+- The security group opens SSH (22) to `0.0.0.0/0`.
+- The template creates an RDS instance. `docker-compose.coordinator.yml` sets `DATABASE_URL` to the `postgres` container, so the app does not use RDS.
+- The generated `.env` has no `APP_DOMAIN`, `DERP_DOMAIN`, `OPERATOR_DIDS`, or `ATPROTO_PRIVATE_KEY`. You must add them. The stack does not start without `APP_DOMAIN` and `DERP_DOMAIN`.
 
 Do not pass the Cloudflare token. You set the Route53 TLS strategy after the stack is created.
 
@@ -257,6 +257,7 @@ aws cloudformation create-stack \
     ParameterKey=PrivateSubnetId2,ParameterValue="$PRIVATE_SUBNET_2" \
     ParameterKey=DBPassword,ParameterValue="$POSTGRES_PASSWORD" \
     ParameterKey=SessionSecret,ParameterValue="$SESSION_SECRET" \
+    ParameterKey=CoordinatorApiKey,ParameterValue="$COORDINATOR_API_KEY" \
     ParameterKey=PublicUrl,ParameterValue="https://${APP_DOMAIN}" \
     ParameterKey=BaseDomain,ParameterValue="$BASE_DOMAIN"
 
@@ -275,6 +276,7 @@ ssh -i ~/.ssh/"$KEY_PAIR_NAME".pem ubuntu@"$EIP"
 cd /opt/atproto-tailnet
 sudo tee -a .env > /dev/null <<EOF
 APP_DOMAIN=$APP_DOMAIN
+DERP_DOMAIN=$DERP_DOMAIN
 OPERATOR_DIDS=$OPERATOR_DIDS
 TLS_STRATEGY=route53
 CADDY_DNS_PLUGINS=github.com/caddy-dns/route53
@@ -285,16 +287,16 @@ EOF
 sudo chmod 600 .env
 
 # Generate the AT Protocol OAuth key (one-line ES256 JWK)
-KEY=$(sudo docker compose -f docker-compose.production.yml run --rm --no-deps --entrypoint node app \
+KEY=$(sudo docker compose -f docker-compose.coordinator.yml run --rm --no-deps --entrypoint node app \
   --input-type=module -e "import {generateKeyPair,exportJWK} from 'jose'; const {privateKey}=await generateKeyPair('ES256',{extractable:true}); console.log(JSON.stringify({...await exportJWK(privateKey),alg:'ES256'}))")
 echo "ATPROTO_PRIVATE_KEY='${KEY}'" | sudo tee -a .env > /dev/null
 
 # Rebuild Caddy with Route53 plugin and restart
-sudo docker compose -f docker-compose.production.yml build caddy
-sudo docker compose -f docker-compose.production.yml up -d
+sudo docker compose -f docker-compose.coordinator.yml build
+sudo docker compose -f docker-compose.coordinator.yml up -d
 ```
 
-These commands run in the shell on the instance. Set `APP_DOMAIN`, `OPERATOR_DIDS`, and the `AWS_*` variables in that shell first, or type the values into `.env`. After the restart, the operator must sign in first.
+These commands run in the shell on the instance. Set `APP_DOMAIN`, `DERP_DOMAIN`, `OPERATOR_DIDS`, and the `AWS_*` variables in that shell first, or type the values into `.env`. After the restart, the operator must sign in first.
 
 ## IAM Policy for Route53 TLS
 

@@ -27,7 +27,7 @@ export interface ToolDef {
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** Opaque control-plane ids: numeric node ids, `cp:<id>` / UUID auth key ids. */
 export const SEGMENT_ID_RE = /^[A-Za-z0-9_:-]{1,128}$/;
-/** Synthesized route id `<nodeId>-<base64url(prefix)>` (orchestrator/headscale-api routeId). */
+/** Synthesized route id `<nodeId>-<base64url(prefix)>` (orchestrator/control-types routeId). */
 const ROUTE_ID_RE = /^\d{1,20}-[A-Za-z0-9_-]{1,96}$/;
 /** Readable route id `<nodeId>:<cidr>`; converted to the synthesized form before use. */
 const READABLE_ROUTE_RE = /^(\d{1,20}):([0-9A-Fa-f.:]{2,45}\/\d{1,3})$/;
@@ -201,31 +201,6 @@ export const TOOL_DEFS: ToolDef[] = [
     shape: { tailnet_id: tailnetId, request_id: uuidArg() },
     annotations: WRITE,
     run: (api, a) => api.call("POST", `${t(a)}/join-requests/${seg(a.request_id, "uuid", "request_id")}/reject`),
-  },
-
-  {
-    name: "list_device_approvals",
-    title: "List device approvals",
-    description: "List pending requests for a device key (Headscale mode only). In coordinator mode use list_waiting_devices.",
-    shape: { tailnet_id: tailnetId },
-    annotations: READ,
-    run: (api, a) => api.call("GET", `${t(a)}/device-approvals`),
-  },
-  {
-    name: "approve_device",
-    title: "Approve device",
-    description: "Approve a device approval request; a key is issued for the requester.",
-    shape: { tailnet_id: tailnetId, approval_id: uuidArg() },
-    annotations: WRITE,
-    run: (api, a) => api.call("POST", `${t(a)}/device-approvals/${seg(a.approval_id, "uuid", "approval_id")}/approve`),
-  },
-  {
-    name: "reject_device",
-    title: "Reject device",
-    description: "Reject a device approval request.",
-    shape: { tailnet_id: tailnetId, approval_id: uuidArg() },
-    annotations: WRITE,
-    run: (api, a) => api.call("POST", `${t(a)}/device-approvals/${seg(a.approval_id, "uuid", "approval_id")}/reject`),
   },
 
   {
@@ -460,7 +435,6 @@ export const TOOL_DEFS: ToolDef[] = [
       requireServiceDeviceApproval: z.boolean().optional(),
       allowAgentTokens: z.boolean().optional(),
       allowMemberAgentTokens: z.boolean().optional(),
-      hibernateAfterDays: z.number().int().min(0).max(365).optional(),
       notificationWebhookUrl: z.string().max(2048).nullable().optional(),
     },
     annotations: { ...WRITE, idempotentHint: true },

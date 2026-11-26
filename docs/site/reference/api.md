@@ -52,8 +52,6 @@ A request from a disabled user returns 403 with `code: "account_disabled"`. A me
 | `GET` | `/api/tenants` | *signed in* | List tenants of the user |
 | `GET` | `/api/tenants/:id` | *any member* | Tenant details |
 | `DELETE` | `/api/tenants/:id` | *originator* | Delete tenant. Not for agent tokens |
-| `POST` | `/api/tenants/:id/start` | *originator* | Start tenant instance |
-| `POST` | `/api/tenants/:id/stop` | *originator* | Stop tenant instance |
 | `GET` | `/api/tenants/:id/health` | *any member* | Live health probe |
 
 ### Members and invitations
@@ -93,7 +91,7 @@ Join request limits:
 
 | Method | Path | Permission | Description |
 |--------|------|-----------|-------------|
-| `GET` | `/api/tenants/:id/devices` | *any member* | List devices |
+| `GET` | `/api/tenants/:id/devices` | *any member* | List devices. Each device has `owner`: `{userId, handle}` or `null`. Each `byUser` group has `key`: the owner's user id, or `unassigned` |
 | `POST` | `/api/tenants/:id/devices/auth-key` | *any member* | Generate a pre-auth key. A key registers a device; the device then waits for admission |
 | `GET` | `/api/tenants/:id/devices/waiting` | *any member* | Devices that wait for admission: `mine`, and `queue` for approvers. Each has `canAdmit` (the caller may take its next step) and `expiresAt` (when it is removed if nobody admits it) |
 | `POST` | `/api/tenants/:id/devices/:nodeId/admit` | owner of the device, then `approve_devices` | Admit a waiting device. Session only, step-up |
@@ -104,13 +102,6 @@ Join request limits:
 | `DELETE` | `/api/tenants/:id/devices/:nodeId` | `manage_devices` or device owner | Remove device |
 | `GET` | `/api/tenants/:id/auth-keys` | *any member* | List auth keys. `manage_devices` sees all keys, others see their own keys |
 | `DELETE` | `/api/tenants/:id/auth-keys/:keyId` | `manage_devices` or key owner | Revoke auth key |
-| `GET` | `/api/tenants/:id/device-approvals` | `approve_devices` | Headscale mode: list pending requests for a key |
-| `GET` | `/api/tenants/:id/device-approvals/mine` | *any member* | Your own approval requests |
-| `POST` | `/api/tenants/:id/device-approvals/:approvalId/approve` | `approve_devices` | Approve and generate the key |
-| `POST` | `/api/tenants/:id/device-approvals/:approvalId/reject` | `approve_devices` | Reject |
-| `POST` | `/api/tenants/:id/device-locks` | `lock_devices` | Lock a member to its current devices |
-| `DELETE` | `/api/tenants/:id/device-locks` | `lock_devices` | Unlock a member |
-| `GET` | `/api/tenants/:id/device-locks/:userId` | `lock_devices` or self | Lock status of a member |
 
 ### Notifications
 
@@ -126,16 +117,15 @@ The service creates a notification for each approval request (device, join, serv
 
 | Method | Path | Permission | Description |
 |--------|------|-----------|-------------|
-| `GET` | `/api/tenants/:id/acl` | `manage_acl` | Get ACL policy |
-| `PUT` | `/api/tenants/:id/acl` | `manage_acl` | Update ACL policy |
+| `GET` | `/api/tenants/:id/acl` | `manage_acl` | Get ACL policy: `{policy}` |
+| `PUT` | `/api/tenants/:id/acl` | `manage_acl` | Update ACL policy. Body: `{acls, hosts}`. Groups, tags and `autoApprovers` are refused |
 | `GET` | `/api/tenants/:id/routes` | `manage_devices` | List exit nodes and subnet routes |
 | `POST` | `/api/tenants/:id/routes/:routeId/enable` | `manage_devices` | Approve route |
 | `POST` | `/api/tenants/:id/routes/:routeId/disable` | `manage_devices` | Withdraw approval |
 | `DELETE` | `/api/tenants/:id/routes/:routeId` | `manage_devices` | Withdraw approval |
 | `GET` | `/api/tenants/:id/derp` | `manage_acl` | Get DERP config |
 | `PUT` | `/api/tenants/:id/derp` | `manage_acl` | Update DERP config of this tenant |
-| `GET` | `/api/tenants/:id/ip-config` | `manage_settings` | Get IP range config |
-| `PUT` | `/api/tenants/:id/ip-config` | `manage_settings` | Update IP ranges |
+| `GET` | `/api/tenants/:id/ip-config` | `manage_settings` | Get the IP ranges: `{ipv4Prefix, ipv6Prefix}`. The ranges are fixed at creation |
 
 ### Federation
 

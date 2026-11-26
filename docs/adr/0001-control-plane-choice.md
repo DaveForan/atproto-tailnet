@@ -3,6 +3,8 @@
 **Status:** Accepted
 **Date:** 2026-10-23
 
+> Note (2026-11-26): the Headscale mode was removed (ADR-0040). The coordinator is the only control plane.
+
 ## Context
 
 We build a service ("atproto-tailnet"). Users log in with their AT Protocol identity (Bluesky handle / DID). Each user receives an isolated Tailscale-compatible mesh network (tailnet). We need an open-source Tailscale control server.

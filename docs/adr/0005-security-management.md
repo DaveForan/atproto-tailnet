@@ -3,6 +3,8 @@
 **Status:** Accepted (revised 2026-10-23)
 **Date:** 2026-10-23
 
+> Note (2026-11-26): the Headscale mode was removed (ADR-0040). The coordinator is the only control plane.
+
 ## Context
 
 Tailnet owners need granular control over these items:

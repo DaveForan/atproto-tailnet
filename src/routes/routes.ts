@@ -4,8 +4,8 @@
  */
 
 import { Router } from "express";
-import { parseRouteId } from "../orchestrator/headscale-api.js";
-import { getControlClient } from "../orchestrator/control-client.js";
+import { parseRouteId } from "../orchestrator/control-types.js";
+import { getCoordinatorClient } from "../orchestrator/control-client.js";
 import {
   requireAuth,
   param,
@@ -25,13 +25,13 @@ routesRouter.get(
     const tenantId = param(req, "tenantId");
     const result = tenantCtx(res);
 
-    if (!result.tenant.apiKey || !result.tenant.port) {
+    if (!result.tenant.coordinatorTenantId) {
       res.status(503).json({ error: "Tenant instance not available" });
       return;
     }
 
     try {
-      const client = getControlClient(result.tenant);
+      const client = getCoordinatorClient(result.tenant);
       const routes = await client.listRoutes();
 
       const exitNodes = routes.filter(
@@ -44,7 +44,7 @@ routesRouter.get(
       res.json({ exitNodes, subnets });
     } catch (err) {
       logger.error({ tenantId, err }, "failed to list routes");
-      res.status(502).json({ error: "Failed to fetch routes from Headscale" });
+      res.status(502).json({ error: "Failed to fetch routes" });
     }
   },
 );
@@ -58,7 +58,7 @@ routesRouter.post(
     const routeId = param(req, "routeId");
     const result = tenantCtx(res);
 
-    if (!result.tenant.apiKey || !result.tenant.port) {
+    if (!result.tenant.coordinatorTenantId) {
       res.status(503).json({ error: "Tenant instance not available" });
       return;
     }
@@ -69,7 +69,7 @@ routesRouter.post(
     }
 
     try {
-      const client = getControlClient(result.tenant);
+      const client = getCoordinatorClient(result.tenant);
       await client.enableRoute(routeId);
 
       logAudit({
@@ -97,7 +97,7 @@ routesRouter.post(
     const routeId = param(req, "routeId");
     const result = tenantCtx(res);
 
-    if (!result.tenant.apiKey || !result.tenant.port) {
+    if (!result.tenant.coordinatorTenantId) {
       res.status(503).json({ error: "Tenant instance not available" });
       return;
     }
@@ -108,7 +108,7 @@ routesRouter.post(
     }
 
     try {
-      const client = getControlClient(result.tenant);
+      const client = getCoordinatorClient(result.tenant);
       await client.disableRoute(routeId);
 
       logAudit({
@@ -136,7 +136,7 @@ routesRouter.delete(
     const routeId = param(req, "routeId");
     const result = tenantCtx(res);
 
-    if (!result.tenant.apiKey || !result.tenant.port) {
+    if (!result.tenant.coordinatorTenantId) {
       res.status(503).json({ error: "Tenant instance not available" });
       return;
     }
@@ -147,7 +147,7 @@ routesRouter.delete(
     }
 
     try {
-      const client = getControlClient(result.tenant);
+      const client = getCoordinatorClient(result.tenant);
       await client.deleteRoute(routeId);
 
       logAudit({

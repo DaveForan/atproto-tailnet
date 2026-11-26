@@ -119,7 +119,7 @@ case "${CMD}" in
     echo "  1. Wait ~3 min for droplet setup to complete"
     echo "  2. SSH in: ssh root@${DROPLET_IP}"
     echo "  3. Configure .env with the database connection string above"
-    echo "  4. Start services: cd /opt/atproto-tailnet && docker compose -f docker-compose.production.yml up -d"
+    echo "  4. Start services: cd /opt/atproto-tailnet && docker compose -f docker-compose.coordinator.yml up -d"
     echo "  5. Point DNS: A record for your domain -> ${DROPLET_IP}"
     echo "     Wildcard: *.ts.yourdomain.com -> ${DROPLET_IP}"
     ;;
@@ -155,7 +155,7 @@ case "${CMD}" in
       exit 1
     fi
     echo "==> Tailing logs on ${IP}..."
-    ssh "root@${IP}" "cd /opt/atproto-tailnet && docker compose -f docker-compose.production.yml logs -f --tail=100 app"
+    ssh "root@${IP}" "cd /opt/atproto-tailnet && docker compose -f docker-compose.coordinator.yml logs -f --tail=100 app"
     ;;
 
   update)
@@ -170,10 +170,10 @@ case "${CMD}" in
       set -euo pipefail
       cd /opt/atproto-tailnet
       git pull origin main
-      docker compose -f docker-compose.production.yml build app
-      docker compose -f docker-compose.production.yml up -d app
+      docker compose -f docker-compose.coordinator.yml build app
+      docker compose -f docker-compose.coordinator.yml up -d app
       echo "Update complete."
-      docker compose -f docker-compose.production.yml ps
+      docker compose -f docker-compose.coordinator.yml ps
 REMOTE
     ;;
 

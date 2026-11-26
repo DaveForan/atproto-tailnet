@@ -48,7 +48,7 @@ live() { # $1 = mode
   docker run -d --name tlsspike -p 127.0.0.1:$HTTPS:443 -p 127.0.0.1:$ADMIN:2019 \
     -v "$PWD/Caddyfile:/etc/caddy/Caddyfile:ro" -v "$PWD/modes/$1:/etc/caddy/mode:ro" $IMG >/dev/null
   for _ in $(seq 1 20); do curl -s -o /dev/null "http://localhost:$ADMIN/config/" && break; sleep 0.5; done
-  (cd "$REPO" && CADDY_ADMIN_URL=http://localhost:$ADMIN BASE_DOMAIN=ts.example.test HEADSCALE_NETWORK= LOG_LEVEL=warn \
+  (cd "$REPO" && CADDY_ADMIN_URL=http://localhost:$ADMIN BASE_DOMAIN=ts.example.test COORDINATOR_URL=http://localhost:9998 COORDINATOR_API_KEY=spike-key-000000000000000000000000000000 LOG_LEVEL=warn \
      npx tsx scripts/spikes/tenant-tls/apply-router.mts 2>&1 | tail -1)
   sleep 1
 }

@@ -14,5 +14,4 @@ vitest.config.ts
 .env.*
 !.env.example
 Caddyfile
-Caddyfile.production
 docker-compose*.yml

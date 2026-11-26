@@ -15,7 +15,7 @@ You can deploy atproto-tailnet on any server with Docker. Four cloud providers h
 | [DigitalOcean](#digitalocean) | `doctl` | ~$18-24 | `digitalocean` | One API for compute and DNS |
 | [AWS](#aws) | `aws` | ~$30-50 | `route53` | Most complex. Instance roles for TLS |
 
-All providers deploy in **coordinator mode** and use `docker-compose.coordinator.yml`. Each provider has an `AGENT.md` in its `deploy/<provider>/` directory. The file contains the exact CLI commands for autonomous deployment.
+All providers use `docker-compose.coordinator.yml`. Each provider has an `AGENT.md` in its `deploy/<provider>/` directory. The file contains the exact CLI commands for autonomous deployment.
 
 For a first deployment by hand, follow [First deployment on DigitalOcean](https://github.com/DaveForan/atproto-tailnet/blob/master/docs/deployment.md#first-deployment-on-digitalocean). The steps also apply to other providers. Then do the steps in [Droplet hardening](https://github.com/DaveForan/atproto-tailnet/blob/master/docs/deployment.md#droplet-hardening).
 
@@ -55,7 +55,7 @@ The setup scripts generate the other secrets, or the `AGENT.md` files show how t
             +--------------+
 ```
 
-All four services run as Docker containers when you use a single `docker compose up -d` command. The coordinator handles the Tailscale control protocol natively. You do not need a Docker socket mount.
+All four services run as Docker containers when you use a single `docker compose -f docker-compose.coordinator.yml up -d` command. The coordinator handles the Tailscale control protocol natively. You do not need a Docker socket mount.
 
 Only Caddy publishes ports (80 and 443). PostgreSQL is on an internal network that Caddy cannot reach. On tenant subdomains, Caddy sends only `/key`, `/ts2021` and `/health` to the coordinator.
 

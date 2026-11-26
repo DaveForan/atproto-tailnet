@@ -8,7 +8,7 @@
 	}
 }
 
-# Main app, running on the host. Tenant subdomains (<slug>.ts.localhost) are
+# Main app, running on the host. Tenant subdomains (<name>.ts.localhost) are
 # matched by the service's managed route before this one.
 :80 {
 	reverse_proxy host.docker.internal:3000

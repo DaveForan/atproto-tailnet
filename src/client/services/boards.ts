@@ -79,7 +79,7 @@ const json = (method: string, body?: unknown): RequestInit => ({
 });
 
 export const boardsService = {
-  myDevices: (tid: string) => tenantApi<{ devices: MyDevice[]; supported: boolean }>(tid, "/my-devices"),
+  myDevices: (tid: string) => tenantApi<{ devices: MyDevice[] }>(tid, "/my-devices"),
   publicBoard: (tid: string) => tenantApi<{ posts: PublicPost[] }>(tid, "/boards/public"),
   myPosts: (tid: string) => tenantApi<{ baseDomain: string; httpsServices: boolean; serviceDomain: string | null; posts: MyPost[] }>(tid, "/boards/mine"),
   children: (tid: string) => tenantApi<{ tailnets: ChildBoard[] }>(tid, "/boards/children"),
@@ -100,7 +100,7 @@ export const boardsService = {
     tenantApi(tid, `/boards/posts/${postId}/connections/${userId}`, json("DELETE")),
 
   accessMode: (tid: string) =>
-    tenantApi<{ mode: "open" | "member"; supported: boolean; canEdit: boolean; mine: boolean }>(tid, "/access-mode"),
+    tenantApi<{ mode: "open" | "member"; canEdit: boolean; mine: boolean }>(tid, "/access-mode"),
   setAccessMode: (tid: string, mode: "open" | "member") => tenantApi(tid, "/access-mode", json("PUT", { mode })),
   setMyOpenAccess: (tid: string, open: boolean) => tenantApi<{ open: boolean; applied: boolean }>(tid, "/access-mode/mine", json("PUT", { open })),
 

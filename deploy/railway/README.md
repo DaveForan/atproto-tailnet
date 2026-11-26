@@ -2,19 +2,10 @@
 
 ## Important limitation
 
-**Docker socket access is not available on Railway.** Railway runs containers in
-an isolated environment. The containers cannot access the host Docker daemon.
-In the legacy Headscale mode, atproto-tailnet manages the Headscale container
-of each tenant through the Docker socket. Headscale mode does not work on
-Railway.
-
-A remote Docker host (`DOCKER_HOST`) does not solve this. The app writes tenant
-configs to a local directory, and the Docker host must bind-mount that
-directory at the same path.
-
-Coordinator mode (`COORDINATOR_URL`) does not need the Docker socket. But it
-needs the Rust coordinator and a proxy for the tenant wildcard subdomains.
-This guide does not set them up.
+**This guide deploys the web tier only.** The service needs the Rust
+coordinator (`COORDINATOR_URL`, `COORDINATOR_API_KEY`) and refuses to start
+without it. Devices also need a proxy for the tenant wildcard subdomains.
+This guide does not set them up. You must run them yourself.
 
 The recommended path is a single VPS with `docker-compose.coordinator.yml`. See
 `deploy/digitalocean/`, `deploy/hetzner/`, `deploy/vultr/`, or `deploy/aws/`.
@@ -47,9 +38,9 @@ automatically.
 railway variables set SESSION_SECRET="$(openssl rand -hex 32)"
 railway variables set PUBLIC_URL="https://your-app.up.railway.app"
 railway variables set BASE_DOMAIN="ts.yourdomain.com"
-railway variables set HEADSCALE_IMAGE="headscale/headscale:0.29.1"
-railway variables set HEADSCALE_PORT_RANGE_START="10001"
-railway variables set HEADSCALE_PORT_RANGE_END="10100"
+# The coordinator you run yourself (key = its COORD_ADMIN_KEY)
+railway variables set COORDINATOR_URL="http://your-coordinator-host:9443"
+railway variables set COORDINATOR_API_KEY='<your coordinator admin key>'
 railway variables set LOG_LEVEL="info"
 
 # The Railway platform proxy is in front of the app

@@ -9,8 +9,8 @@ import {
 } from "../members/permissions.js";
 
 describe("ALL_PERMISSIONS", () => {
-  it("contains exactly 17 permissions", () => {
-    expect(ALL_PERMISSIONS).toHaveLength(17);
+  it("contains exactly 16 permissions", () => {
+    expect(ALL_PERMISSIONS).toHaveLength(16);
   });
 
   it("has no duplicate entries", () => {
@@ -27,7 +27,6 @@ describe("ALL_PERMISSIONS", () => {
       "approve_devices",
       "approve_joins",
       "approve_services",
-      "lock_devices",
       "view_audit_log",
       "manage_devices",
       "manage_services",
@@ -36,6 +35,7 @@ describe("ALL_PERMISSIONS", () => {
       "create_agent_tokens",
       "manage_agent_tokens",
       "manage_acl",
+      "manage_sub_collectives",
     ];
     for (const perm of expected) {
       expect(ALL_PERMISSIONS).toContain(perm);

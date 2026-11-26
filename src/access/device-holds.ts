@@ -7,7 +7,7 @@
 import { eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { memberships, roles, users } from "../db/schema.js";
-import type { DeviceHold } from "../orchestrator/headscale-api.js";
+import type { DeviceHold } from "../orchestrator/control-types.js";
 
 export type { DeviceHold };
 
@@ -25,13 +25,9 @@ export interface AdmitInput {
   otherApprover: boolean;
 }
 
-/** The hold of a device. Headscale has no hold: its devices are admitted when they register. */
-export function holdOf(node: { hold?: DeviceHold }): DeviceHold {
-  return node.hold ?? "none";
-}
-
+/** Security: a device with an unknown hold counts as waiting. */
 export function isAdmitted(node: { hold?: DeviceHold }): boolean {
-  return holdOf(node) === "none";
+  return node.hold === "none";
 }
 
 export type AdmitRefusal = "not_waiting" | "not_owner" | "not_approver";

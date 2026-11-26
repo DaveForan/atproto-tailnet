@@ -1,8 +1,8 @@
 /** Whether named HTTPS services are available: asked from the coordinator's health, kept for a minute. */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const h = vi.hoisted(() => ({ probe: vi.fn(), url: "http://coord" as string | undefined }));
-vi.mock("../config.js", () => ({ config: { get coordinatorUrl() { return h.url; }, coordinatorApiKey: "k" } }));
+const h = vi.hoisted(() => ({ probe: vi.fn() }));
+vi.mock("../config.js", () => ({ config: { coordinatorUrl: "http://coord", coordinatorApiKey: "k" } }));
 vi.mock("../orchestrator/coordinator-api.js", () => ({ CoordinatorApiClient: class { probeHealth = h.probe; } }));
 
 import { httpsServiceDomain, httpsServicesAvailable, resetHttpsServicesCache } from "../orchestrator/gateway.js";
@@ -10,7 +10,6 @@ import { httpsServiceDomain, httpsServicesAvailable, resetHttpsServicesCache } f
 beforeEach(() => {
   vi.clearAllMocks();
   resetHttpsServicesCache();
-  h.url = "http://coord";
 });
 
 describe("httpsServicesAvailable", () => {
@@ -41,11 +40,5 @@ describe("httpsServicesAvailable", () => {
     h.probe.mockResolvedValue({ bootId: "b", gateway: true, serviceDomain: null });
     expect(await httpsServicesAvailable(1_000)).toBe(false);
     expect(await httpsServiceDomain(1_000)).toBeNull();
-  });
-
-  it("is false outside coordinator mode, without a call", async () => {
-    h.url = undefined;
-    expect(await httpsServicesAvailable()).toBe(false);
-    expect(h.probe).not.toHaveBeenCalled();
   });
 });

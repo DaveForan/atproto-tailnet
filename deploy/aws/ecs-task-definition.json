@@ -2,10 +2,10 @@
   "_comment": [
     "ECS Fargate task definition for atproto-tailnet.",
     "",
-    "LIMITATION: Fargate does not provide Docker socket access. The app",
-    "cannot manage per-tenant Headscale containers from within Fargate.",
-    "This definition is provided for the web tier only. You must run",
-    "Headscale containers on a separate EC2 host and set DOCKER_HOST.",
+    "LIMITATION: This definition is provided for the web tier only.",
+    "It does not run the Rust coordinator, the relay or Caddy. You must",
+    "run the coordinator on a host the task can reach, and set",
+    "COORDINATOR_URL and the coordinator-api-key secret to match it.",
     "",
     "For full functionality, use the EC2 CloudFormation template instead."
   ],
@@ -30,9 +30,7 @@
       "environment": [
         { "name": "PORT", "value": "3000" },
         { "name": "LOG_LEVEL", "value": "info" },
-        { "name": "HEADSCALE_IMAGE", "value": "headscale/headscale:0.29.1" },
-        { "name": "HEADSCALE_PORT_RANGE_START", "value": "10001" },
-        { "name": "HEADSCALE_PORT_RANGE_END", "value": "10100" }
+        { "name": "COORDINATOR_URL", "value": "http://COORDINATOR_HOST:9443" }
       ],
       "secrets": [
         {
@@ -42,6 +40,10 @@
         {
           "name": "SESSION_SECRET",
           "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:atproto-tailnet/session-secret"
+        },
+        {
+          "name": "COORDINATOR_API_KEY",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:atproto-tailnet/coordinator-api-key"
         },
         {
           "name": "ATPROTO_PRIVATE_KEY",

@@ -12,7 +12,7 @@ import { useTenantMutation } from "../hooks/useMutation";
 import { deviceService } from "../services/devices";
 import { usageService } from "../services/usage";
 import { securityService } from "../services/security";
-import { DeviceApprovalsGroup, JoinRequestsGroup, WaitingDevicesGroup } from "./security/PendingCards";
+import { JoinRequestsGroup, WaitingDevicesGroup } from "./security/PendingCards";
 import { RequestsGroup } from "./sharing/RequestsCard";
 import { useTabRoute } from "../hooks/useTabRoute";
 import type { SharingAct } from "./sharing/SharesCard";
@@ -130,18 +130,6 @@ function AttentionList({ onDecided }: { onDecided: () => Promise<void> }) {
             act(
               (tid) => (action === "approve" ? deviceService.admitDevice(tid, id) : deviceService.refuseDevice(tid, id)),
               action === "approve" ? "Device admitted" : "Device refused and removed",
-            )
-          }
-        />
-      )}
-      {attention.approvals.length > 0 && (
-        <DeviceApprovalsGroup
-          approvals={attention.approvals}
-          busy={busy}
-          onDecide={(id, action) =>
-            act(
-              (tid) => (action === "approve" ? securityService.approveDevice(tid, id) : securityService.rejectDevice(tid, id)),
-              action === "approve" ? "Device approved" : "Device rejected",
             )
           }
         />

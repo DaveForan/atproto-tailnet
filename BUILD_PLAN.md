@@ -11,6 +11,13 @@ See `docs/adr/` for the reason for each choice:
 - **ADR-0002**: One Headscale instance for each tenant (not a fork — no maintenance burden)
 - **ADR-0003**: AT Protocol OAuth 2.0 for all authentication (DID as the stable identity)
 - **ADR-0004**: TypeScript service + Headscale instances in Docker + Caddy + PostgreSQL
+- **ADR-0023**: Rust mesh coordinator (replaces Headscale)
+- **ADR-0040**: The Headscale mode is removed. The coordinator is the only control plane
+
+> Note (2026-11-26): phases 1 to 5 record the Headscale-based build. ADR-0040 removed these parts:
+> per-tenant Headscale containers, the port allocator, tenant start/stop, hibernation, key-request
+> approvals (`device_approvals`), Headscale device locks (`device_locks`, `lock_devices`), the
+> embedded DERP toggle and the editing of IP ranges. The checked items stay as history.
 
 ---
 
@@ -389,6 +396,14 @@ No service is reachable from the internet. ADR-0031 records the reasons.
 - [ ] Apply the manifests to a test cluster
 - [ ] Verify: replica loss during a ping between two devices
 
+### 6.12 Remove the Headscale mode (ADR-0040)
+- [x] The coordinator is the only control plane; `COORDINATOR_URL` and `COORDINATOR_API_KEY` are required
+- [x] Removed: Headscale containers and REST client, port allocator, tenant start/stop, hibernation
+- [x] Removed: key-request approvals, Headscale device locks and the `lock_devices` permission (16 permissions stay)
+- [x] Removed: embedded DERP toggle, editing of IP ranges, the Headscale compose files
+- [x] Drizzle migration 0045 drops the unused tables and columns
+- [ ] Deploy (migration 0045 runs at the first start)
+
 ### 6.9 Operations (no ADR)
 - [ ] DigitalOcean backups + nightly `pg_dump` and coordinator key off the droplet; test a restore
 - [ ] Uptime check on `/health` and droplet alerts (CPU, memory, disk)
@@ -399,12 +414,12 @@ No service is reachable from the internet. ADR-0031 records the reasons.
 
 ## Out of scope (for now)
 
-- ~~Custom DERP relays per tenant~~ ✅ Implemented (custom regions, embedded toggle, public relay toggle)
-- ~~Per-tenant IP range configuration~~ ✅ Implemented (v4/v6 prefixes, sequential/random allocation)
+- ~~Custom DERP relays per tenant~~ ✅ Implemented (custom regions, default relay toggle)
+- ~~Per-tenant IP range configuration~~ Removed (ADR-0040): the ranges are fixed at creation
 - ~~Exit nodes / subnet routers management UI~~ ✅ Implemented (list/enable/disable/delete routes, split exit nodes vs subnets)
 - ~~Billing / usage metering~~ ✅ Implemented (usage snapshots, plan names, device/member limits, history API, dashboard Usage tab)
 - ~~Federation between tailnets~~ ✅ Implemented (request/accept/reject/revoke links, bidirectional CIDR sharing, dashboard Federation tab)
-- Headscale fork for true multi-tenancy in a single process (see ADR-0002 — escape hatch)
+- ~~Headscale fork for true multi-tenancy in a single process~~ Replaced by the Rust coordinator (ADR-0023)
 
 ---
 
@@ -414,10 +429,10 @@ No service is reachable from the internet. ADR-0031 records the reasons.
 |-------|-----------|
 | Language | TypeScript |
 | API framework | Express 5 |
-| Database | PostgreSQL (service state) + SQLite (for each Headscale instance) |
+| Database | PostgreSQL (service state and coordinator) |
 | ORM | Drizzle |
 | Auth | `@atproto/oauth-client-node` |
-| Control plane | Headscale (Docker containers, one for each tenant) |
+| Control plane | Rust coordinator (`coordinator/`), one process for all tailnets |
 | Reverse proxy | Caddy (wildcard TLS, dynamic upstreams) |
 | Process management | Docker (dev), systemd or K8s (prod) |
 | Frontend | TBD — React SPA or server-rendered (decide in Phase 1.5) |

@@ -7,7 +7,7 @@ import { isAdmitted } from "./device-holds.js";
 import { and, eq, or } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { tenants, servicePosts, serviceConnections, friendships, memberBlocks, deviceShares } from "../db/schema.js";
-import { getControlClient, useCoordinator } from "../orchestrator/control-client.js";
+import { getCoordinatorClient } from "../orchestrator/control-client.js";
 
 export interface MemberDevice {
   id: string;
@@ -18,13 +18,11 @@ export interface MemberDevice {
 }
 
 /**
- * Every admitted device of the tailnet with its owner (our user id). Coordinator mode
- * only: Headscale mode cannot attribute or isolate devices per member.
+ * Every admitted device of the tailnet with its owner (our user id).
  * A device that waits for admission has no access, so nothing can select it.
  */
 export async function listTenantDevices(tenant: typeof tenants.$inferSelect): Promise<MemberDevice[]> {
-  if (!useCoordinator) return [];
-  const nodes = await getControlClient(tenant).listNodes();
+  const nodes = await getCoordinatorClient(tenant).listNodes();
   return nodes.filter(isAdmitted).map((n) => ({
     id: String(n.id),
     name: n.givenName || n.name || `device-${n.id}`,

@@ -7,17 +7,11 @@
 import http from "node:http";
 import https from "node:https";
 import { isDeepStrictEqual } from "node:util";
-import { and, isNotNull, ne } from "drizzle-orm";
+import { ne } from "drizzle-orm";
 import { config } from "../config.js";
 import { db } from "../db/index.js";
 import { tenants } from "../db/schema.js";
 import { logger } from "../logger.js";
-import {
-  HEADSCALE_CONTAINER_PORT,
-  ensureOnTenantNetwork,
-  tenantContainerName,
-} from "./headscale.js";
-import { useCoordinator } from "./control-client.js";
 import { liveHostnamesByTenant } from "./hostnames.js";
 
 /** The Caddyfile sets this server name. */
@@ -47,9 +41,8 @@ export interface CaddyRoute {
 }
 
 export interface RoutableTenant {
-  /** Internal id: the coordinator's tenant slug and the Headscale container name. */
+  /** Internal id: the coordinator's tenant slug. */
   slug: string;
-  port: number;
   /** Live public names (primary first). Defaults to `[slug]`. */
   hostnames?: string[];
 }
@@ -115,18 +108,10 @@ function fail(method: string, path: string, res: CaddyResponse): Error {
   );
 }
 
-/** Caddy's upstream for a tenant: the shared coordinator, or the tenant's Headscale container. */
-export function tenantUpstream(
-  tenant: RoutableTenant,
-  network = config.headscale.network,
-): string {
-  if (useCoordinator && config.coordinatorUrl) {
-    const url = new URL(config.coordinatorUrl);
-    return `${url.hostname}:${url.port || (url.protocol === "https:" ? "443" : "80")}`;
-  }
-  return network
-    ? `${tenantContainerName(tenant.slug)}:${HEADSCALE_CONTAINER_PORT}`
-    : `localhost:${tenant.port}`;
+/** Caddy's upstream for every tenant: the coordinator. */
+export function coordinatorUpstream(): string {
+  const url = new URL(config.coordinatorUrl);
+  return `${url.hostname}:${url.port || (url.protocol === "https:" ? "443" : "80")}`;
 }
 
 // Security: /health stays private because it leaks the coordinator boot_id. Clients do not need it.
@@ -138,13 +123,8 @@ function hostsFor(t: RoutableTenant, baseDomain: string): string[] {
 }
 
 /** Unknown names under the base domain get a 404, so they never fall through to the main app. */
-export function buildTenantRouter(
-  routable: RoutableTenant[],
-  opts: { baseDomain?: string; network?: string; coordinator?: boolean } = {},
-): CaddyRoute {
-  const coordinator = opts.coordinator ?? useCoordinator;
+export function buildTenantRouter(routable: RoutableTenant[], opts: { baseDomain?: string } = {}): CaddyRoute {
   const baseDomain = opts.baseDomain ?? config.baseDomain;
-  const network = "network" in opts ? opts.network : config.headscale.network;
   const sorted = [...routable].sort((a, b) => a.slug.localeCompare(b.slug));
 
   return {
@@ -157,24 +137,12 @@ export function buildTenantRouter(
           ...sorted.map((t) => ({
             // Security: the coordinator serves its admin API (/api/*) on this port too.
             // Expose only the paths that Tailscale clients need.
-            match: [
-              coordinator
-                ? { host: hostsFor(t, baseDomain), path: COORDINATOR_PUBLIC_PATHS }
-                : { host: hostsFor(t, baseDomain) },
-            ],
+            match: [{ host: hostsFor(t, baseDomain), path: COORDINATOR_PUBLIC_PATHS }],
             handle: [
               {
                 handler: "reverse_proxy",
-                upstreams: [{ dial: tenantUpstream(t, network) }],
-                ...(coordinator
-                  ? {
-                      headers: {
-                        request: {
-                          set: { "X-Tenant-Slug": [t.slug] },
-                        },
-                      },
-                    }
-                  : {}),
+                upstreams: [{ dial: coordinatorUpstream() }],
+                headers: { request: { set: { "X-Tenant-Slug": [t.slug] } } },
               },
             ],
           })),
@@ -229,29 +197,14 @@ export async function applyTenantRouter(
   return "created";
 }
 
-async function listRoutableTenants(): Promise<
-  Array<RoutableTenant & { containerId: string | null }>
-> {
-  const whereClause = useCoordinator
-    ? ne(tenants.status, "deleted")
-    : and(ne(tenants.status, "deleted"), isNotNull(tenants.containerId));
+async function listRoutableTenants(): Promise<RoutableTenant[]> {
   const rows = await db
-    .select({
-      id: tenants.id,
-      slug: tenants.slug,
-      port: tenants.port,
-      containerId: tenants.containerId,
-    })
+    .select({ id: tenants.id, slug: tenants.slug })
     .from(tenants)
-    .where(whereClause)
+    .where(ne(tenants.status, "deleted"))
     .orderBy(tenants.slug);
   const names = await liveHostnamesByTenant(rows.map((r) => r.id));
-  return rows.map((r) => ({
-    slug: r.slug,
-    port: r.port,
-    containerId: r.containerId,
-    hostnames: names.get(r.id) ?? [r.slug],
-  }));
+  return rows.map((r) => ({ slug: r.slug, hostnames: names.get(r.id) ?? [r.slug] }));
 }
 
 // Syncs run in series, because overlapping read-compare-write cycles can both insert the route
@@ -272,26 +225,7 @@ export function syncTenantRoutes(): Promise<void> {
   return run;
 }
 
-/**
- * Attaches older tenant containers to the shared network, then syncs routes.
- * It logs failures and never throws, so the service starts when Caddy is down.
- */
+/** Syncs the routes at start. It logs failures and never throws, so the service starts when Caddy is down. */
 export async function reconcileTenantRouting(): Promise<void> {
-  try {
-    if (!useCoordinator) {
-      for (const tenant of await listRoutableTenants()) {
-        if (tenant.containerId) {
-          await ensureOnTenantNetwork(tenant.containerId).catch((err) =>
-            logger.error(
-              { tenantSlug: tenant.slug, err },
-              "failed to attach tenant container to the tenant network",
-            ),
-          );
-        }
-      }
-    }
-    await syncTenantRoutes();
-  } catch (err) {
-    logger.error({ err }, "failed to reconcile tenant routing");
-  }
+  await syncTenantRoutes().catch((err: unknown) => logger.error({ err }, "failed to reconcile tenant routing"));
 }

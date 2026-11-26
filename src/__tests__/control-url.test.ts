@@ -1,4 +1,4 @@
-/** Shared control URL (ADR-0026 §3): one login server for every tailnet in coordinator mode. */
+/** Shared control URL (ADR-0026 §3): one login server for every tailnet. */
 import { describe, it, expect, vi } from "vitest";
 
 vi.hoisted(() => {

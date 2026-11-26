@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# atproto-tailnet  --  Vultr Cloud Compute bootstrap (coordinator mode)
+# atproto-tailnet  --  Vultr Cloud Compute bootstrap
 #
 # Run on a fresh Ubuntu 22.04+ / 24.04 Vultr instance (minimum 2 GB RAM).
-# Installs Docker, clones the repo, and prepares the coordinator-mode stack.
+# Installs Docker, clones the repo, and prepares the stack.
 #
 # Usage:
 #   ssh root@<instance-ip> 'bash -s' < deploy/vultr/server-setup.sh

@@ -6,5 +6,10 @@ export default defineConfig({
   test: {
     root: "src",
     include: ["__tests__/**/*.test.ts"],
+    // The service does not start without a coordinator. No test calls this address.
+    env: {
+      COORDINATOR_URL: "http://coordinator.test:9443",
+      COORDINATOR_API_KEY: "test-coordinator-key-0000000000000000000000",
+    },
   },
 });

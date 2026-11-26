@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { CoordinatorApiClient, toHeadscaleNode } from "../orchestrator/coordinator-api.js";
-import { routeId } from "../orchestrator/headscale-api.js";
+import { CoordinatorApiClient, toControlNode } from "../orchestrator/coordinator-api.js";
+import { routeId } from "../orchestrator/control-types.js";
 
 function mockFetch(responses: Array<{ status?: number; body?: unknown }>) {
   const calls: Array<{ url: string; method: string; body: unknown }> = [];
@@ -31,14 +31,14 @@ const node = {
 
 describe("CoordinatorApiClient", () => {
   it("maps owner to the node user", () => {
-    expect(toHeadscaleNode(node).user).toEqual({ id: "user-1", name: "user-1" });
-    expect(toHeadscaleNode({ ...node, owner: null }).user).toBeNull();
+    expect(toControlNode(node).user).toEqual({ id: "user-1", name: "user-1" });
+    expect(toControlNode({ ...node, owner: null }).user).toBeNull();
   });
 
   it("creates keys with owner and an expiry, returning the key id", async () => {
     const calls = mockFetch([{ status: 201, body: { key: "k".repeat(40), id: "uuid-1", tenant_id: "T", expires_at: null } }]);
     const c = new CoordinatorApiClient("http://coord", "T", "adm");
-    const k = await c.createPreAuthKey("x", { owner: "user-1", expirationSeconds: 3600, reusable: true });
+    const k = await c.createPreAuthKey({ owner: "user-1", expirationSeconds: 3600, reusable: true });
     expect(k.id).toBe("uuid-1");
     expect(calls[0].body).toMatchObject({ tenant_id: "T", owner: "user-1", expiration_seconds: 3600, reusable: true });
   });

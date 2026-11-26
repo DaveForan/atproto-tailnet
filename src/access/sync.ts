@@ -186,10 +186,8 @@ export async function loadTenantDns(
 /**
  * Pushes a tailnet's access rules and names to the coordinator.
  * Returns false on failure; the caller's change is saved and the monitor retries.
- * No-op outside coordinator mode, where per-device rules cannot be enforced.
  */
 export async function syncTenantAccess(tenantId: string, opts: { secondApproval?: boolean } = {}): Promise<boolean> {
-  if (!config.coordinatorUrl) return true;
   const [tenant] = await db
     .select({
       id: tenants.id,

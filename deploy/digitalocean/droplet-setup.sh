@@ -95,15 +95,6 @@ if [ ! -f .env ]; then
   exit 0
 fi
 
-if [ "$COMPOSE_FILE" = "docker-compose.production.yml" ]; then
-  # Headscale mode: tenant data lives in a host directory that is mounted into
-  # the app container at the same absolute path (see docker-compose.production.yml).
-  HS_DIR="$(grep -E '^HEADSCALE_HOST_DATA_DIR=' .env | cut -d= -f2- || true)"
-  HS_DIR="${HS_DIR:-/srv/atproto-tailnet/headscale}"
-  echo "==> Creating Headscale data directory $HS_DIR"
-  mkdir -p "$HS_DIR"
-fi
-
 echo "==> Pulling images"
 docker compose -f "$COMPOSE_FILE" pull
 

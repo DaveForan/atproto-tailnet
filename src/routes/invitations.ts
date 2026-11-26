@@ -14,7 +14,6 @@ import {
   memberships,
   invitations,
 } from "../db/schema.js";
-import { getControlClient } from "../orchestrator/control-client.js";
 import {
   requireAuth,
   param,
@@ -284,8 +283,8 @@ invitationsRouter.post(
       return;
     }
 
-    if (!tenant.apiKey) {
-      res.status(500).json({ error: "Tenant instance not available" });
+    if (!tenant.coordinatorTenantId) {
+      res.status(409).json({ error: "This tailnet is not ready yet", code: "not_ready" });
       return;
     }
 
@@ -305,18 +304,6 @@ invitationsRouter.post(
     }
 
     if (!(await enforceMemberLimit(res, tenant))) return;
-
-    const hsUsername = user.handle
-      .replace(/[^a-z0-9]+/gi, "-")
-      .replace(/^-|-$/g, "")
-      .toLowerCase();
-
-    try {
-      const client = getControlClient(tenant);
-      await client.createUser?.(hsUsername);
-    } catch {
-      // The user may exist from an earlier membership.
-    }
 
     await db.insert(memberships).values({
       userId: user.id,

@@ -3,19 +3,17 @@ import { useToast } from "../../components/Toast";
 import type { AclData, AclRule } from "../../lib/types";
 
 /** The policy being edited; nothing reaches the tailnet until it is saved. */
-export type AclDraft = Pick<AclData, "acls" | "groups" | "hosts">;
+export type AclDraft = Pick<AclData, "acls" | "hosts">;
 
 type DraftAction =
   | { type: "load"; draft: AclDraft }
   | { type: "addRule"; rule: AclRule }
   | { type: "removeRule"; index: number }
-  | { type: "setGroup"; name: string; members: string[] }
-  | { type: "removeGroup"; name: string }
   | { type: "setHost"; name: string; ip: string }
   | { type: "removeHost"; name: string };
 
-const EMPTY: AclDraft = { acls: [], groups: {}, hosts: {} };
-const ALLOW_ALL: AclDraft = { acls: [{ action: "accept", src: ["*"], dst: ["*:*"] }], groups: {}, hosts: {} };
+const EMPTY: AclDraft = { acls: [], hosts: {} };
+const ALLOW_ALL: AclDraft = { acls: [{ action: "accept", src: ["*"], dst: ["*:*"] }], hosts: {} };
 
 function without<V>(record: Record<string, V>, key: string): Record<string, V> {
   const next = { ...record };
@@ -31,10 +29,6 @@ function reducer(draft: AclDraft, action: DraftAction): AclDraft {
       return { ...draft, acls: [...draft.acls, action.rule] };
     case "removeRule":
       return { ...draft, acls: draft.acls.filter((_, i) => i !== action.index) };
-    case "setGroup":
-      return { ...draft, groups: { ...draft.groups, [action.name]: action.members } };
-    case "removeGroup":
-      return { ...draft, groups: without(draft.groups, action.name) };
     case "setHost":
       return { ...draft, hosts: { ...draft.hosts, [action.name]: action.ip } };
     case "removeHost":
@@ -56,8 +50,6 @@ export function useAclDraft() {
     load: (next: AclDraft) => dispatch({ type: "load", draft: next }),
     addRule: (rule: AclRule) => edit({ type: "addRule", rule }, "Rule added"),
     removeRule: (index: number) => edit({ type: "removeRule", index }, "Rule removed"),
-    addGroup: (name: string, members: string[]) => edit({ type: "setGroup", name, members }, "Group added"),
-    removeGroup: (name: string) => edit({ type: "removeGroup", name }, "Group removed"),
     addHost: (name: string, ip: string) => edit({ type: "setHost", name, ip }, "Host added"),
     removeHost: (name: string) => edit({ type: "removeHost", name }, "Host removed"),
     resetToAllowAll: () => edit({ type: "load", draft: ALLOW_ALL }, "ACL reset to allow-all"),

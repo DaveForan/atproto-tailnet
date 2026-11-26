@@ -1,7 +1,7 @@
 /**
  * @module routes/api
- * Core API routes: health check, current-user info, tenant CRUD and
- * lifecycle (start/stop/delete) and public tenant lookup.
+ * Core API routes: health check, current-user info, tenant CRUD
+ * and public tenant lookup.
  */
 
 import { Router } from "express";
@@ -10,8 +10,6 @@ import { eq, and, desc, ne, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/index.js";
 import { users, tenants, memberships, roles } from "../db/schema.js";
-import { startInstance, stopInstance } from "../orchestrator/headscale.js";
-import { useCoordinator } from "../orchestrator/control-client.js";
 import { requireAuth, param, authUserId } from "./helpers.js";
 import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
@@ -33,7 +31,7 @@ import {
   isOperatorDid,
 } from "../operator/policy.js";
 import { provisionTenant } from "../orchestrator/tenant-provisioning.js";
-import { deleteTenantInstance } from "../orchestrator/tenant-deletion.js";
+import { deleteTenantInstance, hasLiveChildren, HAS_CHILDREN_REFUSAL } from "../orchestrator/tenant-deletion.js";
 import { parseBody } from "./validation.js";
 
 export const apiRouter = Router({ caseSensitive: true });
@@ -183,7 +181,6 @@ apiRouter.get("/api/tenants", requireAuth, async (req, res) => {
       // Internal coordinator id: dashboard sessions only, never agent tokens
       ...(req.agentToken ? {} : { coordinatorTenantId }),
       address: names.get(t.id)?.[0] ?? t.slug,
-      coordinatorMode: useCoordinator,
     })),
   );
 });
@@ -204,7 +201,6 @@ apiRouter.get("/api/tenants/:id", requireAuth, tenantGuard({ param: "id" }), asy
     address: await primaryHostname(result.tenant.id, result.tenant.slug),
     loginServer: await tenantLoginServerFor(result.tenant),
     coordinatorTenantId: result.tenant.coordinatorTenantId ?? null,
-    coordinatorMode: useCoordinator,
   });
 });
 
@@ -265,6 +261,11 @@ apiRouter.delete("/api/tenants/:id", requireAuth, stepUpForSession, tenantGuard(
   const tenantId = param(req, "id");
   const result = tenantCtx(res);
 
+  if (await hasLiveChildren(tenantId)) {
+    res.status(409).json(HAS_CHILDREN_REFUSAL);
+    return;
+  }
+
   try {
     await deleteTenantInstance(result.tenant);
 
@@ -283,73 +284,7 @@ apiRouter.delete("/api/tenants/:id", requireAuth, stepUpForSession, tenantGuard(
   }
 });
 
-// Destructive lifecycle action: interactive session only, never agent tokens
-apiRouter.post("/api/tenants/:id/start", requireAuth, tenantGuard({ param: "id", originatorOnly: "Only the tenant originator can start", noAgentToken: "Agent tokens cannot start a tenant" }), async (req, res) => {
-  const result = tenantCtx(res);
-  if (useCoordinator) {
-    res.status(501).json({ error: "Tenant lifecycle is managed by the coordinator — start/stop is not applicable" });
-    return;
-  }
-  if (!result.tenant.containerId) {
-    res.status(500).json({ error: "Tenant instance not available" });
-    return;
-  }
-
-  try {
-    await startInstance(result.tenant.containerId);
-    await db
-      .update(tenants)
-      .set({ status: "running", updatedAt: new Date() })
-      .where(eq(tenants.id, result.tenant.id));
-    logAudit({
-      tenantId: result.tenant.id,
-      actorUserId: authUserId(req),
-      action: "tenant_started",
-      targetType: "tenant",
-      targetId: result.tenant.id,
-    });
-
-    res.json({ status: "running" });
-  } catch (err) {
-    logger.error({ tenantId: result.tenant.id, err }, "failed to start tenant");
-    res.status(502).json({ error: "Failed to start tenant" });
-  }
-});
-
-// Destructive lifecycle action: interactive session only, never agent tokens
-apiRouter.post("/api/tenants/:id/stop", requireAuth, tenantGuard({ param: "id", originatorOnly: "Only the tenant originator can stop", noAgentToken: "Agent tokens cannot stop a tenant" }), async (req, res) => {
-  const result = tenantCtx(res);
-  if (useCoordinator) {
-    res.status(501).json({ error: "Tenant lifecycle is managed by the coordinator — start/stop is not applicable" });
-    return;
-  }
-  if (!result.tenant.containerId) {
-    res.status(500).json({ error: "Tenant instance not available" });
-    return;
-  }
-
-  try {
-    await stopInstance(result.tenant.containerId);
-    await db
-      .update(tenants)
-      .set({ status: "stopped", updatedAt: new Date() })
-      .where(eq(tenants.id, result.tenant.id));
-    logAudit({
-      tenantId: result.tenant.id,
-      actorUserId: authUserId(req),
-      action: "tenant_stopped",
-      targetType: "tenant",
-      targetId: result.tenant.id,
-    });
-
-    res.json({ status: "stopped" });
-  } catch (err) {
-    logger.error({ tenantId: result.tenant.id, err }, "failed to stop tenant");
-    res.status(502).json({ error: "Failed to stop tenant" });
-  }
-});
-
-/** Live health status of a tenant's Headscale instance. Any member can check. */
+/** Whether the coordinator answers for this tailnet. Any member can check. */
 apiRouter.get(
   "/api/tenants/:id/health",
   requireAuth,
@@ -357,10 +292,7 @@ apiRouter.get(
   async (req, res) => {
     const result = tenantCtx(res);
 
-    const reachable = useCoordinator
-      ? Boolean(result.tenant.coordinatorTenantId)
-      : Boolean(result.tenant.containerId && result.tenant.apiKey);
-    if (!reachable) {
+    if (!result.tenant.coordinatorTenantId) {
       res.json({ status: result.tenant.status, healthy: false });
       return;
     }

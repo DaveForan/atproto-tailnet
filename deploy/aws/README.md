@@ -1,12 +1,8 @@
 # Deploying atproto-tailnet on AWS
 
-This guide gives two deployment approaches. Both use the legacy Headscale mode.
-Headscale mode needs Docker socket access to manage the Headscale container of
-each tenant.
-
-The recommended mode is coordinator mode (`docker-compose.coordinator.yml`). It
-does not need the Docker socket. For coordinator mode on EC2 with Route53, use
-Path A in [AGENT.md](AGENT.md).
+This guide gives two deployment approaches. The recommended path is EC2 with
+Route53 and `docker-compose.coordinator.yml`: use Path A in
+[AGENT.md](AGENT.md).
 
 All deployments must also do these steps:
 
@@ -30,10 +26,10 @@ curl "https://public.api.bsky.app/xrpc/com.atproto.identity.resolveHandle?handle
 The CloudFormation template creates these resources:
 - EC2 instance (t3.medium) with Docker pre-installed
 - RDS PostgreSQL 17 (db.t3.micro, encrypted, 7-day backups). Note:
-  `docker-compose.production.yml` sets `DATABASE_URL` to the `postgres`
+  `docker-compose.coordinator.yml` sets `DATABASE_URL` to the `postgres`
   container, so the app does not use RDS.
-- Encrypted EBS data volume for Headscale tenant data
-- Security groups for HTTPS, SSH (open to `0.0.0.0/0`), and Headscale ports (10001-10100)
+- Encrypted EBS data volume
+- Security groups for HTTPS, SSH (open to `0.0.0.0/0`), and STUN (3478/udp)
 - Elastic IP for stable DNS
 - IAM role with CloudWatch and SSM access
 
@@ -59,6 +55,7 @@ aws cloudformation create-stack \
     ParameterKey=PrivateSubnetId2,ParameterValue=subnet-private-b \
     ParameterKey=DBPassword,ParameterValue="$(openssl rand -hex 16)" \
     ParameterKey=SessionSecret,ParameterValue="$(openssl rand -hex 32)" \
+    ParameterKey=CoordinatorApiKey,ParameterValue="$(openssl rand -hex 32)" \
     ParameterKey=PublicUrl,ParameterValue=https://tailnets.yourdomain.com \
     ParameterKey=BaseDomain,ParameterValue=ts.yourdomain.com \
     ParameterKey=CfApiToken,ParameterValue=your-cloudflare-token
@@ -76,19 +73,20 @@ ssh ubuntu@<elastic-ip>
 
 # Check logs
 cd /opt/atproto-tailnet
-docker compose -f docker-compose.production.yml logs -f app
+docker compose -f docker-compose.coordinator.yml logs -f app
 
 # Health check
 curl -f https://tailnets.yourdomain.com/health
 ```
 
-The generated `.env` has no `APP_DOMAIN`, `OPERATOR_DIDS`, `ATPROTO_PRIVATE_KEY`,
-or `TLS_STRATEGY`. Add them to `/opt/atproto-tailnet/.env`. Then restart with
-`docker compose -f docker-compose.production.yml up -d`. To generate
+The generated `.env` has no `APP_DOMAIN`, `DERP_DOMAIN`, `OPERATOR_DIDS`,
+`ATPROTO_PRIVATE_KEY`, or `TLS_STRATEGY`. The stack does not start without
+`APP_DOMAIN` and `DERP_DOMAIN`. Add them to `/opt/atproto-tailnet/.env`. Then start with
+`docker compose -f docker-compose.coordinator.yml up -d`. To generate
 `ATPROTO_PRIVATE_KEY`, run this command in `/opt/atproto-tailnet`:
 
 ```sh
-docker compose -f docker-compose.production.yml run --rm --no-deps --entrypoint node app \
+docker compose -f docker-compose.coordinator.yml run --rm --no-deps --entrypoint node app \
   --input-type=module -e "import {generateKeyPair,exportJWK} from 'jose'; const {privateKey}=await generateKeyPair('ES256',{extractable:true}); console.log(JSON.stringify({...await exportJWK(privateKey),alg:'ES256'}))"
 ```
 
@@ -107,6 +105,7 @@ Create these DNS records. Point them at the Elastic IP from the stack outputs:
 |------|------|-------|
 | A | `tailnets.yourdomain.com` | `<Elastic IP>` |
 | A | `*.ts.yourdomain.com` | `<Elastic IP>` |
+| A | `derp.yourdomain.com` (`DERP_DOMAIN`) | `<Elastic IP>` |
 
 If you use Cloudflare for DNS, use DNS-only records. To get a wildcard
 certificate with a DNS-01 challenge, Caddy needs these values in `.env`:
@@ -124,8 +123,8 @@ The template does not set `TLS_STRATEGY`. Without it, Caddy uses the
 ssh ubuntu@<elastic-ip>
 cd /opt/atproto-tailnet
 git pull
-docker compose -f docker-compose.production.yml build app
-docker compose -f docker-compose.production.yml up -d app
+docker compose -f docker-compose.coordinator.yml build
+docker compose -f docker-compose.coordinator.yml up -d
 ```
 
 ### Cost estimate
@@ -147,21 +146,16 @@ has significant limitations.
 
 ### Limitations
 
-- **No Docker socket**: Fargate tasks run in isolated microVMs. The app cannot
-  create or manage Headscale containers. A remote Docker host (`DOCKER_HOST`)
-  is not sufficient. The app writes tenant configs to a local directory, and
-  the Docker host must bind-mount that directory at the same path.
-- **No coordinator mode**: The task definition does not include the Rust
-  coordinator, Caddy, or `COORDINATOR_URL`.
-- **No host port binding**: Fargate cannot expose ports 10001-10100.
-  Headscale containers must run elsewhere with their own networking.
-- **No persistent local storage**: You must store Headscale data on EFS or on
-  the external host.
+- **Web tier only**: The task definition does not include the Rust
+  coordinator, the relay, or Caddy. The service refuses to start without
+  `COORDINATOR_URL` and `COORDINATOR_API_KEY`.
+- **You supply the coordinator**: Run it on a host that the task can reach.
+  Devices must reach it through a proxy for the tenant wildcard subdomains.
 
 ### When to use ECS
 
 - You already have an ECS cluster and you want Fargate to manage the web tier
-- You are ready to supply the control plane (coordinator or Headscale) yourself
+- You are ready to run the coordinator and its proxy yourself
 
 The service runs as one app process. Do not scale it above one task. Tailnet
 creation uses an in-process lock.
@@ -185,12 +179,16 @@ aws secretsmanager create-secret --name atproto-tailnet/database-url \
   --secret-string "postgresql://user:pass@host:5432/atproto_tailnet"
 aws secretsmanager create-secret --name atproto-tailnet/session-secret \
   --secret-string "$(openssl rand -hex 32)"
+# Must be the same value as COORD_ADMIN_KEY of your coordinator
+aws secretsmanager create-secret --name atproto-tailnet/coordinator-api-key \
+  --secret-string "<your coordinator admin key>"
 ```
 
 3. Edit `ecs-task-definition.json`:
    - Replace the `ACCOUNT_ID` and `REGION` placeholders
    - Update the secret ARNs
-   - Set the environment variables. Include `OPERATOR_DIDS`. Set
+   - Set the environment variables. Set `COORDINATOR_URL` to your coordinator.
+     Include `OPERATOR_DIDS`. Set
      `TRUST_PROXY=1` if one load balancer is in front of the task. Sign-in
      needs it for the secure session cookie.
 

@@ -1,10 +1,10 @@
 ---
-title: Coordinator Mode
+title: The Coordinator
 ---
 
-# Coordinator Mode
+# The Coordinator
 
-The Rust mesh coordinator is a purpose-built, multi-tenant WireGuard control plane. It replaces the Headscale Docker containers of each tenant with one binary. It handles the Tailscale client protocol natively, so standard Tailscale clients connect directly.
+The Rust mesh coordinator is a purpose-built, multi-tenant WireGuard control plane. It is the only control plane: one binary serves all tailnets. It handles the Tailscale client protocol natively, so standard Tailscale clients connect directly.
 
 ## Architecture
 
@@ -45,14 +45,14 @@ This command starts the coordinator, PostgreSQL, and Caddy. Docker builds the co
 
 **Configure the service**
 
-Add these lines to your `.env`:
+Make sure that your `.env` has these lines (`.env.example` contains them):
 
 ```ini
 COORDINATOR_URL=http://localhost:9443
 COORDINATOR_API_KEY=dev-coordinator-key-local-only-0000000000
 ```
 
-When you set `COORDINATOR_URL`, the service uses the `CoordinatorApiClient` and not the `HeadscaleApiClient`. Tenant provisioning creates tenants through the coordinator REST API. It does not launch Docker containers.
+The service refuses to start without both variables. Tenant provisioning creates tenants through the coordinator REST API. It does not launch Docker containers.
 
 </li>
 <li>
@@ -266,11 +266,11 @@ A device advertises routes with `tailscale up --advertise-routes=...` or `--adve
 
 **Disable** or **Delete** withdraws the approval. The device keeps the advertisement.
 
-The coordinator also supports tag-based auto-approvers (`PUT /api/tenants/{id}/auto-approvers`). The service uses them only for federated routes. ACL `autoApprovers` are refused in coordinator mode.
+The coordinator also supports tag-based auto-approvers (`PUT /api/tenants/{id}/auto-approvers`). The service uses them only for federated routes. ACL `autoApprovers` are refused.
 
 ### ACL limits
 
-The coordinator has no users, groups or tags. In coordinator mode, the service accepts only these ACL items:
+The coordinator has no users, groups or tags. The service accepts only these ACL items:
 
 - `accept` rules
 - Sources and destinations that are `*`, an IP address, a CIDR, or a host alias

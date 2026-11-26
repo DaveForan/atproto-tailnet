@@ -16,7 +16,7 @@ const configSchema = z.object({
   sessionSecret: z.string().default("dev-secret-change-me"),
   baseDomain: z.string().default("ts.localhost"),
   /**
-   * Shared control URL hostname for all tailnets in coordinator mode (ADR-0026).
+   * Shared control URL hostname for all tailnets (ADR-0026).
    * It must not be under baseDomain. Split DNS for baseDomain can stop it resolving on devices.
    */
   /**
@@ -43,9 +43,9 @@ const configSchema = z.object({
     .string()
     .regex(/^[0-9a-fA-F]{64}$/, "must be 64 hex characters (32 bytes)")
     .optional(),
-  /** Rust mesh coordinator URL (ADR-0023). When set, it replaces per-tenant Headscale containers. */
-  coordinatorUrl: z.string().url().optional(),
-  coordinatorApiKey: z.string().min(1).optional(),
+  /** Admin API of the Rust mesh coordinator (ADR-0023), the control plane of every tailnet. */
+  coordinatorUrl: z.string({ error: "COORDINATOR_URL is required" }).url(),
+  coordinatorApiKey: z.string({ error: "COORDINATOR_API_KEY is required" }).min(1),
   /**
    * Lets notification webhooks target private or loopback addresses over plain http.
    * Use it only for single-organisation self-hosting.
@@ -54,6 +54,8 @@ const configSchema = z.object({
   webhookAllowPrivate: z.boolean().default(false),
   /** Federation stays off until its data plane works without Docker. */
   federationEnabled: z.boolean().default(false),
+  /** Docker network that federation relay containers join. Only used with federation. */
+  federationRelayNetwork: z.string().min(1).optional(),
   /** Reverse-proxy hops to trust for X-Forwarded-* (1 behind Caddy). 0 = direct exposure. */
   trustProxy: z.coerce.number().int().min(0).max(5).default(0),
   /**
@@ -63,17 +65,6 @@ const configSchema = z.object({
   operatorDids: z
     .array(z.string().regex(/^did:[a-z0-9]+:\S+$/, 'each OPERATOR_DIDS entry must be a DID ("did:…")'))
     .default([]),
-  headscale: z.object({
-    image: z.string().default("headscale/headscale:0.29.1"),
-    portRangeStart: z.coerce.number().default(10001),
-    portRangeEnd: z.coerce.number().default(10100),
-    dataDir: z.string().default("./data/headscale"),
-    /**
-     * Docker network for Caddy and tenant containers. When set, Caddy reaches tenants by container name.
-     * When unset, Caddy must run on the host and dial localhost:<port>.
-     */
-    network: z.string().min(1).optional(),
-  }),
 });
 
 export function parseDidList(raw: string | undefined): string[] {
@@ -98,33 +89,17 @@ export const config = configSchema.parse({
   atprotoPrivateKey: process.env.ATPROTO_PRIVATE_KEY,
   webhookAllowPrivate: process.env.WEBHOOK_ALLOW_PRIVATE === "true",
   federationEnabled: process.env.FEDERATION_ENABLED === "true",
+  federationRelayNetwork: process.env.FEDERATION_RELAY_NETWORK || undefined,
   trustProxy: process.env.TRUST_PROXY || undefined,
   federationKeyEncryptionKey: process.env.FEDERATION_KEY_ENCRYPTION_KEY || undefined,
   operatorDids: parseDidList(process.env.OPERATOR_DIDS),
-  headscale: {
-    image: process.env.HEADSCALE_IMAGE,
-    portRangeStart: process.env.HEADSCALE_PORT_RANGE_START,
-    portRangeEnd: process.env.HEADSCALE_PORT_RANGE_END,
-    dataDir: process.env.HEADSCALE_DATA_DIR,
-    network: process.env.HEADSCALE_NETWORK || undefined,
-  },
 });
 
 // COORDINATOR_URL is operator config, not user input, so private addresses are expected.
 // SSRF protection for user-supplied URLs is in identity/resolver.ts.
-if (config.coordinatorUrl) {
-  const coordUrl = new URL(config.coordinatorUrl);
-  if (!["http:", "https:"].includes(coordUrl.protocol)) {
-    throw new Error(
-      `COORDINATOR_URL must use http or https protocol, got ${coordUrl.protocol}`,
-    );
-  }
-
-  if (!config.coordinatorApiKey) {
-    throw new Error(
-      "COORDINATOR_API_KEY is required when COORDINATOR_URL is set",
-    );
-  }
+const coordUrl = new URL(config.coordinatorUrl);
+if (!["http:", "https:"].includes(coordUrl.protocol)) {
+  throw new Error(`COORDINATOR_URL must use http or https protocol, got ${coordUrl.protocol}`);
 }
 
 /** True when the service runs on a loopback address (local development). */
@@ -179,7 +154,7 @@ if (!isLoopbackDeployment && config.operatorDids.length === 0) {
   );
 }
 
-/** Public tenant Headscale URL (`<proto>://<slug>.<baseDomain>[:port]`), used as the device login server. */
+/** Public URL of a tailnet name (`<proto>://<slug>.<baseDomain>[:port]`), used as the device login server. */
 export function tenantPublicUrl(slug: string): string {
   const proto = config.publicUrl.startsWith("https") ? "https" : "http";
   const port = config.tenantPublicPort ? `:${config.tenantPublicPort}` : "";

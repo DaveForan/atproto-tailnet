@@ -9,8 +9,7 @@ import { z } from "zod";
 import { eq, and, desc, sql } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { memberships, users, joinRequests, tenants } from "../db/schema.js";
-import { getControlClient } from "../orchestrator/control-client.js";
-import { requireAuth, param, toHsUsername, authUserId } from "./helpers.js";
+import { requireAuth, param, authUserId } from "./helpers.js";
 import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
 import { enforceMemberLimit } from "./limits.js";
@@ -260,15 +259,6 @@ joinRequestsRouter.post(
       .select()
       .from(users)
       .where(eq(users.id, request.requesterId));
-
-    const hsUsername = toHsUsername(requester.handle);
-
-    try {
-      const client = getControlClient(result.tenant);
-      await client.createUser?.(hsUsername);
-    } catch {
-      // User might already exist
-    }
 
     await db.insert(memberships).values({
       userId: request.requesterId,

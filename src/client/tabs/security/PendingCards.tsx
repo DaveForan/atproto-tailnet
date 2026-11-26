@@ -1,5 +1,5 @@
 import { formatExpiry, relativeTime } from "../../lib/utils";
-import type { DeviceApproval, JoinRequest, WaitingDevice } from "../../lib/types";
+import type { JoinRequest, WaitingDevice } from "../../lib/types";
 
 type Decide = (id: string, action: "approve" | "reject") => void;
 
@@ -52,47 +52,6 @@ export function WaitingDevicesGroup({ mine, queue, busy, onDecide }: { mine: Wai
         {mine.map((d) => row(d, true))}
         {queue.map((d) => row(d, false))}
       </ul>
-    </section>
-  );
-}
-
-export function DeviceApprovalsGroup({ approvals, busy, onDecide }: { approvals: DeviceApproval[]; busy: boolean; onDecide: Decide }) {
-  return (
-    <section className="item-group" aria-label="Devices waiting for approval">
-      <h4 className="group-heading">Devices waiting for approval</h4>
-        <ul className="item-list">
-          {approvals.map((da) => (
-            <li key={da.id} className="item-row">
-              <div className="item-info">
-                <span className="item-name">
-                  {da.requesterDisplayName || da.requesterHandle}
-                </span>
-                <span className="item-detail">@{da.requesterHandle} asks to add a device</span>
-                <span className="item-meta">{relativeTime(da.requestedAt)}</span>
-              </div>
-              <div className="item-actions">
-                <button
-                  type="button"
-                  className="btn-sm"
-                  aria-label={`Approve ${da.requesterDisplayName || da.requesterHandle}`}
-                  onClick={() => onDecide(da.id, "approve")}
-                  disabled={busy}
-                >
-                  Approve
-                </button>
-                <button
-                  type="button"
-                  className="btn-sm btn-danger"
-                  aria-label={`Reject ${da.requesterDisplayName || da.requesterHandle}`}
-                  onClick={() => onDecide(da.id, "reject")}
-                  disabled={busy}
-                >
-                  Reject
-                </button>
-              </div>
-            </li>
-          ))}
-        </ul>
     </section>
   );
 }

@@ -160,8 +160,8 @@ describe("setPrimaryHostname", () => {
 describe("Caddy routing", () => {
   it("routes every live name and tells the coordinator the internal slug", () => {
     const route = buildTenantRouter(
-      [{ slug: "daveforan-bsky-social", port: -1, hostnames: ["dave", "daveforan-bsky-social"] }],
-      { baseDomain: "ts.example.com", coordinator: true, network: undefined },
+      [{ slug: "daveforan-bsky-social", hostnames: ["dave", "daveforan-bsky-social"] }],
+      { baseDomain: "ts.example.com" },
     ) as unknown as { handle: Array<{ routes: Array<Record<string, any>> }> };
     const tenantRoute = route.handle[0].routes[0];
     expect(tenantRoute.match[0].host).toEqual(["dave.ts.example.com", "daveforan-bsky-social.ts.example.com"]);
@@ -189,7 +189,7 @@ describe("hostnames API", () => {
     return { status: r.status, json: (await r.json()) as Record<string, unknown> };
   };
   const member = (isOriginator: boolean) => [
-    { tenant: { id: T1, slug: "daveforan-bsky-social", lastActivityAt: new Date() }, membership: { isOriginator }, role: null },
+    { tenant: { id: T1, slug: "daveforan-bsky-social" }, membership: { isOriginator }, role: null },
   ];
 
   it("only the originator may change the address", async () => {

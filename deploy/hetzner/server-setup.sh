@@ -3,7 +3,7 @@
 # atproto-tailnet  --  Hetzner Cloud server bootstrap
 #
 # Run on a fresh Ubuntu 22.04+ Hetzner Cloud server (CX22: 2 vCPU / 4 GB RAM).
-# Installs Docker, clones the repo, and prepares the coordinator-mode stack.
+# Installs Docker, clones the repo, and prepares the stack.
 #
 # Usage:
 #   ssh root@<server-ip> 'bash -s' < deploy/hetzner/server-setup.sh

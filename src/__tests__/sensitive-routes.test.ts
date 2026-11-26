@@ -31,13 +31,6 @@ vi.mock("../db/index.js", () => {
 vi.mock("../audit/log.js", () => ({ logAudit: vi.fn() }));
 const accessSync = vi.hoisted(() => ({ push: vi.fn(async (..._args: unknown[]) => true) }));
 vi.mock("../access/sync.js", async (orig) => ({ ...(await orig<Record<string, unknown>>()), syncTenantAccess: accessSync.push }));
-vi.mock("../orchestrator/headscale.js", () => ({
-  startInstance: vi.fn(),
-  stopInstance: vi.fn(),
-  destroyInstance: vi.fn(),
-  adoptInstance: vi.fn(),
-  createInstance: vi.fn(),
-}));
 vi.mock("../orchestrator/caddy.js", () => ({ syncTenantRoutes: vi.fn(async () => {}) }));
 vi.mock("../auth/atproto.js", () => ({
   getOAuthClient: async () => ({}),
@@ -105,9 +98,6 @@ describe("step-up on sensitive routes (ADR-0035)", () => {
     [securityRouter, "delete", "/api/tenants/:tenantId/roles/:roleId"],
     [securityRouter, "put", "/api/tenants/:tenantId/members/:userId/role"],
     [securityRouter, "patch", "/api/tenants/:tenantId/default-role"],
-    [securityRouter, "post", "/api/tenants/:tenantId/device-locks"],
-    [securityRouter, "delete", "/api/tenants/:tenantId/device-locks"],
-    [securityRouter, "post", "/api/tenants/:tenantId/device-approvals/:approvalId/approve"],
     [securityRouter, "post", "/api/tenants/:tenantId/devices/:nodeId/admit"],
     [securityRouter, "put", "/api/tenants/:tenantId/device-approval/mine"],
     [aclRouter, "put", "/api/tenants/:tenantId/acl"],
@@ -211,7 +201,7 @@ describe("GET /api/tenants", () => {
 });
 
 describe("sensitive settings", () => {
-  const tenantRow = { id: T, slug: "t-a", lockdownMode: false, lastActivityAt: new Date(), requireDeviceApproval: false };
+  const tenantRow = { id: T, slug: "t-a", lockdownMode: false, requireDeviceApproval: false };
   const guardRow = (perms: string[]) => [{ tenant: tenantRow, membership: { id: "m", isOriginator: false }, role: { permissions: perms } }];
   let ctx: { session: Record<string, unknown>; agent?: Record<string, unknown> } = { session: {} };
   const app = express();
@@ -270,7 +260,7 @@ describe("sensitive settings", () => {
   it("an agent token can still change plain settings", async () => {
     ctx = { session: {}, agent: { id: "a", tenantId: T, userId: "u-1", permissions: ["manage_settings"] } };
     results.push(guardRow(["manage_settings"]), [], [tenantRow]);
-    expect((await patch({ boardEnabled: true, hibernateAfterDays: 3 })).status).toBe(200);
+    expect((await patch({ boardEnabled: true })).status).toBe(200);
   });
 
   it("a trusted-device session needs step-up for security settings only", async () => {

@@ -10,10 +10,8 @@ import { ALL_PERMISSIONS } from "../members/permissions.js";
 import { notificationsRouter } from "./notifications.js";
 import { settingsRouter } from "./settings.js";
 import { rolesRouter } from "./roles.js";
-import { deviceApprovalsRouter } from "./device-approvals.js";
 import { deviceHoldsRouter } from "./device-holds.js";
 import { joinRequestsRouter } from "./join-requests.js";
-import { deviceLocksRouter } from "./device-locks.js";
 import { auditLogRouter } from "./audit-log.js";
 
 export const securityRouter = Router({ caseSensitive: true });
@@ -27,8 +25,6 @@ securityRouter.get("/api/permissions", requireAuth, (_req, res) => {
 
 securityRouter.use(settingsRouter);
 securityRouter.use(rolesRouter);
-securityRouter.use(deviceApprovalsRouter);
 securityRouter.use(deviceHoldsRouter);
 securityRouter.use(joinRequestsRouter);
-securityRouter.use(deviceLocksRouter);
 securityRouter.use(auditLogRouter);

@@ -24,7 +24,6 @@ import {
   type AuthKeyView,
 } from "../access/keys.js";
 import { CoordinatorApiClient } from "../orchestrator/coordinator-api.js";
-import { HeadscaleApiClient } from "../orchestrator/headscale-api.js";
 
 const key = (id: string, owner: string | null): AuthKeyView => ({
   id,
@@ -57,13 +56,13 @@ describe("revokeMemberAccess (kick cascade)", () => {
     updates.length = 0;
   });
 
-  it("coordinator mode: revokes keys and deletes nodes by owner", async () => {
+  it("revokes keys and deletes nodes by owner", async () => {
     const client = new CoordinatorApiClient("http://coord", "coord-tenant", "k");
     const revoke = vi.spyOn(client, "revokePreAuthKeysByOwner").mockResolvedValue(2);
     const del = vi.spyOn(client, "deleteNodesByOwner").mockResolvedValue(3);
     outstanding = [{ id: "k1", controlKeyId: "u1" }];
 
-    const r = await revokeMemberAccess({ tenantId: "t1", client, userId: "user-1", hsUsername: "bob" });
+    const r = await revokeMemberAccess({ tenantId: "t1", client, userId: "user-1" });
 
     expect(revoke).toHaveBeenCalledWith("user-1");
     expect(del).toHaveBeenCalledWith("user-1");
@@ -74,41 +73,15 @@ describe("revokeMemberAccess (kick cascade)", () => {
     expect(updates[0]).toHaveProperty("revokedAt");
   });
 
-  it("headscale mode: expires tracked keys, deletes the user's nodes and the user", async () => {
-    const client = new HeadscaleApiClient(10001, "key");
-    const expire = vi.spyOn(client, "expirePreAuthKey").mockResolvedValue();
-    const delNodes = vi.spyOn(client, "deleteNodesByUser").mockResolvedValue(2);
-    const delUser = vi.spyOn(client, "deleteUser").mockResolvedValue();
-    outstanding = [
-      { id: "a", controlKeyId: "11" },
-      { id: "b", controlKeyId: "12" },
-      { id: "c", controlKeyId: null },
-    ];
-
-    const r = await revokeMemberAccess({ tenantId: "t1", client, userId: "user-1", hsUsername: "bob-bsky-social" });
-
-    expect(expire.mock.calls.map((c) => c[0])).toEqual(["11", "12"]);
-    expect(delNodes).toHaveBeenCalledWith("bob-bsky-social");
-    expect(delUser).toHaveBeenCalledWith("bob-bsky-social");
-    expect(r).toEqual({ devicesDeleted: 2, keysRevoked: 2, errors: [] });
-    expect(updates).toHaveLength(1);
-  });
-
   it("keeps going when a step fails and reports it", async () => {
     const client = new CoordinatorApiClient("http://coord", "coord-tenant", "k");
     vi.spyOn(client, "revokePreAuthKeysByOwner").mockRejectedValue(new Error("boom"));
     const del = vi.spyOn(client, "deleteNodesByOwner").mockResolvedValue(1);
 
-    const r = await revokeMemberAccess({ tenantId: "t1", client, userId: "user-1", hsUsername: "bob" });
+    const r = await revokeMemberAccess({ tenantId: "t1", client, userId: "user-1" });
     expect(del).toHaveBeenCalled();
     expect(r.errors).toEqual(["revoke_keys"]);
     expect(r.devicesDeleted).toBe(1);
-  });
-
-  it("still marks DB keys revoked when no control client is available", async () => {
-    outstanding = [{ id: "a", controlKeyId: "11" }];
-    const r = await revokeMemberAccess({ tenantId: "t1", client: null, userId: "u", hsUsername: "h" });
-    expect(r.devicesDeleted).toBe(0);
     expect(updates).toHaveLength(1);
   });
 });

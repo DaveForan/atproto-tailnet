@@ -1,16 +1,14 @@
 /**
  * @module access/keys
- * Key issuance tracking and access revocation for both control-plane modes.
- * Coordinator: keys and nodes carry `owner = <our user id>`, so revoke-by-owner removes them.
- * Headscale: keys are expired by id from the `auth_keys` table.
+ * Key issuance tracking and access revocation.
+ * Keys and nodes carry `owner = <our user id>`, so revoke-by-owner removes them.
  */
 
 import { and, eq, isNull } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { authKeys, tenants } from "../db/schema.js";
-import type { ControlClient, HeadscalePreAuthKey } from "../orchestrator/control-client.js";
-import { CoordinatorApiClient } from "../orchestrator/coordinator-api.js";
-import { HeadscaleApiClient } from "../orchestrator/headscale-api.js";
+import type { ControlPreAuthKey } from "../orchestrator/control-types.js";
+import type { CoordinatorApiClient } from "../orchestrator/coordinator-api.js";
 import { logger } from "../logger.js";
 import { pushTenantIdentity } from "../orchestrator/coordinator-identity.js";
 
@@ -39,7 +37,7 @@ export function memberKeyOptionsError(
 /** Revokes every outstanding key of a tenant (lockdown), best effort per key; returns the revoked count. */
 export async function revokeAllTenantKeys(
   tenantId: string,
-  client: ControlClient,
+  client: CoordinatorApiClient,
 ): Promise<number> {
   const outstanding = await db
     .select()
@@ -49,7 +47,7 @@ export async function revokeAllTenantKeys(
   for (const k of outstanding) {
     if (!k.controlKeyId) continue; // unknown on the control plane — leave visible
     try {
-      await revokeControlKey(client, k.controlKeyId);
+      await client.revokePreAuthKey(k.controlKeyId);
     } catch (err) {
       logger.error({ tenantId, keyId: k.id, err }, "lockdown key revocation failed");
       continue; // leave the row unrevoked so it stays visible
@@ -63,20 +61,19 @@ export async function revokeAllTenantKeys(
 /** Mint a pre-auth key for a member and record it in `auth_keys`. */
 export async function issueMemberKey(params: {
   tenant: typeof tenants.$inferSelect;
-  client: ControlClient;
+  client: CoordinatorApiClient;
   userId: string;
-  hsUsername: string;
   kind?: "device" | "service_device";
   reusable?: boolean;
   ephemeral?: boolean;
   expiresInHours?: number;
-}): Promise<HeadscalePreAuthKey & { recordId: string | null }> {
+}): Promise<ControlPreAuthKey & { recordId: string | null }> {
   const hours = params.expiresInHours ?? DEFAULT_KEY_HOURS;
   const expirationSeconds = Math.round(hours * 3600);
   const reusable = params.reusable ?? false;
   const ephemeral = params.ephemeral ?? false;
 
-  const key = await params.client.createPreAuthKey(params.hsUsername, {
+  const key = await params.client.createPreAuthKey({
     reusable,
     ephemeral,
     expirationSeconds,
@@ -85,7 +82,7 @@ export async function issueMemberKey(params: {
 
   // So the device's first registration already shows the tailnet name and the
   // member's handle in the Tailscale app (best effort; the monitor re-pushes).
-  if (params.client instanceof CoordinatorApiClient && params.tenant.coordinatorTenantId) {
+  if (params.tenant.coordinatorTenantId) {
     await pushTenantIdentity(params.tenant.id, params.tenant.coordinatorTenantId).catch((err) =>
       logger.warn({ tenantId: params.tenant.id, err }, "failed to push tenant identity"),
     );
@@ -100,7 +97,6 @@ export async function issueMemberKey(params: {
         userId: params.userId,
         controlKeyId: key.id ?? null,
         prefix: key.key.slice(0, 12),
-        hsUsername: params.client instanceof CoordinatorApiClient ? null : params.hsUsername,
         kind: params.kind ?? "device",
         reusable,
         ephemeral,
@@ -117,20 +113,6 @@ export async function issueMemberKey(params: {
   return { ...key, recordId };
 }
 
-/** Revoke one key on the control plane (by its control-plane id). */
-export async function revokeControlKey(
-  client: ControlClient,
-  controlKeyId: string,
-): Promise<void> {
-  if (client instanceof CoordinatorApiClient) {
-    await client.revokePreAuthKey(controlKeyId);
-  } else if (client instanceof HeadscaleApiClient) {
-    await client.expirePreAuthKey(controlKeyId);
-  } else {
-    throw new Error("Unsupported control client");
-  }
-}
-
 /** Outcome of {@link revokeMemberAccess}. */
 export interface RevokeAccessResult {
   devicesDeleted: number;
@@ -144,74 +126,32 @@ export interface RevokeAccessResult {
  */
 export async function revokeMemberAccess(params: {
   tenantId: string;
-  client: ControlClient | null;
+  client: CoordinatorApiClient;
   userId: string;
-  hsUsername: string;
 }): Promise<RevokeAccessResult> {
-  const { tenantId, client, userId, hsUsername } = params;
+  const { tenantId, client, userId } = params;
   const out: RevokeAccessResult = { devicesDeleted: 0, keysRevoked: 0, errors: [] };
   const fail = (step: string, err: unknown) => {
     out.errors.push(step);
     logger.error({ tenantId, userId, step, err }, "revoke member access step failed");
   };
 
-  const outstanding = await db
-    .select()
-    .from(authKeys)
-    .where(
-      and(
-        eq(authKeys.tenantId, tenantId),
-        eq(authKeys.userId, userId),
-        isNull(authKeys.revokedAt),
-      ),
-    );
-
-  if (client instanceof CoordinatorApiClient) {
-    // Keys first, so nothing new can register while devices are removed
-    try {
-      out.keysRevoked = await client.revokePreAuthKeysByOwner(userId);
-    } catch (err) {
-      fail("revoke_keys", err);
-    }
-    try {
-      out.devicesDeleted = await client.deleteNodesByOwner(userId);
-    } catch (err) {
-      fail("delete_devices", err);
-    }
-  } else if (client instanceof HeadscaleApiClient) {
-    for (const k of outstanding) {
-      if (!k.controlKeyId) continue;
-      try {
-        await client.expirePreAuthKey(k.controlKeyId);
-        out.keysRevoked++;
-      } catch (err) {
-        fail(`expire_key:${k.id}`, err);
-      }
-    }
-    try {
-      out.devicesDeleted = await client.deleteNodesByUser(hsUsername);
-    } catch (err) {
-      fail("delete_devices", err);
-    }
-    try {
-      await client.deleteUser(hsUsername);
-    } catch (err) {
-      fail("delete_user", err);
-    }
+  // Keys first, so nothing new can register while devices are removed
+  try {
+    out.keysRevoked = await client.revokePreAuthKeysByOwner(userId);
+  } catch (err) {
+    fail("revoke_keys", err);
+  }
+  try {
+    out.devicesDeleted = await client.deleteNodesByOwner(userId);
+  } catch (err) {
+    fail("delete_devices", err);
   }
 
-  if (outstanding.length > 0) {
-    await db
-      .update(authKeys)
-      .set({ revokedAt: new Date() })
-      .where(
-        and(
-          eq(authKeys.tenantId, tenantId),
-          eq(authKeys.userId, userId),
-          isNull(authKeys.revokedAt),
-        ),
-      );
-  }
+  await db
+    .update(authKeys)
+    .set({ revokedAt: new Date() })
+    .where(and(eq(authKeys.tenantId, tenantId), eq(authKeys.userId, userId), isNull(authKeys.revokedAt)));
   return out;
 }
 

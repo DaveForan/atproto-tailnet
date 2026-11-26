@@ -95,10 +95,18 @@ describe("machine lock", () => {
     expect((await call("PUT", PATH, { deviceIds: ["1"] })).status).toBe(404);
   });
 
-  it("reports unsupported outside coordinator mode and refuses changes", async () => {
+  it("answers 409 not_ready on every route while the tailnet has no coordinator tenant", async () => {
     h.coordinatorTenantId = null;
-    expect((await call("GET", PATH)).json).toMatchObject({ supported: false, locked: false });
-    expect((await call("PUT", PATH, { deviceIds: ["1"] })).json.code).toBe("unsupported");
+    for (const [method, path, body] of [
+      ["GET", PATH, undefined],
+      ["PUT", PATH, { deviceIds: ["1"] }],
+      ["DELETE", PATH, undefined],
+      ["POST", `${PATH}/allow-one`, undefined],
+    ] as const) {
+      const r = await call(method, path, body);
+      expect(r.status).toBe(409);
+      expect(r.json.code).toBe("not_ready");
+    }
   });
 
   it("shows the member's devices, which are allowed, and refused attempts newest first", async () => {

@@ -9,7 +9,7 @@ import { z } from "zod";
 import { eq, desc } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { tenants, usageSnapshots } from "../db/schema.js";
-import { getControlClient, useCoordinator } from "../orchestrator/control-client.js";
+import { getCoordinatorClient } from "../orchestrator/control-client.js";
 import {
   requireAuth,
   param,
@@ -37,9 +37,9 @@ usageRouter.get(
     let onlineDevices = 0;
     let routeCount = 0;
 
-    if ((tenant.apiKey || useCoordinator) && tenant.status === "running") {
+    if (tenant.coordinatorTenantId && tenant.status === "running") {
       try {
-        const client = getControlClient(tenant);
+        const client = getCoordinatorClient(tenant);
         const [nodes, routes] = await Promise.all([
           client.listNodes(),
           client.listRoutes().catch(() => []),

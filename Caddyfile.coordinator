@@ -2,7 +2,7 @@
 	admin 0.0.0.0:2019
 
 	# The TS service manages tenant routes via the admin API.
-	# In coordinator mode, all tenant subdomains proxy to the coordinator.
+	# All tenant subdomains proxy to the coordinator.
 	servers :80 {
 		name tailnet_proxy
 	}

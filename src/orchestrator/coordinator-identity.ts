@@ -7,7 +7,6 @@
 import { and, eq, inArray, isNotNull } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { tenants, memberships, users } from "../db/schema.js";
-import { config } from "../config.js";
 import { getCoordinatorClient } from "./control-client.js";
 import { logger } from "../logger.js";
 
@@ -48,9 +47,7 @@ export async function buildTenantIdentity(tenantId: string): Promise<TenantIdent
   return out;
 }
 
-/** Does nothing outside coordinator mode. */
 export async function pushTenantIdentity(tenantId: string, coordinatorTenantId: string): Promise<void> {
-  if (!config.coordinatorUrl) return;
   const identity = await buildTenantIdentity(tenantId);
   if (!identity) return;
   const client = getCoordinatorClient({ coordinatorTenantId });
@@ -59,7 +56,6 @@ export async function pushTenantIdentity(tenantId: string, coordinatorTenantId: 
 
 /** Returns false if any push fails. */
 export async function syncAllTenantIdentities(): Promise<boolean> {
-  if (!config.coordinatorUrl) return true;
   const rows = await db
     .select({ id: tenants.id, slug: tenants.slug, coordinatorTenantId: tenants.coordinatorTenantId })
     .from(tenants)

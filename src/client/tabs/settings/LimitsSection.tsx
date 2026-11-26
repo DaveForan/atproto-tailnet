@@ -105,38 +105,36 @@ export function LimitsSection() {
                 />
               </div>
             </div>
-            {currentTenant.coordinatorMode && (
-              <div className="field">
-                <label htmlFor="limit-wait">Remove a waiting device after</label>
-                <div className="field-row">
-                  <input
-                    id="limit-wait"
-                    type="number"
-                    min={1}
-                    max={MAX_WAITING_HOURS / unitHours(waitUnit)}
-                    value={Math.max(1, Math.round(waitHours / unitHours(waitUnit)))}
-                    onChange={(e) => setWaitHours(clampWait(e.target.value, waitUnit))}
-                  />
-                  <select
-                    aria-label="Unit of the waiting time"
-                    value={waitUnit}
-                    onChange={(e) => {
-                      const unit = e.target.value as WaitUnit;
-                      setWaitUnit(unit);
-                      // The time stays the same; days cannot show a part of a day
-                      if (unit === "days") setWaitHours(Math.max(24, Math.round(waitHours / 24) * 24));
-                    }}
-                  >
-                    <option value="hours">hours</option>
-                    <option value="days">days</option>
-                  </select>
-                </div>
-                <p className="help-text">
-                  A new device that nobody admits in this time is removed. The device can be added again. The longest
-                  time is one year.
-                </p>
+            <div className="field">
+              <label htmlFor="limit-wait">Remove a waiting device after</label>
+              <div className="field-row">
+                <input
+                  id="limit-wait"
+                  type="number"
+                  min={1}
+                  max={MAX_WAITING_HOURS / unitHours(waitUnit)}
+                  value={Math.max(1, Math.round(waitHours / unitHours(waitUnit)))}
+                  onChange={(e) => setWaitHours(clampWait(e.target.value, waitUnit))}
+                />
+                <select
+                  aria-label="Unit of the waiting time"
+                  value={waitUnit}
+                  onChange={(e) => {
+                    const unit = e.target.value as WaitUnit;
+                    setWaitUnit(unit);
+                    // The time stays the same; days cannot show a part of a day
+                    if (unit === "days") setWaitHours(Math.max(24, Math.round(waitHours / 24) * 24));
+                  }}
+                >
+                  <option value="hours">hours</option>
+                  <option value="days">days</option>
+                </select>
               </div>
-            )}
+              <p className="help-text">
+                A new device that nobody admits in this time is removed. The device can be added again. The longest
+                time is one year.
+              </p>
+            </div>
             {belowCurrent && (
               <p className="notice" role="status">
                 A cap below current usage blocks new additions but does not remove existing devices or members.

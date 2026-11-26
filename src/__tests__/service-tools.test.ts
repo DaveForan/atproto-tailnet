@@ -5,7 +5,7 @@ vi.mock("../db/index.js", () => ({ db: {}, pool: {} }));
 vi.mock("../access/sync.js", () => ({ syncTenantAccess: vi.fn() }));
 vi.mock("../access/devices.js", () => ({ listUserDevices: vi.fn(), listTenantDevices: vi.fn() }));
 vi.mock("../notifications/service.js", () => ({ notify: vi.fn(), notifyUser: vi.fn() }));
-vi.mock("../orchestrator/control-client.js", () => ({ useCoordinator: true, getControlClient: vi.fn() }));
+vi.mock("../orchestrator/control-client.js", () => ({ getCoordinatorClient: vi.fn() }));
 
 import { TOOL_DEFS } from "../mcp/tools.js";
 import type { ApiClient } from "../mcp/api-client.js";

@@ -46,7 +46,7 @@ vi.mock("../db/index.js", async () => {
   };
 });
 vi.mock("../audit/log.js", () => ({ logAudit: vi.fn() }));
-vi.mock("../orchestrator/control-client.js", () => ({ useCoordinator: false }));
+vi.mock("../orchestrator/control-client.js", () => ({ getCoordinatorClient: vi.fn() }));
 vi.mock("../orchestrator/tenant-provisioning.js", () => ({
   createTenantRecord: h.createTenantRecord,
   provisionTenantInstance: h.provisionTenantInstance,
@@ -169,7 +169,6 @@ describe("POST /api/tenants/:tenantId/collectives", () => {
       id: "child-1",
       slug: "eng",
       name: "Engineering",
-      port: -5,
       path: "t-parent.eng",
       depth: 1,
       status: "provisioning",
@@ -185,7 +184,7 @@ describe("POST /api/tenants/:tenantId/collectives", () => {
       hostname: "eng",
     });
     await new Promise((resolve) => setImmediate(resolve));
-    expect(h.provisionTenantInstance).toHaveBeenCalledWith("child-1", "eng", -5, {
+    expect(h.provisionTenantInstance).toHaveBeenCalledWith("child-1", "eng", {
       parentCoordinatorTenantId: "coord-parent",
     });
   });

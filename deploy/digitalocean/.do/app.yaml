@@ -1,8 +1,8 @@
 # DigitalOcean App Platform spec
 #
-# LIMITATION: App Platform does not provide Docker socket access. This spec
-# deploys the web tier only. Headscale container orchestration requires a
-# Droplet deployment (see droplet-setup.sh).
+# LIMITATION: This spec deploys the web tier only. It does not run the Rust
+# coordinator, the relay or Caddy. Set COORDINATOR_URL and COORDINATOR_API_KEY
+# to a coordinator you run yourself, or use a Droplet (see droplet-setup.sh).
 #
 # Usage:
 #   doctl apps create --spec deploy/digitalocean/.do/app.yaml
@@ -34,15 +34,12 @@ services:
       - key: BASE_DOMAIN
         scope: RUN_TIME
         value: ts.yourdomain.com
-      - key: HEADSCALE_IMAGE
+      - key: COORDINATOR_URL
         scope: RUN_TIME
-        value: headscale/headscale:0.29.1
-      - key: HEADSCALE_PORT_RANGE_START
+        value: http://your-coordinator-host:9443
+      - key: COORDINATOR_API_KEY
         scope: RUN_TIME
-        value: "10001"
-      - key: HEADSCALE_PORT_RANGE_END
-        scope: RUN_TIME
-        value: "10100"
+        type: SECRET
       - key: LOG_LEVEL
         scope: RUN_TIME
         value: info

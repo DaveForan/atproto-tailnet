@@ -1,8 +1,6 @@
 import { tenantApi } from "./api";
 
 export interface MachineLockState {
-  /** False outside coordinator mode: the lock cannot be enforced there. */
-  supported: boolean;
   locked: boolean;
   devices: Array<{ id: string; name: string; online: boolean; allowed: boolean }>;
   /** While set and in the future, the next new device is let in and added to the lock. */

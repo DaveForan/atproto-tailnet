@@ -3,7 +3,6 @@ import type {
   DevicesData,
   HealthData,
   Member,
-  DeviceLockInfo,
   AuthKeyResponse,
   AuthKeyOptions,
   AuthKeyInfo,
@@ -77,21 +76,6 @@ export const deviceService = {
 
   getMembers: (tid: string) =>
     tenantApi<Member[]>(tid, "/members"),
-
-  getDeviceLock: (tid: string, memberId: string) =>
-    tenantApi<DeviceLockInfo>(tid, `/device-locks/${memberId}`),
-
-  lockDevice: (tid: string, memberId: string) =>
-    tenantApi(tid, "/device-locks", {
-      method: "POST",
-      body: JSON.stringify({ userId: memberId }),
-    }),
-
-  unlockDevice: (tid: string, memberId: string) =>
-    tenantApi(tid, "/device-locks", {
-      method: "DELETE",
-      body: JSON.stringify({ userId: memberId }),
-    }),
 
   setMemberRole: (tid: string, memberId: string, roleId: string) =>
     tenantApi(tid, `/members/${memberId}/role`, {

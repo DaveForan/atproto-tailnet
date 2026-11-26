@@ -1,5 +1,5 @@
 /**
- * Sub-collective hierarchy in coordinator mode: detach and eject clear the parent on the
+ * Sub-collective hierarchy: detach and eject clear the parent on the
  * coordinator first (restored if the database write fails); list and quota rules.
  */
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
@@ -37,7 +37,6 @@ vi.mock("../db/index.js", () => {
 });
 vi.mock("../audit/log.js", () => ({ logAudit: vi.fn() }));
 vi.mock("../orchestrator/control-client.js", () => ({
-  useCoordinator: true,
   getCoordinatorClient: (tenant: unknown) => {
     h.clientFor.push(tenant);
     return { setParent: h.setParent };
@@ -89,7 +88,7 @@ beforeEach(() => {
   h.setParent.mockResolvedValue(undefined);
 });
 
-describe("detach and eject in coordinator mode", () => {
+describe("detach and eject", () => {
   it("detach clears the parent on the coordinator, then in the database", async () => {
     h.guard = originatorOf(child);
     h.results.push([{ coordinatorTenantId: "c-parent" }]);

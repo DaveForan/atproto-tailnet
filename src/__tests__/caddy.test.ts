@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   applyTenantRouter,
   buildTenantRouter,
-  tenantUpstream,
+  coordinatorUpstream,
   CADDY_SERVER,
   TENANT_ROUTER_ID,
   type CaddyRequest,
@@ -10,7 +10,7 @@ import {
 } from "../orchestrator/caddy.js";
 import { tenantPublicUrl } from "../config.js";
 
-const opts = { baseDomain: "ts.example.com", network: "tenants-net" };
+const opts = { baseDomain: "ts.example.com" };
 const ROUTES = `/config/apps/http/servers/${CADDY_SERVER}/routes`;
 
 /** A fake Caddy admin API holding one server's route list. */
@@ -52,23 +52,17 @@ function fakeCaddy(initial: CaddyRoute[] | null | "no-server") {
   return { request, calls, routes: () => routes as CaddyRoute[] };
 }
 
-describe("tenantUpstream", () => {
-  it("dials the container by name on a shared network", () => {
-    expect(tenantUpstream({ slug: "acme", port: 10007 }, "tenants-net")).toBe(
-      "headscale-acme:8080",
-    );
-  });
-
-  it("dials the published localhost port without one", () => {
-    expect(tenantUpstream({ slug: "acme", port: 10007 }, undefined)).toBe("localhost:10007");
+describe("coordinatorUpstream", () => {
+  it("dials the host and port of the coordinator URL", () => {
+    expect(coordinatorUpstream()).toBe("coordinator.test:9443");
   });
 });
 
 describe("buildTenantRouter", () => {
   const router = buildTenantRouter(
     [
-      { slug: "zeta", port: 10002 },
-      { slug: "acme", port: 10001 },
+      { slug: "zeta" },
+      { slug: "acme" },
     ],
     opts,
   );
@@ -84,12 +78,24 @@ describe("buildTenantRouter", () => {
   it("has one reverse proxy per tenant, in a stable order", () => {
     expect(inner.slice(0, 2)).toEqual([
       {
-        match: [{ host: ["acme.ts.example.com"] }],
-        handle: [{ handler: "reverse_proxy", upstreams: [{ dial: "headscale-acme:8080" }] }],
+        match: [{ host: ["acme.ts.example.com"], path: ["/key", "/ts2021"] }],
+        handle: [
+          {
+            handler: "reverse_proxy",
+            upstreams: [{ dial: "coordinator.test:9443" }],
+            headers: { request: { set: { "X-Tenant-Slug": ["acme"] } } },
+          },
+        ],
       },
       {
-        match: [{ host: ["zeta.ts.example.com"] }],
-        handle: [{ handler: "reverse_proxy", upstreams: [{ dial: "headscale-zeta:8080" }] }],
+        match: [{ host: ["zeta.ts.example.com"], path: ["/key", "/ts2021"] }],
+        handle: [
+          {
+            handler: "reverse_proxy",
+            upstreams: [{ dial: "coordinator.test:9443" }],
+            headers: { request: { set: { "X-Tenant-Slug": ["zeta"] } } },
+          },
+        ],
       },
     ]);
   });
@@ -107,11 +113,11 @@ describe("buildTenantRouter", () => {
 
 describe("applyTenantRouter", () => {
   const caddyfileRoute: CaddyRoute = { handle: [{ handler: "reverse_proxy" }] };
-  const one = buildTenantRouter([{ slug: "acme", port: 10001 }], opts);
+  const one = buildTenantRouter([{ slug: "acme" }], opts);
   const two = buildTenantRouter(
     [
-      { slug: "acme", port: 10001 },
-      { slug: "zeta", port: 10002 },
+      { slug: "acme" },
+      { slug: "zeta" },
     ],
     opts,
   );
@@ -163,9 +169,9 @@ describe("tenantPublicUrl", () => {
   });
 });
 
-describe("buildTenantRouter in coordinator mode", () => {
+describe("buildTenantRouter public paths", () => {
   it("exposes only the Tailscale client paths, never the coordinator admin API", () => {
-    const router = buildTenantRouter([{ slug: "acme", port: -1 }], { ...opts, coordinator: true });
+    const router = buildTenantRouter([{ slug: "acme" }], opts);
     const [tenantRoute, fallback] = router.handle[0].routes as Array<{ match?: Array<{ path?: string[] }> }>;
     expect(tenantRoute.match?.[0].path).toEqual(["/key", "/ts2021"]);
     expect(tenantRoute.match?.[0].path).not.toContain("/api/*");

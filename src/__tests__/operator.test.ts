@@ -55,7 +55,8 @@ vi.mock("../db/index.js", () => ({
   pool: { connect: async () => ({ query: async () => ({ rows: [] }), release: () => {} }) },
 }));
 
-const { removeMemberCascade, revokeMemberAccess, oauthCallback } = vi.hoisted(() => ({
+const { removeMemberCascade, revokeMemberAccess, oauthCallback, setSuspended } = vi.hoisted(() => ({
+  setSuspended: vi.fn(async (_coordinatorTenantId: string, _suspended: boolean) => {}),
   removeMemberCascade: vi.fn(async (..._a: unknown[]) => ({
     removedUser: { handle: "bob.test" },
     access: { devicesDeleted: 2, keysRevoked: 1, errors: [] as string[] },
@@ -68,12 +69,10 @@ vi.mock("../access/keys.js", async (orig) => ({
   ...(await orig<typeof import("../access/keys.js")>()),
   revokeMemberAccess,
 }));
-vi.mock("../orchestrator/headscale.js", () => ({
-  startInstance: vi.fn(),
-  stopInstance: vi.fn(),
-  destroyInstance: vi.fn(),
-  adoptInstance: vi.fn(),
-  createInstance: vi.fn(),
+vi.mock("../orchestrator/control-client.js", () => ({
+  getCoordinatorClient: (tenant?: { coordinatorTenantId: string }) => ({
+    setSuspended: (suspended: boolean) => setSuspended(tenant!.coordinatorTenantId, suspended),
+  }),
 }));
 vi.mock("../orchestrator/caddy.js", () => ({ syncTenantRoutes: vi.fn(async () => {}) }));
 
@@ -379,8 +378,8 @@ describe("enforceOperatorState", () => {
 
 describe("disable user", () => {
   it("runs the kick cascade for every membership; originated tenants keep the membership but lose access", async () => {
-    const t1 = { id: "t1", status: "running", apiKey: "k", port: 1 };
-    const t2 = { id: "t2", status: "running", apiKey: "k", port: 2 };
+    const t1 = { id: "t1", status: "running", coordinatorTenantId: "c-1" };
+    const t2 = { id: "t2", status: "running", coordinatorTenantId: "c-2" };
     results.push(
       [{ did: "did:plc:bob" }], // users.disabledAt (returning did)
       [{ id: "tok1" }], // agent tokens revoked
@@ -389,7 +388,6 @@ describe("disable user", () => {
       [{ id: "j1", tenantId: "t9" }], // pending join requests → rejected
       [{ id: "i1", tenantId: "t8" }], // pending invitations to their DID → revoked
       [{ tenant: t1, isOriginator: false }, { tenant: t2, isOriginator: true }],
-      [{ id: "u-bob", handle: "bob.test" }], // user lookup for originated tenant
     );
     const out = await disableUser("u-bob", "u-op");
     expect(writes[0]).toMatchObject({ op: "update", table: "users", arg: { disabledAt: expect.any(Date) } });
@@ -427,7 +425,7 @@ describe("invitations", () => {
   const TENANT = "11111111-2222-3333-4444-555555555555";
   const INV = "99999999-8888-7777-6666-555555555555";
   const member = {
-    tenant: { id: TENANT, lockdownMode: false, lastActivityAt: new Date() },
+    tenant: { id: TENANT, lockdownMode: false },
     membership: { isOriginator: true },
     role: null,
   };
@@ -528,7 +526,6 @@ describe("withTailnetCreationLock", () => {
 import { setTenantSuspendedCascade, OperatorActionError } from "../operator/lifecycle.js";
 import { memberAccess } from "../operator/policy.js";
 import { tenantIdFromPath } from "../operator/access.js";
-import { startInstance, stopInstance } from "../orchestrator/headscale.js";
 
 describe("suspension check uses the decoded tenant id", () => {
   const TENANT = "11111111-2222-3333-4444-555555555555";
@@ -562,10 +559,13 @@ describe("suspension check uses the decoded tenant id", () => {
 });
 
 describe("suspension cascades to sub-tailnets", () => {
-  const P = { id: "p", parentId: null, status: "running", containerId: "c-p", suspended: false, suspendedByParentId: null };
-  const C1 = { id: "c1", parentId: "p", status: "running", containerId: "c-c1", suspended: false, suspendedByParentId: null };
-  const C2 = { id: "c2", parentId: "p", status: "stopped", containerId: "c-c2", suspended: true, suspendedByParentId: null };
-  const G = { id: "g", parentId: "c1", status: "running", containerId: null, suspended: false, suspendedByParentId: null };
+  const P = { id: "p", parentId: null, status: "running", coordinatorTenantId: "c-p", suspended: false, suspendedByParentId: null };
+  const C1 = { id: "c1", parentId: "p", status: "running", coordinatorTenantId: "c-c1", suspended: false, suspendedByParentId: null };
+  const C2 = { id: "c2", parentId: "p", status: "running", coordinatorTenantId: "c-c2", suspended: true, suspendedByParentId: null };
+  // The coordinator does not have this one yet: only the DB flag changes
+  const G = { id: "g", parentId: "c1", status: "running", coordinatorTenantId: null, suspended: false, suspendedByParentId: null };
+
+  const tenantWritesHaveNoStatus = () => writes.filter((w) => w.table === "tenants").every((w) => !("status" in (w.arg as object)));
 
   it("suspending a parent suspends unsuspended descendants and records the cascade", async () => {
     results.push(
@@ -579,9 +579,11 @@ describe("suspension cascades to sub-tailnets", () => {
     const r = await setTenantSuspendedCascade(P as never, true);
     expect(r.cascaded).toEqual(["c1", "g"]);
     expect(r.failed).toEqual([]);
-    expect(stopInstance).toHaveBeenCalledWith("c-p");
-    expect(stopInstance).toHaveBeenCalledWith("c-c1");
-    expect(stopInstance).not.toHaveBeenCalledWith("c-c2");
+    expect(setSuspended.mock.calls).toEqual([
+      ["c-p", true],
+      ["c-c1", true],
+    ]);
+    expect(tenantWritesHaveNoStatus()).toBe(true);
     const tenantWrites = writes.filter((w) => w.table === "tenants").map((w) => w.arg as Record<string, unknown>);
     expect(tenantWrites[0]).toMatchObject({ suspended: true, suspendedByParentId: null });
     expect(tenantWrites.slice(1)).toEqual([
@@ -599,9 +601,10 @@ describe("suspension cascades to sub-tailnets", () => {
     );
     const r = await setTenantSuspendedCascade({ ...P, suspended: true } as never, false);
     expect(r.cascaded).toEqual(["c1", "g"]);
-    expect(startInstance).toHaveBeenCalledWith("c-p");
-    expect(startInstance).toHaveBeenCalledWith("c-c1");
-    expect(startInstance).not.toHaveBeenCalledWith("c-c2");
+    expect(setSuspended.mock.calls).toEqual([
+      ["c-p", false],
+      ["c-c1", false],
+    ]);
     const tenantWrites = writes.filter((w) => w.table === "tenants").map((w) => w.arg as Record<string, unknown>);
     expect(tenantWrites.every((w) => w.suspended === false && w.suspendedByParentId === null)).toBe(true);
   });
@@ -611,12 +614,12 @@ describe("suspension cascades to sub-tailnets", () => {
     await expect(
       setTenantSuspendedCascade({ ...C1, suspended: true, suspendedByParentId: "p" } as never, false),
     ).rejects.toBeInstanceOf(OperatorActionError);
-    expect(startInstance).not.toHaveBeenCalled();
+    expect(setSuspended).not.toHaveBeenCalled();
   });
 
   it("descendant control-plane failures are reported (502) and retryable", async () => {
-    vi.mocked(stopInstance).mockImplementation(async (id: string) => {
-      if (id === "c-c1") throw new Error("docker down");
+    setSuspended.mockImplementation(async (id: string) => {
+      if (id === "c-c1") throw new Error("coordinator down");
     });
     const SUSP = "11111111-2222-3333-4444-555555555555";
     results.push(
@@ -629,8 +632,8 @@ describe("suspension cascades to sub-tailnets", () => {
     const r = await call("POST", `/api/operator/tenants/${SUSP}/suspend`, OP);
     expect(r.status).toBe(502);
     expect(r.json.code).toBe("cascade_incomplete");
-    expect(r.json.failed).toEqual([{ tenantId: "c1", error: "docker down" }]);
-    vi.mocked(stopInstance).mockReset();
+    expect(r.json.failed).toEqual([{ tenantId: "c1", error: "coordinator down" }]);
+    setSuspended.mockReset();
   });
 });
 

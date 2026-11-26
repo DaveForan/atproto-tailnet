@@ -37,7 +37,6 @@ export interface AutoApprovers {
 export const tenantStatusEnum = pgEnum("tenant_status", [
   "provisioning",
   "running",
-  "stopped",
   "error",
   "deleted",
 ]);
@@ -101,9 +100,6 @@ export const tenants = pgTable("tenants", {
   ownerUserId: uuid("owner_user_id")
     .notNull()
     .references(() => users.id),
-  port: integer("port").notNull().unique(),
-  apiKey: text("api_key").notNull(),
-  containerId: text("container_id"),
   status: tenantStatusEnum("status").notNull().default("provisioning"),
   /** Operator suspension, separate from the runtime `status`. Members get 403 `tenant_suspended`. */
   suspended: boolean("suspended").notNull().default(false),
@@ -117,7 +113,7 @@ export const tenants = pgTable("tenants", {
   allowJoinRequests: boolean("allow_join_requests").notNull().default(false),
   boardEnabled: boolean("board_enabled").notNull().default(false),
   /** Device access mode (ADR-0036): "open" or "member" (own devices plus approved posts and shares). */
-  accessMode: text("access_mode").notNull().default("open"),
+  accessMode: text("access_mode").notNull().default("member"),
   /** Controller board: the originator's public text (Markdown subset). */
   controllerBoardText: text("controller_board_text"),
   maxBoardPosts: integer("max_board_posts").notNull().default(20),
@@ -128,23 +124,13 @@ export const tenants = pgTable("tenants", {
   allowAgentTokens: boolean("allow_agent_tokens").notNull().default(false),
   /** When true, non-originator members can create their own agent tokens (needs allowAgentTokens). */
   allowMemberAgentTokens: boolean("allow_member_agent_tokens").notNull().default(false),
-  /** Days of inactivity before the instance stops. 0 disables it. */
-  hibernateAfterDays: integer("hibernate_after_days").notNull().default(0),
-  /** Last API access by a member or agent. Updated at most once per 5 minutes. */
-  lastActivityAt: timestamp("last_activity_at").defaultNow().notNull(),
   customDerpRegions: jsonb("custom_derp_regions").$type<DerpRegion[]>().notNull().default([]),
-  /** Headscale embedded DERP server. A change needs a container restart. */
-  embeddedDerpEnabled: boolean("embedded_derp_enabled").notNull().default(false),
   /** When false, only custom DERP regions are used. */
   usePublicDerp: boolean("use_public_derp").notNull().default(true),
-  /** Coordinator mode: last accepted ACL policy, replayed after a coordinator restart. */
+  /** Last accepted ACL policy, replayed after a coordinator restart. */
   coordinatorAclPolicy: jsonb("coordinator_acl_policy"),
   ipv4Prefix: text("ipv4_prefix").notNull().default("100.64.0.0/10"),
   ipv6Prefix: text("ipv6_prefix").notNull().default("fd7a:115c:a1e0::/48"),
-  /** "sequential" or "random". */
-  ipAllocation: text("ip_allocation").notNull().default("sequential"),
-  /** Unused. Caps are maxDevices and maxMembers. */
-  planName: text("plan_name").notNull().default("free"),
   /** 0 means unlimited. */
   maxDevices: integer("max_devices").notNull().default(0),
   /** A device that waits for admission is removed after this many hours (ADR-0039). */
@@ -176,9 +162,9 @@ export const tenants = pgTable("tenants", {
   /** [lat, lon] for local discovery. */
   federationCoordinates: jsonb("federation_coordinates").$type<[number, number]>(),
   federationScopePolicies: jsonb("federation_scope_policies").$type<Record<string, { autoAccept: boolean; verification: string }>>(),
-  /** Tenant UUID in the Rust coordinator (ADR-0023). NULL in Headscale mode. */
+  /** Tenant UUID in the Rust coordinator (ADR-0023). NULL until the tenant is provisioned. */
   coordinatorTenantId: text("coordinator_tenant_id"),
-  /** Coordinator mode: last pushed route auto-approvers, replayed after a coordinator restart. */
+  /** Last pushed route auto-approvers, replayed after a coordinator restart. */
   coordinatorAutoApprovers: jsonb("coordinator_auto_approvers").$type<AutoApprovers>(),
   /** Optional webhook fired on every notification. */
   notificationWebhookUrl: text("notification_webhook_url"),

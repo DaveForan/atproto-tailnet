@@ -11,8 +11,8 @@ import { requireSession } from "./helpers.js";
 import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
-import type { CoordinatorApiClient, OwnerLockView } from "../orchestrator/coordinator-api.js";
-import { getCoordinatorClient, useCoordinator } from "../orchestrator/control-client.js";
+import type { OwnerLockView } from "../orchestrator/coordinator-api.js";
+import { getCoordinatorClient } from "../orchestrator/control-client.js";
 import { listUserDevices } from "../access/devices.js";
 import { syncTenantAccess } from "../access/sync.js";
 import { requireFreshDeviceProof } from "./device-trust.js";
@@ -30,26 +30,20 @@ const lockSchema = z.object({
 
 type Tenant = typeof tenants.$inferSelect;
 
-function coordinatorFor(tenant: Tenant): CoordinatorApiClient | null {
-  return useCoordinator && tenant.coordinatorTenantId ? getCoordinatorClient(tenant) : null;
-}
-
-/** The caller's membership and the coordinator client, or a response and null. Runs after {@link tenantGuard}. */
+/** The caller and the coordinator client, or a response and null while the tailnet is not provisioned. Runs after {@link tenantGuard}. */
 function context(res: Response) {
   const { userId, tenant } = tenantCtx(res);
-  const coord = coordinatorFor(tenant);
-  if (!coord) {
-    res.status(409).json({ error: "This tailnet cannot lock devices", code: "unsupported" });
+  if (!tenant.coordinatorTenantId) {
+    res.status(409).json({ error: "This tailnet is not ready yet", code: "not_ready" });
     return null;
   }
-  return { userId, tenant, coord };
+  return { userId, tenant, coord: getCoordinatorClient(tenant) };
 }
 
 async function view(tenant: Tenant, userId: string, lock: OwnerLockView) {
   const devices = await listUserDevices(tenant, userId);
   const allowed = new Set(lock.node_ids.map(String));
   return {
-    supported: true,
     locked: lock.locked,
     devices: devices.map((d) => ({ id: d.id, name: d.name, online: d.online, allowed: lock.locked ? allowed.has(d.id) : true })),
     allowOneUntil: lock.allow_one_until ?? null,
@@ -58,15 +52,10 @@ async function view(tenant: Tenant, userId: string, lock: OwnerLockView) {
   };
 }
 
-machineLockRouter.get("/api/tenants/:tenantId/machine-lock", requireSession, tenantGuard(), async (req, res) => {
-  const userId = req.session.userId!;
-  const result = tenantCtx(res);
-  const coord = coordinatorFor(result.tenant);
-  if (!coord) {
-    res.json({ supported: false, locked: false, devices: [], allowOneUntil: null, maxDevices: null, refused: [] });
-    return;
-  }
-  res.json(await view(result.tenant, userId, await coord.getOwnerLock(userId)));
+machineLockRouter.get("/api/tenants/:tenantId/machine-lock", requireSession, tenantGuard(), async (_req, res) => {
+  const ctx = context(res);
+  if (!ctx) return;
+  res.json(await view(ctx.tenant, ctx.userId, await ctx.coord.getOwnerLock(ctx.userId)));
 });
 
 /** Lock to the chosen devices. The member's other devices leave the tailnet. */

@@ -6,6 +6,8 @@
 **Depends On:** ADR-0023 (Rust mesh coordinator), ADR-0032 (device sign-in), ADR-0035 (device-bound access)
 **Related:** ADR-0036 (device visibility), ADR-0029 (gateway node)
 
+> Note (2026-11-26): the Headscale mode was removed (ADR-0040). The coordinator is the only control plane.
+
 ## Context
 
 A device joined a tailnet in two ways: with an auth key, or with a sign-in on

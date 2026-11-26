@@ -51,7 +51,7 @@ import type { Request, Response, NextFunction } from "express";
 import { credentialsRouter } from "../routes/credentials.js";
 
 const TENANT = "11111111-1111-4111-8111-111111111111";
-const tenant = { id: TENANT, name: "T", slug: "t", lastActivityAt: new Date(), lockdownMode: false };
+const tenant = { id: TENANT, name: "T", slug: "t", lockdownMode: false };
 const callerRole = { id: "r-1", permissions: ["manage_settings", "invite", "create_posts"] };
 const caller = [{ tenant, membership: { id: "m-1", isOriginator: false }, role: callerRole }];
 const subjectWith = (permissions: string[]) => [{ membership: { id: "m-2", isOriginator: false }, role: { permissions } }];

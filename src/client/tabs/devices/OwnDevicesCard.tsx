@@ -13,7 +13,7 @@ export function OwnDevicesCard() {
   const { data, reload } = useTenantData<OwnDeviceApproval | null>((tid) => deviceService.ownApproval(tid), null);
   const { mutate, busy } = useTenantMutation({ onError: "That did not work", reload });
   const confirm = useConfirm();
-  if (!data || data.supported === false || !user) return null;
+  if (!data || !user) return null;
 
   const setApproval = async (on: boolean) => {
     if (!on && !(await confirm({

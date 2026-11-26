@@ -5,12 +5,6 @@ export const networkService = {
   getIpConfig: (tid: string) =>
     tenantApi<IpConfig>(tid, "/ip-config"),
 
-  setIpConfig: (tid: string, config: IpConfig) =>
-    tenantApi(tid, "/ip-config", {
-      method: "PUT",
-      body: JSON.stringify(config),
-    }),
-
   getDerp: (tid: string) =>
     tenantApi<DerpConfig>(tid, "/derp"),
 

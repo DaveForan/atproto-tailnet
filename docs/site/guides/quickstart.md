@@ -4,7 +4,7 @@ title: Quickstart
 
 # Quickstart
 
-Start a local atproto-tailnet instance on your machine. This guide uses **coordinator mode** (recommended). Docker Compose runs PostgreSQL and Caddy, and the TypeScript service runs on the host.
+Start a local atproto-tailnet instance on your machine. Docker Compose runs PostgreSQL, the Rust coordinator and Caddy, and the TypeScript service runs on the host.
 
 ## Prerequisites
 

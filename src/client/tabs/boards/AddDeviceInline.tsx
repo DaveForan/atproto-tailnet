@@ -16,7 +16,7 @@ const WAIT_MS = 10 * 60 * 1000;
 export function AddDeviceInline({ known, onJoined }: { known: MyDevice[]; onJoined: (device: MyDevice) => void }) {
   const { currentTenant } = useTenant();
   const { toast } = useToast();
-  const [state, setState] = useState<"idle" | "busy" | "waiting" | "pending" | "timeout">("idle");
+  const [state, setState] = useState<"idle" | "busy" | "waiting" | "timeout">("idle");
   const [command, setCommand] = useState("");
   const [problem, setProblem] = useState("");
   const knownIds = useRef(new Set(known.map((d) => d.id)));
@@ -60,10 +60,6 @@ export function AddDeviceInline({ known, onJoined }: { known: MyDevice[]; onJoin
         setState("idle");
         return;
       }
-      if ("approvalId" in result) {
-        setState("pending");
-        return;
-      }
       setCommand(result.command || `tailscale up --login-server ${result.loginServer} --authkey ${result.key}`);
       setState("waiting");
     } catch (e) {
@@ -72,9 +68,6 @@ export function AddDeviceInline({ known, onJoined }: { known: MyDevice[]; onJoin
     }
   };
 
-  if (state === "pending") {
-    return <p className="help-text">This tailnet approves each new device. Your request was sent; add the device on the Devices page after it is approved.</p>;
-  }
   if (state === "waiting" || state === "timeout") {
     return (
       <div className="field">

@@ -30,8 +30,6 @@ vi.mock("../db/index.js", () => {
   return { db: { select: () => chain(), insert: () => chain(), update: () => chain(), delete: () => chain() }, pool: {} };
 });
 vi.mock("../orchestrator/control-client.js", () => ({
-  useCoordinator: true,
-  getControlClient: () => ({}),
   getCoordinatorClient: () => ({}),
 }));
 vi.mock("../access/sync.js", () => ({ syncTenantAccess: sync }));
@@ -49,7 +47,7 @@ const as = (t: Record<string, unknown> = {}, m: Record<string, unknown> = {}, pe
   results.length = 0;
   results.push([
     {
-      tenant: { id: T, name: "Harbor", coordinatorTenantId: "c-1", lockdownMode: false, requireDeviceApproval: false, lastActivityAt: new Date(), ...t },
+      tenant: { id: T, name: "Harbor", coordinatorTenantId: "c-1", lockdownMode: false, requireDeviceApproval: false, ...t },
       membership: { id: "m", isOriginator: false, approveOwnDevices: true, ...m },
       role: { permissions },
     },
@@ -85,7 +83,7 @@ beforeEach(() => {
 describe("own device approval", () => {
   it("is on by default and a member turns it off for themselves", async () => {
     as();
-    expect((await call("GET", "device-approval/mine")).json).toEqual({ on: true, locked: false, needsApprover: false, supported: true });
+    expect((await call("GET", "device-approval/mine")).json).toEqual({ on: true, locked: false, needsApprover: false });
     as();
     const off = await call("PUT", "device-approval/mine", { on: false });
     expect(off.json).toEqual({ on: false, locked: false });

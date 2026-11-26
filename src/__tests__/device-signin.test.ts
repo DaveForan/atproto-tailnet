@@ -39,13 +39,11 @@ vi.mock("../orchestrator/coordinator-api.js", () => ({
   },
 }));
 vi.mock("../orchestrator/control-client.js", () => ({
-  useCoordinator: true,
-  getControlClient: () => ({ listNodes: async () => nodes }),
-  getCoordinatorClient: () => ({
-    getDeviceAuth: coord.getDeviceAuth,
-    approveDeviceAuth: coord.approveDeviceAuth,
-    denyDeviceAuth: coord.denyDeviceAuth,
-  }),
+  // The pending sign-in uses the instance-level client. A tenant client only counts devices.
+  getCoordinatorClient: (tenant?: unknown) =>
+    tenant
+      ? { listNodes: async () => nodes }
+      : { getDeviceAuth: coord.getDeviceAuth, approveDeviceAuth: coord.approveDeviceAuth, denyDeviceAuth: coord.denyDeviceAuth },
 }));
 vi.mock("../orchestrator/coordinator-identity.js", () => ({ pushTenantIdentity: vi.fn(async () => {}) }));
 const { notify } = vi.hoisted(() => ({ notify: vi.fn() }));
@@ -61,7 +59,7 @@ const ID = "0123456789abcdef0123456789abcdef";
 const T = "11111111-1111-4111-8111-111111111111";
 const tenant = (over: Record<string, unknown> = {}) => ({
   id: T, name: "Harbor", slug: "t-x", coordinatorTenantId: "c-1", suspended: false, lockdownMode: false,
-  requireDeviceApproval: false, lastActivityAt: new Date(), ...over,
+  requireDeviceApproval: false, ...over,
 });
 const ctx = (t: Record<string, unknown> = {}, originator = false, permissions: string[] = []) => [
   { tenant: tenant(t), membership: { id: "m", isOriginator: originator }, role: { permissions } },
@@ -147,7 +145,7 @@ describe("device sign-in", () => {
   });
 
   it("approves for a member and binds the device to that member", async () => {
-    results.push(ctx(), []); // tenant, no device lock
+    results.push(ctx(), []);
     const r = await call("POST", `${ID}/approve`, { tenantId: T, confirm: true });
     expect(r.status).toBe(200);
     expect(r.json.status).toBe("approved");
@@ -191,18 +189,12 @@ describe("device sign-in", () => {
   });
 
   it("refuses a tailnet at its device limit", async () => {
-    nodes.push({ id: "1" });
+    nodes.push({ id: "1", hold: "none" });
     results.push(ctx({ maxDevices: 1 }));
     const r = await call("POST", `${ID}/approve`, { tenantId: T, confirm: true });
     expect(r.status).toBe(403);
     expect(r.json).toEqual({ error: "Device limit reached (1)", code: "device_limit" });
     expect(coord.approveDeviceAuth).not.toHaveBeenCalled();
-  });
-
-  it("does not read Headscale device locks (coordinator mode has machine locks)", async () => {
-    results.push(ctx(), [{ id: "lock" }]);
-    expect((await call("POST", `${ID}/approve`, { tenantId: T, confirm: true })).status).toBe(200);
-    expect(results).toEqual([[{ id: "lock" }]]);
   });
 
   it("a link the coordinator no longer knows is 404", async () => {

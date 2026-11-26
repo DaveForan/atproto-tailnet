@@ -1,6 +1,6 @@
 # Status memo
 
-Last updated: 2026-11-25. Code as of `6d87003` on `master`, plus uncommitted work (next steps, item 6). CI is green (TS, Rust, clippy `-D warnings`, `cargo doc`, `cargo audit`).
+Last updated: 2026-11-26. Code as of `6d87003` on `master`, plus uncommitted work (next steps, item 6). CI is green (TS, Rust, clippy `-D warnings`, `cargo doc`, `cargo audit`).
 
 ## Where we are
 
@@ -8,6 +8,7 @@ The single-instance product is ready to deploy. Federation is off and deferred (
 
 Recent work, newest first:
 
+- **Headscale mode removed (ADR-0040).** The Rust coordinator is the only control plane. `COORDINATOR_URL` and `COORDINATOR_API_KEY` are required. Not yet deployed.
 - **Gateway certificate scope (ADR-0038).** Named HTTPS services now live at `<name>.svc.<BASE_DOMAIN>`. The gateway holds only the `*.svc` key, and it runs in a separate `relay` container without the admin key or the control key.
 - **Dependencies.** zod 4 for our own code. chrono replaced by `time`. `rustls-pemfile` replaced. sqlx 0.9.1 fixes RUSTSEC-2026-0459. `cargo audit` reports nothing.
 - **OWASP Top 10 review and fixes.** Sign-in SSRF, `/API/` case bypass of CSRF and the enrolment gate, step-up bound to the device cookie, absolute session expiry, audit of security events, Noise connection limits, unique device names.
@@ -37,6 +38,8 @@ After the first start: sign in yourself before you share the URL, then connect C
 - Compose runs two coordinator containers: `coordinator` (control) and `relay` (DERP, STUN, gateway).
 - Next deploy (ADR-0039): devices that exist stay connected. Every device added after it waits: a device added with a key shows on Overview until its owner admits it. "Require device approval" becomes "Approvers also admit new devices". A member can turn off the approval of their own devices (Devices → Access) unless that setting is on. Unattended installs with a key need this one extra step.
 - Next deploy: open mode no longer opens anybody's devices by itself. In an open tailnet, each member must choose the open policy for their own devices (Friends & sharing). Until then the devices of different members do not reach each other.
+- Next deploy (ADR-0040): drizzle migration `0045_remove_headscale_mode.sql` runs. It is destructive for unused data only: it drops the tables `device_locks` and `device_approvals`, drops the columns `tenants.port`, `api_key`, `container_id`, `embedded_derp_enabled`, `hibernate_after_days`, `last_activity_at`, `ip_allocation`, `plan_name` and `auth_keys.hs_username`, and removes `lock_devices` from stored role permissions. Tailnets, members and devices that exist are not affected.
+- Next deploy (ADR-0040): the service refuses to start without `COORDINATOR_URL` and `COORDINATOR_API_KEY` (`docker-compose.coordinator.yml` sets the URL and already requires the key). The `HEADSCALE_*` variables do nothing; remove them from `.env`. `HEADSCALE_NETWORK` is now `FEDERATION_RELAY_NETWORK` and matters only with federation on. API changes: no tenant start/stop, no `device-locks`, no `device-approvals`, no `PUT .../ip-config`, no hibernation setting.
 
 ## Not yet tested live
 

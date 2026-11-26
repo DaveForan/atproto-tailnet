@@ -2,14 +2,8 @@
 
 import { and, eq } from "drizzle-orm";
 import { db } from "../db/index.js";
-import {
-  tenants,
-  memberships,
-  users,
-  deviceApprovals,
-} from "../db/schema.js";
-import { getControlClient, getCoordinatorClient, useCoordinator } from "../orchestrator/control-client.js";
-import { toHsUsername } from "../identity/handles.js";
+import { tenants, memberships, users } from "../db/schema.js";
+import { getCoordinatorClient } from "../orchestrator/control-client.js";
 import { revokeMemberAccess } from "../access/keys.js";
 import { removeMemberAccessState } from "../access/devices.js";
 import { syncTenantAccess } from "../access/sync.js";
@@ -30,39 +24,15 @@ export async function removeMemberCascade(
     .where(eq(users.id, removedUserId));
 
   let access: Awaited<ReturnType<typeof revokeMemberAccess>> | null = null;
-  if (removedUser) {
-    let client: ReturnType<typeof getControlClient> | null = null;
-    if (tenant.apiKey || useCoordinator) {
-      try {
-        client = getControlClient(tenant);
-      } catch (err) {
-        logger.error({ tenantId, err }, "no control client for kick cleanup");
-      }
-    }
-    access = await revokeMemberAccess({
-      tenantId,
-      client,
-      userId: removedUserId,
-      hsUsername: toHsUsername(removedUser.handle),
-    });
+  // A tailnet that the coordinator does not have yet has no devices and no keys
+  if (removedUser && tenant.coordinatorTenantId) {
+    const client = getCoordinatorClient(tenant);
+    access = await revokeMemberAccess({ tenantId, client, userId: removedUserId });
     // The member's machine lock in this tailnet goes too (ADR-0035)
-    if (useCoordinator && client) {
-      await getCoordinatorClient(tenant)
-        .deleteOwnerLock(removedUserId)
-        .catch((err: unknown) => logger.warn({ tenantId, err }, "failed to remove machine lock of removed member"));
-    }
+    await client
+      .deleteOwnerLock(removedUserId)
+      .catch((err: unknown) => logger.warn({ tenantId, err }, "failed to remove machine lock of removed member"));
   }
-
-  await db
-    .update(deviceApprovals)
-    .set({ status: "rejected", reviewedAt: new Date() })
-    .where(
-      and(
-        eq(deviceApprovals.tenantId, tenantId),
-        eq(deviceApprovals.requesterId, removedUserId),
-        eq(deviceApprovals.status, "pending"),
-      ),
-    );
 
   // Removes posts, connections, friendships and shares (ADR-0036)
   await removeMemberAccessState(tenantId, removedUserId);

@@ -2,7 +2,7 @@
 
 ## Overview
 
-A single Vultr Cloud Compute instance runs atproto-tailnet in **coordinator mode**.
+A single Vultr Cloud Compute instance runs atproto-tailnet.
 
 - **Instance plan**: `vc2-1c-2gb` (1 vCPU, 2 GB RAM, $6/mo) or `vc2-2c-4gb` (2 vCPU, 4 GB RAM, $24/mo)
 - **TLS strategy**: `vultr` — DNS-01 wildcard certificates with the Vultr DNS API
@@ -167,7 +167,7 @@ chmod 600 .env
 "
 ```
 
-Do not set `FEDERATION_ENABLED`. Federation is off by default. Its data plane needs Docker (Headscale mode), and the coordinator stack does not send traffic between instances. The app still uses `FEDERATION_KEY_ENCRYPTION_KEY` for collective signing keys and credentials.
+Do not set `FEDERATION_ENABLED`. Federation is off by default. It is deferred (ADR-0033): its relay containers need the Docker socket, and the stack does not send traffic between instances. The app still uses `FEDERATION_KEY_ENCRYPTION_KEY` for collective signing keys and credentials.
 
 ### 7. Generate the AT Protocol OAuth key
 

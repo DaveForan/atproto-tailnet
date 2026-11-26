@@ -47,10 +47,10 @@ The application server uses Express 5 with Drizzle ORM. It does these tasks:
 - **API**: REST endpoints for all management operations, plus the operator API (`/api/operator/*`).
 - **MCP server**: A stateless remote MCP endpoint at `/mcp`. The service is also the OAuth authorization server for it (dynamic client registration, PKCE, Bluesky sign-in, consent page). Each tool calls the REST API in the same process, as the user.
 - **Notifications**: Rows for each recipient, and an optional signed webhook for each tenant.
-- **Orchestration**: Tenant lifecycle, health monitoring, and Caddy route management.
+- **Orchestration**: Tenant lifecycle, health monitoring, and Caddy route management. The monitor checks the coordinator and sends the per-tenant state again when the coordinator's `boot_id` changes.
 - **Federation broker**: Session management, handshake state machines, and route installation. It starts only when `FEDERATION_ENABLED=true`. Federation is off by default.
 
-The service communicates with the coordinator through the admin REST API. The `getControlClient(tenant)` factory returns a `CoordinatorApiClient` or a `HeadscaleApiClient`. The choice depends on whether `COORDINATOR_URL` is set.
+The service communicates with the coordinator through the admin REST API. All control-plane calls go through `getCoordinatorClient(tenant?)`, which returns a `CoordinatorApiClient`. The coordinator is the only control plane: `COORDINATOR_URL` and `COORDINATOR_API_KEY` are required.
 
 ### Rust coordinator
 
@@ -94,7 +94,7 @@ Clients pin the Noise public key of the coordinator. The coordinator loads its c
 
 ### Database
 
-The TypeScript service needs PostgreSQL (Drizzle ORM, 30 tables). The coordinator supports three storage backends. You select the backend with `store_backend` in the TOML config or with the `COORD_STORE_BACKEND` env var:
+The TypeScript service needs PostgreSQL (Drizzle ORM, 28 tables). The coordinator supports three storage backends. You select the backend with `store_backend` in the TOML config or with the `COORD_STORE_BACKEND` env var:
 
 - **PostgreSQL** (`postgres`): Shares the database of the TS service. The coord-store and the federation store both use sqlx with tables that have the prefix `coord_`.
 - **SQLite** (`sqlite`): A single-file database with no dependencies. The coord-store and the federation store both persist to the same `.db` file (WAL mode). It is ideal for standalone coordinator deployments without the TS service.
@@ -107,7 +107,7 @@ The PostgreSQL and SQLite backends both run their own migrations at startup.
 Caddy is a reverse proxy with dynamic subdomain routing. The TypeScript service manages one Caddy route (`@id: tailnet_tenants`) through the admin API. The service rewrites the route each time it adds or removes a tenant. Caddy does these tasks:
 
 - TLS termination with a pluggable strategy (on-demand per-tenant certs, DNS-01 wildcard, or bring-your-own). See `caddy/tls-strategies/` and the [configuration reference](../reference/configuration.md#tls-strategies).
-- Wildcard subdomain routing (`*.ts.yourdomain.com`). In coordinator mode, a tenant subdomain serves only `/key`, `/ts2021` and `/health`.
+- Wildcard subdomain routing (`*.ts.yourdomain.com`). A tenant subdomain serves only `/key`, `/ts2021` and `/health`.
 - HSTS on `APP_DOMAIN`.
 - HTTP/2 and HTTP/3 (QUIC).
 
@@ -115,7 +115,7 @@ The app sets `TRUST_PROXY=1` behind Caddy. The service then reads the client IP 
 
 ## Multi-tenancy
 
-The mesh network of each user is an isolated tenant. In coordinator mode:
+The mesh network of each user is an isolated tenant:
 
 - Tenants are rows in `coord_tenants` with a UUID, a slug, a parent reference, and a federation posture.
 - Nodes belong to a tenant through `tenant_id`.
@@ -178,9 +178,9 @@ Organization (parent)
 
 ## Database schema
 
-### TypeScript service tables (30)
+### TypeScript service tables (28)
 
-`users`, `tenants`, `roles`, `memberships`, `oauth_states`, `oauth_sessions`, `invitations`, `device_approvals`, `device_locks`, `join_requests`, `auth_keys`, `notifications`, `service_devices`, `services`, `board_posts`, `agent_tokens`, `audit_logs`, `usage_snapshots`, `federation_links`, `collective_dids`, `broker_sessions`, `relay_nodes`, `credential_revocations`, `holder_binding_challenges`, `service_auth_jti_cache`, `instance_settings`, `tailnet_creators`, `mcp_oauth_clients`, `mcp_oauth_grants`, `mcp_oauth_tokens`
+`users`, `tenants`, `roles`, `memberships`, `oauth_states`, `oauth_sessions`, `invitations`, `join_requests`, `auth_keys`, `notifications`, `service_devices`, `services`, `board_posts`, `agent_tokens`, `audit_logs`, `usage_snapshots`, `federation_links`, `collective_dids`, `broker_sessions`, `relay_nodes`, `credential_revocations`, `holder_binding_challenges`, `service_auth_jti_cache`, `instance_settings`, `tailnet_creators`, `mcp_oauth_clients`, `mcp_oauth_grants`, `mcp_oauth_tokens`
 
 ### Coordinator tables
 

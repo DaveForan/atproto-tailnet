@@ -1,6 +1,6 @@
 /**
  * @module orchestrator/coordinator-acl
- * Translates Headscale ACL policies to and from the coordinator's `coord_acl::AclPolicy`.
+ * Translates Tailscale-format ACL policy files to and from the coordinator's `coord_acl::AclPolicy`.
  * Rule `src`/`dst` become FilterRule `SrcIPs`/`DstPorts[].IP`, so each must be `*`, an IP, or a CIDR.
  * Security: we reject groups, tags and autoApprovers, because dropping them silently can widen access.
  */
@@ -21,8 +21,8 @@ export interface CoordAclPolicy {
   rules: CoordAclRule[];
 }
 
-/** Headscale-format policy as accepted by `PUT /api/tenants/:id/acl`. */
-export interface HeadscaleAclPolicy {
+/** ACL policy file (Tailscale format) as accepted by `PUT /api/tenants/:id/acl`. */
+export interface AclPolicyFile {
   acls?: Array<{ action: string; src: string[]; dst: string[] }>;
   groups?: Record<string, string[]>;
   hosts?: Record<string, string>;
@@ -71,7 +71,7 @@ function resolveTarget(
   if (isAddressOrCidr(token)) return token;
   if (Object.hasOwn(hosts, token)) return hosts[token];
   throw new AclTranslationError(
-    `ACL ${where} "${token}" cannot be expressed in coordinator mode — ` +
+    `ACL ${where} "${token}" cannot be expressed in the coordinator — ` +
       `only "*", IP addresses, CIDRs and host aliases are supported ` +
       `(users, groups, tags and autogroups are not)`,
   );
@@ -94,7 +94,7 @@ function parsePorts(spec: string, where: string): CoordPortSpec[] {
   return out;
 }
 
-/** Splits a Headscale dst entry (`target:ports`, `[v6]:ports`) on the last colon. */
+/** Splits an ACL policy file dst entry (`target:ports`, `[v6]:ports`) on the last colon. */
 function splitDst(entry: string, where: string): { target: string; ports: string } {
   const bracket = /^\[([^\]]+)\](?:\/(\d{1,3}))?:([^:]+)$/.exec(entry);
   if (bracket) {
@@ -111,23 +111,23 @@ function splitDst(entry: string, where: string): { target: string; ports: string
  * Follows Tailscale semantics: only listed rules allow traffic, and empty `acls` denies all.
  * @throws {AclTranslationError} when the coordinator cannot represent the policy.
  */
-export function headscaleToCoordinatorPolicy(policy: HeadscaleAclPolicy): CoordAclPolicy {
+export function aclPolicyFileToCoordinator(policy: AclPolicyFile): CoordAclPolicy {
   for (const key of Object.keys(policy)) {
     if (!SUPPORTED_KEYS.has(key) && !isEmpty(policy[key])) {
-      throw new AclTranslationError(`ACL policy field "${key}" is not supported in coordinator mode`);
+      throw new AclTranslationError(`ACL policy field "${key}" is not supported`);
     }
   }
   if (!isEmpty(policy.groups)) {
     throw new AclTranslationError(
-      "ACL groups are not supported in coordinator mode — the coordinator has no per-user identities; use host aliases or CIDRs",
+      "ACL groups are not supported — the coordinator has no per-user identities; use host aliases or CIDRs",
     );
   }
   if (!isEmpty(policy.tagOwners)) {
-    throw new AclTranslationError("ACL tagOwners are not supported in coordinator mode — nodes cannot be tagged");
+    throw new AclTranslationError("ACL tagOwners are not supported — nodes cannot be tagged");
   }
   const aa = policy.autoApprovers;
   if (aa && (!isEmpty(aa.routes) || !isEmpty(aa.exitNode))) {
-    throw new AclTranslationError("ACL autoApprovers are not supported in coordinator mode");
+    throw new AclTranslationError("ACL autoApprovers are not supported");
   }
 
   const hosts = policy.hosts ?? {};
@@ -175,7 +175,7 @@ function formatPort(p: unknown): string | null {
 }
 
 /** The coordinator does not store host aliases, so rules come back with literal addresses. */
-export function coordinatorToHeadscalePolicy(raw: unknown): {
+export function coordinatorToAclPolicyFile(raw: unknown): {
   acls: Array<{ action: "accept"; src: string[]; dst: string[] }>;
   groups: Record<string, string[]>;
   hosts: Record<string, string>;

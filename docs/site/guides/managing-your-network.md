@@ -129,18 +129,17 @@ Every network has two built-in roles:
 
 ### Custom roles
 
-Create custom roles with any combination of 17 permissions:
+Create custom roles with any combination of 16 permissions:
 
 | Permission | Description |
 |-----------|-------------|
 | `invite` | Send invitations to new members |
 | `kick` | Remove members from the network |
 | `manage_roles` | Create, edit, and delete roles and assign them |
-| `manage_settings` | Change tenant settings (posture, hibernation, and others) |
+| `manage_settings` | Change tenant settings (posture, lockdown, and others) |
 | `approve_devices` | Approve pending device connections |
 | `approve_joins` | Approve join requests |
 | `approve_services` | Approve service registrations |
-| `lock_devices` | Bind members to specific machine keys |
 | `view_audit_log` | Read the audit trail |
 | `manage_devices` | Manage nodes (rename, remove, routes) |
 | `manage_services` | Register and manage services |
@@ -204,7 +203,7 @@ tailscale up --login-server=https://control.yourdomain.com \
              --authkey=tskey-auth-XXXXX
 ```
 
-The **Devices** page shows the exact command. In coordinator mode with `CONTROL_DOMAIN` set, all tailnets use one login server. The key selects the tailnet. Without `CONTROL_DOMAIN`, and in legacy Headscale mode, each tailnet has its own login server at `https://<tailnet-address>.<BASE_DOMAIN>`.
+The **Devices** page shows the exact command. With `CONTROL_DOMAIN` set, all tailnets use one login server. The key selects the tailnet. Without `CONTROL_DOMAIN`, each tailnet has its own login server at `https://<tailnet-address>.<BASE_DOMAIN>`.
 
 The device belongs to the member who made the key.
 
@@ -272,8 +271,6 @@ The originator can add a second approval: turn on **Approvers also admit new dev
 - An approver cannot approve their own device. The device of an approver, and of the originator, waits for a different approver. If the tailnet has only one approver, the devices of that person need no second approval.
 - Every member must admit their own devices. Nobody can turn their own approval off, and each choice is set back to on.
 
-In legacy Headscale mode there is no admission step. There the setting has its older meaning: a request for a key waits for an approver.
-
 ### Device and member limits
 
 The originator can set `maxDevices` and `maxMembers` under **Settings → Limits** (0 = unlimited). There are no plans. The service enforces the limits:
@@ -286,14 +283,6 @@ When a limit stops an action, the service notifies the originator. A sub-collect
 ### Removing a member
 
 When you remove (kick) a member, the service also revokes the auth keys of the member and deletes the devices of the member. You need the `kick` permission. Nobody can remove the originator.
-
-### Device locking
-
-Device locks bind a membership to specific machine keys:
-
-- After you lock a member, the member cannot generate new auth keys until you unlock the member.
-- A lock prevents a compromised account from adding rogue devices.
-- You need the `lock_devices` permission to manage locks.
 
 ### Node operations
 
@@ -328,7 +317,7 @@ You can also send each notification to a webhook, for example a self-hosted ntfy
 
 **Settings → Access rules** provides a policy editor. The policy controls which devices can talk to each other. The policy uses the Tailscale ACL format.
 
-In **coordinator mode** (the default), the coordinator has no users, groups or tags. The service accepts only `accept` rules with `*`, IP addresses, CIDRs or host aliases. It refuses `groups`, `tagOwners` and `autoApprovers`:
+The coordinator has no users, groups or tags. The service accepts only `accept` rules with `*`, IP addresses, CIDRs or host aliases. It refuses `groups`, `tagOwners` and `autoApprovers`:
 
 ```json
 {
@@ -342,34 +331,6 @@ In **coordinator mode** (the default), the coordinator has no users, groups or t
       "dst": ["server1:80,443"]
     }
   ]
-}
-```
-
-In **legacy Headscale mode**, the full Headscale policy is available:
-
-```json
-{
-  "groups": {
-    "group:admins": ["alice.bsky.social"]
-  },
-  "hosts": {
-    "server1": "100.64.0.1"
-  },
-  "acls": [
-    {
-      "action": "accept",
-      "src": ["group:admins"],
-      "dst": ["*:*"]
-    },
-    {
-      "action": "accept",
-      "src": ["*"],
-      "dst": ["server1:80,443"]
-    }
-  ],
-  "tagOwners": {
-    "tag:server": ["group:admins"]
-  }
 }
 ```
 
@@ -387,23 +348,16 @@ An **exit node** routes all internet traffic of a device through another device 
 
 ### IP ranges
 
-Each network receives a default IP range in the CGNAT space (`100.64.0.0/10` for IPv4, `fd7a:115c:a1e0::/48` for IPv6). You can change these ranges under **Settings → IP ranges** (Headscale mode only). You can choose these settings:
-
-- IPv4 prefix and size
-- IPv6 prefix and size
-- Allocation strategy: sequential or random
-
-When you change IP ranges, you must restart the control plane. You must also register all devices again.
+Each network receives an IP range in the CGNAT space (`100.64.0.0/10` for IPv4, `fd7a:115c:a1e0::/48` for IPv6). The ranges are fixed when the network is created. **Settings → IP ranges** shows them. You cannot change them.
 
 ### DERP relays
 
-DERP relays provide encrypted relay connectivity when direct peer-to-peer connections fail (for example, behind restrictive NATs). In coordinator mode, the default is the built-in relay of the instance (see the [coordinator guide](coordinator#derp-map)). No traffic goes through Tailscale relays. Under **Settings → Relays** you can do these tasks:
+DERP relays provide encrypted relay connectivity when direct peer-to-peer connections fail (for example, behind restrictive NATs). The default is the built-in relay of the instance (see the [coordinator guide](coordinator#derp-map)). No traffic goes through Tailscale relays. Under **Settings → Relays** you can do these tasks:
 
 - Add custom relay regions (IDs 900-999)
-- Enable or disable the default relays (the built-in relay in coordinator mode; the public Tailscale relays in legacy Headscale mode)
-- Toggle the embedded DERP server (legacy Headscale mode only)
+- Enable or disable the default relays (the built-in relay of the instance)
 
-The settings apply to your tailnet only. In coordinator mode, connected devices get the new relay map at once.
+The settings apply to your tailnet only. Connected devices get the new relay map at once.
 
 ## Agent tokens
 
@@ -477,15 +431,6 @@ The **Overview** page shows the current number of devices and members, with the 
 
 The system stores usage snapshots in the `usage_snapshots` table (the health monitor samples every 5 minutes). `GET /api/tenants/:id/usage` returns 7 days of them; the dashboard does not show the history.
 
-## Instance hibernation
-
-To save resources, the system can stop idle networks automatically:
-
-- Set `hibernateAfterDays` under **Settings → Security** (0 = disabled). Headscale mode only: the coordinator has no instance to stop.
-- The system updates `lastActivityAt` on API access (debounced to avoid write amplification).
-- The health monitor sweeps all tenants. It stops each tenant that is idle longer than the threshold.
-- To start a stopped network again, the originator uses **Start** (`POST /api/tenants/:id/start`).
-
 ## Instance administration
 
 The **Instance** page is visible only to instance operators. It has these functions:
@@ -501,7 +446,7 @@ The **Instance** page is visible only to instance operators. It has these functi
 Suspension stops a tailnet without deleting it:
 
 - The suspension also applies to all sub-tailnets of the tailnet.
-- In coordinator mode, the coordinator enforces it. Devices cannot register or get map updates.
+- The coordinator enforces it. Devices cannot register or get map updates.
 - Members get an error (`tenant_suspended`) on each request to the tailnet.
 - **Unsuspend** restores the tailnet and the sub-tailnets that the suspension included.
 

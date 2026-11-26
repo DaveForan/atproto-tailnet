@@ -1,25 +1,24 @@
 /**
  * @module orchestrator/coordinator-api
  * REST client for the Rust mesh coordinator's admin API (ADR-0023).
- * It keeps the method signatures of HeadscaleApiClient.
  */
 
 import {
   routesOfNode,
   parseRouteId,
   withRouteApproval,
-  type HeadscaleNode,
+  type ControlNode,
   type DeviceHold,
-  type HeadscalePreAuthKey,
-  type HeadscaleRoute,
+  type ControlPreAuthKey,
+  type ControlRoute,
   type PreAuthKeyOptions,
   type ControlPreAuthKeyInfo,
   type AutoApproversConfig,
-} from "./headscale-api.js";
+} from "./control-types.js";
 import {
-  headscaleToCoordinatorPolicy,
-  coordinatorToHeadscalePolicy,
-  type HeadscaleAclPolicy,
+  aclPolicyFileToCoordinator,
+  coordinatorToAclPolicyFile,
+  type AclPolicyFile,
 } from "./coordinator-acl.js";
 
 /** Coordinator keys without an expiry never expire, so we always send one. */
@@ -68,7 +67,7 @@ interface CoordinatorNode {
 }
 
 /** `user` is the owner (our user id), or null for unowned and tagged nodes. */
-export function toHeadscaleNode(n: CoordinatorNode): HeadscaleNode {
+export function toControlNode(n: CoordinatorNode): ControlNode {
   const owner = n.owner ?? null;
   return {
     id: String(n.id),
@@ -312,13 +311,13 @@ export class CoordinatorApiClient {
     await this.request("POST", this.tenantPath("/acl"), policy);
   }
 
-  async getHeadscalePolicy(): Promise<ReturnType<typeof coordinatorToHeadscalePolicy>> {
-    return coordinatorToHeadscalePolicy(await this.request("GET", this.tenantPath("/acl")));
+  async getAclPolicyFile(): Promise<ReturnType<typeof coordinatorToAclPolicyFile>> {
+    return coordinatorToAclPolicyFile(await this.request("GET", this.tenantPath("/acl")));
   }
 
   /** Errors: throws `AclTranslationError` when the coordinator cannot represent the policy. */
-  async setHeadscalePolicy(policy: HeadscaleAclPolicy): Promise<void> {
-    await this.request("POST", this.tenantPath("/acl"), headscaleToCoordinatorPolicy(policy));
+  async setAclPolicyFile(policy: AclPolicyFile): Promise<void> {
+    await this.request("POST", this.tenantPath("/acl"), aclPolicyFileToCoordinator(policy));
   }
 
 
@@ -333,8 +332,8 @@ export class CoordinatorApiClient {
   }
 
 
-  /** Nodes that register with the key get `owner`. This is device ownership in coordinator mode. */
-  async createPreAuthKey(_userName: string, opts?: PreAuthKeyOptions): Promise<HeadscalePreAuthKey & { id: string }> {
+  /** Nodes that register with the key get `owner`. This is how a device gets its owner. */
+  async createPreAuthKey(opts?: PreAuthKeyOptions): Promise<ControlPreAuthKey & { id: string }> {
     const data = (await this.request("POST", "/api/preauth-keys", {
       tenant_id: this.tenant,
       reusable: opts?.reusable ?? false,
@@ -358,8 +357,8 @@ export class CoordinatorApiClient {
   async createTaggedPreAuthKey(
     aclTags: string[],
     opts?: { expirationSeconds?: number; ephemeral?: boolean },
-  ): Promise<HeadscalePreAuthKey & { id: string }> {
-    return this.createPreAuthKey("tagged", {
+  ): Promise<ControlPreAuthKey & { id: string }> {
+    return this.createPreAuthKey({
       reusable: false,
       ephemeral: opts?.ephemeral ?? false,
       expirationSeconds: opts?.expirationSeconds ?? 300,
@@ -416,17 +415,17 @@ export class CoordinatorApiClient {
   }
 
 
-  async listNodes(): Promise<HeadscaleNode[]> {
+  async listNodes(): Promise<ControlNode[]> {
     const data = (await this.request("GET", this.tenantPath("/nodes"))) as { nodes: CoordinatorNode[] };
     // The gateway (ADR-0029) belongs to the instance, not to a member
-    return data.nodes.filter((n) => !(n.tags ?? []).includes(GATEWAY_TAG)).map(toHeadscaleNode);
+    return data.nodes.filter((n) => !(n.tags ?? []).includes(GATEWAY_TAG)).map(toControlNode);
   }
 
-  async getNode(nodeId: string): Promise<HeadscaleNode> {
+  async getNode(nodeId: string): Promise<ControlNode> {
     const tenant = this.tenant;
     const data = (await this.request("GET", `/api/nodes/${encodeURIComponent(nodeId)}`)) as CoordinatorNode;
     if (data.tenant_id !== tenant) throw new Error("Node belongs to different tenant");
-    return toHeadscaleNode(data);
+    return toControlNode(data);
   }
 
   /**
@@ -455,16 +454,15 @@ export class CoordinatorApiClient {
     return data?.deleted ?? 0;
   }
 
-  async renameNode(nodeId: string, newName: string): Promise<HeadscaleNode> {
+  async renameNode(nodeId: string, newName: string): Promise<ControlNode> {
     const data = (await this.request("POST", `/api/nodes/${encodeURIComponent(nodeId)}/name?tenant_id=${this.tenant}`, {
       name: newName,
     })) as CoordinatorNode;
-    return toHeadscaleNode(data);
+    return toControlNode(data);
   }
 
 
-  /** Uses the same route ids as Headscale mode. */
-  async listRoutes(): Promise<HeadscaleRoute[]> {
+  async listRoutes(): Promise<ControlRoute[]> {
     return (await this.listNodes()).flatMap(routesOfNode);
   }
 

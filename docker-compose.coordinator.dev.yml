@@ -1,4 +1,4 @@
-# docker-compose.coordinator.dev.yml  --  local dev with coordinator
+# docker-compose.coordinator.dev.yml  --  local development stack
 #
 # Runs Postgres, coordinator, and Caddy in Docker. The TS service runs
 # on the host via `npm run dev`.

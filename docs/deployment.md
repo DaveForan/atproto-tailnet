@@ -2,20 +2,14 @@
 
 ## Overview
 
-atproto-tailnet supports two control-plane modes:
-
-1. **Coordinator mode** (recommended): The Rust mesh coordinator does all
-   Tailscale control-plane operations. It does not need the Docker socket.
-   The coordinator, the TS service, and PostgreSQL can run as containers on
-   any platform.
-
-2. **Legacy Headscale mode**: This mode uses one Headscale Docker container
-   for each tenant. The app manages the containers through the Docker socket.
-   You must control the host.
+The Rust mesh coordinator is the control plane. It does all Tailscale
+control-plane operations. A standard instance does not need the Docker socket
+(only `FEDERATION_ENABLED=true` uses it, for relay containers). The
+coordinator, the TS service, and PostgreSQL can run as containers on any
+platform. The service refuses to start without `COORDINATOR_URL` and
+`COORDINATOR_API_KEY`.
 
 ### Requirements
-
-#### Coordinator mode (recommended)
 
 | Requirement | Details |
 |-------------|---------|
@@ -27,27 +21,14 @@ atproto-tailnet supports two control-plane modes:
 | DNS | Wildcard record `*.ts.yourdomain.com` that points to the host |
 | TLS | Caddy provisions certificates automatically through a pluggable strategy |
 
-#### Legacy Headscale mode
-
-| Requirement | Details |
-|-------------|---------|
-| Runtime | Node.js 22+ |
-| Database | PostgreSQL 16+ |
-| Docker socket | `/var/run/docker.sock` — the app uses it to manage Headscale containers |
-| Reverse proxy | Caddy 2 with admin API for dynamic subdomain routing |
-| Ports | 80, 443 (Caddy), 3000 (app), 10001-10100 (Headscale tenants) |
-| Persistent storage | `./data/headscale/` — tenant configs and SQLite DBs |
-| DNS | Wildcard record `*.ts.yourdomain.com` that points to the host |
-| TLS | Caddy provisions certificates automatically through a pluggable strategy |
-
 ### Platform comparison
 
-| Platform | Docker socket | Coordinator mode | Headscale mode |
-|----------|:---:|:---:|:---:|
-| EC2 / Droplet / VPS | Yes | Full stack | Full stack |
-| Railway | No | Full stack | Web tier only |
-| DO App Platform | No | Full stack | Web tier only |
-| AWS ECS Fargate | No | Full stack | Web tier only |
+| Platform | What the guide in `deploy/` sets up |
+|----------|---|
+| EC2 / Droplet / VPS | Full stack (`docker-compose.coordinator.yml`) |
+| Railway | Web tier only. You run the coordinator and the proxy yourself |
+| DO App Platform | Web tier only. You run the coordinator and the proxy yourself |
+| AWS ECS Fargate | Web tier only. You run the coordinator and the proxy yourself |
 
 ---
 
@@ -66,23 +47,19 @@ the [configuration reference](site/reference/configuration.md).
 | `PORT` | No | `3000` | HTTP listen port |
 | `PUBLIC_URL` | Yes | `http://localhost:3000` | Public URL (the app uses it in OAuth callbacks) |
 | `BASE_DOMAIN` | Yes | `ts.localhost` | Base domain for tenant subdomains |
-| `HEADSCALE_IMAGE` | No | `headscale/headscale:0.29.1` | Docker image for Headscale containers |
-| `HEADSCALE_PORT_RANGE_START` | No | `10001` | First port in the Headscale allocation pool |
-| `HEADSCALE_PORT_RANGE_END` | No | `10100` | Last port in the Headscale allocation pool |
-| `HEADSCALE_DATA_DIR` | No | `./data/headscale` | Persistent storage for tenant Headscale data |
 | `CADDY_ADMIN_URL` | No | `http://localhost:2019` | Caddy admin API endpoint |
 | `LOG_LEVEL` | No | `info` | Pino log level (`debug`, `info`, `warn`, `error`) |
 | `ATPROTO_PRIVATE_KEY` | Prod | -- | ES256 JWK for AT Proto OAuth (required for production) |
 | `TLS_STRATEGY` | No | `on-demand` | TLS certificate strategy (see `caddy/tls-strategies/`) |
-| `COORDINATOR_URL` | Coord | -- | URL of the Rust coordinator (e.g. `http://coordinator:9443`) |
-| `COORDINATOR_API_KEY` | Coord | -- | Bearer token for the coordinator admin API (required when you set `COORDINATOR_URL`) |
+| `COORDINATOR_URL` | Yes | -- | URL of the Rust coordinator (e.g. `http://coordinator:9443`). The app does not start without it |
+| `COORDINATOR_API_KEY` | Yes | -- | Bearer token for the coordinator admin API. Must be equal to `COORD_ADMIN_KEY` |
 | `APP_DOMAIN` | Yes | -- | Domain of the dashboard, the API and `/mcp`. Caddy uses it. The app does not derive it from `PUBLIC_URL` |
 | `TRUST_PROXY` | Behind a proxy | `0` | Reverse-proxy hops to trust. Must be `1` behind Caddy, or sign-in fails. The compose files set it |
 | `CADDY_DNS_PLUGINS` | DNS-01 | -- | Caddy DNS module for your `TLS_STRATEGY`, for example `github.com/caddy-dns/digitalocean`. Add `@version` to pin a version. `Dockerfile.caddy` pins `github.com/caddy-dns/digitalocean` when you give no version |
 | `CADDY_CERTS_DIR` | Manual | `./caddy/certs` | Folder with `wildcard.pem` and `wildcard.key` for `TLS_STRATEGY=manual` |
 | `WEBHOOK_ALLOW_PRIVATE` | No | `false` | Set `true` only for single-organisation self-hosting. It lets notification webhooks reach private addresses |
 | `OPERATOR_DIDS` | Yes (production) | -- | Comma-separated DIDs of the instance operators, for example `did:plc:abc123`. Only operators (and the "tailnet creators" they designate) get a tailnet; everyone else who signs in sees invitations or can request to join the default tailnet. Operators get the operator API (`/api/operator/*`). If it is empty the app logs a loud warning and nobody can create a tailnet |
-| `FEDERATION_ENABLED` | No | `false` | Turns on federation (links between tailnets). Keep it off. The federation data plane needs Docker (Headscale mode), and cross-instance traffic is not implemented. Links carry no traffic in the coordinator stack |
+| `FEDERATION_ENABLED` | No | `false` | Turns on federation (links between tailnets). Keep it off. Federation is deferred (ADR-0033): its relay containers need the Docker socket (and `FEDERATION_RELAY_NETWORK`), cross-instance traffic is not implemented, and links carry no traffic |
 | `FEDERATION_KEY_ENCRYPTION_KEY` | Recommended | -- | 64 hex characters. Encrypts collective signing keys at rest |
 
 #### Coordinator-side env vars (Rust binary)
@@ -100,7 +77,7 @@ the [configuration reference](site/reference/configuration.md).
 | `COORD_GATEWAY_UDP_LISTEN` | No | -- | UDP address of the gateway socket, for example `0.0.0.0:41641`. Unset: the gateway uses the relay only. Compose: `GATEWAY_UDP_LISTEN` |
 | `COORD_GATEWAY_ENDPOINTS` | No | -- | Public `ip:port` addresses of that socket, with commas between them (8 at most). Devices get them as the endpoints of the gateway. Compose: `GATEWAY_ENDPOINTS` |
 
-### Production `.env` example (coordinator mode)
+### Production `.env` example
 
 ```sh
 DATABASE_URL=postgresql://atproto_tailnet:strong-password@postgres:5432/atproto_tailnet
@@ -117,30 +94,11 @@ ATPROTO_PRIVATE_KEY='{"kty":"EC","crv":"P-256",...}'
 OPERATOR_DIDS=did:plc:your-own-did
 ```
 
-### Production `.env` example (legacy Headscale mode)
-
-```sh
-DATABASE_URL=postgresql://atproto_tailnet:strong-password@postgres:5432/atproto_tailnet
-SESSION_SECRET=a1b2c3d4e5f6...   # openssl rand -hex 32
-PORT=3000
-PUBLIC_URL=https://tailnets.yourdomain.com
-BASE_DOMAIN=ts.yourdomain.com
-HEADSCALE_IMAGE=headscale/headscale:0.29.1
-HEADSCALE_PORT_RANGE_START=10001
-HEADSCALE_PORT_RANGE_END=10100
-HEADSCALE_DATA_DIR=/data/headscale
-CADDY_ADMIN_URL=http://caddy:2019
-LOG_LEVEL=info
-TLS_STRATEGY=on-demand
-ATPROTO_PRIVATE_KEY='{"kty":"EC","crv":"P-256",...}'
-OPERATOR_DIDS=did:plc:your-own-did
-```
-
 ---
 
 ## First deployment on DigitalOcean
 
-This procedure installs the coordinator-mode stack on one Droplet. It uses the
+This procedure installs the stack on one Droplet. It uses the
 `digitalocean` TLS strategy (DNS-01 wildcard certificate). For the commands
 that an agent can run without help, see
 [`deploy/digitalocean/AGENT.md`](../deploy/digitalocean/AGENT.md).
@@ -490,18 +448,18 @@ version and prints a warning. Go checks each module against
 
 ### Caddyfile
 
-The production Caddyfiles (`Caddyfile.coordinator.production` and
-`Caddyfile.production`) import the TLS strategy from a mounted directory
-(`/etc/caddy/tls-strategy/`). The compose files mount the
-correct strategy automatically, based on `TLS_STRATEGY`. Set `APP_DOMAIN` and
+The production Caddyfile (`Caddyfile.coordinator.production`) imports the
+TLS strategy from a mounted directory (`/etc/caddy/tls-strategy/`). The
+compose file mounts the correct strategy automatically, based on
+`TLS_STRATEGY`. Set `APP_DOMAIN` and
 `BASE_DOMAIN` in `.env`. You do not need to edit the Caddyfile.
 
 ---
 
-## Docker Compose — Coordinator mode (recommended)
+## Docker Compose
 
-The coordinator stack runs all services as containers. It does not need the
-Docker socket:
+The stack (`docker-compose.coordinator.yml`) runs all services as containers.
+It does not need the Docker socket:
 
 ```sh
 git clone https://github.com/your-org/atproto-tailnet.git
@@ -623,48 +581,6 @@ docker compose -f docker-compose.coordinator.yml up -d
 
 ---
 
-## Docker Compose — Legacy Headscale mode
-
-Use this mode for deployments that use one Headscale container for each
-tenant:
-
-```sh
-git clone https://github.com/your-org/atproto-tailnet.git
-cd atproto-tailnet
-
-cp .env.example .env
-# Edit .env with production values
-
-docker compose -f docker-compose.production.yml up -d
-```
-
-This command starts the app, PostgreSQL, and Caddy. The app accesses the Docker
-socket through a bind mount. The app can then create Headscale containers on
-the host.
-
-The Caddy admin API listens on `10.250.250.2:2019` on the private network
-`caddy_admin`. Only Caddy and the app (`10.250.250.3`) are on this network.
-The tenant Headscale containers and the other services cannot reach the admin
-API. This is the same as in the coordinator stack. If you upgrade from an
-older version, run `docker compose -f docker-compose.production.yml up -d`
-for both services, so that they join the new network.
-
-### Updating
-
-```sh
-git pull
-docker compose -f docker-compose.production.yml build app
-docker compose -f docker-compose.production.yml up -d app
-```
-
-### Viewing logs
-
-```sh
-docker compose -f docker-compose.production.yml logs -f app
-```
-
----
-
 ## Platform-specific guides
 
 These guides give detailed setup instructions for each platform:
@@ -694,32 +610,20 @@ curl -f https://tailnets.yourdomain.com/health
 
 ### PostgreSQL
 
-Use the compose file of your mode. The example uses the Headscale mode file.
-For coordinator mode, use `docker-compose.coordinator.yml`.
-
 ```sh
 # Manual dump
-docker compose -f docker-compose.production.yml \
+docker compose -f docker-compose.coordinator.yml \
   exec -T postgres pg_dump -U atproto_tailnet atproto_tailnet | gzip > backup.sql.gz
 
 # Restore
-gunzip -c backup.sql.gz | docker compose -f docker-compose.production.yml \
+gunzip -c backup.sql.gz | docker compose -f docker-compose.coordinator.yml \
   exec -T postgres psql -U atproto_tailnet atproto_tailnet
 ```
 
 ### Coordinator control key
 
-In coordinator mode, also back up the `coord_data` volume. It holds the Noise
-control key. See [Backups](#backups) in Droplet hardening.
-
-### Headscale data
-
-The `HEADSCALE_DATA_DIR` directory contains the configuration files and SQLite
-databases of each tenant. Back up the complete directory:
-
-```sh
-tar czf headscale-backup-$(date +%Y%m%d).tar.gz /data/headscale/
-```
+Also back up the `coord_data` volume. It holds the Noise control key. See
+[Backups](#backups) in Droplet hardening.
 
 ---
 
@@ -736,15 +640,11 @@ tar czf headscale-backup-$(date +%Y%m%d).tar.gz /data/headscale/
   for the rate limits.
 - `COORDINATOR_API_KEY` and `COORD_ADMIN_KEY` must be equal and strong. This
   key protects all admin operations on the coordinator.
-- **Coordinator mode**: The coordinator listens on port 9443. The compose file
+- The coordinator listens on port 9443. The compose file
   does not publish this port. Do not let the public internet reach it. The
   coordinator admin API uses constant-time Bearer token authentication.
 - Docker-published ports bypass `ufw`. Use the firewall of your cloud
   provider. See [Droplet hardening](#droplet-hardening).
-- **Headscale mode**: The Docker socket mount gives the app root-equivalent
-  access to the host. Harden the host and make sure the app is the only
-  consumer. Use a firewall to let only Tailscale protocol traffic (DERP/STUN)
-  reach the Headscale ports (10001-10100).
 - The app has built-in rate limiting (10 req/min for auth, 60 req/min for the
   API).
 - The coordinator limits the request body to 2 MiB on all routes.

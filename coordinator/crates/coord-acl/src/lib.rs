@@ -134,9 +134,9 @@ mod serde_tests {
     use super::AclPolicy;
 
     #[test]
-    fn rejects_headscale_shaped_policy() {
-        let hs = r#"{"acls":[{"action":"accept","src":["*"],"dst":["*:*"]}]}"#;
-        assert!(serde_json::from_str::<AclPolicy>(hs).is_err());
+    fn rejects_acl_policy_file_shape() {
+        let file = r#"{"acls":[{"action":"accept","src":["*"],"dst":["*:*"]}]}"#;
+        assert!(serde_json::from_str::<AclPolicy>(file).is_err());
     }
 
     #[test]

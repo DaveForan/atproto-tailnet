@@ -47,7 +47,7 @@ Claude can use these tools:
 | Area | Tools |
 |------|-------|
 | Account | `whoami`, `list_tailnets`, `create_tailnet`, `get_tailnet` |
-| Devices | `list_devices`, `remove_device`, `list_device_approvals`, `approve_device`, `reject_device` |
+| Devices | `list_devices`, `remove_device` |
 | Members | `list_members`, `remove_member`, `invite`, `list_invitations`, `revoke_invitation` |
 | Join requests | `list_join_requests`, `approve_join_request`, `reject_join_request` |
 | Auth keys | `list_auth_keys`, `create_auth_key`, `revoke_auth_key` |

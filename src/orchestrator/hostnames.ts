@@ -10,7 +10,6 @@ import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { tenants, tenantHostnames } from "../db/schema.js";
 import { sharedControlUrl, tenantPublicUrl } from "../config.js";
-import { useCoordinator } from "./control-client.js";
 
 /** The db client or an open transaction. */
 export type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
@@ -71,14 +70,14 @@ export async function primaryHostname(tenantId: string, fallbackSlug?: string): 
   return t?.slug ?? "";
 }
 
-/** True when every tailnet's devices use one shared control URL (coordinator mode + CONTROL_DOMAIN). */
+/** True when every tailnet's devices use one shared control URL (`CONTROL_DOMAIN` is set). */
 export function usesSharedControlUrl(): boolean {
-  return useCoordinator && sharedControlUrl() !== null;
+  return sharedControlUrl() !== null;
 }
 
 /**
- * Login server URL for new devices. In coordinator mode the pre-auth key alone selects the tailnet.
- * Headscale mode has one server per tailnet, so it uses the primary address.
+ * Login server URL for new devices. The pre-auth key or the sign-in selects the tailnet.
+ * Without `CONTROL_DOMAIN` each tailnet has its own control name, so this is the primary address.
  */
 export async function tenantLoginServerFor(tenant: { id: string; slug: string }): Promise<string> {
   if (usesSharedControlUrl()) return sharedControlUrl()!;

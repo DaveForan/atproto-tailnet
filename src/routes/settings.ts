@@ -8,7 +8,7 @@ import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/index.js";
 import { tenants, memberships } from "../db/schema.js";
-import { getControlClient } from "../orchestrator/control-client.js";
+import { getCoordinatorClient } from "../orchestrator/control-client.js";
 import { requireAuth, hasPermission, authUserId, sendNotApplied } from "./helpers.js";
 import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
@@ -33,7 +33,6 @@ const settingsBody = z.object({
   requireServiceDeviceApproval: z.boolean().optional(),
   allowAgentTokens: z.boolean().optional(),
   allowMemberAgentTokens: z.boolean().optional(),
-  hibernateAfterDays: z.number().int().min(0).max(365).optional(),
   /** https only (unless WEBHOOK_ALLOW_PRIVATE); null/"" clears it. */
   notificationWebhookUrl: z.string().max(2048).nullable().optional(),
   /** Write-only; null/"" clears it. */
@@ -71,8 +70,6 @@ function settingsView(
     requireServiceDeviceApproval: t.requireServiceDeviceApproval,
     allowAgentTokens: t.allowAgentTokens,
     allowMemberAgentTokens: t.allowMemberAgentTokens,
-    hibernateAfterDays: t.hibernateAfterDays,
-    lastActivityAt: t.lastActivityAt,
     defaultRoleId: t.defaultRoleId,
     notificationWebhookUrl: canManage ? (t.notificationWebhookUrl ?? null) : null,
     hasWebhookSecret: Boolean(t.notificationWebhookSecret),
@@ -269,18 +266,6 @@ settingsRouter.patch(
       });
     }
 
-    if (parsed.data.hibernateAfterDays !== undefined) {
-      updates.hibernateAfterDays = parsed.data.hibernateAfterDays;
-      logAudit({
-        tenantId: result.tenant.id,
-        actorUserId: authUserId(req),
-        action: "tenant_settings_updated",
-        targetType: "tenant",
-        targetId: result.tenant.id,
-        metadata: { hibernateAfterDays: parsed.data.hibernateAfterDays },
-      });
-    }
-
     await db
       .update(tenants)
       .set(updates)
@@ -299,7 +284,7 @@ settingsRouter.patch(
       // Lockdown is already on at this point; a revocation failure is logged,
       // never turned into an error response.
       try {
-        const client = getControlClient(result.tenant);
+        const client = getCoordinatorClient(result.tenant);
         const keysRevoked = await revokeAllTenantKeys(result.tenant.id, client);
         logAudit({
           tenantId: result.tenant.id,

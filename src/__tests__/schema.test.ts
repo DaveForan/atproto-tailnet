@@ -6,7 +6,6 @@ import {
   tenantStatusEnum,
   invitationStatusEnum,
   auditActionEnum,
-  deviceApprovalStatusEnum,
   joinRequestStatusEnum,
   agentTokenStatusEnum,
   federationStatusEnum,
@@ -67,7 +66,6 @@ describe("enum value arrays have no duplicates", () => {
     tenantStatusEnum,
     invitationStatusEnum,
     auditActionEnum,
-    deviceApprovalStatusEnum,
     joinRequestStatusEnum,
     agentTokenStatusEnum,
     federationStatusEnum,
@@ -85,7 +83,6 @@ describe("enum value arrays have no duplicates", () => {
     expect([...tenantStatusEnum.enumValues]).toEqual([
       "provisioning",
       "running",
-      "stopped",
       "error",
       "deleted",
     ]);
@@ -111,7 +108,7 @@ describe("enum value arrays have no duplicates", () => {
 describe("legacy schema", () => {
   it("no longer exports the dropped tables and enums", async () => {
     const schema: Record<string, unknown> = await import("../db/schema.js");
-    for (const name of ["services", "serviceDevices", "boardPosts", "serviceStatusEnum", "serviceDeviceStatusEnum", "boardPostStatusEnum", "memberRoleEnum"]) {
+    for (const name of ["services", "serviceDevices", "boardPosts", "serviceStatusEnum", "serviceDeviceStatusEnum", "boardPostStatusEnum", "memberRoleEnum", "deviceApprovals", "deviceLocks", "deviceApprovalStatusEnum"]) {
       expect(schema[name]).toBeUndefined();
     }
     expect("role" in (schema.memberships as object)).toBe(false);

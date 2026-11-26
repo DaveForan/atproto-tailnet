@@ -5,10 +5,9 @@ import { securityService } from "../services/security";
 import { boardsService, type MyDevice, type PendingPost } from "../services/boards";
 import { sharingService, type Person, type Share } from "../services/sharing";
 import { deviceService } from "../services/devices";
-import type { DeviceApproval, Invitation, JoinRequest, WaitingDevice, WaitingDevices } from "../lib/types";
+import type { Invitation, JoinRequest, WaitingDevice, WaitingDevices } from "../lib/types";
 
 interface Loaded {
-  approvals: DeviceApproval[];
   joinRequests: JoinRequest[];
   pending: { posts: PendingPost[] };
   friends: { incoming: Person[] };
@@ -19,7 +18,6 @@ interface Loaded {
 
 export interface Attention {
   invitations: Invitation[];
-  approvals: DeviceApproval[];
   joinRequests: JoinRequest[];
   posts: PendingPost[];
   friendRequests: Person[];
@@ -37,7 +35,6 @@ export interface Attention {
 }
 
 const FALLBACK: Loaded = {
-  approvals: [],
   joinRequests: [],
   pending: { posts: [] },
   friends: { incoming: [] },
@@ -56,11 +53,9 @@ export function useAttention() {
 
 export function AttentionProvider({ children }: { children: ReactNode }) {
   const { invitations, hasPerm } = useSession();
-  const canDevices = hasPerm("approve_devices");
   const canJoins = hasPerm("approve_joins");
   const canPosts = hasPerm("approve_services");
   const loaders: TenantLoaders<Loaded> = {
-    approvals: (tid) => (canDevices ? securityService.deviceApprovals(tid) : Promise.resolve([])),
     joinRequests: (tid) => (canJoins ? securityService.joinRequests(tid) : Promise.resolve([])),
     pending: (tid) => (canPosts ? boardsService.pending(tid) : Promise.resolve({ posts: [] })),
     friends: (tid) => sharingService.friends(tid),
@@ -69,7 +64,7 @@ export function AttentionProvider({ children }: { children: ReactNode }) {
     waiting: (tid) => deviceService.waiting(tid),
   };
   const { data, loading, error, reload } = useTenantParallel(loaders, FALLBACK, {
-    deps: [canDevices, canJoins, canPosts],
+    deps: [canJoins, canPosts],
     keepPreviousOnReload: true,
   });
 
@@ -81,7 +76,6 @@ export function AttentionProvider({ children }: { children: ReactNode }) {
   }, [reload]);
 
   const value = useMemo<Attention>(() => {
-    const approvals = data.approvals.filter((a) => a.status === "pending");
     const joinRequests = data.joinRequests.filter((j) => j.status === "pending");
     const posts = data.pending.posts;
     const friendRequests = data.friends.incoming;
@@ -91,7 +85,6 @@ export function AttentionProvider({ children }: { children: ReactNode }) {
     const mineToAnswer = waitingMine.filter((d) => d.canAdmit).length;
     return {
       invitations,
-      approvals,
       joinRequests,
       posts,
       friendRequests,
@@ -100,7 +93,7 @@ export function AttentionProvider({ children }: { children: ReactNode }) {
       waitingMine,
       waitingQueue,
       count:
-        invitations.length + approvals.length + joinRequests.length + posts.length + friendRequests.length + shares.length +
+        invitations.length + joinRequests.length + posts.length + friendRequests.length + shares.length +
         mineToAnswer + waitingQueue.length,
       loading,
       error,

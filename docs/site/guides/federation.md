@@ -6,8 +6,8 @@ title: Federation
 
 > **Status: off by default.** Federation is not available on a standard instance. The code exists, but the service hides it unless you set `FEDERATION_ENABLED=true`. Keep it off for these reasons:
 >
-> - The federation data plane needs Docker. Only the legacy Headscale mode has it.
-> - Cross-instance traffic is not implemented. In the coordinator stack, links carry no traffic.
+> - Federation is deferred (ADR-0033). Its relay containers need the Docker socket, and the standard stack does not mount it.
+> - Cross-instance traffic is not implemented. Links carry no traffic.
 >
 > When federation is off, the federation and traversal API paths return 404. The broker does not start. The dashboard hides the **Federation**, **Traversal policy** and **Credentials** settings sections. The Rust federation endpoints also need `COORD_FEDERATION_ENABLED=true`. The rest of this guide describes the design and the code.
 
@@ -148,7 +148,7 @@ When more than one path exists to the same prefix, the coordinator selects the b
 - A public HTTPS URL for each instance (federation messages travel over the internet)
 - `FEDERATION_KEY_ENCRYPTION_KEY` in `.env` (64 hex characters)
 - `FEDERATION_ENABLED=true` in `.env` on each instance
-- The legacy Headscale mode, if you need traffic across links (see the status note above)
+- The Docker socket mounted into the app container, and `FEDERATION_RELAY_NETWORK`, for the relay containers (see the status note above)
 
 ### Configure posture
 

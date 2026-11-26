@@ -6,6 +6,8 @@
 **Depends On:** ADR-0001 (control plane choice), ADR-0009 (hierarchical tenancy)
 **Superseded By:** ADR-0023 (Rust mesh coordinator)
 
+> Note (2026-11-26): the Headscale mode was removed (ADR-0040). The coordinator is the only control plane.
+
 ## Context
 
 ADR-0002 chose container-per-tenant orchestration over a Headscale fork. That

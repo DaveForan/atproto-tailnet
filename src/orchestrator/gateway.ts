@@ -4,7 +4,6 @@
  * domain (ADR-0038). The coordinator says so in its health answer; the answer is kept for a minute.
  */
 
-import { config } from "../config.js";
 import { getCoordinatorClient } from "./control-client.js";
 
 const TTL_MS = 60_000;
@@ -13,7 +12,6 @@ let cached: { at: number; value: Answer } | null = null;
 
 async function ask(now: number): Promise<Answer> {
   const off: Answer = { gateway: false, serviceDomain: null };
-  if (!config.coordinatorUrl) return off;
   if (cached && now - cached.at < TTL_MS) return cached.value;
   const health = await getCoordinatorClient().probeHealth(5_000);
   // An unreachable coordinator is not remembered: ask again next time

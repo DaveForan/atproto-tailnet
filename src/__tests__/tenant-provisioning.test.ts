@@ -60,16 +60,12 @@ vi.mock("../db/index.js", async () => {
     },
   };
 });
-vi.mock("../orchestrator/ports.js", () => ({ allocateTenantPort: vi.fn(async () => -7) }));
 vi.mock("../orchestrator/prefix-allocator.js", () => ({
   allocateTenantPrefixes: vi.fn(async () => ({ ipv4Prefix: "100.64.0.0/24", ipv6Prefix: "fd7a::/64" })),
 }));
-vi.mock("../orchestrator/headscale.js", () => ({ adoptInstance: vi.fn(), createInstance: vi.fn() }));
 vi.mock("../orchestrator/caddy.js", () => ({ syncTenantRoutes: vi.fn(async () => {}) }));
 vi.mock("../orchestrator/control-client.js", () => ({
-  useCoordinator: true,
-  getControlClient: vi.fn(),
-  getCoordinatorClient: () => ({ createTenant: h.createTenant, setHeadscalePolicy: vi.fn(), deleteTenant: vi.fn() }),
+  getCoordinatorClient: () => ({ createTenant: h.createTenant, setAclPolicyFile: vi.fn(), deleteTenant: vi.fn() }),
 }));
 vi.mock("../orchestrator/hostnames.js", async (orig) => {
   const real = await orig<typeof import("../orchestrator/hostnames.js")>();
@@ -120,7 +116,8 @@ describe("provisionTenant", () => {
     expect(membership).toMatchObject({ userId: "u-1", isOriginator: true });
     expect(membership).not.toHaveProperty("role");
     const tenant = h.inserts.find((i) => i.values.table === "tenants")!.values;
-    expect(tenant).toMatchObject({ name: "Dave's tailnet", ownerUserId: "u-1", port: -7, accessMode: "member" });
+    expect(tenant).toMatchObject({ name: "Dave's tailnet", ownerUserId: "u-1", accessMode: "member" });
+    expect(tenant).not.toHaveProperty("port");
     expect(tenant).not.toHaveProperty("parentId");
     expect(h.claimDefaultTailnet).toHaveBeenCalledWith(expect.stringMatching(/^tenants-/), "did:plc:owner");
   });
@@ -161,12 +158,11 @@ describe("createTenantRecord with a parent", () => {
     id: "p-1",
     path: "t-root",
     depth: 1,
-    ipAllocation: "random",
     maxDevices: 20,
     maxMembers: 5,
   } as typeof tenants.$inferSelect;
 
-  it("inherits hierarchy, IP allocation and caps and uses the given slug as address", async () => {
+  it("inherits hierarchy and caps and uses the given slug as address", async () => {
     await createTenantRecord({ ownerUserId: "u-1", name: "Eng", parent, slug: "eng", hostname: "eng" });
     expect(h.transactions).toBe(1);
     const tenant = h.inserts.find((i) => i.values.table === "tenants")!.values;
@@ -175,7 +171,6 @@ describe("createTenantRecord with a parent", () => {
       parentId: "p-1",
       path: "t-root.eng",
       depth: 2,
-      ipAllocation: "random",
       maxDevices: 20,
       maxMembers: 5,
       maxSubCollectives: 10,

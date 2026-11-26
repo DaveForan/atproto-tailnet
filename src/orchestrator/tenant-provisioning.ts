@@ -1,17 +1,15 @@
 /**
  * @module orchestrator/tenant-provisioning
  * Creates a tailnet: the database records ({@link createTenantRecord}), then
- * its control plane ({@link provisionTenantInstance}), after the commit.
+ * its tenant in the coordinator ({@link provisionTenantInstance}), after the commit.
  */
 
 import { eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { users, tenants, memberships, roles } from "../db/schema.js";
-import { allocateTenantPort } from "./ports.js";
 import { allocateTenantPrefixes } from "./prefix-allocator.js";
-import { adoptInstance, createInstance } from "./headscale.js";
 import { syncTenantRoutes } from "./caddy.js";
-import { getControlClient, getCoordinatorClient, useCoordinator } from "./control-client.js";
+import { getCoordinatorClient } from "./control-client.js";
 import {
   generateAvailableFriendlyName,
   generateInternalSlug,
@@ -48,7 +46,7 @@ export interface NewTenantRecord {
   hostname?: string;
 }
 
-/** Attempts per tenant insert; the port, slug or hostname can race with another insert. */
+/** Attempts per tenant insert; the slug or hostname can race with another insert. */
 const INSERT_ATTEMPTS = 3;
 
 /**
@@ -62,8 +60,6 @@ export async function createTenantRecord(rec: NewTenantRecord): Promise<Tenant> 
   for (let attempt = 0; ; attempt++) {
     const slug = rec.slug ?? (await generateUniqueSlug());
     const hostname = rec.hostname ?? (await generateAvailableFriendlyName());
-    // Coordinator tenants have no Headscale container, so they get a placeholder port
-    const port = await allocateTenantPort(!useCoordinator);
     try {
       return await db.transaction(async (tx) => {
         const [tenant] = await tx
@@ -72,10 +68,8 @@ export async function createTenantRecord(rec: NewTenantRecord): Promise<Tenant> 
             slug,
             name: rec.name,
             ownerUserId: rec.ownerUserId,
-            port,
-            apiKey: "",
             status: "provisioning",
-            accessMode: useCoordinator ? "member" : "open",
+            accessMode: "member",
             ipv4Prefix: prefixes.ipv4Prefix,
             ipv6Prefix: prefixes.ipv6Prefix,
             ...(parent && {
@@ -83,7 +77,6 @@ export async function createTenantRecord(rec: NewTenantRecord): Promise<Tenant> 
               path: parent.path ? `${parent.path}.${slug}` : slug,
               depth: parent.depth + 1,
               maxSubCollectives: 10,
-              ipAllocation: parent.ipAllocation,
               // An unlimited (0) child under a capped parent would bypass the parent's caps
               maxDevices: parent.maxDevices,
               maxMembers: parent.maxMembers,
@@ -132,7 +125,7 @@ export async function createTenantRecord(rec: NewTenantRecord): Promise<Tenant> 
 }
 
 /**
- * Creates a top-level tenant and provisions its control plane after the commit.
+ * Creates a top-level tenant and registers it with the coordinator after the commit.
  * Callers must check `canCreateTailnet` first.
  */
 export async function provisionTenant(
@@ -152,30 +145,25 @@ export async function provisionTenant(
   }
 
   setImmediate(() => {
-    void provisionTenantInstance(tenant.id, tenant.slug, tenant.port);
+    void provisionTenantInstance(tenant.id, tenant.slug);
   });
   return tenant;
 }
 
-/** Brings up the tenant's control plane. On failure it marks the tenant "error" and returns false. */
+/** Registers the tenant with the coordinator. On failure it marks the tenant "error" and returns false. */
 export async function provisionTenantInstance(
   tenantId: string,
   slug: string,
-  port: number,
   opts: { parentCoordinatorTenantId?: string | null } = {},
 ): Promise<boolean> {
   try {
-    if (useCoordinator) {
-      await provisionViaCoordinator(tenantId, slug, port, opts.parentCoordinatorTenantId ?? null);
-    } else {
-      await provisionViaHeadscale(tenantId, slug, port);
-    }
+    await provisionViaCoordinator(tenantId, slug, opts.parentCoordinatorTenantId ?? null);
 
     await syncTenantRoutes().catch((err) =>
       logger.error({ tenantSlug: slug, err }, "failed to sync Caddy routes"),
     );
 
-    logger.info({ tenantSlug: slug, port, mode: useCoordinator ? "coordinator" : "headscale" }, "tenant provisioned");
+    logger.info({ tenantSlug: slug }, "tenant provisioned");
     return true;
   } catch (err) {
     logger.error({ tenantSlug: slug, err }, "failed to provision tenant");
@@ -187,12 +175,9 @@ export async function provisionTenantInstance(
   }
 }
 
-const COORDINATOR_API_KEY_SENTINEL = "__coordinator__";
-
 async function provisionViaCoordinator(
   tenantId: string,
   slug: string,
-  _port: number,
   parentCoordinatorTenantId: string | null,
 ): Promise<void> {
   const coordTenant = await getCoordinatorClient().createTenant(slug, parentCoordinatorTenantId);
@@ -200,19 +185,14 @@ async function provisionViaCoordinator(
   try {
     await db
       .update(tenants)
-      .set({
-        coordinatorTenantId: coordTenant.id,
-        apiKey: COORDINATOR_API_KEY_SENTINEL,
-        status: "running",
-        updatedAt: new Date(),
-      })
+      .set({ coordinatorTenantId: coordTenant.id, status: "running", updatedAt: new Date() })
       .where(eq(tenants.id, tenantId));
 
     // Own devices only by default (ADR-0036); the coordinator stores the mode
     await syncTenantAccess(tenantId);
 
     // Default allow-all, translated to the coordinator's {default_deny, rules} model
-    await getCoordinatorClient({ coordinatorTenantId: coordTenant.id }).setHeadscalePolicy({
+    await getCoordinatorClient({ coordinatorTenantId: coordTenant.id }).setAclPolicyFile({
       acls: [{ action: "accept", src: ["*"], dst: ["*:*"] }],
     });
   } catch (err) {
@@ -224,32 +204,4 @@ async function provisionViaCoordinator(
     }
     throw err;
   }
-}
-
-async function provisionViaHeadscale(
-  tenantId: string,
-  slug: string,
-  port: number,
-): Promise<void> {
-  const instance =
-    (await adoptInstance(slug, port)) ?? (await createInstance(slug, port));
-
-  await db
-    .update(tenants)
-    .set({
-      apiKey: instance.apiKey,
-      containerId: instance.containerId,
-      status: "running",
-      updatedAt: new Date(),
-    })
-    .where(eq(tenants.id, tenantId));
-
-  const client = getControlClient({
-    port,
-    apiKey: instance.apiKey,
-  });
-
-  await client.setPolicy({
-    acls: [{ action: "accept", src: ["*"], dst: ["*:*"] }],
-  });
 }

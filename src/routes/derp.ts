@@ -1,6 +1,6 @@
 /**
  * @module routes/derp
- * Per-tenant DERP relays: custom regions, embedded relay and public relay toggles (manage_acl; writes need step-up).
+ * Per-tenant DERP relays: custom regions and the switch for the instance's default relays (manage_acl; writes need step-up).
  */
 
 import { Router } from "express";
@@ -9,11 +9,6 @@ import { eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { tenants, type DerpRegion } from "../db/schema.js";
 import {
-  updateInstanceConfig,
-  stopInstance,
-  startInstance,
-} from "../orchestrator/headscale.js";
-import {
   requireAuth,
   param,
   authUserId,
@@ -21,7 +16,7 @@ import {
 import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
-import { getCoordinatorClient, useCoordinator } from "../orchestrator/control-client.js";
+import { getCoordinatorClient } from "../orchestrator/control-client.js";
 import { parseBody } from "./validation.js";
 import { stepUpForSession } from "../auth/step-up.js";
 
@@ -46,7 +41,6 @@ export const derpRegionSchema = z.object({
 
 export const derpConfigBody = z.object({
   regions: z.array(derpRegionSchema).max(20).optional(),
-  embeddedDerpEnabled: z.boolean().optional(),
   usePublicDerp: z.boolean().optional(),
 });
 
@@ -59,7 +53,6 @@ derpRouter.get(
 
     res.json({
       regions: result.tenant.customDerpRegions ?? [],
-      embeddedDerpEnabled: useCoordinator ? false : result.tenant.embeddedDerpEnabled,
       usePublicDerp: result.tenant.usePublicDerp,
     });
   },
@@ -74,113 +67,37 @@ derpRouter.put(
     const tenantId = param(req, "tenantId");
     const result = tenantCtx(res);
 
-    if (useCoordinator) {
-      const parsed = parseBody(derpConfigBody, req, res);
-      if (!parsed) return;
-      const { tenant } = result;
-      if (!tenant.coordinatorTenantId) {
-        res.status(409).json({ error: "Tenant is not registered with the coordinator yet" });
-        return;
-      }
-      const regions: DerpRegion[] =
-        parsed.data.regions ?? (tenant.customDerpRegions as DerpRegion[]) ?? [];
-      const usePublicDerp = parsed.data.usePublicDerp ?? tenant.usePublicDerp;
-      if (regions.length === 0 && !usePublicDerp) {
-        res.status(400).json({ error: "Enable public relays or add at least one custom region" });
-        return;
-      }
-      try {
-        const client = getCoordinatorClient(tenant);
-        await client.setDerp(regions, usePublicDerp);
-        await db
-          .update(tenants)
-          .set({ customDerpRegions: regions, usePublicDerp, updatedAt: new Date() })
-          .where(eq(tenants.id, tenantId));
-        logAudit({
-          tenantId,
-          actorUserId: authUserId(req),
-          action: "derp_updated",
-          targetType: "tenant",
-          targetId: tenantId,
-          metadata: { coordinator: true, regionCount: regions.length, usePublicDerp },
-        });
-        res.json({ status: "updated", regions, embeddedDerpEnabled: false, usePublicDerp });
-      } catch (err) {
-        logger.error({ tenantId, err }, "failed to update coordinator DERP config");
-        res.status(502).json({ error: "Failed to update DERP configuration on coordinator" });
-      }
-      return;
-    }
-
     const parsed = parseBody(derpConfigBody, req, res);
     if (!parsed) return;
-
     const { tenant } = result;
-    const regions: DerpRegion[] =
-      parsed.data.regions ?? (tenant.customDerpRegions as DerpRegion[]) ?? [];
-    const embeddedDerpEnabled =
-      parsed.data.embeddedDerpEnabled ?? tenant.embeddedDerpEnabled;
-    const usePublicDerp =
-      parsed.data.usePublicDerp ?? tenant.usePublicDerp;
-
-    const embeddedChanged = embeddedDerpEnabled !== tenant.embeddedDerpEnabled;
-
+    if (!tenant.coordinatorTenantId) {
+      res.status(409).json({ error: "Tenant is not registered with the coordinator yet" });
+      return;
+    }
+    const regions: DerpRegion[] = parsed.data.regions ?? (tenant.customDerpRegions as DerpRegion[]) ?? [];
+    const usePublicDerp = parsed.data.usePublicDerp ?? tenant.usePublicDerp;
+    if (regions.length === 0 && !usePublicDerp) {
+      res.status(400).json({ error: "Enable public relays or add at least one custom region" });
+      return;
+    }
     try {
-      await updateInstanceConfig(
-        tenant.slug,
-        tenant.port,
-        {
-          derp: {
-            embeddedDerpEnabled,
-            usePublicDerp,
-            hasCustomRegions: regions.length > 0,
-          },
-          ipv4Prefix: tenant.ipv4Prefix,
-          ipv6Prefix: tenant.ipv6Prefix,
-          ipAllocation: tenant.ipAllocation,
-        },
-        regions,
-      );
-
+      await getCoordinatorClient(tenant).setDerp(regions, usePublicDerp);
       await db
         .update(tenants)
-        .set({
-          customDerpRegions: regions,
-          embeddedDerpEnabled,
-          usePublicDerp,
-          updatedAt: new Date(),
-        })
+        .set({ customDerpRegions: regions, usePublicDerp, updatedAt: new Date() })
         .where(eq(tenants.id, tenantId));
-
-      if (embeddedChanged && tenant.containerId && tenant.status === "running") {
-        await stopInstance(tenant.containerId);
-        await startInstance(tenant.containerId);
-      }
-
       logAudit({
         tenantId,
         actorUserId: authUserId(req),
         action: "derp_updated",
         targetType: "tenant",
         targetId: tenantId,
-        metadata: {
-          regionCount: regions.length,
-          embeddedDerpEnabled,
-          usePublicDerp,
-          containerRestarted: embeddedChanged,
-        },
+        metadata: { regionCount: regions.length, usePublicDerp },
       });
-
-      res.json({
-        status: "updated",
-        regions,
-        embeddedDerpEnabled,
-        usePublicDerp,
-        containerRestarted: embeddedChanged,
-      });
+      res.json({ status: "updated", regions, usePublicDerp });
     } catch (err) {
       logger.error({ tenantId, err }, "failed to update DERP config");
-      res.status(500).json({ error: "Failed to update DERP configuration" });
+      res.status(502).json({ error: "Failed to update the DERP configuration" });
     }
   },
 );

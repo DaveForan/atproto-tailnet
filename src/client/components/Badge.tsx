@@ -22,7 +22,6 @@ export function StatusBadge({ status }: { status: string }) {
     case "active":
     case "approved":
       return <Badge variant="running">{status}</Badge>;
-    case "stopped":
     case "revoked":
     case "rejected":
       return <Badge variant="stopped">{status}</Badge>;

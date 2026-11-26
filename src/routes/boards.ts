@@ -26,7 +26,6 @@ import { roleAllows } from "../access/compiler.js";
 import { validateHostname, tenantIdForPublicLink, primaryHostname } from "../orchestrator/hostnames.js";
 import { lintBoardText, parseBoardText, renderBoardHtml } from "../shared/board-text.js";
 import { config } from "../config.js";
-import { useCoordinator } from "../orchestrator/control-client.js";
 import { parseBody } from "./validation.js";
 import { stepUpForSession } from "../auth/step-up.js";
 
@@ -135,7 +134,7 @@ async function loadPost(tenantId: string, postId: string): Promise<Post | null> 
 boardsRouter.get("/api/tenants/:tenantId/my-devices", requireAuth, tenantGuard(), async (req, res) => {
   const result = tenantCtx(res);
   try {
-    res.json({ devices: await listUserDevices(result.tenant, authUserId(req)), supported: useCoordinator });
+    res.json({ devices: await listUserDevices(result.tenant, authUserId(req)) });
   } catch {
     res.status(502).json({ error: "Could not list devices" });
   }
@@ -707,7 +706,6 @@ boardsRouter.get("/api/tenants/:tenantId/access-mode", requireAuth, tenantGuard(
   const result = tenantCtx(res);
   res.json({
     mode: result.tenant.accessMode === "member" ? "member" : "open",
-    supported: useCoordinator,
     canEdit: hasPermission(result.membership, result.role, "manage_acl", req),
     // The caller's own choice: do my devices follow the open policy?
     mine: result.membership.openAccess,
@@ -754,10 +752,6 @@ boardsRouter.put("/api/tenants/:tenantId/access-mode", requireAuth, tenantGuard(
   const parsed = z.object({ mode: z.enum(["open", "member"]) }).safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: 'mode must be "open" or "member"' });
-    return;
-  }
-  if (parsed.data.mode === "member" && !useCoordinator) {
-    res.status(409).json({ error: "Member mode needs the coordinator control plane", code: "coordinator_required" });
     return;
   }
   await db

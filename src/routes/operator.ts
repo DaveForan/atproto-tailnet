@@ -31,7 +31,7 @@ import {
 } from "../operator/lifecycle.js";
 import { authUserId, param } from "./helpers.js";
 import { logAudit } from "../audit/log.js";
-import { deleteTenantInstance } from "../orchestrator/tenant-deletion.js";
+import { deleteTenantInstance, hasLiveChildren, HAS_CHILDREN_REFUSAL } from "../orchestrator/tenant-deletion.js";
 import { ACCOUNT_DID_RE, normalizeAccountDid, resolveDidToHandle, resolveHandleToDid } from "../identity/handles.js";
 import { logger } from "../logger.js";
 import { primaryHostname } from "../orchestrator/hostnames.js";
@@ -419,13 +419,8 @@ operatorRouter.delete("/api/operator/tenants/:id", async (req, res) => {
     res.status(404).json({ error: "Tenant not found" });
     return;
   }
-  const [child] = await db
-    .select({ id: tenants.id })
-    .from(tenants)
-    .where(and(eq(tenants.parentId, tenant.id), ne(tenants.status, "deleted")))
-    .limit(1);
-  if (child) {
-    res.status(409).json({ error: "Delete or detach its sub-collectives first", code: "has_children" });
+  if (await hasLiveChildren(tenant.id)) {
+    res.status(409).json(HAS_CHILDREN_REFUSAL);
     return;
   }
   try {

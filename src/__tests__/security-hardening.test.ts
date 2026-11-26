@@ -55,7 +55,8 @@ vi.mock("../db/index.js", () => ({
   pool: {},
 }));
 
-const { notify, resolvesToPublicAddresses, guardedRequest } = vi.hoisted(() => ({
+const { notify, resolvesToPublicAddresses, guardedRequest, setPosture } = vi.hoisted(() => ({
+  setPosture: vi.fn(async (_coordinatorTenantId: string | null, _posture: string) => {}),
   notify: vi.fn(),
   resolvesToPublicAddresses: vi.fn(async (_h: string) => false),
   guardedRequest: vi.fn(async (..._a: unknown[]) => ({ ok: false, status: 404, text: "" })),
@@ -76,17 +77,11 @@ vi.mock("node:dns/promises", async (orig) => ({
   }),
 }));
 vi.mock("../audit/log.js", () => ({ logAudit: vi.fn() }));
-vi.mock("../orchestrator/headscale.js", () => ({
-  startInstance: vi.fn(),
-  stopInstance: vi.fn(),
-  destroyInstance: vi.fn(),
-  adoptInstance: vi.fn(),
-  createInstance: vi.fn(),
-}));
 vi.mock("../orchestrator/caddy.js", () => ({ syncTenantRoutes: vi.fn(async () => {}) }));
-vi.mock("../orchestrator/ports.js", async (orig) => ({
-  ...(await orig<typeof import("../orchestrator/ports.js")>()),
-  releaseTenantPort: vi.fn(async () => {}),
+vi.mock("../orchestrator/control-client.js", () => ({
+  getCoordinatorClient: (tenant?: { coordinatorTenantId: string | null }) => ({
+    setPosture: (posture: string) => setPosture(tenant?.coordinatorTenantId ?? null, posture),
+  }),
 }));
 vi.mock("../auth/atproto.js", () => ({
   getOAuthClient: async () => ({}),
@@ -192,9 +187,7 @@ function tenantRow(over: Record<string, unknown> = {}) {
     path: "acme",
     maxSubCollectives: 10,
     coordinatorTenantId: null,
-    apiKey: "k",
     defaultRoleId: "r1",
-    lastActivityAt: new Date(),
     ...over,
   };
 }
@@ -355,7 +348,7 @@ describe("invitations and tenant state", () => {
   });
 
   it("deleting a tenant revokes its pending invitations", async () => {
-    await deleteTenantInstance(tenantRow({ containerId: null }) as never);
+    await deleteTenantInstance(tenantRow() as never);
     const revoke = writes.find((w) => w.op === "update" && w.table === "invitations" && w.method === "set");
     expect(revoke?.arg).toMatchObject({ status: "revoked" });
     const where = writes.find((w) => w.op === "update" && w.table === "invitations" && w.method === "where");
@@ -491,7 +484,7 @@ describe("tlsCertAllowedForSlug", () => {
 });
 
 describe("PUT /api/tenants/:id/federation/posture", () => {
-  const membership = [{ tenant: tenantRow(), membership: { isOriginator: true, roleId: null }, role: null }];
+  const membership = [{ tenant: tenantRow({ coordinatorTenantId: "c-acme" }), membership: { isOriginator: true, roleId: null }, role: null }];
 
   it("refuses selective with the coordinator's message and stores nothing", async () => {
     results.push(membership);
@@ -499,6 +492,7 @@ describe("PUT /api/tenants/:id/federation/posture", () => {
     expect(r.status).toBe(400);
     expect(r.json).toEqual({ error: "selective posture is not implemented" });
     expect(writes.some((w) => w.op === "update" && w.table === "tenants" && w.method === "set")).toBe(false);
+    expect(setPosture).not.toHaveBeenCalled();
   });
 
   it("accepts closed and open", async () => {
@@ -506,6 +500,7 @@ describe("PUT /api/tenants/:id/federation/posture", () => {
     const r = await call("PUT", `/api/tenants/${TENANT}/federation/posture`, BOB, { posture: "closed" });
     expect(r.status).toBe(200);
     expect(r.json).toEqual({ posture: "closed" });
+    expect(setPosture).toHaveBeenCalledWith("c-acme", "closed");
   });
 });
 

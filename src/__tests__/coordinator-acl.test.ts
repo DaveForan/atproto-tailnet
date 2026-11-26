@@ -1,26 +1,26 @@
 import { describe, it, expect } from "vitest";
 import {
-  headscaleToCoordinatorPolicy,
-  coordinatorToHeadscalePolicy,
+  aclPolicyFileToCoordinator,
+  coordinatorToAclPolicyFile,
   AclTranslationError,
 } from "../orchestrator/coordinator-acl.js";
 
-describe("headscaleToCoordinatorPolicy", () => {
+describe("aclPolicyFileToCoordinator", () => {
   it("translates the default allow-all policy", () => {
     expect(
-      headscaleToCoordinatorPolicy({ acls: [{ action: "accept", src: ["*"], dst: ["*:*"] }] }),
+      aclPolicyFileToCoordinator({ acls: [{ action: "accept", src: ["*"], dst: ["*:*"] }] }),
     ).toEqual({ default_deny: true, rules: [{ src: "*", dst: "*", ports: ["All"] }] });
   });
 
   it("empty acls deny everything", () => {
-    expect(headscaleToCoordinatorPolicy({ acls: [], groups: {}, hosts: {} })).toEqual({
+    expect(aclPolicyFileToCoordinator({ acls: [], groups: {}, hosts: {} })).toEqual({
       default_deny: true,
       rules: [],
     });
   });
 
   it("expands src x dst, resolves hosts and parses ports", () => {
-    const out = headscaleToCoordinatorPolicy({
+    const out = aclPolicyFileToCoordinator({
       acls: [{ action: "accept", src: ["10.0.0.0/8", "web"], dst: ["db:5432", "[fd7a::1]:80,443,1000-2000"] }],
       hosts: { web: "100.64.0.5", db: "100.64.0.6/32" },
       groups: {},
@@ -46,14 +46,14 @@ describe("headscaleToCoordinatorPolicy", () => {
     [{ acls: [], hosts: { bad: "not-an-ip" } }],
     [{ acls: [], ssh: [{ action: "accept" }] }],
   ])("rejects untranslatable policy %#", (policy) => {
-    expect(() => headscaleToCoordinatorPolicy(policy)).toThrow(AclTranslationError);
+    expect(() => aclPolicyFileToCoordinator(policy)).toThrow(AclTranslationError);
   });
 });
 
-describe("coordinatorToHeadscalePolicy", () => {
+describe("coordinatorToAclPolicyFile", () => {
   it("renders the coordinator's unset default as allow-all", () => {
     expect(
-      coordinatorToHeadscalePolicy({
+      coordinatorToAclPolicyFile({
         default_deny: false,
         rules: [{ src: "*", dst: "*", ports: [{ range: [0, 65535] }] }],
       }).acls,
@@ -64,12 +64,12 @@ describe("coordinatorToHeadscalePolicy", () => {
     const policy = {
       acls: [{ action: "accept", src: ["10.0.0.0/8"], dst: ["100.64.0.6/32:22,80-90"] }],
     };
-    const back = coordinatorToHeadscalePolicy(headscaleToCoordinatorPolicy(policy));
+    const back = coordinatorToAclPolicyFile(aclPolicyFileToCoordinator(policy));
     expect(back.acls).toEqual(policy.acls);
-    expect(headscaleToCoordinatorPolicy(back)).toEqual(headscaleToCoordinatorPolicy(policy));
+    expect(aclPolicyFileToCoordinator(back)).toEqual(aclPolicyFileToCoordinator(policy));
   });
 
   it("renders default-deny with no rules as empty acls", () => {
-    expect(coordinatorToHeadscalePolicy({ default_deny: true, rules: [] }).acls).toEqual([]);
+    expect(coordinatorToAclPolicyFile({ default_deny: true, rules: [] }).acls).toEqual([]);
   });
 });

@@ -35,9 +35,8 @@ export type TenantForUser = {
   role: typeof roles.$inferSelect | null;
 };
 
-const ACTIVITY_DEBOUNCE_MS = 5 * 60 * 1000;
 
-/** Tenant, membership and role in one query; null for non-members and deleted tenants. Touches `lastActivityAt` at most every 5 min. */
+/** Tenant, membership and role in one query; null for non-members and deleted tenants. */
 export async function getTenantForUser(
   tenantId: string,
   userId: string,
@@ -55,19 +54,7 @@ export async function getTenantForUser(
       ),
     );
 
-  const result = results[0] ?? null;
-
-  if (result) {
-    const sinceActivity = Date.now() - result.tenant.lastActivityAt.getTime();
-    if (sinceActivity > ACTIVITY_DEBOUNCE_MS) {
-      db.update(tenants)
-        .set({ lastActivityAt: new Date() })
-        .where(eq(tenants.id, tenantId))
-        .catch(() => {});
-    }
-  }
-
-  return result;
+  return results[0] ?? null;
 }
 
 /**
@@ -136,7 +123,6 @@ export function isLockedDown(
   return tenant.lockdownMode;
 }
 
-export { toHsUsername } from "../identity/handles.js";
 
 /** Builds the login-server URL for a tenant slug (e.g. `https://my-tenant.ts.example.com`). */
 export function tenantLoginServer(slug: string): string {

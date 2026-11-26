@@ -53,7 +53,7 @@ vi.mock("../access/devices.js", () => ({
   listTenantDevices: async () => Object.values(devices).flat(),
 }));
 vi.mock("../notifications/service.js", () => ({ notify: vi.fn(), notifyUser: vi.fn() }));
-vi.mock("../orchestrator/control-client.js", () => ({ useCoordinator: true, getControlClient: vi.fn() }));
+vi.mock("../orchestrator/control-client.js", () => ({ getCoordinatorClient: vi.fn() }));
 
 import express from "express";
 import type { Request, Response, NextFunction } from "express";
@@ -64,7 +64,7 @@ const T = "11111111-1111-4111-8111-111111111111";
 const ALICE = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const BOB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const POST = "99999999-9999-4999-8999-999999999999";
-const tenant = { id: T, slug: "t-x", lockdownMode: false, boardEnabled: true, lastActivityAt: new Date(), accessMode: "member", controllerBoardText: null, requireServiceApproval: true };
+const tenant = { id: T, slug: "t-x", lockdownMode: false, boardEnabled: true, accessMode: "member", controllerBoardText: null, requireServiceApproval: true };
 // Members hold create_posts unless a test says otherwise
 const ctx = (opts: { originator?: boolean; perms?: string[]; lockdown?: boolean; board?: boolean; review?: boolean } = {}) => [
   {

@@ -123,11 +123,3 @@ export async function resolveHandleToDid(handle: string): Promise<string | null>
 
   return null;
 }
-
-/** Converts an AT Proto handle to a Headscale-safe username (lowercase alphanumeric + hyphens). */
-export function toHsUsername(handle: string): string {
-  return handle
-    .replace(/[^a-z0-9]+/gi, "-")
-    .replace(/^-|-$/g, "")
-    .toLowerCase();
-}
