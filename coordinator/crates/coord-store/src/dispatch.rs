@@ -456,6 +456,15 @@ impl Store {
         }
     }
 
+    /// Moves a node from the hold `from` to the hold `to`. False when its hold is not `from`.
+    pub async fn set_node_hold(&self, node_id: NodeId, from: coord_core::Hold, to: coord_core::Hold) -> Result<bool, CoordError> {
+        match self {
+            Store::Memory(m) => m.set_node_hold(node_id, from, to),
+            Store::Pg(p) => p.set_node_hold(node_id, from, to).await,
+            Store::Sqlite(s) => s.set_node_hold(node_id, from, to).await,
+        }
+    }
+
     pub async fn delete_nodes_by_owner(&self, tenant_id: TenantId, owner: &str) -> Result<Vec<NodeId>, CoordError> {
         match self {
             Store::Memory(m) => m.delete_nodes_by_owner(tenant_id, owner),
@@ -472,6 +481,7 @@ impl Store {
         }
     }
 
+    /// Registers a node with no owner and no hold. The control path uses `register_node_with`, which sets the hold.
     pub async fn register_node(
         &self,
         tenant_id: TenantId,

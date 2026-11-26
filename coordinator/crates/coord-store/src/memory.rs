@@ -614,6 +614,7 @@ impl MemoryStore {
                     // A new identity must not inherit approvals granted to the old one.
                     node.attrs.approved_routes.clear();
                 }
+                node.attrs.hold = coord_core::Hold::on_reregister(node.attrs.hold, reg.hold, node.attrs.owner == reg.owner);
                 node.attrs.owner = reg.owner;
                 node.attrs.tags = reg.tags;
                 node.attrs.ephemeral = reg.ephemeral;
@@ -669,6 +670,7 @@ impl MemoryStore {
                 ephemeral: reg.ephemeral,
                 advertised_routes: reg.advertised_routes.unwrap_or_default(),
                 approved_routes: vec![],
+                hold: reg.hold,
             },
         };
 
@@ -746,7 +748,7 @@ impl MemoryStore {
         let nodes = self.nodes.lock().unwrap_or_else(|e| e.into_inner());
         nodes
             .values()
-            .filter(|n| n.tenant_id == tenant_id && n.id != exclude_node)
+            .filter(|n| n.tenant_id == tenant_id && n.id != exclude_node && !n.attrs.hold.is_held())
             .map(stored_node_to_peer_info)
             .collect()
     }
@@ -773,6 +775,7 @@ impl MemoryStore {
             .values()
             .filter(|n| {
                 n.id != exclude_node
+                    && !n.attrs.hold.is_held()
                     && (n.tenant_id == tenant_id || child_ids.contains(&n.tenant_id))
             })
             .map(stored_node_to_peer_info)
@@ -953,6 +956,17 @@ impl MemoryStore {
         })
     }
 
+    /// Moves a node from the hold `from` to the hold `to`. False when its hold is not `from`.
+    pub fn set_node_hold(&self, node_id: NodeId, from: coord_core::Hold, to: coord_core::Hold) -> Result<bool, CoordError> {
+        self.update_attrs(node_id, |a| {
+            if a.hold != from || from == to {
+                return false;
+            }
+            a.hold = to;
+            true
+        })
+    }
+
     fn update_attrs(
         &self,
         node_id: NodeId,
@@ -1080,6 +1094,8 @@ fn stored_node_to_summary(n: &StoredNode) -> NodeSummary {
         stable_id: n.stable_id.clone(),
         online: n.online,
         hostname: n.info.hostname.clone(),
+        os: n.info.os.clone(),
+        machine_key: n.info.machine_key.clone(),
         attrs: n.attrs.clone(),
     }
 }

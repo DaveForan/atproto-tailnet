@@ -1016,15 +1016,15 @@ impl PgStore {
             .await
             .map_err(db)?;
 
-        let existing = sqlx::query_as::<_, (i64, uuid::Uuid, String, i64, Option<String>, Json)>(
-            "SELECT id, tenant_id, ipv4, session_generation, owner, tags FROM coord_nodes WHERE machine_key = $1"
+        let existing = sqlx::query_as::<_, (i64, uuid::Uuid, String, i64, Option<String>, Json, i16)>(
+            "SELECT id, tenant_id, ipv4, session_generation, owner, tags, hold FROM coord_nodes WHERE machine_key = $1"
         )
             .bind(&machine_key[..])
             .fetch_optional(&mut *tx)
             .await
             .map_err(db)?;
 
-        if let Some((id, existing_tenant_uuid, ip_str, old_generation, old_owner, old_tags)) = existing {
+        if let Some((id, existing_tenant_uuid, ip_str, old_generation, old_owner, old_tags, old_hold)) = existing {
             let existing_tenant = TenantId::new(existing_tenant_uuid);
             if existing_tenant != tenant_id {
                 return Err(CoordError::Protocol(
@@ -1034,12 +1034,13 @@ impl PgStore {
             let new_gen = old_generation + 1;
             let hostname = tenant_unique_hostname(&mut tx, tenant_id.as_uuid(), id, &info.hostname, &reg).await?;
             // A new identity (owner/tags) must not inherit approvals granted to the old one.
+            let hold = coord_core::Hold::on_reregister(coord_core::Hold::from_i16(old_hold), reg.hold, old_owner == reg.owner);
             let identity_changed = old_owner != reg.owner || from_json(old_tags) != reg.tags;
             sqlx::query(
                 "UPDATE coord_nodes SET node_key = $1, disco_key = $2, hostname = $3, os = $4, \
                  endpoints = $5, online = TRUE, last_seen = NOW(), session_generation = $6, \
                  owner = $7, tags = $8, ephemeral = $9, \
-                 approved_routes = CASE WHEN $10 THEN '[]'::jsonb ELSE approved_routes END \
+                 approved_routes = CASE WHEN $10 THEN '[]'::jsonb ELSE approved_routes END, hold = $12 \
                  WHERE id = $11"
             )
                 .bind(&info.node_key)
@@ -1053,6 +1054,7 @@ impl PgStore {
                 .bind(reg.ephemeral)
                 .bind(identity_changed)
                 .bind(id)
+                .bind(hold.as_i16())
                 .execute(&mut *tx)
                 .await
                 .map_err(db)?;
@@ -1086,8 +1088,8 @@ impl PgStore {
 
         let row = sqlx::query_as::<_, (i64, i64)>(
             "INSERT INTO coord_nodes (tenant_id, machine_key, node_key, disco_key, stable_id, ipv4, hostname, os, endpoints, session_generation, \
-                                      owner, tags, ephemeral, advertised_routes) \
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1, $10, $11, $12, $13) \
+                                      owner, tags, ephemeral, advertised_routes, hold) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1, $10, $11, $12, $13, $14) \
              RETURNING id, session_generation"
         )
             .bind(tenant_id.as_uuid())
@@ -1103,6 +1105,7 @@ impl PgStore {
             .bind(to_json(&reg.tags))
             .bind(reg.ephemeral)
             .bind(to_json(&reg.advertised_routes.unwrap_or_default()))
+            .bind(reg.hold.as_i16())
             .fetch_one(&mut *tx)
             .await
             .map_err(db)?;
@@ -1214,7 +1217,7 @@ impl PgStore {
     pub async fn get_peers(&self, tenant_id: TenantId, exclude_node: NodeId) -> Vec<PeerInfo> {
         let rows = sqlx::query_as::<_, PeerRow>(
             "SELECT id, node_key, machine_key, disco_key, endpoints, ipv4, hostname, online, last_seen, advertised_routes, approved_routes, owner \
-             FROM coord_nodes WHERE tenant_id = $1 AND id != $2"
+             FROM coord_nodes WHERE tenant_id = $1 AND id != $2 AND hold = 0"
         )
             .bind(tenant_id.as_uuid())
             .bind(exclude_node.as_i64())
@@ -1233,7 +1236,7 @@ impl PgStore {
         let rows = sqlx::query_as::<_, PeerRow>(
             "SELECT n.id, n.node_key, n.machine_key, n.disco_key, n.endpoints, n.ipv4, n.hostname, n.online, n.last_seen, n.advertised_routes, n.approved_routes, n.owner \
              FROM coord_nodes n \
-             WHERE n.id != $2 AND ( \
+             WHERE n.id != $2 AND n.hold = 0 AND ( \
                  n.tenant_id = $1 \
                  OR n.tenant_id IN ( \
                      SELECT id FROM coord_tenants \
@@ -1265,7 +1268,7 @@ impl PgStore {
 
     pub async fn list_nodes_for_tenant(&self, tenant_id: TenantId) -> Vec<NodeSummary> {
         let rows = sqlx::query_as::<_, SummaryRow>(
-            "SELECT id, tenant_id, ipv4, stable_id, online, hostname, owner, tags, ephemeral, advertised_routes, approved_routes FROM coord_nodes WHERE tenant_id = $1 ORDER BY id"
+            "SELECT id, tenant_id, ipv4, stable_id, online, hostname, owner, tags, ephemeral, advertised_routes, approved_routes, hold, os, machine_key FROM coord_nodes WHERE tenant_id = $1 ORDER BY id"
         )
             .bind(tenant_id.as_uuid())
             .fetch_all(&self.pool)
@@ -1285,8 +1288,8 @@ impl PgStore {
             .await
             .ok()??;
 
-        let attrs_row = sqlx::query_as::<_, (Option<String>, Json, bool, Json, Json)>(
-            "SELECT owner, tags, ephemeral, advertised_routes, approved_routes FROM coord_nodes WHERE id = $1"
+        let attrs_row = sqlx::query_as::<_, (Option<String>, Json, bool, Json, Json, i16)>(
+            "SELECT owner, tags, ephemeral, advertised_routes, approved_routes, hold FROM coord_nodes WHERE id = $1"
         )
             .bind(node_id.as_i64())
             .fetch_optional(&self.pool)
@@ -1348,7 +1351,7 @@ impl PgStore {
 
     pub async fn list_nodes(&self) -> Vec<NodeSummary> {
         let rows = sqlx::query_as::<_, SummaryRow>(
-            "SELECT id, tenant_id, ipv4, stable_id, online, hostname, owner, tags, ephemeral, advertised_routes, approved_routes FROM coord_nodes ORDER BY id"
+            "SELECT id, tenant_id, ipv4, stable_id, online, hostname, owner, tags, ephemeral, advertised_routes, approved_routes, hold, os, machine_key FROM coord_nodes ORDER BY id"
         )
             .fetch_all(&self.pool)
             .await
@@ -1507,6 +1510,31 @@ impl PgStore {
         }
     }
 
+    /// Moves a node from the hold `from` to the hold `to`. False when its hold is not `from`.
+    pub async fn set_node_hold(&self, node_id: NodeId, from: coord_core::Hold, to: coord_core::Hold) -> Result<bool, CoordError> {
+        let changed: Option<uuid::Uuid> = sqlx::query_scalar(
+            "UPDATE coord_nodes SET hold = $1 WHERE id = $2 AND hold = $3 AND hold <> $1 RETURNING tenant_id"
+        )
+            .bind(to.as_i16())
+            .bind(node_id.as_i64())
+            .bind(from.as_i16())
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db)?;
+        match changed {
+            Some(tenant_uuid) => {
+                self.emit(PeerEvent::NodeUpdated { tenant_id: TenantId::new(tenant_uuid), node_id }).await;
+                Ok(true)
+            }
+            None => {
+                if self.get_node_tenant(node_id).await.is_none() {
+                    return Err(CoordError::Protocol("node not found".into()));
+                }
+                Ok(false)
+            }
+        }
+    }
+
     pub async fn delete_nodes_by_owner(&self, tenant_id: TenantId, owner: &str) -> Result<Vec<NodeId>, CoordError> {
         let mut ids: Vec<i64> = sqlx::query_scalar(
             "DELETE FROM coord_nodes WHERE tenant_id = $1 AND owner = $2 RETURNING id"
@@ -1622,7 +1650,7 @@ impl std::fmt::Debug for PgStore {
 }
 
 type PeerRow = (i64, Vec<u8>, Vec<u8>, Option<String>, Json, String, String, bool, OffsetDateTime, Json, Json, Option<String>);
-type SummaryRow = (i64, uuid::Uuid, String, String, bool, String, Option<String>, Json, bool, Json, Json);
+type SummaryRow = (i64, uuid::Uuid, String, String, bool, String, Option<String>, Json, bool, Json, Json, i16, String, Vec<u8>);
 
 fn to_json(v: &[String]) -> Json {
     serde_json::to_value(v).unwrap_or_else(|_| Json::Array(vec![]))
@@ -1651,13 +1679,14 @@ fn from_json(v: Json) -> Vec<String> {
     serde_json::from_value(v).unwrap_or_default()
 }
 
-fn attrs_from_parts((owner, tags, ephemeral, advertised, approved): (Option<String>, Json, bool, Json, Json)) -> NodeAttrs {
+fn attrs_from_parts((owner, tags, ephemeral, advertised, approved, hold): (Option<String>, Json, bool, Json, Json, i16)) -> NodeAttrs {
     NodeAttrs {
         owner,
         tags: from_json(tags),
         ephemeral,
         advertised_routes: from_json(advertised),
         approved_routes: from_json(approved),
+        hold: coord_core::Hold::from_i16(hold),
     }
 }
 
@@ -1685,7 +1714,7 @@ fn peer_row_to_info(
 }
 
 fn summary_row_to_summary(
-    (id, tenant_uuid, ip_str, stable_id, online, hostname, owner, tags, ephemeral, advertised, approved): SummaryRow,
+    (id, tenant_uuid, ip_str, stable_id, online, hostname, owner, tags, ephemeral, advertised, approved, hold, os, machine_key): SummaryRow,
 ) -> Option<NodeSummary> {
     let ipv4: Ipv4Addr = ip_str.parse().ok()?;
     Some(NodeSummary {
@@ -1695,7 +1724,9 @@ fn summary_row_to_summary(
         stable_id,
         online,
         hostname,
-        attrs: attrs_from_parts((owner, tags, ephemeral, advertised, approved)),
+        os,
+        machine_key,
+        attrs: attrs_from_parts((owner, tags, ephemeral, advertised, approved, hold)),
     })
 }
 

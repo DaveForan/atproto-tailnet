@@ -46,7 +46,7 @@ pub async fn handle_register(
             // Same node key: nothing to re-authorize. tailscaled re-sends its --authkey on restart.
             // That key is not consumed: burning a single-use key here breaks its next real use.
             // A real re-auth (`tailscale up --force-reauth`) sends a new node key and takes the key path.
-            let identity_resp = authorized_response(state, detail.tenant_id, detail.attrs.owner.as_deref());
+            let identity_resp = registered_response(state, detail.tenant_id, detail.attrs.owner.as_deref(), detail.attrs.hold);
             let same_key = !suspended && current == node_key_bytes.as_slice();
             // Key rotation without an auth key keeps the node's identity.
             // With an auth key, fall through: the key's owner, tags and ephemeral flag replace the old ones.
@@ -91,9 +91,14 @@ pub async fn handle_register(
             }
         }
 
-    let grant = match auth_key {
+    // Security: a key admits a machine only for an owner who turned their own approval off.
+    let coord_core::Admission { grant, hold } = match auth_key {
         Some(key) => match state.store.validate_preauth_key(key).await {
-            Some(grant) => grant,
+            Some(grant) => {
+                let access = state.store.get_tenant_access(grant.tenant_id).await;
+                let hold = if access.key_admits(grant.owner.as_deref()) { coord_core::Hold::None } else { coord_core::Hold::Owner };
+                coord_core::Admission { grant, hold }
+            }
             None => {
                 // Never log the key or its start: only a short tag of its hash.
                 warn!(auth_key_hash = %coord_store::preauth_key_log_id(key), "invalid pre-auth key");
@@ -102,7 +107,7 @@ pub async fn handle_register(
         },
         // No key: interactive sign-in (ADR-0032)
         None => match interactive_sign_in(state, machine_key, &req, known_tenant, client_ip).await {
-            Ok(grant) => grant,
+            Ok(admission) => admission,
             Err(resp) => return Ok((serde_json::to_string(&resp)?, None)),
         },
     };
@@ -154,6 +159,7 @@ pub async fn handle_register(
         tags: grant.tags,
         ephemeral: grant.ephemeral,
         advertised_routes: advertised,
+        hold,
     };
     let (node_id, ipv4, generation) = state
         .store
@@ -181,7 +187,12 @@ pub async fn handle_register(
         "node registered"
     );
 
-    let resp = authorized_response(state, tenant_id, owner.as_deref());
+    // A known machine can keep an earlier admission, so read the stored hold.
+    let hold = state.store.get_node_info(node_id).await.map_or(hold, |d| d.attrs.hold);
+    if hold.is_held() {
+        info!(node_id = node_id.as_i64(), ?hold, "node waits for admission");
+    }
+    let resp = registered_response(state, tenant_id, owner.as_deref(), hold);
     Ok((serde_json::to_string(&resp)?, Some(generation)))
 }
 
@@ -225,7 +236,7 @@ async fn interactive_sign_in(
     req: &RegisterRequest,
     known_tenant: Option<TenantId>,
     client_ip: Option<std::net::IpAddr>,
-) -> Result<coord_core::PreAuthGrant, RegisterResponse> {
+) -> Result<coord_core::Admission, RegisterResponse> {
     use crate::device_auth::{self, Decision};
     let Some(base) = state.device_auth_url.as_deref() else {
         return Err(error_response("this server needs an auth key: run `tailscale up --authkey <key>`"));
@@ -241,7 +252,7 @@ async fn interactive_sign_in(
 
     if let Some(id) = req.followup.as_deref().and_then(device_auth::id_from_url) {
         match state.device_auth.wait(&state.store, id, machine_key, state.device_auth_wait).await {
-            Some(Decision::Approved { tenant_id, owner }) => {
+            Some(Decision::Approved { tenant_id, owner, hold }) => {
                 if state.store.is_tenant_suspended(tenant_id).await {
                     return Err(error_response(TENANT_SUSPENDED_MSG));
                 }
@@ -249,7 +260,8 @@ async fn interactive_sign_in(
                     return Err(error_response("this machine is registered to a different tailnet"));
                 }
                 info!(tenant = %tenant_id, "device sign-in approved");
-                return Ok(coord_core::PreAuthGrant { tenant_id, owner: Some(owner), tags: vec![], ephemeral: false });
+                let grant = coord_core::PreAuthGrant { tenant_id, owner: Some(owner), tags: vec![], ephemeral: false };
+                return Ok(coord_core::Admission { grant, hold });
             }
             // Still waiting: the device asks again with the same URL
             Some(Decision::Pending) => return Err(sign_in_url(id)),
@@ -301,8 +313,9 @@ fn error_response(msg: &str) -> RegisterResponse {
     }
 }
 
-/// Authorized RegisterResponse naming the owner's Bluesky handle, or the placeholder user when unknown.
-fn authorized_response(state: &CoordinatorState, tenant: TenantId, owner: Option<&str>) -> RegisterResponse {
+/// RegisterResponse of a registered machine, naming the owner's Bluesky handle or the placeholder user.
+/// A held machine is not authorized: tailscaled then waits for approval.
+fn registered_response(state: &CoordinatorState, tenant: TenantId, owner: Option<&str>, hold: coord_core::Hold) -> RegisterResponse {
     let profile = state.caches.identity.profile(tenant, owner);
     RegisterResponse {
         user: User {
@@ -316,7 +329,7 @@ fn authorized_response(state: &CoordinatorState, tenant: TenantId, owner: Option
             display_name: profile.display_name,
         },
         node_key_expired: false,
-        machine_authorized: true,
+        machine_authorized: !hold.is_held(),
         auth_url: String::new(),
         error: String::new(),
     }

@@ -83,7 +83,7 @@ SELECT format('ALTER ROLE %I IN DATABASE %I RESET search_path', :'relay_role', c
 -- Admission of a device
 GRANT SELECT (id, tenant_id, ipv4, stable_id, node_key, machine_key, disco_key,
               endpoints, hostname, os, online, owner, tags, ephemeral,
-              advertised_routes, approved_routes)
+              advertised_routes, approved_routes, hold)
   ON public.coord_nodes TO :"relay_role";
 
 GRANT SELECT (id, slug, parent_id, federation_posture, ipv4_prefix, ipv6_prefix,

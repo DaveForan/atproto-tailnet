@@ -85,12 +85,20 @@ pub struct TenantAccess {
     /// Owners who put their own devices under the tenant's open policy. Used in `Open` mode only.
     #[serde(default)]
     pub open_owners: Vec<String>,
+    /// Owners who turned off the approval of their own new devices: their key admits a device at once.
+    #[serde(default)]
+    pub unheld_owners: Vec<String>,
 }
 
 impl TenantAccess {
     /// True when a device of `owner` follows the open policy: the mode is `Open`, and the owner chose it or there is no owner.
     pub fn is_open_for(&self, owner: Option<&str>) -> bool {
         self.mode == AccessMode::Open && owner.is_none_or(|o| self.open_owners.iter().any(|x| x == o))
+    }
+
+    /// True when a key of `owner` admits a device without the owner's step. A key without an owner never does.
+    pub fn key_admits(&self, owner: Option<&str>) -> bool {
+        owner.is_some_and(|o| self.unheld_owners.iter().any(|x| x == o))
     }
 
     /// Checks size limits and port ranges.
@@ -100,6 +108,9 @@ impl TenantAccess {
         }
         if self.open_owners.len() > MAX_OPEN_OWNERS || self.open_owners.iter().any(|o| o.is_empty() || o.len() > 128) {
             return Err("open_owners: too many, or an owner is empty or too long");
+        }
+        if self.unheld_owners.len() > MAX_OPEN_OWNERS || self.unheld_owners.iter().any(|o| o.is_empty() || o.len() > 128) {
+            return Err("unheld_owners: too many, or an owner is empty or too long");
         }
         for r in &self.rules {
             if r.ports.is_empty() || r.ports.len() > MAX_RULE_PORTS {

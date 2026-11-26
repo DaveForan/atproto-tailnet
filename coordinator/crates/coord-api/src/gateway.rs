@@ -273,7 +273,7 @@ impl CoordinatorState {
             ipv4: None,
             ipv6: None,
         };
-        let registration = NodeRegistration { owner: None, tags: vec![GATEWAY_TAG.into()], ephemeral: false, advertised_routes: None };
+        let registration = NodeRegistration { owner: None, tags: vec![GATEWAY_TAG.into()], ephemeral: false, advertised_routes: None, hold: coord_core::Hold::None };
         let node_id = match self.store.register_node_with(tenant, offer.machine_key, info, registration).await {
             Ok((node_id, _, _)) => node_id,
             Err(e) => {
@@ -466,7 +466,7 @@ mod tests {
                 ipv4: None,
                 ipv6: None,
             };
-            let reg = NodeRegistration { owner: owner.map(String::from), tags: vec![], ephemeral: false, advertised_routes: None };
+            let reg = NodeRegistration { owner: owner.map(String::from), tags: vec![], ephemeral: false, advertised_routes: None, hold: coord_core::Hold::None };
             let (id, addr, _) = store.register_node_with(tenant, key, info, reg).await.unwrap();
             nodes.push((id, addr));
         }

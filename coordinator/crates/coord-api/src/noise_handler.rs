@@ -329,7 +329,11 @@ async fn handle_register_request(
             if let Some(g) = generation {
                 session_gen.store(g, Ordering::Release);
             }
-            if generation.is_some() || grants_session(&response_body) {
+            // A held machine is registered but not authorized. It keeps its session to wait for admission.
+            if generation.is_some()
+                || grants_session(&response_body)
+                || state.store.get_node_by_machine_key(&machine_key).await.is_some()
+            {
                 authed.store(true, Ordering::Release);
             }
             Response::builder()

@@ -81,6 +81,45 @@ impl NetmapService {
 
         let node_key_str = format_key_bytes(&detail.info.node_key);
 
+        // Security: a device that waits for admission gets its own node and nothing else.
+        // No peers, no names, and an empty filter that blocks all traffic.
+        if detail.attrs.hold.is_held() {
+            let label = node_label(&detail.info.hostname, node_id.as_i64());
+            let owner = detail.attrs.owner.as_deref();
+            return Ok(MapResponse {
+                node: Some(MapNode {
+                    id: node_id.as_i64(),
+                    stable_id: detail.stable_id,
+                    name: label.clone(),
+                    user: user_id_for(owner),
+                    key: node_key_str,
+                    machine: format_machine_key(&MachineKey(*machine_key)),
+                    disco_key: None,
+                    addresses: self_addresses,
+                    allowed_ips: vec![],
+                    primary_routes: vec![],
+                    endpoints: vec![],
+                    derp: None,
+                    home_derp: None,
+                    hostinfo: minimal_hostinfo(&label),
+                    online: Some(true),
+                    last_seen: None,
+                    machine_authorized: Some(false),
+                    key_expiry: None,
+                }),
+                peers: None,
+                peers_changed: None,
+                peers_removed: None,
+                derp_map: None,
+                dns_config: None,
+                packet_filter: Some(vec![]),
+                domain: Some(self.identity.domain(tenant_id)),
+                user_profiles: Some(self.profiles_for(tenant_id, std::iter::once(owner))),
+                keep_alive: None,
+                control_time: Some(clock::to_rfc3339(clock::now())),
+            });
+        }
+
         let dns = self.store.get_tenant_dns(tenant_id).await;
         let access = self.store.get_tenant_access(tenant_id).await;
         // Security: only the owner puts a device under the tenant's open policy (ADR-0036).

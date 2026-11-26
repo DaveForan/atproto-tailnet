@@ -94,6 +94,7 @@ pub fn router(state: Arc<CoordinatorState>) -> Router {
             get(admin::list_tenant_nodes_handler).delete(admin::delete_tenant_nodes_by_owner),
         )
         .route("/tenants/{id}/nodes/{node_id}/routes", post(admin::approve_node_routes))
+        .route("/tenants/{id}/nodes/{node_id}/hold", put(admin::set_node_hold))
         .route(
             "/tenants/{id}/preauth-keys",
             get(admin::list_preauth_keys).delete(admin::revoke_preauth_keys_by_owner),
@@ -213,9 +214,29 @@ async fn health(axum::extract::State(state): axum::extract::State<Arc<Coordinato
     }))
 }
 
+/// Registers a device, admits it as its owner does in the dashboard, and registers again.
+/// The answer is the one an admitted device gets.
 #[cfg(feature = "test-hooks")]
 #[doc(hidden)]
 pub async fn __test_handle_register(
+    state: &Arc<CoordinatorState>,
+    machine_key: &[u8; 32],
+    body: &str,
+) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    let json = __test_handle_register_held(state, machine_key, body).await?;
+    let Some(node) = state.store.get_node_by_machine_key(machine_key).await else {
+        return Ok(json);
+    };
+    if !state.store.set_node_hold(node, coord_core::Hold::Owner, coord_core::Hold::None).await.unwrap_or(false) {
+        return Ok(json);
+    }
+    __test_handle_register_held(state, machine_key, body).await
+}
+
+/// Registers a device and leaves it as the control server does: a new machine waits for admission.
+#[cfg(feature = "test-hooks")]
+#[doc(hidden)]
+pub async fn __test_handle_register_held(
     state: &Arc<CoordinatorState>,
     machine_key: &[u8; 32],
     body: &str,

@@ -29,6 +29,10 @@ impl Admission for StoreAdmission {
     async fn admit(&self, node_key: &[u8; 32]) -> Option<Scope> {
         let node = self.store.get_node_by_node_key(node_key).await?;
         let detail = self.store.get_node_info(node).await?;
+        // Security: a device that waits for admission gets no relay.
+        if detail.attrs.hold.is_held() {
+            return None;
+        }
         relay_scope(&self.store, detail.tenant_id).await
     }
 }

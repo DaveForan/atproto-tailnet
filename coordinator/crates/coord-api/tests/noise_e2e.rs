@@ -111,11 +111,13 @@ async fn a_client_registers_over_noise_and_http2_on_real_tcp() {
         out.extend_from_slice(&chunk);
     }
     let json: serde_json::Value = serde_json::from_slice(&out).unwrap();
-    assert_eq!(json["MachineAuthorized"], true, "{json}");
+    // A key registers the machine. It does not admit it.
+    assert_eq!((&json["MachineAuthorized"], &json["Error"]), (&serde_json::json!(false), &serde_json::json!("")), "{json}");
 
     // The node is registered under the machine key proven in the handshake
     let node = state.store().get_node_by_machine_key(&machine_public).await.expect("registered");
     assert_eq!(state.store().get_node_tenant(node).await, Some(tenant));
+    assert_eq!(state.store().get_node_info(node).await.unwrap().attrs.hold, coord_core::Hold::Owner);
 }
 
 #[tokio::test]
@@ -194,7 +196,7 @@ async fn sessions_that_do_not_authenticate_in_time_are_closed() {
         "Auth": { "AuthKey": "tskey-auth-wrong" },
     })).await;
     assert!(!out["Error"].as_str().unwrap_or("").is_empty(), "{out}");
-    // A registered device stays connected
+    // A registered device stays connected, also while it waits for admission
     let (mut good, good_conn) = open_session(addr, &state, 44).await;
     let body = serde_json::json!({
         "Version": VERSION,
@@ -202,13 +204,13 @@ async fn sessions_that_do_not_authenticate_in_time_are_closed() {
         "Auth": { "AuthKey": auth_key },
         "Hostinfo": { "Hostname": "stays", "OS": "linux" }
     });
-    assert_eq!(register(&mut good, body.clone()).await["MachineAuthorized"], true);
+    assert_eq!(register(&mut good, body.clone()).await["Error"], "");
 
     let wait = deadline * 6;
     tokio::time::timeout(wait, idle_conn).await.expect("an idle session is closed").unwrap();
     tokio::time::timeout(wait, failed_conn).await.expect("a failed registration does not keep the session").unwrap();
     assert!(!good_conn.is_finished(), "an authenticated session stays open");
-    assert_eq!(register(&mut good, body).await["MachineAuthorized"], true, "and keeps working");
+    assert_eq!(register(&mut good, body).await["Error"], "", "and keeps working");
 }
 
 #[tokio::test]

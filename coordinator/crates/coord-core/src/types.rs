@@ -307,6 +307,51 @@ pub struct NodeAttrs {
     pub ephemeral: bool,
     pub advertised_routes: Vec<String>,
     pub approved_routes: Vec<String>,
+    pub hold: Hold,
+}
+
+/// Who must admit a device before it gets any access.
+/// A held device is no peer of any device, and the relay and the gateway refuse it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Hold {
+    /// Admitted.
+    #[default]
+    None,
+    /// The owner admitted it. An approver of the tailnet must admit it too.
+    Approver,
+    /// The owner must admit it.
+    Owner,
+}
+
+impl Hold {
+    pub fn is_held(self) -> bool {
+        self != Hold::None
+    }
+
+    /// The stored number. The order is the number of steps left.
+    pub fn as_i16(self) -> i16 {
+        match self {
+            Hold::None => 0,
+            Hold::Approver => 1,
+            Hold::Owner => 2,
+        }
+    }
+
+    /// Reads a stored number. An unknown value is the strictest hold.
+    pub fn from_i16(v: i16) -> Self {
+        match v {
+            0 => Hold::None,
+            1 => Hold::Approver,
+            _ => Hold::Owner,
+        }
+    }
+
+    /// The hold of a known machine that registers again.
+    /// The same owner keeps the steps already done. A new owner starts with the new hold.
+    pub fn on_reregister(stored: Hold, requested: Hold, same_owner: bool) -> Hold {
+        if same_owner { stored.min(requested) } else { requested }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -317,6 +362,8 @@ pub struct NodeSummary {
     pub stable_id: String,
     pub online: bool,
     pub hostname: String,
+    pub os: String,
+    pub machine_key: Vec<u8>,
     pub attrs: NodeAttrs,
 }
 
@@ -333,12 +380,14 @@ pub struct NodeDetail {
 /// Grant-derived attributes for `register_node_with`. They replace a known machine's values.
 /// `advertised_routes: None` keeps the advertised set.
 /// A changed owner or tag set clears approved routes, because approvals belong to the old identity.
+/// `hold` applies to a new machine; a known machine follows [`Hold::on_reregister`].
 #[derive(Debug, Clone, Default)]
 pub struct NodeRegistration {
     pub owner: Option<String>,
     pub tags: Vec<String>,
     pub ephemeral: bool,
     pub advertised_routes: Option<Vec<String>>,
+    pub hold: Hold,
 }
 
 /// Tag of the coordinator's own gateway node (ADR-0029). Auth keys cannot carry it.
@@ -392,6 +441,13 @@ pub struct PreAuthGrant {
     pub owner: Option<String>,
     pub tags: Vec<String>,
     pub ephemeral: bool,
+}
+
+/// What a registration grants: the key or sign-in grant, and the hold of a new machine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Admission {
+    pub grant: PreAuthGrant,
+    pub hold: Hold,
 }
 
 pub const PREAUTH_KEY_PREFIX_LEN: usize = 12;

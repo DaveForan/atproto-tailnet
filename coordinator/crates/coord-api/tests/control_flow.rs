@@ -4038,3 +4038,145 @@ async fn tenant_parent_can_be_set_and_cleared_over_the_admin_api() {
     assert!(stream_shows_peer(&mut parent_stream, child_node, false).await, "detaching drops the child's device");
     assert!(state.store().get_child_tenants(parent).await.is_empty());
 }
+
+/// Register `mkey` with a key and leave it as the control server does: the device waits for admission.
+async fn register_held(state: &Arc<CoordinatorState>, mkey: u8, auth_key: &str, hostname: &str) -> serde_json::Value {
+    let body = serde_json::json!({
+        "Version": 2,
+        "NodeKey": format!("nodekey:{}", hex::encode([mkey.wrapping_add(1); 32])),
+        "Auth": { "AuthKey": auth_key },
+        "Hostinfo": { "Hostname": hostname, "OS": "linux" },
+    });
+    serde_json::from_str(&coord_api::__test_handle_register_held(state, &[mkey; 32], &body.to_string()).await.unwrap()).unwrap()
+}
+
+#[tokio::test]
+async fn a_key_admits_a_device_only_for_an_owner_who_turned_the_approval_off() {
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "unheld").await;
+    let key_of = |owner: &'static str| {
+        let app = app.clone();
+        async move { api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "owner": owner, "reusable": true })).await["key"].as_str().unwrap().to_string() }
+    };
+    let (alice, bob) = (key_of("alice").await, key_of("bob").await);
+    let unheld = |owners: serde_json::Value| {
+        let app = app.clone();
+        async move { api_call(&app, "PUT", format!("/api/tenants/{t}/access"), Some(serde_json::json!({ "mode": "member", "unheld_owners": owners }))).await.0 }
+    };
+
+    assert_eq!(unheld(serde_json::json!(["alice"])).await, StatusCode::OK);
+    assert_eq!(register_held(&state, 70, &alice, "alice-laptop").await["MachineAuthorized"], true);
+    assert_eq!(register_held(&state, 72, &bob, "bob-laptop").await["MachineAuthorized"], false, "the choice of one owner changes no other owner");
+
+    // The second approval empties the list: the next device of alice waits again.
+    assert_eq!(unheld(serde_json::json!([])).await, StatusCode::OK);
+    assert_eq!(register_held(&state, 74, &alice, "alice-phone").await["MachineAuthorized"], false);
+    assert_eq!(register_held(&state, 70, &alice, "alice-laptop").await["MachineAuthorized"], true, "an admitted device stays admitted");
+}
+
+#[tokio::test]
+async fn a_key_registers_a_device_but_only_admission_gives_it_access() {
+    use coord_derp::Admission;
+    let (app, state) = setup();
+    let t = create_test_tenant(&state, "hold").await;
+    let other = create_test_tenant(&state, "hold-other").await;
+    let key = api_key(&app, serde_json::json!({ "tenant_id": t.to_string(), "owner": "alice", "reusable": true })).await;
+    let key = key["key"].as_str().unwrap();
+    register_routes(&state, 60, key, "laptop", None).await;
+    let relay = coord_api::derp_handler::StoreAdmission::for_state(&state);
+    let set_hold = |node: i64, tenant: coord_core::TenantId, from: &'static str, to: &'static str| {
+        let app = app.clone();
+        async move {
+            api_call(&app, "PUT", format!("/api/tenants/{tenant}/nodes/{node}/hold"), Some(serde_json::json!({ "from": from, "to": to }))).await.0
+        }
+    };
+
+    // A second machine with the same valid key is registered and held.
+    let out = register_held(&state, 62, key, "stranger").await;
+    assert_eq!((&out["MachineAuthorized"], &out["Error"]), (&serde_json::json!(false), &serde_json::json!("")), "{out}");
+    let held = member_map(&state, 62).await;
+    let node = held["Node"]["ID"].as_i64().unwrap();
+    assert_eq!(held["Node"]["MachineAuthorized"], false, "{held}");
+    assert!(held.get("Peers").is_none() && held.get("DERPMap").is_none() && held.get("DNSConfig").is_none(), "{held}");
+    assert_eq!(held["PacketFilter"], serde_json::json!([]));
+    assert!(member_map(&state, 60).await.get("Peers").is_none(), "no device sees a held device");
+    assert!(relay.admit(&[63u8; 32]).await.is_none(), "the relay refuses a held device");
+    // A restart of the held device changes nothing.
+    assert_eq!(register_held(&state, 62, key, "stranger").await["MachineAuthorized"], false);
+
+    // The dashboard sees which machine waits and for whom.
+    let (_, nodes) = api_call(&app, "GET", format!("/api/tenants/{t}/nodes"), None).await;
+    let listed = nodes["nodes"].as_array().unwrap().iter().find(|n| n["id"] == node).unwrap();
+    assert_eq!((&listed["hold"], &listed["os"], &listed["owner"]), (&serde_json::json!("owner"), &serde_json::json!("linux"), &serde_json::json!("alice")));
+    assert_eq!(listed["fingerprint"], "3e3e-3e3e-3e3e-3e3e");
+    let first = nodes["nodes"].as_array().unwrap().iter().find(|n| n["id"] != node).unwrap();
+    assert_eq!(first["hold"], "none");
+
+    // A step needs the right tenant and the hold that the caller saw. A hold never grows.
+    assert_eq!(set_hold(node, other, "owner", "none").await, StatusCode::NOT_FOUND);
+    assert_eq!(set_hold(node, t, "approver", "none").await, StatusCode::CONFLICT);
+    assert_eq!(set_hold(node, t, "none", "owner").await, StatusCode::BAD_REQUEST);
+    assert_eq!(set_hold(node, t, "owner", "owner").await, StatusCode::BAD_REQUEST);
+    assert!(member_map(&state, 60).await.get("Peers").is_none());
+
+    // The owner's step alone is not enough when an approver must follow.
+    let mut stream = open_stream(&state, 62).await;
+    assert_eq!(set_hold(node, t, "owner", "approver").await, StatusCode::OK);
+    assert!(member_map(&state, 60).await.get("Peers").is_none());
+    assert!(relay.admit(&[63u8; 32]).await.is_none());
+
+    // Admission: both devices see each other, and the waiting device learns it at once.
+    assert_eq!(set_hold(node, t, "approver", "none").await, StatusCode::OK);
+    assert_eq!(member_map(&state, 60).await["Peers"][0]["ID"], node);
+    assert!(relay.admit(&[63u8; 32]).await.is_some());
+    let mut admitted = false;
+    for _ in 0..8 {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(3), next_map_frame(&mut stream)).await.expect("update after admission").expect("frame");
+        if frame["Node"]["MachineAuthorized"] == true && frame["Peers"].is_array() {
+            admitted = true;
+            break;
+        }
+    }
+    assert!(admitted, "the device's own stream gets its new map");
+    assert_eq!(register_held(&state, 62, key, "stranger").await["MachineAuthorized"], true, "an admitted machine stays admitted");
+}
+
+#[tokio::test]
+async fn a_sign_in_gives_the_device_the_hold_that_the_dashboard_chose() {
+    let (app, state) = sign_in_state();
+    let t = create_test_tenant(&state, "sign-in-hold").await;
+    for (mkey, hold, expected) in [
+        (216u8, Some("none"), "none"),
+        (218, Some("approver"), "approver"),
+        // Without a hold the device waits for its owner.
+        (220, None, "owner"),
+    ] {
+        let body = serde_json::json!({
+            "Version": 2,
+            "NodeKey": format!("nodekey:{}", hex::encode([mkey + 1; 32])),
+            "Hostinfo": { "Hostname": format!("phone-{mkey}"), "OS": "iOS" }
+        });
+        let register = |followup: Option<String>| {
+            let (state, mut body) = (state.clone(), body.clone());
+            async move {
+                if let Some(f) = followup {
+                    body["Followup"] = serde_json::json!(f);
+                }
+                let out = coord_api::__test_handle_register_held(&state, &[mkey; 32], &body.to_string()).await.unwrap();
+                serde_json::from_str::<serde_json::Value>(&out).unwrap()
+            }
+        };
+        let url = register(None).await["AuthURL"].as_str().unwrap().to_string();
+        let id = url.rsplit('/').next().unwrap().to_string();
+        let mut approval = serde_json::json!({ "tenant_id": t.to_string(), "owner": "u-dave" });
+        if let Some(h) = hold {
+            approval["hold"] = serde_json::json!(h);
+        }
+        assert_eq!(api_call(&app, "POST", format!("/api/device-auth/{id}/approve"), Some(approval)).await.0, StatusCode::OK);
+        let done = register(Some(url)).await;
+        assert_eq!(done["MachineAuthorized"], expected == "none", "{done}");
+        let (_, nodes) = api_call(&app, "GET", format!("/api/tenants/{t}/nodes"), None).await;
+        let listed = nodes["nodes"].as_array().unwrap().iter().find(|n| n["hostname"] == format!("phone-{mkey}")).unwrap();
+        assert_eq!(listed["hold"], expected);
+    }
+}

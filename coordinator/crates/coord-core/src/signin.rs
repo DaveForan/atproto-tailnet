@@ -39,7 +39,13 @@ pub enum SignInStart {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum SignInDecision {
-    Approved { tenant_id: TenantId, owner: String },
+    /// `hold` is the hold of the new device. A decision stored without it waits for the owner.
+    Approved {
+        tenant_id: TenantId,
+        owner: String,
+        #[serde(default = "owner_hold")]
+        hold: crate::Hold,
+    },
     Denied,
 }
 
@@ -54,4 +60,8 @@ pub struct PendingSignIn {
     pub requester_ip: Option<String>,
     /// When the sign-in was started.
     pub requested_at: crate::clock::OffsetDateTime,
+}
+
+fn owner_hold() -> crate::Hold {
+    crate::Hold::Owner
 }

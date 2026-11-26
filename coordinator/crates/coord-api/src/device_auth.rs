@@ -18,14 +18,14 @@ const RECHECK: Duration = Duration::from_secs(2);
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
     Pending,
-    Approved { tenant_id: TenantId, owner: String },
+    Approved { tenant_id: TenantId, owner: String, hold: coord_core::Hold },
     Denied,
 }
 
 impl From<SignInDecision> for Decision {
     fn from(d: SignInDecision) -> Self {
         match d {
-            SignInDecision::Approved { tenant_id, owner } => Decision::Approved { tenant_id, owner },
+            SignInDecision::Approved { tenant_id, owner, hold } => Decision::Approved { tenant_id, owner, hold },
             SignInDecision::Denied => Decision::Denied,
         }
     }
@@ -159,8 +159,9 @@ mod tests {
         tokio::task::yield_now().await;
         let tenant = TenantId::generate();
         let started = std::time::Instant::now();
-        assert!(reg.decide(&store, &id, SignInDecision::Approved { tenant_id: tenant, owner: "alice".into() }).await);
-        assert_eq!(waiter.await.unwrap(), Some(Decision::Approved { tenant_id: tenant, owner: "alice".into() }));
+        let hold = coord_core::Hold::Approver;
+        assert!(reg.decide(&store, &id, SignInDecision::Approved { tenant_id: tenant, owner: "alice".into(), hold }).await);
+        assert_eq!(waiter.await.unwrap(), Some(Decision::Approved { tenant_id: tenant, owner: "alice".into(), hold }));
         assert!(started.elapsed() < RECHECK, "the waiter was woken, not polled");
         // Consumed: the link works once
         assert!(!reg.decide(&store, &id, SignInDecision::Denied).await);
@@ -201,7 +202,7 @@ mod tests {
         assert!(reg.get(&store, &first).await.is_none());
         assert!(reg.get(&store, &second).await.is_some());
         assert!(reg.decide(&store, &second, SignInDecision::Denied).await);
-        assert!(!reg.decide(&store, &second, SignInDecision::Approved { tenant_id: TenantId::generate(), owner: "x".into() }).await);
+        assert!(!reg.decide(&store, &second, SignInDecision::Approved { tenant_id: TenantId::generate(), owner: "x".into(), hold: coord_core::Hold::None }).await);
     }
 
     #[tokio::test]

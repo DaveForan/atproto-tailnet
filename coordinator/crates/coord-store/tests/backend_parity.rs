@@ -258,6 +258,7 @@ async fn registration_attrs_and_routes() {
                     tags: strs(&["tag:relay"]),
                     ephemeral: true,
                     advertised_routes: Some(strs(&["0.0.0.0/0", "10.0.0.0/24"])),
+                    hold: coord_core::Hold::None,
                 },
             )
             .await
@@ -302,6 +303,7 @@ async fn registration_attrs_and_routes() {
             tags: strs(&["tag:relay"]),
             ephemeral: true,
             advertised_routes: None,
+            hold: coord_core::Hold::None,
         };
         s.register_node_with(t, mk, info("router", mk), same).await.unwrap();
         let d = s.get_node_info(n1).await.unwrap();
@@ -319,6 +321,7 @@ async fn registration_attrs_and_routes() {
                 tags: vec![],
                 ephemeral: false,
                 advertised_routes: Some(strs(&["192.168.1.0/24"])),
+                hold: coord_core::Hold::None,
             },
         )
         .await
@@ -334,6 +337,48 @@ async fn registration_attrs_and_routes() {
         let summaries = s.list_nodes_for_tenant(t).await;
         let sum = summaries.iter().find(|n| n.id == n1).unwrap();
         assert_eq!(sum.attrs, d.attrs, "{}", b.name);
+    }
+}
+
+#[tokio::test]
+async fn a_held_node_is_no_peer_until_it_is_admitted() {
+    use coord_core::Hold;
+    let held = |owner: &str, hold| NodeRegistration { owner: Some(owner.into()), hold, ..Default::default() };
+    for b in backends().await {
+        let s = &b.store;
+        let t = tenant(s, "hold").await;
+        let (first_key, new_key) = (rand_bytes::<32>(), rand_bytes::<32>());
+        let (first, _, _) = s.register_node_with(t, first_key, info("first", first_key), held("alice", Hold::None)).await.unwrap();
+        let (new, _, _) = s.register_node_with(t, new_key, info("new", new_key), held("alice", Hold::Owner)).await.unwrap();
+        let hold_of = |id| async move { s.get_node_info(id).await.unwrap().attrs.hold };
+        let peers_of = |id| async move { s.get_peers(t, id).await.into_iter().map(|p| p.node_id).collect::<Vec<_>>() };
+
+        assert_eq!(hold_of(new).await, Hold::Owner, "{}", b.name);
+        assert!(peers_of(first).await.is_empty(), "{}: a held node is no peer", b.name);
+        assert!(s.get_peers_with_children(t, first).await.is_empty(), "{}", b.name);
+        let listed = s.list_nodes_for_tenant(t).await;
+        let summary = listed.iter().find(|n| n.id == new).unwrap();
+        assert_eq!((summary.attrs.hold, summary.machine_key.as_slice()), (Hold::Owner, &new_key[..]), "{}", b.name);
+
+        // A step applies only from the hold that the caller saw.
+        assert!(!s.set_node_hold(new, Hold::Approver, Hold::None).await.unwrap(), "{}", b.name);
+        assert!(s.set_node_hold(new, Hold::Owner, Hold::Approver).await.unwrap(), "{}", b.name);
+        assert!(peers_of(first).await.is_empty(), "{}: the approver step is still a hold", b.name);
+
+        // The same owner keeps the steps done. A key cannot move the node forward or back.
+        s.register_node_with(t, new_key, info("new", new_key), held("alice", Hold::Owner)).await.unwrap();
+        assert_eq!(hold_of(new).await, Hold::Approver, "{}", b.name);
+
+        assert!(s.set_node_hold(new, Hold::Approver, Hold::None).await.unwrap(), "{}", b.name);
+        assert_eq!(peers_of(first).await, vec![new], "{}", b.name);
+        s.register_node_with(t, new_key, info("new", new_key), held("alice", Hold::Owner)).await.unwrap();
+        assert_eq!(hold_of(new).await, Hold::None, "{}: an admitted machine of the same owner stays admitted", b.name);
+
+        // Another owner on the same machine starts again.
+        s.register_node_with(t, new_key, info("new", new_key), held("mallory", Hold::Owner)).await.unwrap();
+        assert_eq!(hold_of(new).await, Hold::Owner, "{}", b.name);
+        assert!(peers_of(first).await.is_empty(), "{}", b.name);
+        assert!(s.set_node_hold(rnode(), Hold::Owner, Hold::None).await.is_err(), "{}: unknown node", b.name);
     }
 }
 
@@ -624,6 +669,7 @@ async fn tenant_access_round_trip_and_default() {
                 ports: vec![AccessPort { proto: AccessProto::Tcp, first: 3000, last: 3000 }],
             }],
             open_owners: vec!["bob".into()],
+            unheld_owners: vec!["carol".into()],
         };
         s.set_tenant_access(t, access.clone()).await.unwrap();
         assert_eq!(s.get_tenant_access(t).await, access, "{}", b.name);
@@ -808,7 +854,7 @@ async fn sign_in_is_decided_once_and_taken_once() {
         assert!(s.sign_in_get(&id).await.is_none(), "{}", b.name);
         assert_eq!(s.sign_in_get(&id2).await.unwrap().requester_ip, None, "{}", b.name);
 
-        let yes = SignInDecision::Approved { tenant_id: t, owner: "alice".into() };
+        let yes = SignInDecision::Approved { tenant_id: t, owner: "alice".into(), hold: coord_core::Hold::Approver };
         assert!(s.sign_in_decide(&id2, &yes).await, "{}", b.name);
         assert!(!s.sign_in_decide(&id2, &SignInDecision::Denied).await, "decided once ({})", b.name);
         assert!(!s.sign_in_decide("unknown", &yes).await, "{}", b.name);

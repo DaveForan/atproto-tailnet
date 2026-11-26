@@ -11,6 +11,8 @@ use coord_core::clock;
 pub struct DeviceAuthApproval {
     pub tenant_id: String,
     pub owner: String,
+    /// The hold of the new device. Without it, the device waits for its owner.
+    pub hold: Option<coord_core::Hold>,
 }
 
 /// GET /api/device-auth/{id} — what the approval page shows about a pending sign-in.
@@ -55,7 +57,7 @@ pub async fn approve_device_auth(
     if state.store.is_tenant_suspended(tenant_id).await {
         return bad_request("tenant is suspended".to_string());
     }
-    let decision = coord_core::SignInDecision::Approved { tenant_id, owner: body.owner };
+    let decision = coord_core::SignInDecision::Approved { tenant_id, owner: body.owner, hold: body.hold.unwrap_or(coord_core::Hold::Owner) };
     if !state.device_auth.decide(&state.store, &id, decision).await {
         return not_found("device sign-in not found, expired or already answered");
     }
