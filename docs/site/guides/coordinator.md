@@ -216,7 +216,7 @@ Caddy returns 404 for all other paths and for unknown names. The admin API (`/ap
 
 ### Suspension
 
-An instance operator can suspend a tailnet in the **Instance** tab. The service then calls `PUT /api/tenants/{id}/suspended` on the coordinator. The suspension also applies to the sub-tailnets. While a tenant is suspended, its nodes cannot register or poll the map, and the coordinator ends their open map streams.
+An instance operator can suspend a tailnet on the **Instance** page. The service then calls `PUT /api/tenants/{id}/suspended` on the coordinator. The suspension also applies to the sub-tailnets. While a tenant is suspended, its nodes cannot register or poll the map, and the coordinator ends their open map streams.
 
 ### DERP map
 
@@ -229,7 +229,7 @@ DERP (Designated Encrypted Relay for Packets) relays give fallback connectivity 
 
 DERP configuration applies to one tenant at a time. There is no global DERP endpoint.
 
-- Each tenant can add its own relay regions (IDs 900-999) in the **DERP Relays** tab. The service sends them to `PUT /api/tenants/{id}/derp` for that tenant only. Connected devices of that tenant get the new map at once.
+- Each tenant can add its own relay regions (IDs 900-999) under **Settings → Relays**. The service sends them to `PUT /api/tenants/{id}/derp` for that tenant only. Connected devices of that tenant get the new map at once.
 - A tenant can also turn off the default map.
 - The service database is the source of truth. The coordinator keeps the maps in memory. The service sends them again after a coordinator restart.
 
@@ -260,7 +260,7 @@ Set `derp_map_file` in the TOML or the `COORD_DERP_MAP` env var to the path of t
 
 A device advertises routes with `tailscale up --advertise-routes=...` or `--advertise-exit-node`. The coordinator reads them from `Hostinfo.RoutableIPs`. A route has no effect until somebody approves it:
 
-1. Open the **Routes** tab (the `manage_devices` permission is necessary).
+1. Open **Settings → Routes** (the `manage_devices` permission is necessary).
 2. Find the advertised route.
 3. Select **Enable**. The service calls `POST /api/tenants/{id}/nodes/{node_id}/routes`.
 

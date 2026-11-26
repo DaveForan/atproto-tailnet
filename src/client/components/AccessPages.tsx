@@ -30,7 +30,7 @@ export function NoAccessPage() {
   if (user.isOperator && tab === "instance") {
     return (
       <main>
-        <button type="button" className="btn-sm btn-ghost mb-12" onClick={() => setTab("status")}>
+        <button type="button" className="btn-sm btn-ghost mb-12" onClick={() => setTab("overview")}>
           &larr; Back
         </button>
         <Suspense fallback={<Loading />}>
@@ -50,7 +50,11 @@ export function NoAccessPage() {
             You&apos;re allowed to create a tailnet. Sign out and sign in again to provision it.
           </p>
         )}
-        <PendingInvitations invitations={invitations} onAction={() => { void reload(); }} />
+        {invitations.length > 0 && (
+          <Card>
+            <PendingInvitations invitations={invitations} onAction={() => { void reload(); }} />
+          </Card>
+        )}
         <JoinDefaultTailnet hasInvitations={invitations.length > 0} />
         <div className="btn-group mt-16">
           {user.isOperator && (
@@ -72,7 +76,7 @@ type JoinState =
   | { kind: "rejected"; tenantId: string; name: string }
   | { kind: "approved"; name: string };
 
-function JoinDefaultTailnet({ hasInvitations }: { hasInvitations: boolean }) {
+export function JoinDefaultTailnet({ hasInvitations }: { hasInvitations: boolean }) {
   const { reload } = useSession();
   const { toast, toastFailure } = useToast();
   const [state, setState] = useState<JoinState>({ kind: "loading" });

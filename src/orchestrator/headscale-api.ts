@@ -29,6 +29,11 @@ const headscaleNodeSchema = z.object({
   approvedRoutes: z.array(z.string()).optional(),
   /** Approved routes for which this node is the primary router. */
   subnetRoutes: z.array(z.string()).optional(),
+  /** Coordinator only: who must admit the device before it gets access. */
+  hold: z.enum(["none", "approver", "owner"]).optional(),
+  /** Coordinator only: short form of the machine key. */
+  fingerprint: z.string().optional(),
+  os: z.string().optional(),
 });
 
 const headscaleUserSchema = z.object({
@@ -50,6 +55,8 @@ const headscalePreAuthKeySchema = z.object({
 });
 
 export type HeadscaleNode = z.infer<typeof headscaleNodeSchema>;
+/** Who must admit a device next. `none` means admitted. */
+export type DeviceHold = NonNullable<HeadscaleNode["hold"]>;
 export type HeadscaleUser = z.infer<typeof headscaleUserSchema>;
 export type HeadscalePreAuthKey = z.infer<typeof headscalePreAuthKeySchema>;
 /** Headscale has no route objects, so `id` comes from the node id and prefix (see {@link routeId}). */

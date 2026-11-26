@@ -28,7 +28,7 @@ All configuration comes from environment variables. A Zod schema in `src/config.
 |----------|----------|---------|-------------|
 | `OPERATOR_DIDS` | Yes (production) | *(empty)* | Comma-separated DIDs of the instance operators, for example `did:plc:abc123,did:web:example.com`. Each entry must start with `did:` |
 
-Only operators get a tailnet at sign-in. Operators can also designate "tailnet creators" in the **Instance** tab. Each other person who signs in sees only their invitations and, if available, a **Request to join** button for the default tailnet.
+Only operators get a tailnet at sign-in. Operators can also designate "tailnet creators" on the **Instance** page. Each other person who signs in sees only their invitations and, if available, a **Request to join** button for the default tailnet.
 
 If `OPERATOR_DIDS` is empty on a production instance, the service logs a loud warning. It still starts, but nobody can create a tailnet. A change to the list needs a restart.
 
@@ -99,7 +99,7 @@ Federation is off by default. The code exists, but links carry no traffic in the
 - The federation data plane needs Docker (Headscale mode).
 - Cross-instance traffic is not implemented.
 
-When `FEDERATION_ENABLED` is not `true`, the federation and traversal API paths return 404. The broker does not start. The dashboard hides the **Federation** and **Traversal Policy** tabs. The service still serves collective DID documents for credentials.
+When `FEDERATION_ENABLED` is not `true`, the federation and traversal API paths return 404. The broker does not start. The dashboard hides the **Federation**, **Traversal policy** and **Credentials** settings sections. The service still serves collective DID documents for credentials.
 
 ## Secret strength rules
 

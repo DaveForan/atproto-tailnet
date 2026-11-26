@@ -6,17 +6,39 @@ export type BoolSettingKey = {
   [K in keyof Settings]-?: Settings[K] extends boolean ? K : never;
 }[keyof Settings];
 
-export const TOGGLE_SETTINGS: Array<{ key: BoolSettingKey; label: string; description: string }> = [
-  { key: "lockdownMode", label: "Lockdown mode", description: "Block invitations, joins, and device registrations" },
-  { key: "requireDeviceApproval", label: "Require device approval", description: "New devices wait for admin approval before they can join. Admins get a dashboard notification (and a webhook call, if configured below) for each request." },
-  { key: "requireServiceApproval", label: "Require service approval", description: "Services need admin approval before activation" },
-  { key: "allowJoinRequests", label: "Allow join requests", description: "Allow non-members to request to join" },
-  { key: "boardEnabled", label: "Board enabled", description: "Enable the public message board" },
-  { key: "allowAgentTokens", label: "Allow agent tokens", description: "Enable AI agent token creation" },
-  { key: "allowMemberAgentTokens", label: "Allow member agent tokens", description: "Allow non-originator members to create agent tokens" },
+interface ToggleSetting {
+  key: BoolSettingKey;
+  label: string;
+  description: string;
+}
+
+/** Security switches, one card for each job. */
+export const SETTING_GROUPS: Array<{ title: string; toggles: ToggleSetting[] }> = [
+  {
+    title: "Joining",
+    toggles: [
+      { key: "allowJoinRequests", label: "Allow join requests", description: "People who are not members can ask to join. An approver answers each request on Overview." },
+      { key: "requireDeviceApproval", label: "Approvers also admit new devices", description: "While this is on, an approver must admit each new device on Overview after its owner did, and no member can turn off the approval of their own devices. The device of an approver needs a different approver, when there is one." },
+    ],
+  },
+  {
+    title: "Agent tokens",
+    toggles: [
+      { key: "allowAgentTokens", label: "Allow agent tokens", description: "Tokens that let an AI agent act in this tailnet with chosen permissions." },
+      { key: "allowMemberAgentTokens", label: "Allow member agent tokens", description: "Members other than the originator can also create tokens." },
+    ],
+  },
+  {
+    title: "Lockdown",
+    toggles: [
+      { key: "lockdownMode", label: "Lockdown mode", description: "Stops invitations, joins, new devices and new tokens until you turn it off. Connected devices keep working." },
+    ],
+  },
 ];
 
-export function SettingsCard({
+export const TOGGLE_SETTINGS: ToggleSetting[] = SETTING_GROUPS.flatMap((g) => g.toggles);
+
+export function SettingsCards({
   settings,
   busy,
   onToggle,
@@ -26,19 +48,23 @@ export function SettingsCard({
   onToggle: (key: BoolSettingKey, value: boolean) => void;
 }) {
   return (
-    <Card title="Security settings">
-      <div className="toggle-group">
-      {TOGGLE_SETTINGS.map((toggle) => (
-        <Toggle
-          key={toggle.key}
-          label={toggle.label}
-          description={toggle.description}
-          checked={settings?.[toggle.key] ?? false}
-          onChange={(v) => onToggle(toggle.key, v)}
-          disabled={busy}
-        />
+    <>
+      {SETTING_GROUPS.map((group) => (
+        <Card key={group.title} title={group.title}>
+          <div className="toggle-group">
+            {group.toggles.map((toggle) => (
+              <Toggle
+                key={toggle.key}
+                label={toggle.label}
+                description={toggle.description}
+                checked={settings?.[toggle.key] ?? false}
+                onChange={(v) => onToggle(toggle.key, v)}
+                disabled={busy}
+              />
+            ))}
+          </div>
+        </Card>
       ))}
-      </div>
-    </Card>
+    </>
   );
 }

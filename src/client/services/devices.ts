@@ -8,6 +8,8 @@ import type {
   AuthKeyOptions,
   AuthKeyInfo,
   Stats,
+  WaitingDevices,
+  OwnDeviceApproval,
 } from "../lib/types";
 
 export const deviceService = {
@@ -30,8 +32,33 @@ export const deviceService = {
     return { totalDevices: total, onlineDevices: online, totalMembers: byUser.length };
   },
 
+  /** The address a device signs in to. */
+  getLoginServer: async (tid: string): Promise<string | null> =>
+    (await tenantApi<{ loginServer: string }>(tid, ""))?.loginServer ?? null,
+
   getHealth: (tid: string) =>
     tenantApi<HealthData>(tid, "/health"),
+
+  /** Devices that wait for admission: the caller's own, and the approver queue. */
+  waiting: (tid: string) =>
+    tenantApi<WaitingDevices>(tid, "/devices/waiting"),
+
+  admitDevice: (tid: string, id: string) =>
+    tenantApi<{ status: "admitted" | "waiting_for_approver" }>(tid, `/devices/${id}/admit`, { method: "POST", body: "{}" }),
+
+  refuseDevice: (tid: string, id: string) =>
+    tenantApi(tid, `/devices/${id}/refuse`, { method: "POST", body: "{}" }),
+
+  /** The caller's own approval of their new devices. */
+  ownApproval: (tid: string) =>
+    tenantApi<OwnDeviceApproval>(tid, "/device-approval/mine"),
+
+  setOwnApproval: (tid: string, on: boolean) =>
+    tenantApi<OwnDeviceApproval>(tid, "/device-approval/mine", { method: "PUT", body: JSON.stringify({ on }) }),
+
+  /** Removes every device of a member and revokes every key of that member. */
+  invalidateDevices: (tid: string, userId: string) =>
+    tenantApi<{ devicesDeleted: number; keysRevoked: number }>(tid, `/members/${userId}/devices/invalidate`, { method: "POST", body: "{}" }),
 
   removeDevice: (tid: string, id: string) =>
     tenantApi(tid, `/devices/${id}`, { method: "DELETE" }),

@@ -24,6 +24,8 @@ export interface CoordinatorAccess {
   rules: CoordinatorAccessRule[];
   /** Open mode: the owners (user ids) who put their own devices under the open policy. */
   open_owners?: string[];
+  /** The owners (user ids) whose key admits a device without their own step (ADR-0039). */
+  unheld_owners?: string[];
 }
 
 export interface CompileInput {
@@ -56,6 +58,8 @@ export interface CompileInput {
   nodeOwners?: ReadonlyMap<string, string>;
   /** Members (user ids) who chose the tailnet's open policy for their own devices. Used in open mode. */
   openOwners?: string[];
+  /** Members (user ids) who turned off the approval of their own new devices. Empty while the tailnet has the second approval. */
+  unheldOwners?: string[];
   now?: Date;
 }
 
@@ -216,8 +220,10 @@ export function compileAccess(input: CompileInput): CoordinatorAccess {
     }
   }
 
-  if (input.mode !== "member") return { mode: "open", rules, open_owners: [...new Set(input.openOwners ?? [])].sort() };
-  return { mode: "member", rules };
+  const unheld = [...new Set(input.unheldOwners ?? [])].sort();
+  const held = unheld.length ? { unheld_owners: unheld } : {};
+  if (input.mode !== "member") return { mode: "open", rules, open_owners: [...new Set(input.openOwners ?? [])].sort(), ...held };
+  return { mode: "member", rules, ...held };
 }
 
 export interface CoordinatorDnsRecord {

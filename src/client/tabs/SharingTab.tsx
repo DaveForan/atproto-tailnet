@@ -4,19 +4,19 @@ import { Card } from "../components/Card";
 import { Loading } from "../components/Loading";
 import { LoadError } from "../components/LoadError";
 import { boardsService, type MyDevice } from "../services/boards";
-import { sharingService, type MyAccess, type FriendsData, type Person, type Share } from "../services/sharing";
-import { ReachCard } from "./sharing/ReachCard";
+import { sharingService, type FriendsData, type Person, type Share } from "../services/sharing";
+import { useAttention } from "../hooks/useAttention";
+import { useTabRoute } from "../hooks/useTabRoute";
 import { SharesCard, type SharingAct } from "./sharing/SharesCard";
-import { RequestsCard } from "./sharing/RequestsCard";
 import { FriendsCard } from "./sharing/FriendsCard";
 import { NewShareForm } from "./sharing/NewShareForm";
+import { SubNav, useSections } from "../components/SubNav";
 
 interface SharingData {
   friends: FriendsData;
   shares: { shares: Share[] };
   devices: { devices: MyDevice[] };
   candidates: { members: Person[] };
-  access: MyAccess;
 }
 
 const FALLBACK: SharingData = {
@@ -24,7 +24,6 @@ const FALLBACK: SharingData = {
   shares: { shares: [] },
   devices: { devices: [] },
   candidates: { members: [] },
-  access: { mode: "member", open: false, openMembers: 0, devices: [] },
 };
 
 const LOADERS: TenantLoaders<SharingData> = {
@@ -32,12 +31,12 @@ const LOADERS: TenantLoaders<SharingData> = {
   shares: (tid) => sharingService.shares(tid),
   devices: (tid) => boardsService.myDevices(tid),
   candidates: (tid) => sharingService.candidates(tid),
-  access: (tid) => sharingService.myAccess(tid),
 };
 
 export function SharingTab() {
   const { data, loading, error, reload } = useTenantParallel(LOADERS, FALLBACK, { keepPreviousOnReload: true });
   const { mutate, busy } = useTenantMutation({ onError: "That did not work", reload });
+  const { sections, open } = useSections("sharing");
 
   if (loading) return <Loading />;
 
@@ -46,15 +45,37 @@ export function SharingTab() {
   const shares = data.shares.shares;
 
   return (
-    <div className="tab-content">
-      <LoadError error={error} onRetry={reload} />
-      <RequestsCard incoming={friends.incoming} waiting={shares.filter((s) => s.awaitingMe)} devices={data.devices.devices} act={act} busy={busy} />
-      <SharesCard shares={shares.filter((s) => !s.awaitingMe)} devices={data.devices.devices} act={act} busy={busy} />
-      <ReachCard access={data.access} act={act} busy={busy} />
-      <Card title="Share a device">
-        <NewShareForm friends={friends.friends} devices={data.devices.devices} onCreated={() => { void reload(); }} />
-      </Card>
-      <FriendsCard friends={friends} candidates={data.candidates.members} act={act} busy={busy} />
-    </div>
+    <>
+      <SubNav tab="sharing" label="Sharing sections" sections={sections} open={open} />
+      <div className="tab-content">
+        <LoadError error={error} onRetry={reload} />
+        <WaitingNotice count={friends.incoming.length + shares.filter((s) => s.awaitingMe).length} />
+        {open?.id === "friends" ? (
+          <FriendsCard friends={friends} candidates={data.candidates.members} act={act} busy={busy} />
+        ) : (
+          <>
+            <SharesCard shares={shares.filter((s) => !s.awaitingMe)} devices={data.devices.devices} act={act} busy={busy} />
+            <Card title="Share a device">
+              <NewShareForm friends={friends.friends} devices={data.devices.devices} onCreated={() => { void reload(); }} />
+            </Card>
+          </>
+        )}
+      </div>
+    </>
+  );
+}
+
+/** Requests are answered on Overview; this page only says that some wait. */
+export function WaitingNotice({ count }: { count: number }) {
+  const { setTab } = useTabRoute();
+  const { reload } = useAttention();
+  if (count === 0) return null;
+  return (
+    <p className="notice notice-row" role="status">
+      <span>{count === 1 ? "1 request waits" : `${count} requests wait`} for your answer.</span>
+      <button type="button" className="btn-sm" onClick={() => { void reload(); setTab("overview"); }}>
+        Open Overview
+      </button>
+    </p>
   );
 }

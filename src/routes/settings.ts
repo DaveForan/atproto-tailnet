@@ -7,9 +7,9 @@ import { Router } from "express";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../db/index.js";
-import { tenants } from "../db/schema.js";
+import { tenants, memberships } from "../db/schema.js";
 import { getControlClient } from "../orchestrator/control-client.js";
-import { requireAuth, hasPermission, authUserId } from "./helpers.js";
+import { requireAuth, hasPermission, authUserId, sendNotApplied } from "./helpers.js";
 import { tenantGuard, tenantCtx } from "./guard.js";
 import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
@@ -17,6 +17,7 @@ import { config } from "../config.js";
 import { validateWebhookUrl } from "../notifications/webhook.js";
 import { revokeAllTenantKeys } from "../access/keys.js";
 import { parseBody } from "./validation.js";
+import { syncTenantAccess } from "../access/sync.js";
 import { refuseStepUp, stepUpMissing } from "../auth/step-up.js";
 
 export const settingsRouter = Router({ caseSensitive: true });
@@ -40,7 +41,7 @@ const settingsBody = z.object({
 });
 
 /**
- * Settings that change who may get in or be told: never from an agent token, and a session needs step-up.
+ * Settings that change who may get in, be told or publish without review: never from an agent token, and a session needs step-up.
  * Security: an agent token with manage_settings must not open the tailnet or redirect its notifications.
  */
 export const SENSITIVE_SETTINGS = [
@@ -51,6 +52,7 @@ export const SENSITIVE_SETTINGS = [
   "notificationWebhookSecret",
   "requireDeviceApproval",
   "allowJoinRequests",
+  "requireServiceApproval",
 ] as const;
 
 /** Settings response; the webhook URL is shown only to settings managers, the secret never. */
@@ -133,6 +135,15 @@ settingsRouter.patch(
     }
     if (parsed.data.notificationWebhookSecret !== undefined) {
       updates.notificationWebhookSecret = parsed.data.notificationWebhookSecret || null;
+    }
+
+    // The body is valid from here on.
+    // Security: the coordinator must stop key-only admission before the setting says it did.
+    // Nothing is saved when the push fails, so the caller can try again.
+    const secondApprovalOn = parsed.data.requireDeviceApproval === true && !result.tenant.requireDeviceApproval;
+    if (secondApprovalOn && !(await syncTenantAccess(result.tenant.id, { secondApproval: true }))) {
+      sendNotApplied(res);
+      return;
     }
     if (
       parsed.data.notificationWebhookUrl !== undefined ||
@@ -274,6 +285,13 @@ settingsRouter.patch(
       .update(tenants)
       .set(updates)
       .where(eq(tenants.id, result.tenant.id));
+
+    // A change of the second approval turns every member's own approval on, so no earlier choice comes back.
+    if (parsed.data.requireDeviceApproval !== undefined && parsed.data.requireDeviceApproval !== result.tenant.requireDeviceApproval) {
+      await db.update(memberships).set({ approveOwnDevices: true }).where(eq(memberships.tenantId, result.tenant.id));
+      // Turning it off: a failure here leaves the coordinator stricter than the setting, and the next push corrects it
+      if (!secondApprovalOn) await syncTenantAccess(result.tenant.id);
+    }
 
     // Entering lockdown also revokes keys already handed out, so a leaked
     // reusable key can't keep enrolling devices during the lockdown.

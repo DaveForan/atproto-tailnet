@@ -242,15 +242,6 @@ main {
   flex-wrap: wrap;
 }
 
-.nav-group-header {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--text-dim);
-  text-transform: uppercase;
-  letter-spacing: 0.8px;
-  padding: 16px 16px 6px;
-}
-
 .nav-item {
   display: block;
   width: 100%;
@@ -278,6 +269,64 @@ main {
 }
 
 .nav-item[aria-current="page"] { font-weight: 600; }
+
+/* Requests that wait for the user, next to the Overview entry */
+.nav-count {
+  float: right;
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 20px;
+  text-align: center;
+}
+
+/* Sections of the Settings page */
+.subnav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-width: 1080px;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.subnav-item {
+  padding: 5px 12px;
+  min-height: 30px;
+  font-size: 13px;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.subnav-item:hover {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+}
+
+.subnav-item.active {
+  color: var(--text);
+  font-weight: 600;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+}
+
+/* A notice with one action at its end */
+.notice-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+}
 
 /* Menu button, drawer header and overlay show only at drawer widths (see Responsive). */
 .hamburger-btn {
@@ -1341,3 +1390,18 @@ img, svg { max-width: 100%; }
 .check-list legend { padding: 0 6px; font-size: 13px; color: var(--text-dim); }
 .check-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; cursor: pointer; }
 .check-row span:first-of-type { flex: 1; overflow-wrap: anywhere; }
+
+/* A count inside a section menu sits after its label */
+.subnav-item .nav-count {
+  float: none;
+  display: inline-block;
+  margin-left: 6px;
+}
+
+.subnav-item { display: inline-flex; align-items: center; }
+
+/* A card's own buttons keep their size; the grid must not stretch them */
+.post-card > button,
+.post-card > .btn-group { justify-self: start; }
+
+.card > .stats-row:last-child { margin-bottom: 0; }

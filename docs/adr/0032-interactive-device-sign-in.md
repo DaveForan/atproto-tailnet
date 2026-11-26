@@ -62,9 +62,9 @@ path.
 
 Differences from the decision:
 
-- In a tailnet that requires device approval, only the originator can use the
-  sign-in. Other members get a message to ask for a key. The request to
-  approvers from this page is not built.
+- The approval on this page is the owner's admission of that machine
+  (ADR-0039). In a tailnet with the second approval, the device then waits for
+  an approver. Every member can use the sign-in.
 - Pending sign-ins are in the memory of one coordinator process. With more
   than one replica (ADR-0034) they must move to the store.
 

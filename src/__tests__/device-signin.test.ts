@@ -1,4 +1,4 @@
-/** Interactive device sign-in (ADR-0032): the dashboard side applies every key-path check. */
+/** Interactive device sign-in (ADR-0032): the member admits their own machine; a tailnet can add an approver (ADR-0039). */
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import type { AddressInfo } from "node:net";
 
@@ -48,7 +48,8 @@ vi.mock("../orchestrator/control-client.js", () => ({
   }),
 }));
 vi.mock("../orchestrator/coordinator-identity.js", () => ({ pushTenantIdentity: vi.fn(async () => {}) }));
-vi.mock("../notifications/service.js", () => ({ notify: vi.fn() }));
+const { notify } = vi.hoisted(() => ({ notify: vi.fn() }));
+vi.mock("../notifications/service.js", () => ({ notify }));
 const { logAudit } = vi.hoisted(() => ({ logAudit: vi.fn() }));
 vi.mock("../audit/log.js", () => ({ logAudit }));
 
@@ -62,8 +63,8 @@ const tenant = (over: Record<string, unknown> = {}) => ({
   id: T, name: "Harbor", slug: "t-x", coordinatorTenantId: "c-1", suspended: false, lockdownMode: false,
   requireDeviceApproval: false, lastActivityAt: new Date(), ...over,
 });
-const ctx = (t: Record<string, unknown> = {}, originator = false) => [
-  { tenant: tenant(t), membership: { id: "m", isOriginator: originator }, role: null },
+const ctx = (t: Record<string, unknown> = {}, originator = false, permissions: string[] = []) => [
+  { tenant: tenant(t), membership: { id: "m", isOriginator: originator }, role: { permissions } },
 ];
 
 const app = express();
@@ -112,11 +113,13 @@ describe("device sign-in", () => {
   });
 
   it("shows the device and the tailnets it can join, with reasons for blocked ones", async () => {
+    // A second approval does not block the sign-in: the device waits for the approver afterwards
     results.push([
-      { tenant: tenant(), isOriginator: false },
-      { tenant: tenant({ id: "t2", name: "Locked", lockdownMode: true }), isOriginator: true },
-      { tenant: tenant({ id: "t3", name: "Approval", requireDeviceApproval: true }), isOriginator: false },
-      { tenant: tenant({ id: "t4", name: "Suspended", suspended: true }), isOriginator: true },
+      { tenant: tenant(), membership: { isOriginator: false }, role: { permissions: [] } },
+      { tenant: tenant({ id: "t2", name: "Locked", lockdownMode: true }), membership: { isOriginator: true }, role: { permissions: [] } },
+      { tenant: tenant({ id: "t3", name: "Approval", requireDeviceApproval: true }), membership: { isOriginator: false }, role: { permissions: [] } },
+      { tenant: tenant({ id: "t4", name: "Suspended", suspended: true }), membership: { isOriginator: true }, role: { permissions: [] } },
+      { tenant: tenant({ id: "t5", name: "Approver", requireDeviceApproval: true }), membership: { isOriginator: false }, role: { permissions: ["approve_devices"] } },
     ]);
     const r = await call("GET", ID);
     expect(r.status).toBe(200);
@@ -124,13 +127,16 @@ describe("device sign-in", () => {
     expect(r.json.tailnets.map((t: any) => [t.name, t.blocked === null])).toEqual([
       ["Harbor", true],
       ["Locked", false],
-      ["Approval", false],
+      ["Approval", true],
+      ["Approver", true],
     ]);
+    // A member with approve_devices needs no second approval, like the originator
+    expect(r.json.tailnets.map((t: any) => t.needsApprover)).toEqual([false, false, true, false]);
   });
 
   it("a machine already in a tailnet can only sign in to that tailnet", async () => {
     coord.getDeviceAuth.mockResolvedValue({ hostname: "h", os: "", fingerprint: "f", pending: true, registered_tenant_id: "c-other" });
-    results.push([{ tenant: tenant(), isOriginator: true }]);
+    results.push([{ tenant: tenant(), membership: { isOriginator: true }, role: { permissions: [] } }]);
     expect((await call("GET", ID)).json.tailnets).toEqual([]);
   });
 
@@ -144,22 +150,44 @@ describe("device sign-in", () => {
     results.push(ctx(), []); // tenant, no device lock
     const r = await call("POST", `${ID}/approve`, { tenantId: T, confirm: true });
     expect(r.status).toBe(200);
-    expect(coord.approveDeviceAuth).toHaveBeenCalledWith(ID, "c-1", "u-1");
+    expect(r.json.status).toBe("approved");
+    expect(coord.approveDeviceAuth).toHaveBeenCalledWith(ID, "c-1", "u-1", "none");
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it("with the second approval, a member's device waits for an approver and the approvers are told", async () => {
+    results.push(ctx({ requireDeviceApproval: true }), []);
+    const r = await call("POST", `${ID}/approve`, { tenantId: T, confirm: true });
+    expect(r.status).toBe(200);
+    expect(r.json.status).toBe("waiting_for_approver");
+    expect(coord.approveDeviceAuth).toHaveBeenCalledWith(ID, "c-1", "u-1", "approver");
+    expect(notify).toHaveBeenCalledWith(T, "device_approval_requested", expect.objectContaining({ body: expect.stringContaining("aaaa-bbbb-cccc-dddd") }));
+  });
+
+  it("an approver's own device waits for another approver, when there is one", async () => {
+    const me = { userId: "u-1", handle: "a.test", isOriginator: false, permissions: ["approve_devices"] };
+    results.push(ctx({ requireDeviceApproval: true }, false, ["approve_devices"]), [me]);
+    expect((await call("POST", `${ID}/approve`, { tenantId: T, confirm: true })).json.status).toBe("approved");
+    expect(coord.approveDeviceAuth).toHaveBeenLastCalledWith(ID, "c-1", "u-1", "none");
+
+    results.push(ctx({ requireDeviceApproval: true }, false, ["approve_devices"]), [me, { userId: "u-2", handle: "b.test", isOriginator: true, permissions: [] }]);
+    expect((await call("POST", `${ID}/approve`, { tenantId: T, confirm: true })).json.status).toBe("waiting_for_approver");
+    expect(coord.approveDeviceAuth).toHaveBeenLastCalledWith(ID, "c-1", "u-1", "approver");
   });
 
   it.each([
     ["a non-member", [], 404],
     ["lockdown", ctx({ lockdownMode: true }), 403],
-    ["a tailnet that requires device approval", ctx({ requireDeviceApproval: true }), 403],
   ])("refuses %s", async (_label, first, status) => {
     results.push(first);
     expect((await call("POST", `${ID}/approve`, { tenantId: T, confirm: true })).status).toBe(status);
     expect(coord.approveDeviceAuth).not.toHaveBeenCalled();
   });
 
-  it("the originator may add a device where approval is required for others", async () => {
+  it("the originator's own device needs no second approval while they are the only approver", async () => {
     results.push(ctx({ requireDeviceApproval: true }, true), []);
     expect((await call("POST", `${ID}/approve`, { tenantId: T, confirm: true })).status).toBe(200);
+    expect(coord.approveDeviceAuth).toHaveBeenCalledWith(ID, "c-1", "u-1", "none");
   });
 
   it("refuses a tailnet at its device limit", async () => {
@@ -188,7 +216,7 @@ describe("device sign-in", () => {
     expect(coord.denyDeviceAuth).toHaveBeenCalledWith(ID);
   });
   it("shows where and when the device asked (phishing check)", async () => {
-    results.push([{ tenant: tenant(), isOriginator: true }]);
+    results.push([{ tenant: tenant(), membership: { isOriginator: true }, role: { permissions: [] } }]);
     const r = await call("GET", ID);
     expect(r.json.requesterIp).toBe("203.0.113.7");
     expect(typeof r.json.requestedAt).toBe("string");

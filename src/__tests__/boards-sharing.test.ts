@@ -64,11 +64,11 @@ const T = "11111111-1111-4111-8111-111111111111";
 const ALICE = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const BOB = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const POST = "99999999-9999-4999-8999-999999999999";
-const tenant = { id: T, slug: "t-x", lockdownMode: false, boardEnabled: true, lastActivityAt: new Date(), accessMode: "member", controllerBoardText: null };
+const tenant = { id: T, slug: "t-x", lockdownMode: false, boardEnabled: true, lastActivityAt: new Date(), accessMode: "member", controllerBoardText: null, requireServiceApproval: true };
 // Members hold create_posts unless a test says otherwise
-const ctx = (opts: { originator?: boolean; perms?: string[]; lockdown?: boolean; board?: boolean } = {}) => [
+const ctx = (opts: { originator?: boolean; perms?: string[]; lockdown?: boolean; board?: boolean; review?: boolean } = {}) => [
   {
-    tenant: { ...tenant, lockdownMode: opts.lockdown ?? false, boardEnabled: opts.board ?? true },
+    tenant: { ...tenant, lockdownMode: opts.lockdown ?? false, boardEnabled: opts.board ?? true, requireServiceApproval: opts.review ?? true },
     membership: { id: "m", isOriginator: opts.originator ?? false },
     role: { permissions: opts.perms ?? ["create_posts"] },
   },
@@ -118,6 +118,13 @@ describe("service posts", () => {
     const r = await call("POST", "/boards/posts", body);
     expect(r.status).toBe(201);
     expect(insertOf("service_posts")?.status).toBe("pending");
+  });
+
+  it("a member's public post needs no approval when the tailnet asks for none", async () => {
+    results.push(ctx({ review: false }), [], [post()]);
+    const r = await call("POST", "/boards/posts", body);
+    expect(r.status).toBe(201);
+    expect(insertOf("service_posts")).toMatchObject({ status: "approved", reviewedById: BOB });
   });
 
   it("the originator's own post needs no approval", async () => {
@@ -199,6 +206,13 @@ describe("service posts", () => {
     const update = writes.find((w) => w.op === "update" && w.table === "service_posts")?.arg as Record<string, unknown>;
     expect(update).toMatchObject({ port: 4000, status: "pending" });
     expect(syncTenantAccess).toHaveBeenCalled();
+  });
+
+  it("a changed port needs no new approval when the tailnet asks for none", async () => {
+    results.push(ctx({ review: false }), [post({ authorId: BOB, nodeId: "20" })], undefined, [post({ authorId: BOB, port: 4000 })]);
+    expect((await call("PATCH", `/boards/posts/${POST}`, { port: 4000 })).status).toBe(200);
+    const update = writes.find((w) => w.op === "update" && w.table === "service_posts")?.arg as Record<string, unknown>;
+    expect(update.status).toBeUndefined();
   });
 
   it("renaming an approved public post sends it back for approval; connections stay", async () => {

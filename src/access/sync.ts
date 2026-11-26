@@ -128,6 +128,8 @@ export async function loadTenantAccess(
   tenantId: string,
   mode: AccessMode,
   nodeOwners?: ReadonlyMap<string, string>,
+  /** The tailnet's second approval: while on, no member's key admits a device. */
+  secondApproval = true,
 ): Promise<CoordinatorAccess> {
   const posts = await db.select().from(servicePosts).where(eq(servicePosts.tenantId, tenantId));
   const postIds = posts.filter((p) => p.board === "public" && p.status === "approved").map((p) => p.id);
@@ -146,7 +148,17 @@ export async function loadTenantAccess(
             .where(and(eq(memberships.tenantId, tenantId), eq(memberships.openAccess, true)))
         ).map((m) => m.userId)
       : [];
-  return compileAccess({ mode, posts, connections, shares, nodeOwners, openOwners });
+  // Security: only a member's own choice lets their key admit a device, and the second approval overrides it
+  const unheldOwners =
+    !secondApproval
+      ? (
+          await db
+            .select({ userId: memberships.userId })
+            .from(memberships)
+            .where(and(eq(memberships.tenantId, tenantId), eq(memberships.approveOwnDevices, false)))
+        ).map((m) => m.userId)
+      : [];
+  return compileAccess({ mode, posts, connections, shares, nodeOwners, openOwners, unheldOwners });
 }
 
 /** Compile the current device and service names of a tailnet from the database. */
@@ -176,10 +188,16 @@ export async function loadTenantDns(
  * Returns false on failure; the caller's change is saved and the monitor retries.
  * No-op outside coordinator mode, where per-device rules cannot be enforced.
  */
-export async function syncTenantAccess(tenantId: string): Promise<boolean> {
+export async function syncTenantAccess(tenantId: string, opts: { secondApproval?: boolean } = {}): Promise<boolean> {
   if (!config.coordinatorUrl) return true;
   const [tenant] = await db
-    .select({ id: tenants.id, coordinatorTenantId: tenants.coordinatorTenantId, accessMode: tenants.accessMode, slug: tenants.slug })
+    .select({
+      id: tenants.id,
+      coordinatorTenantId: tenants.coordinatorTenantId,
+      accessMode: tenants.accessMode,
+      slug: tenants.slug,
+      requireDeviceApproval: tenants.requireDeviceApproval,
+    })
     .from(tenants)
     .where(eq(tenants.id, tenantId));
   if (!tenant?.coordinatorTenantId) return true;
@@ -193,7 +211,7 @@ export async function syncTenantAccess(tenantId: string): Promise<boolean> {
       if (n.user?.id != null) nodeOwners.set(String(n.id), String(n.user.id));
     }
     await closeStaleAccess(tenantId, nodeOwners);
-    const access = await loadTenantAccess(tenantId, mode, nodeOwners);
+    const access = await loadTenantAccess(tenantId, mode, nodeOwners, opts.secondApproval ?? tenant.requireDeviceApproval);
     await client.setAccess(access);
     await client.setDns(await loadTenantDns(tenant, nodeOwners));
     return true;

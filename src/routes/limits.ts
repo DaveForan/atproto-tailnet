@@ -70,7 +70,7 @@ export function sendDeviceRefusal(res: Response, tenant: Tenant, refusal: Device
       return;
     case "approval_required":
       res.status(403).json({
-        error: "This tailnet requires device approval. Ask for a key in the Add Device tab",
+        error: "This tailnet requires device approval. Ask for a key on the Devices page",
         code: "approval_required",
       });
       return;

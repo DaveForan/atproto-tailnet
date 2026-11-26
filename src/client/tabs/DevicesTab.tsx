@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useSession } from "../hooks/session";
 import { deviceService } from "../services/devices";
 import { useTenantData } from "../hooks/useTenantData";
@@ -11,11 +12,60 @@ import { MachineLockCard } from "../components/MachineLock";
 import { formatExpiry, relativeTime } from "../lib/utils";
 import type { AuthKeyInfo, DevicesData } from "../lib/types";
 import { LoadError } from "../components/LoadError";
+import { sharingService, type MyAccess } from "../services/sharing";
+import { AddDeviceCard, SignInDeviceCard } from "./devices/AddDeviceCard";
+import { ReachCard } from "./sharing/ReachCard";
+import { OwnDevicesCard } from "./devices/OwnDevicesCard";
+import { SubNav, useSections } from "../components/SubNav";
+import { useTabRoute } from "../hooks/useTabRoute";
 
 const KEYS_FALLBACK: { keys: AuthKeyInfo[] } = { keys: [] };
 
+/** A group is one owner's devices; devices without an owner keep the control server's name. */
+function ownerLabel(group: DevicesData["byUser"][number]): string {
+  const handle = group.devices[0]?.owner?.handle;
+  return handle ? `@${handle}` : group.hsUsername;
+}
+
 export function DevicesTab() {
-  const { hasPerm, reloadTenants, user, currentTenant } = useSession();
+  const { sections, open } = useSections("devices");
+  const { currentTenant, reloadTenants } = useSession();
+  return (
+    <>
+      <SubNav tab="devices" label="Devices sections" sections={sections} open={open} />
+      {open?.id === "add" ? (
+        <AddSection />
+      ) : open?.id === "access" ? (
+        <div className="tab-content">
+          <ReachSection />
+          <OwnDevicesCard />
+          {currentTenant && <MachineLockCard tenantId={currentTenant.id} onChanged={() => { void reloadTenants(); }} />}
+        </div>
+      ) : (
+        <DeviceList />
+      )}
+    </>
+  );
+}
+
+/** A new key and the keys issued before: one job, so one view. */
+function AddSection() {
+  const [keysVersion, setKeysVersion] = useState(0);
+  return (
+    <div className="tab-content">
+      <SignInDeviceCard />
+      <AddDeviceCard onIssued={() => setKeysVersion((v) => v + 1)} />
+      <AuthKeysCard key={keysVersion} />
+    </div>
+  );
+}
+
+/** True while a device has no access because nobody admitted it yet. */
+const waits = (d: { hold?: string }) => !!d.hold && d.hold !== "none";
+
+function DeviceList() {
+  const { hasPerm, reloadTenants, user } = useSession();
+  const { setTab } = useTabRoute();
   const { data: devices, loading, error, reload: reloadDevices } = useTenantData<DevicesData | null>(
     (tid) => deviceService.getDevices(tid),
     null,
@@ -37,17 +87,20 @@ export function DevicesTab() {
   return (
     <div className="tab-content">
       <LoadError error={error} onRetry={reloadDevices} />
-      <Card title="Devices">
+      <Card
+        title="Devices"
+        actions={<button type="button" className="btn-sm" onClick={() => setTab("devices", "add")}>Add a device</button>}
+      >
         {error && !devices ? (
           <p className="help-text">The device list could not be loaded.</p>
         ) : !devices || devices.byUser.length === 0 ? (
           <EmptyState>
-            No devices connected. Use the Add device tab to connect your first device.
+            No devices are connected yet.
           </EmptyState>
         ) : (
           devices.byUser.map((group) => (
-            <section key={group.hsUsername} className="item-group" aria-label={`Devices of ${group.hsUsername}`}>
-              <h4 className="group-heading">{group.hsUsername}</h4>
+            <section key={group.hsUsername} className="item-group" aria-label={`Devices of ${ownerLabel(group)}`}>
+              <h4 className="group-heading">{ownerLabel(group)}</h4>
               <ul className="item-list">
                 {group.devices.map((device) => {
                   const name = device.givenName || device.name;
@@ -60,11 +113,14 @@ export function DevicesTab() {
                           <span className="item-name">
                             {name}
                             <span className="sr-only"> ({device.online ? "online" : "offline"})</span>
+                            {waits(device) && <> <Badge variant="pending">waits to be admitted</Badge></>}
                           </span>
                           <span className="item-detail mono">{device.ipAddresses.join(", ")}</span>
-                          <span className="item-detail">
-                            Owner: {device.owner ? `@${device.owner.handle}` : "—"}
-                          </span>
+                          {waits(device) && (
+                            <span className="item-detail">
+                              No access yet. {device.hold === "owner" ? "Its owner" : "An approver"} admits it on Overview.
+                            </span>
+                          )}
                         </div>
                       </div>
                       {canRemove && (
@@ -86,12 +142,16 @@ export function DevicesTab() {
           ))
         )}
       </Card>
-      {currentTenant && (
-        <MachineLockCard tenantId={currentTenant.id} onChanged={() => { void reloadDevices(); void reloadTenants(); }} />
-      )}
-      <AuthKeysCard />
     </div>
   );
+}
+
+/** Who reaches the caller's devices. Legacy mode has no such list, so a failed load shows nothing. */
+function ReachSection() {
+  const { data, error, reload } = useTenantData<MyAccess | null>((tid) => sharingService.myAccess(tid), null);
+  const { mutate, busy } = useTenantMutation({ onError: "That did not work", reload });
+  if (!data || error) return null;
+  return <ReachCard access={data} act={(action, done) => { void mutate(action, { successMsg: done }); }} busy={busy} />;
 }
 
 function keyState(k: AuthKeyInfo): "revoked" | "expired" | "used" | "active" {
@@ -120,7 +180,7 @@ function AuthKeysCard() {
   };
 
   return (
-    <Card title="Auth keys">
+    <Card title="Issued keys">
       <p className="card-description">
         {canManage
           ? "All pre-auth keys issued for this tailnet. Revoke a key to stop it from registering new devices; already-connected devices are not affected."

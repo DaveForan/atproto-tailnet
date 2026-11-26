@@ -94,11 +94,17 @@ Join request limits:
 | Method | Path | Permission | Description |
 |--------|------|-----------|-------------|
 | `GET` | `/api/tenants/:id/devices` | *any member* | List devices |
-| `POST` | `/api/tenants/:id/devices/auth-key` | *any member* | Generate a pre-auth key. With device approval on, this creates a pending approval |
+| `POST` | `/api/tenants/:id/devices/auth-key` | *any member* | Generate a pre-auth key. A key registers a device; the device then waits for admission |
+| `GET` | `/api/tenants/:id/devices/waiting` | *any member* | Devices that wait for admission: `mine`, and `queue` for approvers. Each has `canAdmit` (the caller may take its next step) and `expiresAt` (when it is removed if nobody admits it) |
+| `POST` | `/api/tenants/:id/devices/:nodeId/admit` | owner of the device, then `approve_devices` | Admit a waiting device. Session only, step-up |
+| `POST` | `/api/tenants/:id/devices/:nodeId/refuse` | owner of the device, or `approve_devices` | Refuse and remove a waiting device. Session only |
+| `GET` | `/api/tenants/:id/device-approval/mine` | *any member* | The caller's own approval of new devices: `{on, locked, needsApprover}`; `locked` while the second approval is on, `needsApprover` when another member must also admit a new device of the caller |
+| `PUT` | `/api/tenants/:id/device-approval/mine` | *the member* | Body `{on}`. Session only, step-up. Turning it off: 409 `approval_locked` with the second approval, 403 in lockdown |
+| `POST` | `/api/tenants/:id/members/:userId/devices/invalidate` | the member, or `manage_devices` | Remove every device of the member and revoke every key. The member stays |
 | `DELETE` | `/api/tenants/:id/devices/:nodeId` | `manage_devices` or device owner | Remove device |
 | `GET` | `/api/tenants/:id/auth-keys` | *any member* | List auth keys. `manage_devices` sees all keys, others see their own keys |
 | `DELETE` | `/api/tenants/:id/auth-keys/:keyId` | `manage_devices` or key owner | Revoke auth key |
-| `GET` | `/api/tenants/:id/device-approvals` | `approve_devices` | List pending device approvals |
+| `GET` | `/api/tenants/:id/device-approvals` | `approve_devices` | Headscale mode: list pending requests for a key |
 | `GET` | `/api/tenants/:id/device-approvals/mine` | *any member* | Your own approval requests |
 | `POST` | `/api/tenants/:id/device-approvals/:approvalId/approve` | `approve_devices` | Approve and generate the key |
 | `POST` | `/api/tenants/:id/device-approvals/:approvalId/reject` | `approve_devices` | Reject |
@@ -169,7 +175,7 @@ These endpoints return 404 unless `FEDERATION_ENABLED=true`. See [Federation](..
 | Method | Path | Permission | Description |
 |--------|------|-----------|-------------|
 | `GET` | `/api/tenants/:id/usage` | *any member* | `{current, limits, overLimit, history}` (7-day history) |
-| `PUT` | `/api/tenants/:id/limits` | *originator* | Set `maxDevices` and `maxMembers` (0 = unlimited). Not for agent tokens |
+| `PUT` | `/api/tenants/:id/limits` | *originator* | Set `maxDevices` and `maxMembers` (0 = unlimited). Not for agent tokens. Also `waitingDeviceHours` (1 to 8760, default 168): after this time a device that waits for admission is removed |
 
 There are no plans. The originator sets the limits. A sub-collective cannot have higher limits than its parent. The service enforces the limits:
 

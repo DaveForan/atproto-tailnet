@@ -147,6 +147,8 @@ export const tenants = pgTable("tenants", {
   planName: text("plan_name").notNull().default("free"),
   /** 0 means unlimited. */
   maxDevices: integer("max_devices").notNull().default(0),
+  /** A device that waits for admission is removed after this many hours (ADR-0039). */
+  waitingDeviceHours: integer("waiting_device_hours").notNull().default(168),
   /** 0 means unlimited. */
   maxMembers: integer("max_members").notNull().default(0),
   /** Parent collective. NULL for a root collective. */
@@ -203,6 +205,8 @@ export const memberships = pgTable(
     isOriginator: boolean("is_originator").notNull().default(false),
     /** The member put their own devices under the tailnet's open policy. Only the member sets it. */
     openAccess: boolean("open_access").notNull().default(false),
+    /** The member admits each of their own new devices (ADR-0039). Only the member turns it off; the tailnet's second approval forces it on. */
+    approveOwnDevices: boolean("approve_own_devices").notNull().default(true),
     /** Legacy: permissions come from the role. */
     canInvite: boolean("can_invite").notNull().default(false),
     canKick: boolean("can_kick").notNull().default(false),

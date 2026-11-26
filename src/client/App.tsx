@@ -2,66 +2,32 @@ import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useSession } from "./hooks/session";
 import { useTabRoute } from "./hooks/useTabRoute";
 import { useWizard } from "./hooks/useWizard";
-import { Header, LockdownBanner, LoginPage, Sidebar, SidebarProvider, StatsSummary } from "./components/Layout";
-import { PendingInvitations } from "./components/PendingInvitations";
+import { Header, LockdownBanner, LoginPage, Sidebar, SidebarProvider } from "./components/Layout";
+import { AttentionProvider } from "./hooks/useAttention";
 import { Loading } from "./components/Loading";
 import { InvitePage, NoAccessPage, SuspendedPage } from "./components/AccessPages";
 import { DeviceSignInPage } from "./components/DeviceSignIn";
 import { VerifyDevicePage } from "./components/VerifyDevice";
 import { SetupWizard } from "./components/SetupWizard";
-import { tabRegistry } from "./components/registry";
+import { pageSections, tabRegistry } from "./components/registry";
 import { usePathRoute } from "./hooks/usePathRoute";
 import type { TabId } from "./lib/types";
 import { onSessionExpired, SESSION_EXPIRED_MESSAGE } from "./services/api";
 
-const StatusTab = lazy(() => import("./tabs/StatusTab").then((m) => ({ default: m.StatusTab })));
-const DevicesTab = lazy(() => import("./tabs/DevicesTab").then((m) => ({ default: m.DevicesTab })));
-const MembersTab = lazy(() => import("./tabs/MembersTab").then((m) => ({ default: m.MembersTab })));
-const ConnectTab = lazy(() => import("./tabs/ConnectTab").then((m) => ({ default: m.ConnectTab })));
-const InviteTab = lazy(() => import("./tabs/InviteTab").then((m) => ({ default: m.InviteTab })));
-const RoutesTab = lazy(() => import("./tabs/RoutesTab").then((m) => ({ default: m.RoutesTab })));
-const IpConfigTab = lazy(() => import("./tabs/IpConfigTab").then((m) => ({ default: m.IpConfigTab })));
-const DerpTab = lazy(() => import("./tabs/DerpTab").then((m) => ({ default: m.DerpTab })));
-const BoardsTab = lazy(() => import("./tabs/BoardsTab").then((m) => ({ default: m.BoardsTab })));
+const lazyTab = <K extends string>(load: () => Promise<Record<K, React.ComponentType>>, name: K) =>
+  lazy(() => load().then((m) => ({ default: m[name] })));
+
 const AccountTab = lazy(() => import("./tabs/AccountTab").then((m) => ({ default: m.AccountTab })));
-const SharingTab = lazy(() => import("./tabs/SharingTab").then((m) => ({ default: m.SharingTab })));
-const FederationTab = lazy(() => import("./tabs/FederationTab").then((m) => ({ default: m.FederationTab })));
-const CollectivesTab = lazy(() => import("./tabs/CollectivesTab").then((m) => ({ default: m.CollectivesTab })));
-const TraversalTab = lazy(() => import("./tabs/TraversalTab").then((m) => ({ default: m.TraversalTab })));
-const RolesTab = lazy(() => import("./tabs/RolesTab").then((m) => ({ default: m.RolesTab })));
-const AgentsTab = lazy(() => import("./tabs/AgentsTab").then((m) => ({ default: m.AgentsTab })));
-const AclTab = lazy(() => import("./tabs/AclTab").then((m) => ({ default: m.AclTab })));
-const CredentialsTab = lazy(() => import("./tabs/CredentialsTab").then((m) => ({ default: m.CredentialsTab })));
-const UsageTab = lazy(() => import("./tabs/UsageTab").then((m) => ({ default: m.UsageTab })));
-const SecurityTab = lazy(() => import("./tabs/SecurityTab").then((m) => ({ default: m.SecurityTab })));
-const AuditTab = lazy(() => import("./tabs/AuditTab").then((m) => ({ default: m.AuditTab })));
-const ClaudeTab = lazy(() => import("./tabs/ClaudeTab").then((m) => ({ default: m.ClaudeTab })));
-const InstanceTab = lazy(() => import("./tabs/InstanceTab").then((m) => ({ default: m.InstanceTab })));
 
 const tabComponents: Record<TabId, React.LazyExoticComponent<React.ComponentType>> = {
-  status: StatusTab,
-  devices: DevicesTab,
-  members: MembersTab,
-  connect: ConnectTab,
-  invite: InviteTab,
-  routes: RoutesTab,
-  ipconfig: IpConfigTab,
-  derp: DerpTab,
-  board: BoardsTab,
-  sharing: SharingTab,
-  account: AccountTab,
-  federation: FederationTab,
-  collectives: CollectivesTab,
-  traversal: TraversalTab,
-  roles: RolesTab,
-  agents: AgentsTab,
-  acl: AclTab,
-  credentials: CredentialsTab,
-  usage: UsageTab,
-  security: SecurityTab,
-  audit: AuditTab,
-  claude: ClaudeTab,
-  instance: InstanceTab,
+  overview: lazyTab(() => import("./tabs/OverviewTab"), "OverviewTab"),
+  devices: lazyTab(() => import("./tabs/DevicesTab"), "DevicesTab"),
+  people: lazyTab(() => import("./tabs/PeopleTab"), "PeopleTab"),
+  board: lazyTab(() => import("./tabs/BoardsTab"), "BoardsTab"),
+  sharing: lazyTab(() => import("./tabs/SharingTab"), "SharingTab"),
+  settings: lazyTab(() => import("./tabs/SettingsTab"), "SettingsTab"),
+  account: lazyTab(() => import("./tabs/AccountTab"), "AccountPage"),
+  instance: lazyTab(() => import("./tabs/InstanceTab"), "InstanceTab"),
 };
 
 /**
@@ -190,15 +156,17 @@ function AppContent() {
 const APP_NAME = "atproto-tailnet";
 
 function Dashboard() {
-  const { invitations, currentTenant, reloadInvitations, reloadTenants } = useSession();
-  const { tab, setTab, navCount } = useTabRoute();
-  const TabComponent = tabComponents[tab] ?? StatusTab;
-  const label = tabRegistry.find((e) => e.id === tab)?.label ?? "Status";
+  const { currentTenant } = useSession();
+  const { tab, section, setTab, navCount } = useTabRoute();
+  const TabComponent = tabComponents[tab] ?? tabComponents.overview;
+  const label = tabRegistry.find((e) => e.id === tab)?.label ?? "Overview";
+  const sectionLabel = pageSections[tab]?.find((s) => s.id === section)?.label;
+  const title = sectionLabel ? `${label}: ${sectionLabel}` : label;
   const headingRef = useRef<HTMLHeadingElement>(null);
 
   useEffect(() => {
-    document.title = currentTenant ? `${label} · ${currentTenant.name} · ${APP_NAME}` : APP_NAME;
-  }, [label, currentTenant?.name]);
+    document.title = currentTenant ? `${title} · ${currentTenant.name} · ${APP_NAME}` : APP_NAME;
+  }, [title, currentTenant?.name]);
 
   // Screen readers and keyboard users land on the new page; the first load keeps the browser's focus
   useEffect(() => {
@@ -206,30 +174,27 @@ function Dashboard() {
   }, [navCount]);
 
   return (
-    <div className="dashboard-layout">
-      <Sidebar />
-      <main>
-        <h2 ref={headingRef} tabIndex={-1} className="tab-title">{label}</h2>
-        {currentTenant?.suspended && (
-          <div className="suspended-banner" role="status">
-            <span>
-              {currentTenant.name} is suspended. Its members can&apos;t use it and its devices can&apos;t
-              connect until you unsuspend it.
-            </span>
-            {tab !== "instance" && (
-              <button type="button" className="btn-sm btn-warning" onClick={() => setTab("instance")}>Manage</button>
-            )}
-          </div>
-        )}
-        <PendingInvitations
-          invitations={invitations}
-          onAction={() => { void reloadInvitations(); void reloadTenants(); }}
-        />
-        <StatsSummary />
-        <Suspense key={currentTenant?.id} fallback={<Loading />}>
-          <TabComponent />
-        </Suspense>
-      </main>
-    </div>
+    <AttentionProvider>
+      <div className="dashboard-layout">
+        <Sidebar />
+        <main>
+          <h2 ref={headingRef} tabIndex={-1} className="tab-title">{label}</h2>
+          {currentTenant?.suspended && (
+            <div className="suspended-banner" role="status">
+              <span>
+                {currentTenant.name} is suspended. Its members can&apos;t use it and its devices can&apos;t
+                connect until you unsuspend it.
+              </span>
+              {tab !== "instance" && (
+                <button type="button" className="btn-sm btn-warning" onClick={() => setTab("instance")}>Manage</button>
+              )}
+            </div>
+          )}
+          <Suspense key={currentTenant?.id} fallback={<Loading />}>
+            <TabComponent />
+          </Suspense>
+        </main>
+      </div>
+    </AttentionProvider>
   );
 }

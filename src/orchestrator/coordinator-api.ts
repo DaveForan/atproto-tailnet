@@ -9,6 +9,7 @@ import {
   parseRouteId,
   withRouteApproval,
   type HeadscaleNode,
+  type DeviceHold,
   type HeadscalePreAuthKey,
   type HeadscaleRoute,
   type PreAuthKeyOptions,
@@ -61,6 +62,9 @@ interface CoordinatorNode {
   ephemeral?: boolean;
   advertised_routes?: string[];
   approved_routes?: string[];
+  os?: string;
+  fingerprint?: string;
+  hold?: DeviceHold;
 }
 
 /** `user` is the owner (our user id), or null for unowned and tagged nodes. */
@@ -79,6 +83,10 @@ export function toHeadscaleNode(n: CoordinatorNode): HeadscaleNode {
     availableRoutes: n.advertised_routes ?? [],
     approvedRoutes: n.approved_routes ?? [],
     subnetRoutes: n.approved_routes ?? [],
+    // Security: a node without a known hold counts as held by its owner.
+    hold: n.hold ?? "owner",
+    fingerprint: n.fingerprint,
+    os: n.os,
   };
 }
 
@@ -192,10 +200,12 @@ export class CoordinatorApiClient {
     return (await this.request("GET", `/api/device-auth/${encodeURIComponent(id)}`)) as PendingDeviceAuth;
   }
 
-  async approveDeviceAuth(id: string, coordinatorTenantId: string, owner: string): Promise<void> {
+  /** `hold` is the hold of the new device: `none` admits it, `approver` leaves it for an approver. */
+  async approveDeviceAuth(id: string, coordinatorTenantId: string, owner: string, hold: DeviceHold): Promise<void> {
     await this.request("POST", `/api/device-auth/${encodeURIComponent(id)}/approve`, {
       tenant_id: coordinatorTenantId,
       owner,
+      hold,
     });
   }
 
@@ -417,6 +427,20 @@ export class CoordinatorApiClient {
     const data = (await this.request("GET", `/api/nodes/${encodeURIComponent(nodeId)}`)) as CoordinatorNode;
     if (data.tenant_id !== tenant) throw new Error("Node belongs to different tenant");
     return toHeadscaleNode(data);
+  }
+
+  /**
+   * Moves a waiting device from the hold `from` to `to`.
+   * Returns false when the device is no longer at `from`.
+   */
+  async setNodeHold(nodeId: string, from: DeviceHold, to: DeviceHold): Promise<boolean> {
+    try {
+      await this.request("PUT", this.tenantPath(`/nodes/${encodeURIComponent(nodeId)}/hold`), { from, to });
+      return true;
+    } catch (err) {
+      if (isCoordinatorStatus(err, 409)) return false;
+      throw err;
+    }
   }
 
   async deleteNode(nodeId: string): Promise<void> {

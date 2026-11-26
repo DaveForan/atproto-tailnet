@@ -1,0 +1,1 @@
+import{l as r}from"./chunk-7SRYUQSB.js";import{b as d}from"./chunk-OJJDWQS4.js";var a=d(r(),1);function t({title:e,actions:c,children:s,className:i}){return(0,a.jsxs)("div",{className:`card ${i??""}`,children:[e&&(0,a.jsxs)("div",{className:"card-header",children:[(0,a.jsx)("h3",{children:e}),c]}),s]})}export{t as a};

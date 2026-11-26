@@ -196,6 +196,43 @@ export interface Device {
   online: boolean;
   lastSeen?: string;
   owner?: OwnerRef | null;
+  /** Who must admit the device before it gets access. `none`: admitted. */
+  hold?: DeviceHold;
+  fingerprint?: string | null;
+  os?: string | null;
+}
+
+export type DeviceHold = "none" | "approver" | "owner";
+
+/** A device that waits for admission. */
+export interface WaitingDevice {
+  id: string;
+  name: string;
+  os: string;
+  /** Short form of the key that the device made. It identifies that exact machine. */
+  fingerprint: string;
+  hold: DeviceHold;
+  /** The caller may take the next step for this device. */
+  canAdmit: boolean;
+  /** When the device is removed if nobody admits it. */
+  expiresAt: string | null;
+  owner: OwnerRef | null;
+}
+
+export interface OwnDeviceApproval {
+  on: boolean;
+  /** The tailnet's second approval forces it on. */
+  locked: boolean;
+  /** After the caller admits a new device, another member must admit it too. */
+  needsApprover?: boolean;
+  supported?: boolean;
+}
+
+export interface WaitingDevices {
+  /** The caller's own devices that wait. */
+  mine: WaitingDevice[];
+  /** Devices of other members that the caller may admit as an approver. */
+  queue: WaitingDevice[];
 }
 
 export interface OwnerRef {
@@ -333,6 +370,8 @@ export interface RouteEntry {
 export interface UsageLimits {
   maxDevices: number;
   maxMembers: number;
+  /** Hours after which a device that waits for admission is removed. */
+  waitingDeviceHours: number;
 }
 
 export interface UsageData {
@@ -377,19 +416,17 @@ export interface AuditLogPage {
 
 export interface DeviceApproval {
   id: string;
-  membershipId: string;
-  handle: string;
-  displayName?: string;
-  machineKey: string;
+  requesterHandle: string;
+  requesterDisplayName?: string | null;
   status: "pending" | "approved" | "rejected";
-  createdAt: string;
+  requestedAt: string;
 }
 
 export interface JoinRequest {
   id: string;
-  userHandle: string;
-  userDisplayName?: string;
-  message?: string;
+  requesterHandle: string;
+  requesterDisplayName?: string | null;
+  message?: string | null;
   status: "pending" | "approved" | "rejected";
   requestedAt: string;
 }
@@ -468,6 +505,7 @@ export interface ComplianceData {
 
 export interface HealthData {
   status: string;
+  healthy?: boolean;
   message?: string;
 }
 
@@ -521,26 +559,27 @@ export interface ChallengeResult {
 }
 
 export type TabId =
-  | "status"
-  | "derp"
-  | "ipconfig"
-  | "routes"
+  | "overview"
   | "devices"
-  | "members"
-  | "connect"
-  | "invite"
-  | "sharing"
+  | "people"
   | "board"
-  | "federation"
-  | "collectives"
-  | "traversal"
-  | "roles"
-  | "agents"
-  | "acl"
-  | "credentials"
-  | "usage"
+  | "sharing"
+  | "settings"
+  | "account"
+  | "instance";
+
+export type SettingsSectionId =
   | "security"
+  | "limits"
+  | "notifications"
+  | "roles"
+  | "acl"
+  | "relays"
+  | "routes"
+  | "ipconfig"
+  | "agents"
+  | "collectives"
   | "audit"
-  | "claude"
-  | "instance"
-  | "account";
+  | "federation"
+  | "traversal"
+  | "credentials";

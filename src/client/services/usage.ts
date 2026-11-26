@@ -4,9 +4,9 @@ import type { UsageData } from "../lib/types";
 export const usageService = {
   getUsage: (tid: string) => tenantApi<UsageData>(tid, "/usage"),
 
-  setLimits: (tid: string, maxDevices: number, maxMembers: number) =>
+  setLimits: (tid: string, limits: { maxDevices: number; maxMembers: number; waitingDeviceHours: number }) =>
     tenantApi(tid, "/limits", {
       method: "PUT",
-      body: JSON.stringify({ maxDevices, maxMembers }),
+      body: JSON.stringify(limits),
     }),
 };

@@ -1,11 +1,13 @@
 import { useState } from "react";
-import { useSession } from "../hooks/session";
-import { useTabRoute } from "../hooks/useTabRoute";
-import { useToast } from "../components/Toast";
-import { Card } from "../components/Card";
-import { CodeBlock } from "../components/CodeBlock";
-import { errorCode, errorMessage } from "../lib/utils";
-import { deviceService } from "../services/devices";
+import { useSession } from "../../hooks/session";
+import { useTabRoute } from "../../hooks/useTabRoute";
+import { useToast } from "../../components/Toast";
+import { Card } from "../../components/Card";
+import { CodeBlock } from "../../components/CodeBlock";
+import { CopyField } from "../../components/CopyField";
+import { useTenantData } from "../../hooks/useTenantData";
+import { errorCode, errorMessage } from "../../lib/utils";
+import { deviceService } from "../../services/devices";
 
 const EXPIRY_OPTIONS = [1, 24, 24 * 7, 24 * 30];
 /** Members without manage_devices get single-use keys of at most 24 hours. */
@@ -18,12 +20,62 @@ interface IssuedKey {
   expiresInHours: number;
 }
 
-export function ConnectTab() {
+/** The way for most people: sign in on the device itself. No key, no command on phones. */
+export function SignInDeviceCard() {
+  const { currentTenant } = useSession();
+  const { data: loginServer } = useTenantData<string | null>((tid) => deviceService.getLoginServer(tid), null);
+  const { data: approval } = useTenantData((tid) => deviceService.ownApproval(tid), null);
+  if (!currentTenant?.coordinatorMode) return null;
+  const needsApprover = !!approval?.needsApprover;
+  return (
+    <Card title="Sign in on the device">
+      <p className="card-description">
+        The easy way for a phone, tablet or computer. You need no key: you sign in with your Bluesky account, the
+        same as here.
+      </p>
+      <ol className="steps">
+        <li>
+          Install the Tailscale app on the device:{" "}
+          <a href="https://tailscale.com/download" target="_blank" rel="noreferrer">tailscale.com/download</a>.
+        </li>
+        <li>
+          Tell the app to use this server. On a phone or tablet, open the account menu of the app and select the
+          option for a custom (alternate) server. Then paste this address:
+          {loginServer && <CopyField value={loginServer} label="Server address for the Tailscale app" />}
+        </li>
+        <li>Select <strong>Log in</strong>. A browser page opens: sign in with your Bluesky account.</li>
+        <li>
+          Check the device name and the key fingerprint on that page and select <strong>Add device</strong>. This
+          admits that one device.
+        </li>
+      </ol>
+      {needsApprover && (
+        <p className="notice" role="note">
+          In this tailnet another member, an approver, must admit each new device too. Your device has no access until then, and
+          connects by itself afterwards.
+        </p>
+      )}
+      {loginServer && (
+        <>
+          <p className="help-text mt-12">On a computer, you can also type this command and open the link that it shows:</p>
+          <CodeBlock value={`tailscale login --login-server ${loginServer}`} label="Sign-in command for a computer" />
+        </>
+      )}
+    </Card>
+  );
+}
+
+/** Issues an auth key; `onIssued` lets the page refresh its list of keys. */
+export function AddDeviceCard({ onIssued }: { onIssued?: () => void }) {
   const { currentTenant, hasPerm } = useSession();
   const { setTab } = useTabRoute();
+  const canSeeLimits = !!currentTenant?.isOriginator || hasPerm("manage_settings");
   const canManageDevices = hasPerm("manage_devices");
   const expiryOptions = canManageDevices ? EXPIRY_OPTIONS : MEMBER_EXPIRY_OPTIONS;
   const { toast, toastFailure } = useToast();
+  const { data: approval } = useTenantData((tid) => deviceService.ownApproval(tid), null);
+  // Until the answer is known, say the safer thing: the device waits
+  const waits = !!currentTenant?.coordinatorMode && approval?.on !== false;
   const [issued, setIssued] = useState<IssuedKey | null>(null);
   const [pending, setPending] = useState(false);
   const [limitError, setLimitError] = useState<string | null>(null);
@@ -55,6 +107,7 @@ export function ConnectTab() {
         expiresInHours: opts.expiresInHours,
       });
       toast("Auth key generated");
+      onIssued?.();
     } catch (e) {
       if (errorCode(e) === "device_limit") setLimitError(errorMessage(e, ""));
       else toastFailure(e, "Failed to generate auth key");
@@ -64,11 +117,14 @@ export function ConnectTab() {
   };
 
   return (
-    <div className="tab-content">
-      <Card title="Add a device">
+      <Card title="Use a key instead">
         <p className="card-description">
-          Generate an auth key to connect a new device to this tailnet. Run the
-          command on the device you want to add.
+          For a server, a script, or a device with no browser. Generate an auth key and run the command on the
+          device.{" "}
+          {waits
+            ? "A key does not admit a device: after the command, the device waits on Overview until you admit it there."
+            : currentTenant?.coordinatorMode &&
+              "You turned off the approval of your new devices, so the key alone gives the device access. Keep the key secret."}
         </p>
 
         <form className="form-stack" onSubmit={handleGenerate}>
@@ -100,7 +156,9 @@ export function ConnectTab() {
           {limitError && (
             <div className="lockdown-banner" role="alert">
               <span>{limitError}</span>
-              <button type="button" className="btn-sm btn-ghost" onClick={() => setTab("usage")}>View limits</button>
+              {canSeeLimits && (
+                <button type="button" className="btn-sm btn-ghost" onClick={() => setTab("settings", "limits")}>View limits</button>
+              )}
             </div>
           )}
 
@@ -116,8 +174,9 @@ export function ConnectTab() {
               <CodeBlock value={issued.command} label="Connect command" />
               <p className="help-text">
                 Run this command on the device you want to connect.{" "}
+                {waits && "Then admit the device on Overview: check its name and key fingerprint first. "}
                 {issued.reusable ? "The key can be used for several devices" : "The key can only be used once"}{" "}
-                and expires in {expiryLabel(issued.expiresInHours)}. You can revoke it from the Devices tab.
+                and expires in {expiryLabel(issued.expiresInHours)}. You can revoke it under Issued keys on this page.
               </p>
             </div>
           )}
@@ -127,6 +186,5 @@ export function ConnectTab() {
           </button>
         </form>
       </Card>
-    </div>
   );
 }

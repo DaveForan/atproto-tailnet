@@ -31,10 +31,8 @@ export function PendingInvitations({
   };
 
   return (
-    <section className="card" aria-labelledby="pending-invitations-heading">
-      <div className="card-header">
-        <h3 id="pending-invitations-heading">Invitations for you</h3>
-      </div>
+    <section className="item-group" aria-labelledby="pending-invitations-heading">
+      <h4 id="pending-invitations-heading" className="group-heading">Invitations for you</h4>
       <ul className="item-list">
         {invitations.map((inv) => (
           <li key={inv.id} className="item-row">

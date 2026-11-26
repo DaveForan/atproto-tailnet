@@ -170,7 +170,7 @@ When the stack runs, do these steps:
 4. **View logs**: `docker compose -f docker-compose.coordinator.yml logs -f`
 5. **Connect Claude (optional)**: Add a custom connector with the URL `https://tailnets.yourdomain.com/mcp`. See [Connect Claude (MCP)](mcp).
 
-Other people who sign in get no tailnet. They see their invitations, or they can request to join the default tailnet. Use the **Invite** tab to invite people, and the **Instance** tab to manage the instance.
+Other people who sign in get no tailnet. They see their invitations, or they can request to join the default tailnet. Use the **People** page to invite people, and the **Instance** page to manage the instance.
 
 ## Updating
 

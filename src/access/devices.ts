@@ -3,6 +3,7 @@
  * Device ownership from the control plane and cleanup of a removed member's access state (ADR-0036).
  */
 
+import { isAdmitted } from "./device-holds.js";
 import { and, eq, or } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { tenants, servicePosts, serviceConnections, friendships, memberBlocks, deviceShares } from "../db/schema.js";
@@ -17,13 +18,14 @@ export interface MemberDevice {
 }
 
 /**
- * Every device of the tailnet with its owner (our user id). Coordinator mode
+ * Every admitted device of the tailnet with its owner (our user id). Coordinator mode
  * only: Headscale mode cannot attribute or isolate devices per member.
+ * A device that waits for admission has no access, so nothing can select it.
  */
 export async function listTenantDevices(tenant: typeof tenants.$inferSelect): Promise<MemberDevice[]> {
   if (!useCoordinator) return [];
   const nodes = await getControlClient(tenant).listNodes();
-  return nodes.map((n) => ({
+  return nodes.filter(isAdmitted).map((n) => ({
     id: String(n.id),
     name: n.givenName || n.name || `device-${n.id}`,
     address: n.ipAddresses?.[0] ?? null,

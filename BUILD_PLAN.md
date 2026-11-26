@@ -346,12 +346,10 @@ Order matters: each stage gives value alone and unblocks the next.
 - [x] ACL-policy rule for the gateway in a tailnet with an ACL policy (`gateway_filter`)
 - [ ] Verify `https://<name>.<BASE_DOMAIN>` from a second device; not reachable from outside
 
-### 6.7 Public service exposure (ADR-0031)
+### 6.7 Public service exposure (ADR-0031) — declined 2026-11-23, not built
 - [x] `__Host-` dashboard session cookie (7e7b3e7)
-- [ ] Decide and register `PUBLIC_SERVICE_DOMAIN`
-- [ ] Operator enable per tailnet + per-service approval, audit, kill switch
-- [ ] Caddy public side → gateway; `public` and `public-signed-in` modes
-- [ ] Rate, body-size and bandwidth limits; access logs
+
+No service is reachable from the internet. ADR-0031 records the reasons.
 
 ### 6.8 Federation data plane and service records (ADR-0033)
 - [ ] Gateway-to-gateway link; advertise agreed CIDRs; enforce traversal policy

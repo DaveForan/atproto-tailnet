@@ -45,7 +45,7 @@ export function InstanceSettingsCard({
         <h4><label htmlFor="default-tailnet">Default tailnet</label></h4>
         <p className="help-text" id="default-tailnet-help">
           Signed-in people without a tailnet are offered a &ldquo;Request to join&rdquo; button for the
-          default tailnet. Join requests are enabled on it; its admins approve them in the Security tab.
+          default tailnet. Join requests are enabled on it; its admins approve them on Overview.
         </p>
         <select
           id="default-tailnet"

@@ -2,31 +2,33 @@ import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { useTenant } from "../hooks/session";
 import { useTabRoute } from "../hooks/useTabRoute";
 import { useToast } from "./Toast";
-import { tabRegistry } from "./registry";
+import { parseRoute, type Route } from "./registry";
 import { notificationService } from "../services/notifications";
 import { relativeTime } from "../lib/utils";
-import type { AppNotification, TabId } from "../lib/types";
+import type { AppNotification } from "../lib/types";
 
 const POLL_MS = 30_000;
 
-const TYPE_TABS: Record<string, TabId> = {
-  device_approval_requested: "security",
-  join_request: "security",
-  service_device_approval_requested: "board",
-  service_approval_requested: "board",
-  device_limit_reached: "usage",
+const OVERVIEW: Route = { tab: "overview", section: null };
+
+/** Types whose page does not follow from the link: older rows link to pages that moved. */
+const TYPE_ROUTES: Record<string, Route> = {
+  device_approval_requested: OVERVIEW,
+  join_request: OVERVIEW,
+  service_approval_requested: { tab: "board", section: "queue" },
+  friend_request: OVERVIEW,
+  share_offered: OVERVIEW,
+  share_requested: OVERVIEW,
+  service_device_approval_requested: { tab: "board", section: null },
+  device_limit_reached: { tab: "settings", section: "limits" },
 };
 
-function isTabId(v: string): v is TabId {
-  return tabRegistry.some((e) => e.id === v);
-}
-
-function targetTab(n: AppNotification): TabId | null {
-  if (n.link) {
-    const raw = n.link.includes("#") ? n.link.slice(n.link.indexOf("#") + 1) : n.link.replace(/^\/+/, "");
-    if (isTabId(raw)) return raw;
-  }
-  return TYPE_TABS[n.type] ?? null;
+function targetRoute(n: AppNotification): Route | null {
+  const byType = TYPE_ROUTES[n.type];
+  if (byType) return byType;
+  if (!n.link) return null;
+  const raw = n.link.includes("#") ? n.link.slice(n.link.indexOf("#") + 1) : n.link.replace(/^\/+/, "");
+  return parseRoute(raw);
 }
 
 export function NotificationBell() {
@@ -147,9 +149,9 @@ export function NotificationBell() {
         .then((res) => { if (res && tid === tidRef.current) setUnread(res.unreadCount); })
         .catch(() => { void refreshCount(); });
     }
-    const tab = targetTab(n);
-    if (tab) {
-      setTab(tab);
+    const route = targetRoute(n);
+    if (route) {
+      setTab(route.tab, route.section);
       close(false);
     }
   };

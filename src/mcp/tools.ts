@@ -206,7 +206,7 @@ export const TOOL_DEFS: ToolDef[] = [
   {
     name: "list_device_approvals",
     title: "List device approvals",
-    description: "List pending device approval requests (used when the tailnet requires device approval).",
+    description: "List pending requests for a device key (Headscale mode only). In coordinator mode use list_waiting_devices.",
     shape: { tailnet_id: tailnetId },
     annotations: READ,
     run: (api, a) => api.call("GET", `${t(a)}/device-approvals`),
@@ -228,6 +228,35 @@ export const TOOL_DEFS: ToolDef[] = [
     run: (api, a) => api.call("POST", `${t(a)}/device-approvals/${seg(a.approval_id, "uuid", "approval_id")}/reject`),
   },
 
+  {
+    name: "list_waiting_devices",
+    title: "List waiting devices",
+    description:
+      "List the devices that wait for admission: `mine` wait for you, `queue` wait for an approver. Every new device waits until its owner admits that exact machine in the dashboard (Overview). Nobody can admit a device through this connector.",
+    shape: { tailnet_id: tailnetId },
+    annotations: READ,
+    run: (api, a) => api.call("GET", `${t(a)}/devices/waiting`),
+  },
+
+  {
+    name: "get_my_device_approval",
+    title: "Get my device approval",
+    description:
+      "Show whether you approve each of your own new devices in this tailnet (`on`), whether the tailnet locks that on (`locked`), and whether another member must also admit your new devices (`needsApprover`). Only you can change it, in the dashboard under Devices → Access.",
+    shape: { tailnet_id: tailnetId },
+    annotations: READ,
+    run: (api, a) => api.call("GET", `${t(a)}/device-approval/mine`),
+  },
+  {
+    name: "invalidate_member_devices",
+    title: "Invalidate a member's devices and keys",
+    description:
+      "Remove every device of one member from a tailnet and revoke every auth key of that member. The member stays a member and adds devices again afterwards. You can do this for yourself; for another member you need manage_devices or to be the originator." +
+      DESTRUCTIVE_NOTE,
+    shape: { tailnet_id: tailnetId, user_id: uuidArg().describe("Member user id from list_members, or your own from whoami") },
+    annotations: DESTRUCTIVE,
+    run: (api, a) => api.call("POST", `${t(a)}/members/${seg(a.user_id, "uuid", "user_id")}/devices/invalidate`),
+  },
   {
     name: "list_my_devices",
     title: "List my devices",
@@ -421,7 +450,7 @@ export const TOOL_DEFS: ToolDef[] = [
     description: "Change one or more tailnet settings. Only the fields you pass change.",
     shape: {
       tailnet_id: tailnetId,
-      requireDeviceApproval: z.boolean().optional(),
+      requireDeviceApproval: z.boolean().optional().describe("While on, an approver must also admit each new device after its owner did"),
       lockdownMode: z.boolean().optional().describe("Blocks invitations, joins and new keys while on"),
       allowJoinRequests: z.boolean().optional(),
       boardEnabled: z.boolean().optional(),
@@ -445,17 +474,20 @@ export const TOOL_DEFS: ToolDef[] = [
   {
     name: "set_limits",
     title: "Set limits",
-    description: "Set the tailnet's device and member caps (0 = unlimited). Originator only.",
+    description:
+      "Set the tailnet's device and member caps (0 = unlimited), and after how many hours a device that waits for admission is removed (default 168). Originator only.",
     shape: {
       tailnet_id: tailnetId,
       maxDevices: z.number().int().min(0).optional(),
       maxMembers: z.number().int().min(0).optional(),
+      waitingDeviceHours: z.number().int().min(1).max(8760).optional(),
     },
     annotations: { ...WRITE, idempotentHint: true },
     run: (api, a) => {
       const body: Record<string, unknown> = {};
       if (a.maxDevices !== undefined) body.maxDevices = a.maxDevices;
       if (a.maxMembers !== undefined) body.maxMembers = a.maxMembers;
+      if (a.waitingDeviceHours !== undefined) body.waitingDeviceHours = a.waitingDeviceHours;
       return api.call("PUT", `${t(a)}/limits`, body);
     },
   },

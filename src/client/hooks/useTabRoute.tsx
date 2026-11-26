@@ -1,66 +1,85 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import { tabEnabled, tabRegistry } from "../components/registry";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { parseRoute, routeHash, tabEnabled, tabRegistry, visibleSections, type Route } from "../components/registry";
 import { useSession } from "./session";
 import type { TabId } from "../lib/types";
 
 interface RouteContext {
   tab: TabId;
-  setTab: (tab: TabId) => void;
-  /** Counts tab changes the user asked for; the permission fallback does not count. */
+  /** The open sub-view of the page; null means its first one. */
+  section: string | null;
+  setTab: (tab: TabId, section?: string | null) => void;
+  /** Counts page changes the user asked for; the permission fallback does not count. */
   navCount: number;
 }
 
 const RouteCtx = createContext<RouteContext>(null!);
 
-/** The open tab, kept in the URL hash. */
+/** The open page, kept in the URL hash. */
 export function useTabRoute() {
   return useContext(RouteCtx);
 }
 
-function isTabId(v: string): v is TabId {
-  return tabRegistry.some((e) => e.id === v);
+const HOME: Route = { tab: "overview", section: null };
+
+function currentRoute(): Route {
+  return parseRoute(window.location.hash.slice(1)) ?? HOME;
 }
 
-function initialTab(): TabId {
-  const hash = window.location.hash.slice(1);
-  if (!hash) return "devices";
-  return isTabId(hash) ? hash : "status";
+function replaceHash(route: Route) {
+  history.replaceState(null, "", `${location.pathname}${location.search}#${routeHash(route)}`);
 }
 
 export function TabRouteProvider({ children }: { children: ReactNode }) {
   const { loading, currentTenant, settings, user, hasPerm } = useSession();
-  const [tab, setTabState] = useState<TabId>(initialTab);
+  const [route, setRoute] = useState<Route>(currentRoute);
   const [navCount, setNavCount] = useState(0);
 
-  const setTab = useCallback((next: TabId) => {
-    setTabState(next);
+  // Mirrors `route` for the hashchange handler, which must not count a change it already knows
+  const routeRef = useRef(route);
+  routeRef.current = route;
+
+  const setTab = useCallback((tab: TabId, section: string | null = null) => {
+    const next = { tab, section };
+    routeRef.current = next;
+    setRoute(next);
     setNavCount((n) => n + 1);
-    window.location.hash = next;
+    window.location.hash = routeHash(next);
   }, []);
 
   useEffect(() => {
     const onHash = () => {
-      const hash = window.location.hash.slice(1);
-      if (!hash) return;
-      setTabState(isTabId(hash) ? hash : "status");
+      if (!window.location.hash.slice(1)) return;
+      const next = currentRoute();
+      const prev = routeRef.current;
+      if (prev.tab === next.tab && prev.section === next.section) return;
+      setRoute(next);
       setNavCount((n) => n + 1);
     };
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
-  // A tab this user may not open (permissions, settings, features) falls back to Status
+  // A page this user may not open falls back to Overview, a section to the first one of its page
   useEffect(() => {
     if (loading || !currentTenant) return;
-    const entry = tabRegistry.find((e) => e.id === tab);
+    const entry = tabRegistry.find((e) => e.id === route.tab);
     if (!entry || !tabEnabled(entry, hasPerm, settings, currentTenant, user)) {
-      setTabState("status");
-      if (window.location.hash) {
-        history.replaceState(null, "", `${location.pathname}${location.search}#status`);
-      }
+      setRoute(HOME);
+      if (window.location.hash) replaceHash(HOME);
+      return;
     }
-  }, [loading, tab, currentTenant, settings, user, hasPerm]);
+    if (route.section === null) return;
+    const sections = visibleSections(route.tab, hasPerm, settings, currentTenant, user);
+    if (!sections.some((s) => s.id === route.section)) {
+      const next = { tab: route.tab, section: null };
+      setRoute(next);
+      replaceHash(next);
+    }
+  }, [loading, route, currentTenant, settings, user, hasPerm]);
 
-  const value = useMemo(() => ({ tab, setTab, navCount }), [tab, setTab, navCount]);
+  const value = useMemo(
+    () => ({ tab: route.tab, section: route.section, setTab, navCount }),
+    [route, setTab, navCount],
+  );
   return <RouteCtx.Provider value={value}>{children}</RouteCtx.Provider>;
 }

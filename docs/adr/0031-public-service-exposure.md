@@ -1,6 +1,6 @@
 # ADR-0031: Public service exposure
 
-**Status:** Proposed
+**Status:** Declined (an idea we looked at and chose not to build; 2026-11-23)
 **Date:** 2026-11-19
 **Priority:** P2
 **Depends On:** ADR-0030 (named tailnet services)
@@ -83,3 +83,35 @@ set or replace it.
 - A public service needs both approvals before it becomes reachable.
 - The kill switch stops public access in less than one minute.
 - The dashboard cookie has the `__Host-` prefix.
+
+## Status: declined (2026-11-23)
+
+We do not build public exposure. The idea stays here as a record. No code for
+it exists, and no service is reachable from the internet through the gateway.
+
+### Why
+
+- The instance is a private network coordinator. Public exposure also makes it
+  a web host for the content of members, with the abuse reports that follow.
+- The gateway accepts connections only from devices in a tailnet. Public
+  exposure makes it parse traffic from anybody, in the process that also runs
+  the relay for every tailnet.
+- A service on a member's device is seldom hardened for the internet. A fault
+  in it gives an attacker a device that is inside the tailnet.
+- Friend shares (ADR-0036) already let a member open one port of one device to
+  a chosen person. The other person joins with a device of their own.
+
+### What stays
+
+- The `__Host-` dashboard session cookie ("Cookie hardening") is in production.
+  It is correct without public services.
+- `Caddyfile.coordinator.production` answers every `*.<SERVICE_DOMAIN>` name
+  from the internet with 404. Keep that.
+
+### If the question comes back
+
+Start with `public-signed-in` only: a visitor who signs in with Bluesky has an
+identity that can be limited and blocked. Run the public listener as its own
+process, apart from the relay and the tailnet gateway. Only the owner of a
+device can make its service public (ADR-0036); the operator and the approver
+can refuse or revoke, never start it. Write a new ADR for that work.

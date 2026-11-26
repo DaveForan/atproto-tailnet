@@ -23,7 +23,7 @@ When an operator designates you as a tailnet creator, you can create your tailne
 
 A web application on one of your devices can get an address such as `https://food-app.ts.example.com`. The address works inside the tailnet only, and it has a valid certificate.
 
-1. Open the **Boards** tab and add a service: select the device, type the port, and give it a name.
+1. Open the **Services** page and add a service: select the device, type the port, and give it a name.
 2. Select **This is a web application: give it a secure web address**.
 3. On your private board, the address works on your own devices. On the public board, it works for members after the approval and after they select **Connect**.
 
@@ -37,7 +37,7 @@ If you do not see the option, the instance does not run the gateway.
 
 ### Lock sign-in to your devices
 
-You can limit sign-in to devices that you trust. Open the **Account** tab.
+You can limit sign-in to devices that you trust. Open the **Account** page.
 
 1. Select **Trust this device and turn the lock on**. The browser makes a key that it keeps and does not show to anybody. The service stores only the public part.
 2. Save the recovery codes. The service shows them one time.
@@ -49,11 +49,11 @@ If you lose all trusted devices, use a recovery code. Each code works one time. 
 
 The key and a device cookie are in the data of the browser. A sign-in needs the two. If you clear the data or the cookies of the browser, the device is not trusted any more. Approve it again from another trusted device, or use a recovery code.
 
-If a trusted device signs in from a browser that looks different (another system, another browser), the sign-in works but the **Account** tab shows a warning on that device and you get a notification. If it was not you, remove the device. If it was you, select **This was me**.
+If a trusted device signs in from a browser that looks different (another system, another browser), the sign-in works but the **Account** page shows a warning on that device and you get a notification. If it was not you, remove the device. If it was you, select **This was me**.
 
 ### Lock your tailnet devices
 
-You can limit your devices in a tailnet to the machines that you have now. Open the **Devices** tab and find **Lock my devices**.
+You can limit your devices in a tailnet to the machines that you have now. Open the **Devices** page and find **Lock my devices**.
 
 1. Select **Lock to my devices** and select the devices that stay. The other devices of yours are removed from the tailnet.
 2. While the lock is on, no other machine can join as you. A valid auth key or the correct sign-in does not help.
@@ -63,7 +63,7 @@ The card shows the machines that were refused. If you have trusted devices, each
 
 ### Appearance
 
-Select a colour theme in the **Account** tab. The theme is saved in the browser.
+Select a colour theme on the **Account** page. The theme is saved in the browser.
 
 ### What sign-in can access
 
@@ -73,46 +73,20 @@ Your session in the dashboard is a cookie of this service. It stays valid for 7 
 
 ## Dashboard overview
 
-The dashboard is a React 19 single-page application. It is served at the root URL of your instance. Your permissions control which tabs you see.
+The dashboard is a React 19 single-page application. It is served at the root URL of your instance. Your permissions control which pages and settings sections you see.
 
-**Network**
+The menu has one entry for each page:
 
-- **Status** -- Network health, node count, member count, provisioning status
-- **DERP Relays** -- Custom relay configuration
-- **IP Ranges** -- IPv4/IPv6 prefix configuration
-- **Routes** -- Exit nodes and subnet routers
-- **Devices** -- Connected nodes, online status, auth keys
-- **Members** -- Current members and their roles
-- **Add Device** -- Generate an auth key and connect a new device
+- **Overview** -- Health of the control server, device and member counts, the tailnet address, and every request that waits for your answer (invitations, devices that wait to be admitted, join requests, friend and share requests). Services that wait for approval have their own queue: **Services → Approval queue**
+- **Devices** -- The devices, adding a device, who can reach your devices, the lock on your devices, auth keys
+- **People** -- Members and their roles, invitations
+- **Services** -- The public board, your private board, the controller board
+- **Sharing** -- Friends and device shares
+- **Settings** -- Sections for administrators: Security, Limits, Notifications, Roles, Access rules, Relays, Routes, Agent tokens, Sub-collectives, Audit log. You see only the sections that your permissions allow. With `FEDERATION_ENABLED=true` there are also Federation, Traversal policy and Credentials
+- **Account** -- Trusted devices, the colour theme, the connector URL for Claude. See [Connect Claude (MCP)](mcp)
+- **Instance** (instance operators only) -- Tailnets, users, settings, tailnet creators, activity log. See [Instance administration](#instance-administration)
 
-**Manage**
-
-- **Invite** -- Invite people by handle or DID
-- **Services** -- Service registry and approval
-- **Board** -- Public service board
-- **Sub-Collectives** -- Sub-collective hierarchy management
-- **Federation** and **Traversal Policy** -- Shown only when `FEDERATION_ENABLED=true`
-
-**Access Control**
-
-- **Roles** -- Custom role definitions and permission assignments
-- **Agents** -- API token management for automation
-- **ACL** -- Access control lists
-- **Credentials** -- Verifiable credential issuance and verification
-
-**Admin**
-
-- **Usage** -- Live counts, limits, snapshot history
-- **Security** -- Tenant settings, lockdown, approval toggles, notification webhook
-- **Audit Log** -- Audit log of security-relevant actions
-
-**Account**
-
-- **Connect Claude** -- Connector URL and your MCP connections. See [Connect Claude (MCP)](mcp).
-
-**Operator** (instance operators only)
-
-- **Instance** -- Tailnets, users, settings, tailnet creators, activity log. See [Instance administration](#instance-administration).
+The number next to **Overview** counts the requests that wait for you.
 
 The header has a notification bell. It shows approval requests and limit hits for the current tailnet.
 
@@ -120,7 +94,7 @@ The header has a notification bell. It shows approval requests and limit hits fo
 
 An invitation is the allow-list entry for one person. The service does not send anything. You share the link.
 
-1. Go to the **Invite** tab.
+1. Open the **People** page and find **Invite someone**.
 2. Enter a handle (for example, `alice.bsky.social`) or a DID (`did:plc:...` or `did:web:...`).
 3. Copy the invitation link (`https://<APP_DOMAIN>/invite/<id>`).
 4. Send the link to the invitee by any channel.
@@ -132,10 +106,10 @@ You can revoke an invitation before the invitee accepts it. Lockdown mode blocks
 
 ### Join requests
 
-Join requests are an alternative to invitations. Turn on `allowJoinRequests` in the Security tab. Then:
+Join requests are an alternative to invitations. Turn on `allowJoinRequests` under **Settings → Security**. Then:
 
 - A signed-in person can visit `https://<APP_DOMAIN>/join/<your-slug>` and submit a request.
-- Requests appear in the dashboard for approval (the `approve_joins` permission is necessary). Approvers get a notification.
+- Requests appear on the **Overview** page for approval (the `approve_joins` permission is necessary). Approvers get a notification.
 - Lockdown mode blocks new join requests.
 
 The default tailnet of the instance accepts join requests automatically. People with no access see its **Request to join** button.
@@ -177,7 +151,7 @@ Create custom roles with any combination of 17 permissions:
 | `manage_acl` | Edit ACL policy and DERP configuration |
 | `manage_sub_collectives` | Create and manage sub-collectives |
 
-Assign roles to members in the **Members** tab. The effective permissions of a member are the union of the permissions of the role of that member.
+Assign roles to members on the **People** page. The effective permissions of a member are the union of the permissions of the role of that member.
 
 ## Boards and sharing
 
@@ -191,13 +165,13 @@ A tailnet has three boards.
 
 ### Device access
 
-In a new tailnet, a device can reach only the other devices of its owner. Two things open more access: a service on the public board, and a share between friends. The originator, or a member with the `manage_acl` permission, can change the tailnet to open access (each device reaches each other device) in the **Boards** tab.
+In a new tailnet, a device can reach only the other devices of its owner. Two things open more access: a service on the public board, and a share between friends. The originator, or a member with the `manage_acl` permission, can change the tailnet to open access (each device reaches each other device) on the **Services** page.
 
 ### Offer a service
 
-1. Open the **Boards** tab and go to **Add a service**.
+1. Open the **Services** page and go to **Add a service**.
 2. Select the board, one of your devices, and one port. Give a title.
-3. A service on the private board is active at once. A service on the public board needs an approval from an operator of the tailnet (the originator, or a member with `approve_services`).
+3. A service on the private board is active at once. A service on the public board waits in **Services → Approval queue** until an operator of the tailnet approves it (the originator, or a member with `approve_services`). The originator can turn this approval off under **Services → Board settings** (**Approve services before they show**); a new public service then shows on the board immediately.
 
 A service offers only its one port. Other ports of the device stay private.
 
@@ -207,7 +181,7 @@ On the public board, select **Connect** next to a service and select one or more
 
 ### Friends and shares
 
-Use the **Friends & Sharing** tab to share a device with one member.
+Use the **Sharing** page to share a device with one member.
 
 1. Send a friend request. The other member accepts it.
 2. Offer one of your devices, or ask for a device of your friend. Give the ports and how long the share lasts.
@@ -217,20 +191,20 @@ Each of you can end a share at any time. If you remove a friend, all shares betw
 
 ### Controller board
 
-The originator writes the public page of the tailnet in the **Boards** tab. The text can have headings, lists, bold, italic and `https://` links. HTML and scripts are shown as text. The page is at `/board/<tailnet-address>`. The sign-in page shows the controller board of the default tailnet.
+The originator writes the public page of the tailnet on the **Services** page. The text can have headings, lists, bold, italic and `https://` links. HTML and scripts are shown as text. The page is at `/board/<tailnet-address>`. The sign-in page shows the controller board of the default tailnet.
 
 ## Device management
 
 ### Connecting devices
 
-Members generate **pre-authentication keys** in the **Add Device** tab. A key authorizes a Tailscale client to join the network:
+Members generate **pre-authentication keys** on the **Devices** page (**Add a device**). A key authorizes a Tailscale client to join the network:
 
 ```bash
 tailscale up --login-server=https://control.yourdomain.com \
              --authkey=tskey-auth-XXXXX
 ```
 
-The **Add Device** tab shows the exact command. In coordinator mode with `CONTROL_DOMAIN` set, all tailnets use one login server. The key selects the tailnet. Without `CONTROL_DOMAIN`, and in legacy Headscale mode, each tailnet has its own login server at `https://<tailnet-address>.<BASE_DOMAIN>`.
+The **Devices** page shows the exact command. In coordinator mode with `CONTROL_DOMAIN` set, all tailnets use one login server. The key selects the tailnet. Without `CONTROL_DOMAIN`, and in legacy Headscale mode, each tailnet has its own login server at `https://<tailnet-address>.<BASE_DOMAIN>`.
 
 The device belongs to the member who made the key.
 
@@ -238,13 +212,17 @@ The device belongs to the member who made the key.
 
 A device can also join without a key. Start the Tailscale app with the login server of the instance and select **Sign in**. The app opens a page of this service. Sign in with your AT Protocol account, check the name of the device and the key fingerprint, select the tailnet, and select **Add device**. The link is valid for 10 minutes and works one time.
 
-In a tailnet that requires device approval, only the originator can add a device this way. Other members ask for a key in the **Add Device** tab.
+This is the first method on **Devices → Add a device**, with the server address to copy. It is the easy method for phones and for people who do not use a terminal.
+
+A person who is not yet a member sees their invitation on that same page. They accept it and then add the device. Without an invitation, they can ask to join; after the approval, they start the sign-in on the device again.
+
+When you select **Add device** on that page, you admit that one device. In a tailnet where approvers also admit new devices, the device then waits for an approver and connects by itself afterwards.
 
 ### Tailnet address
 
 Each tailnet has a public address, for example `quiet-harbor-4821.ts.yourdomain.com`. Join links and board links use it. A new tailnet gets a random address. The address never contains your handle.
 
-The originator can change the address in the **Status** tab (**Tailnet address**):
+The originator can change the address on the **Overview** page (**Tailnet address**):
 
 - The old address stays active as an alias. Devices and links that use it continue to work.
 - A tailnet can have a maximum of 5 active addresses.
@@ -252,24 +230,53 @@ The originator can change the address in the **Status** tab (**Tailnet address**
 
 ### Auth keys
 
-The service records each key that it issues. The **Devices** tab lists the keys:
+The service records each key that it issues. The **Devices** page lists the keys:
 
 - A member sees the keys that the member made.
 - A member with `manage_devices` (and the originator) sees all keys.
 - You can revoke a key that is not used yet.
 
-### Device approval
+### Every new device waits for admission
 
-By default, devices connect without approval. When you turn on `requireDeviceApproval` (Security tab):
+A new device has no access until its owner admits it. This is on for every member, and for the originator too. Each member can turn it off for their own devices only (see below); nobody can turn it off for another member or for the whole tailnet.
 
-- A request for an auth key creates a pending approval. The originator does not need approval.
-- The service notifies the users with the `approve_devices` permission.
-- An approver approves the request. The service then makes the key for the member.
-- A rejected request gives no key.
+- **A device that signs in** (see above): you admit it on the sign-in page, where you see its name, system and key fingerprint.
+- **A device that uses an auth key**: the key only registers the device. The device then shows on the **Overview** page under **Devices waiting to be admitted**. Check the name and the fingerprint, and select **Admit**. Select **Refuse** for a device that you do not know: it is removed.
+- **Only the owner admits a device.** The originator and the approvers cannot admit the device of another member in the owner's place.
+- While a device waits, no device can reach it and it can reach no device. The relay refuses it.
+- **You get a notification** when a device is added with one of your keys and waits. If you do not know the device, refuse it and revoke your keys.
+- **A waiting device expires.** If nobody admits it in one week, it is removed. The originator can set another time, from one hour to one year, under **Settings → Limits** (`waitingDeviceHours`). A removed device can be added again.
+
+The key fingerprint is the short form of a key that the Tailscale app makes on the device. It identifies that one installation. The name and the system come from the device and can be false.
+
+#### Your own approval
+
+**Devices → Access → Protection of my devices** has the switch **Approve each new device**. It is on by default.
+
+- While it is off, a device that you add with one of your keys has access at once. Anyone who gets your key can then add a device. A sign-in on the device still asks you first.
+- The switch applies to your devices only. No admin can change it for you.
+- While the tailnet has the second approval, the switch is on and locked for every member.
+
+#### Invalidate devices and keys
+
+To cut off one device, remove it on the **Devices** page. To stop one key, revoke it under **Issued keys**. To cut off everything at once, select **Invalidate all my devices and keys** in **Protection of my devices**: all your devices in this tailnet lose access and all your keys stop working. You stay a member and can add devices again.
+
+The originator, or a member with `manage_devices`, can do the same for any member: **People → Invalidate devices**.
+
+#### Second approval
+
+The originator can add a second approval: turn on **Approvers also admit new devices** (**Settings → Security**, setting `requireDeviceApproval`). Then:
+
+- After the owner admits a device, it waits for an approver: the originator, or a member with the `approve_devices` permission.
+- The approvers get a notification. They admit or refuse the device on the **Overview** page.
+- An approver cannot approve their own device. The device of an approver, and of the originator, waits for a different approver. If the tailnet has only one approver, the devices of that person need no second approval.
+- Every member must admit their own devices. Nobody can turn their own approval off, and each choice is set back to on.
+
+In legacy Headscale mode there is no admission step. There the setting has its older meaning: a request for a key waits for an approver.
 
 ### Device and member limits
 
-The originator can set `maxDevices` and `maxMembers` in the **Usage** tab (0 = unlimited). There are no plans. The service enforces the limits:
+The originator can set `maxDevices` and `maxMembers` under **Settings → Limits** (0 = unlimited). There are no plans. The service enforces the limits:
 
 - Devices: when it issues a key and when it approves a device.
 - Members: when an invitee accepts and when an approver approves a join request.
@@ -290,7 +297,7 @@ Device locks bind a membership to specific machine keys:
 
 ### Node operations
 
-In the Devices tab, members with the `manage_devices` permission can do these tasks:
+On the Devices page, members with the `manage_devices` permission can do these tasks:
 
 - View all connected devices and their online status
 - Remove devices from the network
@@ -310,7 +317,7 @@ The recipients are the originator and the members with the matching `approve_*` 
 
 ### Webhook
 
-You can also send each notification to a webhook, for example a self-hosted ntfy, Gotify, or a Matrix bridge. In the **Security** tab, set the webhook URL and a secret (the `manage_settings` permission is necessary). Then:
+You can also send each notification to a webhook, for example a self-hosted ntfy, Gotify, or a Matrix bridge. Under **Settings → Notifications**, set the webhook URL and a secret (the `manage_settings` permission is necessary). Then:
 
 - Each request has an HMAC-SHA256 signature of the body in the `X-Atproto-Tailnet-Signature` header. Use the secret to check it.
 - The URL must use `https` and resolve to a public address. The instance operator can allow private addresses with `WEBHOOK_ALLOW_PRIVATE=true` (single-organisation instances only).
@@ -319,7 +326,7 @@ You can also send each notification to a webhook, for example a self-hosted ntfy
 
 ## Access control (ACL)
 
-The ACL tab provides a policy editor. The policy controls which devices can talk to each other. The policy uses the Tailscale ACL format.
+**Settings → Access rules** provides a policy editor. The policy controls which devices can talk to each other. The policy uses the Tailscale ACL format.
 
 In **coordinator mode** (the default), the coordinator has no users, groups or tags. The service accepts only `accept` rules with `*`, IP addresses, CIDRs or host aliases. It refuses `groups`, `tagOwners` and `autoApprovers`:
 
@@ -380,7 +387,7 @@ An **exit node** routes all internet traffic of a device through another device 
 
 ### IP ranges
 
-Each network receives a default IP range in the CGNAT space (`100.64.0.0/10` for IPv4, `fd7a:115c:a1e0::/48` for IPv6). You can change these ranges in the IP Ranges tab. You can choose these settings:
+Each network receives a default IP range in the CGNAT space (`100.64.0.0/10` for IPv4, `fd7a:115c:a1e0::/48` for IPv6). You can change these ranges under **Settings → IP ranges** (Headscale mode only). You can choose these settings:
 
 - IPv4 prefix and size
 - IPv6 prefix and size
@@ -390,7 +397,7 @@ When you change IP ranges, you must restart the control plane. You must also reg
 
 ### DERP relays
 
-DERP relays provide encrypted relay connectivity when direct peer-to-peer connections fail (for example, behind restrictive NATs). In coordinator mode, the default is the built-in relay of the instance (see the [coordinator guide](coordinator#derp-map)). No traffic goes through Tailscale relays. In the DERP Relays tab you can do these tasks:
+DERP relays provide encrypted relay connectivity when direct peer-to-peer connections fail (for example, behind restrictive NATs). In coordinator mode, the default is the built-in relay of the instance (see the [coordinator guide](coordinator#derp-map)). No traffic goes through Tailscale relays. Under **Settings → Relays** you can do these tasks:
 
 - Add custom relay regions (IDs 900-999)
 - Enable or disable the default relays (the built-in relay in coordinator mode; the public Tailscale relays in legacy Headscale mode)
@@ -407,7 +414,7 @@ Agent tokens give programmatic API access to automation, CI/CD, and AI agents:
 - Expiry is mandatory (maximum 365 days).
 - The system resolves tokens at request time. When you revoke a token or disable the `allowAgentTokens` toggle, the change takes effect immediately.
 
-Create tokens in the **Agents** tab. The dashboard shows the token value once, when you create the token.
+Create tokens under **Settings → Agent tokens**. The dashboard shows the token value once, when you create the token.
 
 ### Using agent tokens
 
@@ -422,13 +429,13 @@ To use the API from Claude, use the MCP server, not an agent token. See [Connect
 
 ## Security settings
 
-The **Security** tab controls the security toggles for the whole tenant:
+**Settings → Security** controls the security toggles for the whole tenant. The switch for the public board is on the **Services** page. The API has all of these settings:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `requireDeviceApproval` | off | Gate new device connections behind approval |
+| `requireDeviceApproval` | off | Approvers also admit each new device, after its owner. Every new device waits for its owner in all cases |
 | `requireServiceDeviceApproval` | off | Gate service device registrations |
-| `requireServiceApproval` | off | Gate service registrations |
+| `requireServiceApproval` | on | A new or changed public service waits in the approval queue. Off: it shows on the board immediately |
 | `allowJoinRequests` | off | Enable public join request page (on for the default tailnet) |
 | `allowAgentTokens` | off | Enable API token creation |
 | `allowMemberAgentTokens` | off | Allow non-originators to create tokens |
@@ -450,7 +457,7 @@ Lockdown does not disconnect existing devices. It does not revoke existing token
 
 ## Audit log
 
-The system logs each security-relevant action to the audit trail. You can view the trail in the **Audit** tab (the `view_audit_log` permission is necessary). The system logs these actions:
+The system logs each security-relevant action to the audit trail. You can view the trail under **Settings → Audit log** (the `view_audit_log` permission is necessary). The system logs these actions:
 
 - Member joins, leaves, and role changes
 - Device approvals, locks, and removals
@@ -466,26 +473,22 @@ Each audit entry includes the user ID of the actor, the timestamp, the action ty
 
 ## Usage and limits
 
-The **Usage** tab shows these items:
+The **Overview** page shows the current number of devices and members, with the limit when one is set. The originator sets the limits under **Settings → Limits**. See [Device and member limits](#device-and-member-limits).
 
-- **Live counts**: Current devices, members, and services
-- **Limits**: Maximum devices and members. The originator sets them. See [Device and member limits](#device-and-member-limits)
-- **7-day history**: 168 data points (the health monitor samples every 5 minutes)
-
-The system stores usage snapshots in the `usage_snapshots` table. The dashboard shows them as a sparkline chart.
+The system stores usage snapshots in the `usage_snapshots` table (the health monitor samples every 5 minutes). `GET /api/tenants/:id/usage` returns 7 days of them; the dashboard does not show the history.
 
 ## Instance hibernation
 
 To save resources, the system can stop idle networks automatically:
 
-- Set `hibernateAfterDays` in the Security tab (0 = disabled).
+- Set `hibernateAfterDays` under **Settings → Security** (0 = disabled). Headscale mode only: the coordinator has no instance to stop.
 - The system updates `lastActivityAt` on API access (debounced to avoid write amplification).
 - The health monitor sweeps all tenants. It stops each tenant that is idle longer than the threshold.
 - To start a stopped network again, the originator uses **Start** (`POST /api/tenants/:id/start`).
 
 ## Instance administration
 
-The **Instance** tab is visible only to instance operators. It has these functions:
+The **Instance** page is visible only to instance operators. It has these functions:
 
 - **Tailnets**: All tailnets on the instance. An operator can suspend, unsuspend or delete a tailnet.
 - **Users**: All users who signed in. An operator can disable or enable a user.

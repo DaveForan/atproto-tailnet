@@ -41,7 +41,7 @@ title: Architecture
 
 The application server uses Express 5 with Drizzle ORM. It does these tasks:
 
-- **Web UI**: A React 19 SPA with 22 lazy-loaded tabs. esbuild builds it. The server serves it as external JS bundles from `public/js/`.
+- **Web UI**: A React 19 SPA with 8 lazy-loaded pages; the Settings page loads each of its sections on demand. esbuild builds it. The server serves it as external JS bundles from `public/js/`.
 - **Authentication**: AT Protocol OAuth through `@atproto/oauth-client-node`.
 - **Instance policy**: Operators come from `OPERATOR_DIDS`. One function, `canCreateTailnet(user)`, decides who can create a tailnet. Middleware refuses disabled users and members of suspended tenants.
 - **API**: REST endpoints for all management operations, plus the operator API (`/api/operator/*`).

@@ -19,6 +19,7 @@ import { sweepExpiredOAuthStates } from "../auth/atproto.js";
 import { logAudit } from "../audit/log.js";
 import { endExpiredShares, syncTenantAccess } from "../access/sync.js";
 import { logger } from "../logger.js";
+import { sweepWaitingDevices } from "./waiting-devices.js";
 import { isLeader } from "./leader.js";
 import { notifyRefusedMachines } from "./machine-refusals.js";
 
@@ -296,6 +297,9 @@ export function startHealthMonitor(intervalMs = 60_000): void {
       if (useCoordinator) {
         await notifyRefusedMachines().catch((err) =>
           logger.warn({ err }, "failed to notify about refused machines"),
+        );
+        await sweepWaitingDevices().catch((err) =>
+          logger.warn({ err }, "failed to check waiting devices"),
         );
       }
       // An expired share must stop working within a minute

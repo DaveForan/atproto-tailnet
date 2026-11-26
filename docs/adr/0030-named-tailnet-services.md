@@ -33,7 +33,8 @@ A **named service** has:
   30-day quarantine after retirement, per-member limit.
 - A target: one device of the publisher and one TCP port.
 - A tailnet: the tailnet of the device.
-- A visibility: `private` (default) or `public` (ADR-0031).
+- A visibility: `private` (default) or `public` (ADR-0031; declined, so only
+  `private` exists).
 
 The URL is `https://<name>.<BASE_DOMAIN>`.
 

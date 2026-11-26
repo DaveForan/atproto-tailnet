@@ -1,3 +1,4 @@
+import { useTabRoute } from "../hooks/useTabRoute";
 import { useSession } from "../hooks/session";
 import { useTenantData } from "../hooks/useTenantData";
 import { useTenantMutation } from "../hooks/useMutation";
@@ -30,8 +31,10 @@ async function loadMembers(tid: string, withLocks: boolean): Promise<MembersData
 }
 
 export function MembersTab() {
-  const { hasPerm, roles, reloadTenants } = useSession();
-  const canLock = hasPerm("lock_devices");
+  const { hasPerm, roles, reloadTenants, currentTenant } = useSession();
+  const { setTab } = useTabRoute();
+  // The coordinator has no admin-set device lock: each member locks their own devices
+  const canLock = hasPerm("lock_devices") && !currentTenant?.coordinatorMode;
   const { data, loading, error: loadError, reload } = useTenantData<MembersData>(
     (tid) => loadMembers(tid, canLock),
     { members: [], locks: new Map() },
@@ -73,17 +76,34 @@ export function MembersTab() {
     );
   };
 
+  const handleInvalidate = async (memberId: string, handle: string) => {
+    if (!(await confirm({
+      title: `Invalidate the devices and keys of @${handle}?`,
+      message: "Every device of this member loses access now and every key of theirs stops working. They stay a member and add their devices again. This cannot be undone.",
+      confirmLabel: "Invalidate",
+      danger: true,
+    }))) return;
+    await mutate(
+      (tid) => deviceService.invalidateDevices(tid, memberId),
+      { successMsg: "Devices removed and keys revoked", reload: reloadAfterMutate },
+    );
+  };
+
+  const inviteAction = hasPerm("invite") && (
+    <button type="button" className="btn-sm" onClick={() => setTab("people", "invite")}>Invite someone</button>
+  );
+
   if (loading) return <Loading />;
 
   if (members.length === 0) {
     return (
       <div className="tab-content">
         <LoadError error={loadError} onRetry={reload} />
-        <Card title="Members">
+        <Card title="Members" actions={inviteAction}>
           {loadError ? (
             <p className="help-text">The member list could not be loaded.</p>
           ) : (
-            <EmptyState>No members yet. Send an invitation to get started.</EmptyState>
+            <EmptyState>No members yet.</EmptyState>
           )}
         </Card>
       </div>
@@ -95,7 +115,7 @@ export function MembersTab() {
   return (
     <div className="tab-content">
       <LoadError error={loadError} onRetry={reload} />
-      <Card title="Members">
+      <Card title="Members" actions={inviteAction}>
         <ul className="item-list">
           {members.map((member) => {
             const avatar = safeUrl(member.avatarUrl);
@@ -124,7 +144,7 @@ export function MembersTab() {
                   </div>
                 </div>
 
-                {canAct && (hasPerm("manage_roles") || hasPerm("lock_devices") || hasPerm("kick")) && (
+                {canAct && (hasPerm("manage_roles") || canLock || hasPerm("kick") || hasPerm("manage_devices")) && (
                   <div className="item-actions">
                     {hasPerm("manage_roles") && (
                       <select
@@ -142,7 +162,7 @@ export function MembersTab() {
                       </select>
                     )}
 
-                    {hasPerm("lock_devices") && (
+                    {canLock && (
                       <button
                         type="button"
                         className={`btn-sm ${isLocked ? "btn-warning" : "btn-ghost"}`}
@@ -151,6 +171,18 @@ export function MembersTab() {
                         onClick={() => handleToggleLock(member.id, isLocked)}
                       >
                         {isLocked ? "Unlock" : "Lock"}
+                      </button>
+                    )}
+
+                    {hasPerm("manage_devices") && currentTenant?.coordinatorMode && (
+                      <button
+                        type="button"
+                        className="btn-sm btn-ghost"
+                        disabled={busy}
+                        aria-label={`Invalidate the devices and keys of @${member.handle}`}
+                        onClick={() => handleInvalidate(member.id, member.handle)}
+                      >
+                        Invalidate devices
                       </button>
                     )}
 

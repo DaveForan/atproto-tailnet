@@ -377,7 +377,7 @@ boardsRouter.post("/api/tenants/:tenantId/boards/posts", requireAuth, tenantGuar
   }
 
   // Private posts and the originator's own posts need no review
-  const approved = data.board === "private" || result.membership.isOriginator;
+  const approved = data.board === "private" || result.membership.isOriginator || !result.tenant.requireServiceApproval;
   try {
     const [post] = await db
       .insert(servicePosts)
@@ -412,7 +412,7 @@ boardsRouter.post("/api/tenants/:tenantId/boards/posts", requireAuth, tenantGuar
         notify(result.tenant.id, "service_approval_requested", {
           title: "Service post needs review",
           body: `"${post.title}" (port ${post.port}) is waiting for approval.`,
-          link: "/#board",
+          link: "/#board/queue",
         });
       }
     }
@@ -503,10 +503,11 @@ boardsRouter.patch("/api/tenants/:tenantId/boards/posts/:postId", requireAuth, t
   // A new public name is what members see and resolve: it needs a new approval
   // too (connections stay; they follow the same device and port)
   const renamed = updates.name !== undefined && updates.name !== post.name;
+  const needsReview = !result.membership.isOriginator && result.tenant.requireServiceApproval;
   if (targetChanged && post.board === "public") {
     await db.delete(serviceConnections).where(eq(serviceConnections.postId, post.id));
   }
-  if ((targetChanged || renamed) && post.board === "public" && !result.membership.isOriginator && post.status !== "pending") {
+  if ((targetChanged || renamed) && post.board === "public" && needsReview && post.status !== "pending") {
     updates.status = "pending";
     updates.reviewedById = null;
     updates.reviewedAt = null;
@@ -527,7 +528,7 @@ boardsRouter.patch("/api/tenants/:tenantId/boards/posts/:postId", requireAuth, t
         body: targetChanged
           ? `"${updated.title}" now points at port ${updated.port}.`
           : `"${updated.title}" has a new name${updated.name ? `: ${updated.name}` : ""}.`,
-        link: "/#board",
+        link: "/#board/queue",
       });
     }
     res.json(updated);

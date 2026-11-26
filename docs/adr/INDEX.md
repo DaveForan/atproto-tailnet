@@ -4,7 +4,7 @@ Track ADRs like stories on a board. Each ADR moves through these lifecycle state
 
 **Proposed** → **Accepted** → **In Progress** → **Implemented** → **Superseded** / **Deprecated**
 
-Any state can move to **Deferred** (still on the roadmap; work is paused).
+Any state can move to **Deferred** (still on the roadmap; work is paused). A Proposed ADR can move to **Declined** (looked at, not built).
 
 ## Board
 
@@ -50,6 +50,7 @@ Any state can move to **Deferred** (still on the roadmap; work is paused).
 | 0025 | Instance operators and MCP access | 2026-11-19 | — | 0003, 0005, 0023 |
 | 0037 | Keep separate PostgreSQL and SQLite store implementations | 2026-11-20 | — | 0023, 0034 |
 | 0038 | Scope of the gateway certificate | 2026-11-20 | — | 0029, 0030, 0034 |
+| 0039 | Every new device waits for admission | 2026-11-25 | — | 0023, 0032, 0035 |
 
 ### Proposed
 
@@ -59,7 +60,6 @@ Any state can move to **Deferred** (still on the roadmap; work is paused).
 | 0024 | Purpose-built mesh client | 2026-11-06 | — | 0023 |
 | 0029 | Bespoke gateway node (`coord-gateway`) | 2026-11-19 | — | 0023, 0027 |
 | 0030 | Named tailnet services | 2026-11-19 | — | 0026, 0028, 0029 |
-| 0031 | Public service exposure | 2026-11-19 | — | 0030 |
 | 0034 | High availability, replicas, and Kubernetes | 2026-11-20 | — | 0023, 0026, 0027 |
 
 ### Deferred
@@ -71,6 +71,12 @@ Federation is tabled (2026-11-20). ADR-0033 records what exists, the code kept o
 | 0019 | Cross-instance federation links | 2026-11-04 | — | 0014, 0016, 0017 |
 | 0020 | Federation relay data plane | 2026-11-04 | — | 0006, 0010, 0016, 0019 |
 | 0033 | Federation data plane on the gateway, and services as AT Proto records | 2026-11-19 | 0020 (coordinator mode) | 0029, 0030 |
+
+### Declined
+
+| ID | Title | Date | Decided | Reason |
+|----|-------|------|---------|--------|
+| 0031 | Public service exposure | 2026-11-19 | 2026-11-23 | Makes the instance a public web host; friend shares cover the need |
 
 ### Superseded
 
@@ -86,6 +92,7 @@ Federation is tabled (2026-11-20). ADR-0033 records what exists, the code kept o
 
 - **Proposed**: The draft is complete. The team can discuss it.
 - **Deferred**: The work stays on the roadmap but is paused. The ADR says what exists and what resumes it. Code kept for it is not dead code.
+- **Declined**: The team looked at the idea and chose not to build it. The ADR stays as a record and says why. It is not on the roadmap.
 - **Accepted**: The team made the decision. The ADR is ready for implementation.
 - **In Progress**: Development is in progress.
 - **Implemented**: The code is in production and the feature is complete.

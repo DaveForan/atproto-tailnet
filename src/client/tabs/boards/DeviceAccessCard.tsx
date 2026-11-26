@@ -16,7 +16,7 @@ export function DeviceAccessCard({
       <p className="card-description">
         {mode === "member"
           ? "Members only: a device reaches its owner's other devices, plus services they connected to and shares between friends."
-          : "Open: members who choose it let their devices reach each other, on every port or as the ACL policy says. Each member chooses for their own devices, under Friends & sharing. The devices of everyone else stay members-only."}
+          : "Open: members who choose it let their devices reach each other, on every port or as the ACL policy says. Each member chooses for their own devices, on the Devices page. The devices of everyone else stay members-only."}
       </p>
       <button
         type="button"

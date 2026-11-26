@@ -16,13 +16,13 @@ The platform has a purpose-built Rust mesh coordinator (which replaces [Headscal
 ## Features
 
 - **AT Protocol auth** — no passwords and no accounts to create. Your Bluesky DID is your identity.
-- **Instance operators** — `OPERATOR_DIDS` controls who gets a tailnet. Optional single-tailnet mode. The **Instance** tab lists tailnets and users, and can suspend tailnets (with their sub-tailnets), delete tailnets, disable users, and show the activity log.
+- **Instance operators** — `OPERATOR_DIDS` controls who gets a tailnet. Optional single-tailnet mode. The **Instance** page lists tailnets and users, and can suspend tailnets (with their sub-tailnets), delete tailnets, disable users, and show the activity log.
 - **Invitations as the allow-list** — invite by handle or DID, then share the copyable link.
 - **Join requests** — on the public `/join/<slug>` page, and for the default tailnet. Limits: 50 pending for each tailnet, one pending for each person, 24-hour cooldown after a rejection.
 - **Remote MCP server** — connect Claude as a custom connector at `https://<APP_DOMAIN>/mcp`. OAuth with Bluesky sign-in. Operator tools are an opt-in. See [docs/site/guides/mcp.md](docs/site/guides/mcp.md).
 - **Isolated networks** — each tenant has its own subdomain, with its own ACL, DERP map, and IP ranges
 - **Role-based access** — 17 granular permissions, custom roles, originator protection
-- **Device approval and notifications** — optional approval for new devices, a notification bell, and an optional signed webhook
+- **Device admission and notifications** — every new device waits until its owner admits that exact machine; a tailnet can add a second approval; a notification bell, and an optional signed webhook
 - **Auth keys** — list and revoke keys. Removing a member also removes their devices and keys.
 - **Device and member limits** — the originator sets them, and the service enforces them. There are no plans.
 - **Device locking** — bind members to specified machines
@@ -42,7 +42,7 @@ The platform has a purpose-built Rust mesh coordinator (which replaces [Headscal
 |-------|-----------|
 | Coordinator | Rust (9-crate workspace: coord-core, coord-noise, coord-proto, coord-acl, coord-store, coord-netmap, coord-federation, coord-api, coord-server) |
 | Service layer | TypeScript / Express 5 / Drizzle ORM |
-| Dashboard | React 19 / esbuild / lazy-loaded tabs / typed service layer |
+| Dashboard | React 19 / esbuild / lazy-loaded pages / typed service layer |
 | Database | PostgreSQL (service layer) or SQLite (coordinator standalone) |
 | Auth | `@atproto/oauth-client-node` |
 | Control plane | Rust coordinator (Noise IK protocol, multi-tenant) or Headscale (legacy, one Docker container for each tenant) |
@@ -166,11 +166,11 @@ src/                      — TypeScript service layer
   client/                 — React 19 dashboard SPA (esbuild)
     main.tsx              — Dashboard entry point
     join.tsx              — Join page entry point
-    App.tsx               — Root component, lazy-loaded tab routing
+    App.tsx               — Root component, lazy-loaded page routing
     components/           — Shared UI (Badge, Card, EmptyState, Layout, Toast, Toggle)
     hooks/                — useAppState (global context), useTenantData, useMutation
     services/             — 20 typed API modules (one per domain)
-    tabs/                 — 22 lazy-loaded tab components
+    tabs/                 — 8 lazy-loaded pages; Settings loads its sections on demand
     lib/                  — Types, constants, utilities
   auth/atproto.ts         — AT Proto OAuth setup
   config.ts               — Zod-validated env config
@@ -213,7 +213,7 @@ The TypeScript service layer includes these items:
 - Invitations, join requests, roles, device approval, notifications, limits, and lockdown
 - Services, board, agent tokens, ACL, DERP, routes, and health monitoring
 - The remote MCP server with OAuth
-- A React 19 dashboard with 22 lazy-loaded tabs
+- A React 19 dashboard with 8 lazy-loaded pages
 
 The Rust coordinator includes these items:
 

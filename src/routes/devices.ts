@@ -3,6 +3,7 @@
  * Devices and members: list nodes, issue pre-auth keys (optional approval), remove nodes, kick members.
  */
 
+import { holdOf } from "../access/device-holds.js";
 import { Router } from "express";
 import { z } from "zod";
 import { eq, and, desc } from "drizzle-orm";
@@ -99,6 +100,9 @@ devicesRouter.get(
           online: n.online ?? false,
           lastSeen: n.lastSeen,
           machineKey: n.machineKey ?? null,
+          hold: holdOf(n),
+          fingerprint: n.fingerprint ?? null,
+          os: n.os ?? null,
           user: userLabel,
           owner,
         };

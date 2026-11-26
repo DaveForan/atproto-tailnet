@@ -1,7 +1,8 @@
 /**
  * @module routes/device-signin
- * Interactive device sign-in (ADR-0032): a member approves a waiting device at `/device/<id>`.
- * The auth-key checks apply (membership, lockdown, device limit, approval); Headscale device locks do not.
+ * Interactive device sign-in (ADR-0032): a member admits their own waiting device at `/device/<id>`.
+ * The auth-key checks apply (membership, lockdown, device limit). With the tailnet's second step,
+ * the device then waits for an approver.
  */
 
 import { Router } from "express";
@@ -9,8 +10,8 @@ import rateLimit from "express-rate-limit";
 import { z } from "zod";
 import { and, eq, ne } from "drizzle-orm";
 import { db } from "../db/index.js";
-import { tenants, memberships } from "../db/schema.js";
-import { requireSession, param, getTenantForUser, isLockedDown } from "./helpers.js";
+import { tenants, memberships, roles } from "../db/schema.js";
+import { requireSession, param, getTenantForUser, isLockedDown, hasPermission } from "./helpers.js";
 import { logAudit } from "../audit/log.js";
 import { logger } from "../logger.js";
 import { sendDeviceRefusal } from "./limits.js";
@@ -19,6 +20,8 @@ import type { CoordinatorApiClient } from "../orchestrator/coordinator-api.js";
 import { getCoordinatorClient, useCoordinator } from "../orchestrator/control-client.js";
 import { pushTenantIdentity } from "../orchestrator/coordinator-identity.js";
 import { stepUpForSession } from "../auth/step-up.js";
+import { holdAfterOwnerFor } from "../access/device-holds.js";
+import { notify } from "../notifications/service.js";
 
 export const deviceSignInRouter = Router({ caseSensitive: true });
 
@@ -78,12 +81,20 @@ deviceSignInRouter.get("/api/device-auth/:id", requireSession, viewLimiter, asyn
   }
   const userId = req.session.userId!;
   const rows = await db
-    .select({ tenant: tenants, isOriginator: memberships.isOriginator })
+    .select({ tenant: tenants, membership: memberships, role: roles })
     .from(memberships)
     .innerJoin(tenants, eq(memberships.tenantId, tenants.id))
+    .leftJoin(roles, eq(memberships.roleId, roles.id))
     .where(and(eq(memberships.userId, userId), ne(tenants.status, "deleted")))
     .orderBy(tenants.name)
     .limit(200);
+
+  // An approver must admit the device after the member does
+  const needsApprover = new Map<string, boolean>();
+  for (const r of rows.filter((x) => x.tenant.requireDeviceApproval)) {
+    const hold = await holdAfterOwnerFor(r.tenant, hasPermission(r.membership, r.role, "approve_devices", req), userId);
+    needsApprover.set(r.tenant.id, hold === "approver");
+  }
 
   res.json({
     device: { hostname: pending.hostname, os: pending.os, fingerprint: pending.fingerprint },
@@ -97,11 +108,8 @@ deviceSignInRouter.get("/api/device-auth/:id", requireSession, viewLimiter, asyn
       .map((r) => ({
         id: r.tenant.id,
         name: r.tenant.name,
-        blocked: isLockedDown(r.tenant)
-          ? "This tailnet is in lockdown"
-          : r.tenant.requireDeviceApproval && !r.isOriginator
-            ? "This tailnet requires device approval: ask for a key in the Add Device tab"
-            : null,
+        blocked: isLockedDown(r.tenant) ? "This tailnet is in lockdown" : null,
+        needsApprover: needsApprover.get(r.tenant.id) ?? false,
       })),
   });
 });
@@ -143,8 +151,10 @@ deviceSignInRouter.post("/api/device-auth/:id/approve", requireSession, approveL
   await pushTenantIdentity(result.tenant.id, result.tenant.coordinatorTenantId).catch((err) =>
     logger.warn({ tenantId: result.tenant.id, err }, "failed to push tenant identity"),
   );
+  // The member admits this exact machine here: the page shows its fingerprint.
+  const hold = await holdAfterOwnerFor(result.tenant, hasPermission(result.membership, result.role, "approve_devices", req), userId);
   try {
-    await coord.approveDeviceAuth(id, result.tenant.coordinatorTenantId, userId);
+    await coord.approveDeviceAuth(id, result.tenant.coordinatorTenantId, userId, hold);
   } catch {
     res.status(404).json({ error: "Sign-in link not found, expired or already used" });
     return;
@@ -160,9 +170,17 @@ deviceSignInRouter.post("/api/device-auth/:id/approve", requireSession, approveL
       hostname: pending.hostname,
       requesterIp: pending.requester_ip ?? null,
       requestedAt: pending.requested_at ?? null,
+      hold,
     },
   });
-  res.json({ status: "approved", tailnet: result.tenant.name });
+  if (hold === "approver") {
+    notify(result.tenant.id, "device_approval_requested", {
+      title: "A device waits for approval",
+      body: `A member signed in the device ${pending.hostname} (${pending.fingerprint}) to ${result.tenant.name}.`,
+      link: "/#overview",
+    });
+  }
+  res.json({ status: hold === "none" ? "approved" : "waiting_for_approver", tailnet: result.tenant.name });
 });
 
 deviceSignInRouter.post("/api/device-auth/:id/deny", requireSession, async (req, res) => {

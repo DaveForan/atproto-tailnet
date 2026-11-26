@@ -77,6 +77,12 @@ export function formatExpiry(dateStr: string | null): string {
 }
 
 export const auditActionLabels: Record<string, string> = {
+  device_admitted_by_owner: "Owner admitted device",
+  device_admitted: "Admitted device",
+  device_refused: "Refused device",
+  device_expired: "Waiting device expired",
+  devices_invalidated: "Invalidated devices and keys",
+  own_device_approval_changed: "Changed own device approval",
   tenant_created: "Created tailnet",
   tenant_deleted: "Deleted tailnet",
   tenant_started: "Started tailnet",

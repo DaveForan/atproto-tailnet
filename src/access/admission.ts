@@ -1,9 +1,11 @@
 /**
  * @module access/admission
- * Whether a member may add a device to a tailnet: lockdown, device locks,
- * the device limit and device approval. Routes map the refusal codes to HTTP.
+ * Whether a member may ask to add a device: lockdown, device locks, the device limit,
+ * and in Headscale mode the approval of a key. Routes map the refusal codes to HTTP.
+ * In coordinator mode a key or sign-in never admits a device: see `access/device-holds.ts`.
  */
 
+import { isAdmitted } from "./device-holds.js";
 import { and, eq } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { deviceLocks, memberships, tenants } from "../db/schema.js";
@@ -20,7 +22,7 @@ export type DeviceRefusal =
   | "device_limit"
   /** The control plane could not count the devices. */
   | "limit_unverified"
-  /** A non-originator must ask for approval first. */
+  /** Headscale mode: a non-originator must ask for a key first. */
   | "approval_required";
 
 /** True when a cap is set (> 0) and `count` has reached it. */
@@ -50,7 +52,8 @@ export async function deviceLimitRefusal(
   if (tenant.maxDevices <= 0) return null;
   let count: number;
   try {
-    count = (await client.listNodes()).length;
+    // A device that waits for admission is counted when it is admitted
+    count = (await client.listNodes()).filter(isAdmitted).length;
   } catch (err) {
     logger.error({ tenantId: tenant.id, err }, "failed to count devices for limit check");
     return "limit_unverified";
@@ -73,7 +76,7 @@ export async function deviceLimitRefusal(
 /**
  * The first reason the member may not add a device, or null.
  * Order: lockdown, device lock, device limit, approval.
- * Device locks exist only in Headscale mode; coordinator mode has the machine lock.
+ * Device locks and key approval exist only in Headscale mode. The coordinator has the machine lock and holds every new device.
  */
 export async function deviceAdmission(
   tenant: Tenant,
@@ -85,6 +88,6 @@ export async function deviceAdmission(
   if (!useCoordinator && (await isDeviceLocked(tenant.id, userId))) return "device_locked";
   const limit = await deviceLimitRefusal(tenant, client);
   if (limit) return limit;
-  if (tenant.requireDeviceApproval && !membership.isOriginator) return "approval_required";
+  if (!useCoordinator && tenant.requireDeviceApproval && !membership.isOriginator) return "approval_required";
   return null;
 }

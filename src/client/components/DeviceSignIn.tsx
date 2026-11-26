@@ -1,6 +1,9 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Card } from "./Card";
 import { Loading } from "./Loading";
+import { PendingInvitations } from "./PendingInvitations";
+import { JoinDefaultTailnet } from "./AccessPages";
+import { useSession } from "../hooks/session";
 import { deviceAuthService, type PendingDeviceSignIn } from "../services/device-auth";
 import { errorMessage, relativeTime } from "../lib/utils";
 
@@ -8,7 +11,7 @@ type State =
   | { kind: "loading" }
   | { kind: "gone" }
   | { kind: "ready"; data: PendingDeviceSignIn }
-  | { kind: "done"; tailnet: string }
+  | { kind: "done"; tailnet: string; waiting: boolean }
   | { kind: "denied" };
 
 /**
@@ -22,21 +25,27 @@ export function DeviceSignInPage({ id, onDone }: { id: string; onDone: () => voi
   const [error, setError] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState(false);
 
-  useEffect(() => {
-    let stale = false;
+  const { invitations, reload } = useSession();
+  // Only the answer to the newest request counts: a membership can change while the page is open
+  const latest = useRef(0);
+
+  const load = useCallback(() => {
+    const turn = ++latest.current;
     deviceAuthService
       .get(id)
       .then((data) => {
-        if (stale) return;
+        if (turn !== latest.current) return;
         if (!data) return setState({ kind: "gone" });
         setState({ kind: "ready", data });
         setTenantId(data.tailnets.find((t) => !t.blocked)?.id ?? "");
       })
-      .catch(() => !stale && setState({ kind: "gone" }));
-    return () => {
-      stale = true;
-    };
+      .catch(() => turn === latest.current && setState({ kind: "gone" }));
   }, [id]);
+
+  useEffect(() => {
+    load();
+    return () => { latest.current++; };
+  }, [load]);
 
   const answer = async (approve: boolean) => {
     setBusy(true);
@@ -44,7 +53,7 @@ export function DeviceSignInPage({ id, onDone }: { id: string; onDone: () => voi
     try {
       if (approve) {
         const r = await deviceAuthService.approve(id, tenantId);
-        setState({ kind: "done", tailnet: r?.tailnet ?? "your tailnet" });
+        setState({ kind: "done", tailnet: r?.tailnet ?? "your tailnet", waiting: r?.status === "waiting_for_approver" });
       } else {
         await deviceAuthService.deny(id);
         setState({ kind: "denied" });
@@ -71,8 +80,15 @@ export function DeviceSignInPage({ id, onDone }: { id: string; onDone: () => voi
         )}
 
         {state.kind === "done" && (
-          <Card title="Device added">
-            <p role="status">The device is joining {state.tailnet}. You can close this page.</p>
+          <Card title={state.waiting ? "Device admitted by you" : "Device added"}>
+            {state.waiting ? (
+              <p role="status">
+                You admitted the device to {state.tailnet}. It has no access yet: another member, an approver of the
+                tailnet, must admit it too. The device connects by itself after that. You can close this page.
+              </p>
+            ) : (
+              <p role="status">The device is joining {state.tailnet}. You can close this page.</p>
+            )}
             {back}
           </Card>
         )}
@@ -99,13 +115,22 @@ export function DeviceSignInPage({ id, onDone }: { id: string; onDone: () => voi
             )}
             <p className="notice mt-12" role="note">
               <strong>
-                Only approve if you just ran <code>tailscale up</code> / logged in on this machine yourself. Someone may
-                have sent you this link.
+                Only approve if you started the sign-in on this device yourself, just now. Someone may have sent you
+                this link.
               </strong>{" "}
               A device you approve joins as one of your own devices.
             </p>
             {state.data.tailnets.length === 0 ? (
-              <p className="notice" role="alert">You are not a member of a tailnet this device can join.</p>
+              <div className="mt-12">
+                <p className="notice" role="status">
+                  You are not a member of a tailnet yet, so this device has nowhere to join.{" "}
+                  {invitations.length > 0
+                    ? "Accept your invitation below, then add the device."
+                    : "Ask to join below. After an admin approves you, start the sign-in on the device again."}
+                </p>
+                <PendingInvitations invitations={invitations} onAction={() => { void reload(); load(); }} />
+                {invitations.length === 0 && <JoinDefaultTailnet hasInvitations={false} />}
+              </div>
             ) : (
               <div className="field">
                 <label htmlFor="device-tailnet">Tailnet</label>
@@ -119,6 +144,9 @@ export function DeviceSignInPage({ id, onDone }: { id: string; onDone: () => voi
                 {state.data.tailnets.filter((t) => t.blocked).map((t) => (
                   <p key={t.id} className="help-text">{t.name}: {t.blocked}</p>
                 ))}
+                {state.data.tailnets.find((t) => t.id === tenantId)?.needsApprover && (
+                  <p className="help-text">After you add the device, another member, an approver of this tailnet, must admit it too.</p>
+                )}
               </div>
             )}
             {state.data.tailnets.length > 0 && (

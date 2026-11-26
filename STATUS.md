@@ -1,6 +1,6 @@
 # Status memo
 
-Last updated: 2026-11-20. Code as of `61d6d8e` on `master`. CI is green (TS, Rust, clippy `-D warnings`, `cargo doc`, `cargo audit`).
+Last updated: 2026-11-25. Code as of `6d87003` on `master`, plus uncommitted work (next steps, item 6). CI is green (TS, Rust, clippy `-D warnings`, `cargo doc`, `cargo audit`).
 
 ## Where we are
 
@@ -35,6 +35,7 @@ After the first start: sign in yourself before you share the URL, then connect C
 - Boards are off by default. An admin must turn the board on before public posts work.
 - Named HTTPS service addresses move to `<name>.svc.<BASE_DOMAIN>`.
 - Compose runs two coordinator containers: `coordinator` (control) and `relay` (DERP, STUN, gateway).
+- Next deploy (ADR-0039): devices that exist stay connected. Every device added after it waits: a device added with a key shows on Overview until its owner admits it. "Require device approval" becomes "Approvers also admit new devices". A member can turn off the approval of their own devices (Devices → Access) unless that setting is on. Unattended installs with a key need this one extra step.
 - Next deploy: open mode no longer opens anybody's devices by itself. In an open tailnet, each member must choose the open policy for their own devices (Friends & sharing). Until then the devices of different members do not reach each other.
 
 ## Not yet tested live
@@ -55,7 +56,12 @@ After the first start: sign in yourself before you share the URL, then connect C
    - Gateway direct paths (ADR-0029 phase 2): built, off unless `GATEWAY_UDP_LISTEN` is set. No real Tailscale client has confirmed it. It needs one UDP port open on the server.
    - These were checked on a local stack (real coordinator and service, PostgreSQL, a browser), not with real devices.
 4. Resume federation when a second collective needs access (resume criteria in ADR-0033): gateway data plane, protocol version on CFP messages, replica-safe handshake state, traversal policy enforcement.
-5. Optional: the @atproto packages still bundle zod 3 (advisory flagged by `npm audit`); it clears when they release.
+5. Decided 2026-11-23: no public exposure of services (ADR-0031 is Declined). Nothing is reachable from the internet through the gateway.
+6. Done 2026-11-25, not yet committed, pushed or deployed:
+   - Dashboard: 8 pages with sections instead of 23 tabs. Services has an approval queue, and the originator can turn service approval off (`requireServiceApproval`).
+   - Sign-in on the device is the first method on Devices → Add a device. A phone client was confirmed against production by sign-in (no key).
+   - **Every new device waits for admission (ADR-0039).** A key or sign-in no longer gives access by itself: the owner admits that exact machine, and a tailnet can add a second approval by its approvers. Each member can turn the approval off for their own devices only; the second approval locks it on for all. A member, or the originator for any member, can invalidate all devices and keys of that member. Coordinator migrations 018 (PostgreSQL) / 015 (SQLite), drizzle migrations 0042 to 0044. The owner is told when a key registers a device, and a device that waits longer than one week (the originator can change the time) is removed. Checked on a local stack with stand-in devices; not with a real Tailscale client.
+7. Optional: the @atproto packages still bundle zod 3 (advisory flagged by `npm audit`); it clears when they release.
 
 ## Working notes
 

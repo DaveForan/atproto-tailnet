@@ -29,6 +29,8 @@ vi.mock("../db/index.js", () => {
   return { db: { select: () => chain(), insert: () => chain(), update: () => chain(), delete: () => chain() }, pool: {} };
 });
 vi.mock("../audit/log.js", () => ({ logAudit: vi.fn() }));
+const accessSync = vi.hoisted(() => ({ push: vi.fn(async (..._args: unknown[]) => true) }));
+vi.mock("../access/sync.js", async (orig) => ({ ...(await orig<Record<string, unknown>>()), syncTenantAccess: accessSync.push }));
 vi.mock("../orchestrator/headscale.js", () => ({
   startInstance: vi.fn(),
   stopInstance: vi.fn(),
@@ -106,6 +108,8 @@ describe("step-up on sensitive routes (ADR-0035)", () => {
     [securityRouter, "post", "/api/tenants/:tenantId/device-locks"],
     [securityRouter, "delete", "/api/tenants/:tenantId/device-locks"],
     [securityRouter, "post", "/api/tenants/:tenantId/device-approvals/:approvalId/approve"],
+    [securityRouter, "post", "/api/tenants/:tenantId/devices/:nodeId/admit"],
+    [securityRouter, "put", "/api/tenants/:tenantId/device-approval/mine"],
     [aclRouter, "put", "/api/tenants/:tenantId/acl"],
     [derpRouter, "put", "/api/tenants/:tenantId/derp"],
     [apiRouter, "delete", "/api/tenants/:id"],
@@ -241,12 +245,26 @@ describe("sensitive settings", () => {
     { notificationWebhookSecret: "s" },
     { requireDeviceApproval: false },
     { allowJoinRequests: true },
+    { requireServiceApproval: false },
   ])("an agent token with manage_settings cannot change %j", async (body) => {
     ctx = { session: {}, agent: { id: "a", tenantId: T, userId: "u-1", permissions: ["manage_settings"] } };
     results.push(guardRow(["manage_settings"]));
     const r = await patch(body);
     expect(r.status).toBe(403);
     expect(r.json.error).toMatch(/Agent tokens/);
+  });
+
+  it("the second approval is saved only when the coordinator took it", async () => {
+    ctx = { session: { userId: "u-1" } };
+    results.push(guardRow(["manage_settings"]));
+    accessSync.push.mockResolvedValueOnce(false);
+    const refused = await patch({ requireDeviceApproval: true });
+    expect([refused.status, refused.json.code]).toEqual([502, "not_applied"]);
+    expect(results).toHaveLength(0);
+
+    results.push(guardRow(["manage_settings"]), [], [], [{ ...tenantRow, requireDeviceApproval: true }]);
+    expect((await patch({ requireDeviceApproval: true })).status).toBe(200);
+    expect(accessSync.push).toHaveBeenLastCalledWith(T, { secondApproval: true });
   });
 
   it("an agent token can still change plain settings", async () => {

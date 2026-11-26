@@ -3,7 +3,7 @@
  * Shared route helpers: params, tenant lookup, permission checks, naming. Re-exports request auth.
  */
 
-import type { Request } from "express";
+import type { Request, Response } from "express";
 import { eq, and, ne } from "drizzle-orm";
 import { db } from "../db/index.js";
 import { tenants, memberships, roles } from "../db/schema.js";
@@ -141,4 +141,9 @@ export { toHsUsername } from "../identity/handles.js";
 /** Builds the login-server URL for a tenant slug (e.g. `https://my-tenant.ts.example.com`). */
 export function tenantLoginServer(slug: string): string {
   return tenantPublicUrl(slug);
+}
+
+/** 502 for a change that the coordinator did not take. The caller saved nothing that claims it. */
+export function sendNotApplied(res: Response): void {
+  res.status(502).json({ error: "The control server did not take the change. Try again", code: "not_applied" });
 }

@@ -74,7 +74,7 @@ export function SetupWizard({ tenant }: { tenant: Tenant }) {
         {wizardStep === 2 && (
           <div>
             <p>
-              Install <a href="https://tailscale.com/download" target="_blank" rel="noopener noreferrer">Tailscale</a> on your device, then go to the <strong>Add device</strong> tab to generate an auth key.
+              Install <a href="https://tailscale.com/download" target="_blank" rel="noopener noreferrer">Tailscale</a> on your device, then open <strong>Devices</strong> to generate an auth key.
             </p>
             <div className="wizard-actions">
               <button type="button" onClick={() => setWizardStep(3)}>Next</button>

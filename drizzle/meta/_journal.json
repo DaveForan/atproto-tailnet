@@ -295,6 +295,27 @@
       "when": 1794201618003,
       "tag": "0041_membership_open_access",
       "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1794374418003,
+      "tag": "0042_device_admission_audit",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1794460818003,
+      "tag": "0043_own_device_approval",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1794547218003,
+      "tag": "0044_waiting_device_expiry",
+      "breakpoints": true
     }
   ]
 }

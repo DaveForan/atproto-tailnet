@@ -18,7 +18,7 @@ function DevicePicker({
   idPrefix: string;
 }) {
   if (devices.length === 0) {
-    return <p className="help-text">You have no devices in this tailnet yet. Add one in the Add device tab.</p>;
+    return <p className="help-text">You have no devices in this tailnet yet. Add one on the Devices page.</p>;
   }
   return (
     <fieldset className="device-picker">

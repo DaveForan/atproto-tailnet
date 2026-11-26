@@ -9,7 +9,7 @@ title: Federation
 > - The federation data plane needs Docker. Only the legacy Headscale mode has it.
 > - Cross-instance traffic is not implemented. In the coordinator stack, links carry no traffic.
 >
-> When federation is off, the federation and traversal API paths return 404. The broker does not start. The dashboard hides the **Federation** and **Traversal Policy** tabs. The Rust federation endpoints also need `COORD_FEDERATION_ENABLED=true`. The rest of this guide describes the design and the code.
+> When federation is off, the federation and traversal API paths return 404. The broker does not start. The dashboard hides the **Federation**, **Traversal policy** and **Credentials** settings sections. The Rust federation endpoints also need `COORD_FEDERATION_ENABLED=true`. The rest of this guide describes the design and the code.
 
 Federation connects separate mesh networks (collectives). Devices in one network can then reach devices in another network. Each side keeps full control of the routes it shares and of the users who can connect. Each side also decides to accept or reject link proposals.
 
@@ -67,7 +67,7 @@ One collective sends a `LINK_REQUEST` to another collective. The request propose
 
 **Operator review**
 
-If the posture of the recipient is `selective` (or `open`), the request appears in the **Federation** tab of the recipient's dashboard. The operator reviews these items:
+If the posture of the recipient is `selective` (or `open`), the request appears under **Settings → Federation** in the recipient's dashboard. The operator reviews these items:
 
 - The DID and domain of the requesting collective
 - The proposed CIDR prefixes
@@ -152,7 +152,7 @@ When more than one path exists to the same prefix, the coordinator selects the b
 
 ### Configure posture
 
-Set the federation posture of your collective in the **Federation** tab of the dashboard or with the API:
+Set the federation posture of your collective under **Settings → Federation** in the dashboard or with the API:
 
 ```bash
 curl -X PUT https://yourdomain.com/api/tenants/<tenant-id>/federation/posture \
@@ -163,11 +163,11 @@ curl -X PUT https://yourdomain.com/api/tenants/<tenant-id>/federation/posture \
 
 ### Send a link request
 
-In the **Federation** tab, enter the DID of the peer collective (`did:web:...`). Then enter the CIDR prefixes that you want to share. The system resolves the DID document of the peer and discovers the broker endpoint. Then it sends a signed `LINK_REQUEST`.
+Under **Settings → Federation**, enter the DID of the peer collective (`did:web:...`). Then enter the CIDR prefixes that you want to share. The system resolves the DID document of the peer and discovers the broker endpoint. Then it sends a signed `LINK_REQUEST`.
 
 ### Accept a link request
 
-When a link request arrives, it appears in your **Federation** tab as a pending request. Review the identity of the sender and the proposed CIDRs. Then accept or reject the request.
+When a link request arrives, it appears under **Settings → Federation** as a pending request. Review the identity of the sender and the proposed CIDRs. Then accept or reject the request.
 
 ### Monitor active links
 

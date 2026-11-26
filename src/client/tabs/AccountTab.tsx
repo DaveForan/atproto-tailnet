@@ -1,3 +1,4 @@
+import { ConnectClaude } from "../components/ConnectClaude";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useConfirm } from "../components/ConfirmDialog";
 import { Card } from "../components/Card";
@@ -301,6 +302,18 @@ function TrustedDevices({ onChanged }: { onChanged?: () => void }) {
         </>
       )}
     </div>
+  );
+}
+
+/** The Account page of the dashboard. A browser still enrolling gets `AccountTab` alone. */
+export function AccountPage() {
+  return (
+    <>
+      <AccountTab />
+      <div className="tab-content">
+        <ConnectClaude />
+      </div>
+    </>
   );
 }
 

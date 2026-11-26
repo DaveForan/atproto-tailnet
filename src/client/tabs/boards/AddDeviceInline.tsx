@@ -73,7 +73,7 @@ export function AddDeviceInline({ known, onJoined }: { known: MyDevice[]; onJoin
   };
 
   if (state === "pending") {
-    return <p className="help-text">This tailnet approves each new device. Your request was sent; add the device from the Add device tab after it is approved.</p>;
+    return <p className="help-text">This tailnet approves each new device. Your request was sent; add the device on the Devices page after it is approved.</p>;
   }
   if (state === "waiting" || state === "timeout") {
     return (

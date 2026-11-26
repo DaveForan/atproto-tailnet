@@ -147,6 +147,7 @@ export async function createNotification(
 
 export const USER_NOTIFICATION_TYPES = [
   "device_trust",
+  "device_waiting",
   "friend_request",
   "friend_accepted",
   "friend_removed",

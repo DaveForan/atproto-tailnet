@@ -260,7 +260,7 @@ Open `https://tailnets.example.com` and sign in with the Bluesky account in
 
 The service then creates your tailnet. This first operator tailnet becomes the
 default tailnet of the instance, and it accepts join requests. In the
-**Instance** tab you can change these items:
+**Instance** page you can change these items:
 
 - The default tailnet
 - Single-tailnet mode
@@ -284,7 +284,7 @@ serves only `/key`, `/ts2021` and `/health` from the coordinator:
 curl -f https://<your-slug>.ts.example.com/key
 ```
 
-Then connect a device from the **Add Device** tab.
+Then connect a device from the **Devices** page.
 
 ### 9. Connect Claude (optional)
 
@@ -385,7 +385,7 @@ Droplets.
 
 Set `OPERATOR_DIDS` before you start the stack the first time. Sign in as the
 operator first. Without operators, nobody can create a tailnet and nobody can
-use the **Instance** tab.
+use the **Instance** page.
 
 ### Backups
 

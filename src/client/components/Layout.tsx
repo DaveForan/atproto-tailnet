@@ -7,7 +7,9 @@ import { Badge } from "./Badge";
 import { BoardText } from "./BoardText";
 import { boardsService } from "../services/boards";
 import { NotificationBell } from "./NotificationBell";
-import { tabEnabled, tabRegistry, type TabGroup } from "./registry";
+import { tabEnabled, tabRegistry } from "./registry";
+import { useAttention } from "../hooks/useAttention";
+import type { TabId } from "../lib/types";
 import { safeUrl } from "../lib/utils";
 
 interface SidebarState {
@@ -77,6 +79,7 @@ export function Sidebar() {
   const { currentTenant, tenants, selectTenant, hasPerm, settings, user } = useSession();
   const { tab, setTab } = useTabRoute();
   const { sidebarOpen, closeSidebar } = useContext(SidebarCtx);
+  const { count: waiting } = useAttention();
   const t = currentTenant;
   const closeRef = useRef<HTMLButtonElement>(null);
 
@@ -99,12 +102,12 @@ export function Sidebar() {
 
   if (!t) return null;
 
-  const handleTabClick = (tabId: string) => {
-    setTab(tabId as import("../lib/types").TabId);
+  const handleTabClick = (tabId: TabId) => {
+    setTab(tabId);
     closeSidebar();
   };
 
-  const groups = buildVisibleGroups(hasPerm, settings, currentTenant, user);
+  const pages = tabRegistry.filter((e) => tabEnabled(e, hasPerm, settings, currentTenant, user));
   const roleBadge = t.isOriginator ? (
     <Badge variant="originator">originator</Badge>
   ) : (
@@ -147,21 +150,22 @@ export function Sidebar() {
           </div>
         </div>
         <nav aria-label="Tailnet pages">
-          {groups.map((group) => (
-            <div key={group.label} role="group" aria-label={group.label}>
-              <div className="nav-group-header" aria-hidden="true">{group.label}</div>
-              {group.tabs.map((entry) => (
-                <button
-                  key={entry.id}
-                  type="button"
-                  className={`nav-item${tab === entry.id ? " active" : ""}`}
-                  aria-current={tab === entry.id ? "page" : undefined}
-                  onClick={() => handleTabClick(entry.id)}
-                >
-                  {entry.label}
-                </button>
-              ))}
-            </div>
+          {pages.map((entry) => (
+            <button
+              key={entry.id}
+              type="button"
+              className={`nav-item${tab === entry.id ? " active" : ""}`}
+              aria-current={tab === entry.id ? "page" : undefined}
+              onClick={() => handleTabClick(entry.id)}
+            >
+              {entry.label}
+              {entry.id === "overview" && waiting > 0 && (
+                <span className="nav-count">
+                  {waiting}
+                  <span className="sr-only"> waiting for you</span>
+                </span>
+              )}
+            </button>
           ))}
         </nav>
       </aside>
@@ -172,35 +176,6 @@ export function Sidebar() {
       />
     </>
   );
-}
-
-interface VisibleGroup {
-  label: string;
-  tabs: Array<{ id: string; label: string }>;
-}
-
-function buildVisibleGroups(
-  hasPerm: (p: string) => boolean,
-  settings: import("../lib/types").Settings | null,
-  tenant: import("../lib/types").Tenant | null,
-  user: import("../lib/types").User | null,
-): VisibleGroup[] {
-  const result: VisibleGroup[] = [];
-  const groupMap = new Map<string, TabGroup>();
-
-  for (const entry of tabRegistry) {
-    if (!tabEnabled(entry, hasPerm, settings, tenant, user)) continue;
-    if (!groupMap.has(entry.group)) {
-      groupMap.set(entry.group, { label: entry.group, tabs: [] });
-    }
-    groupMap.get(entry.group)!.tabs.push(entry);
-  }
-
-  for (const group of groupMap.values()) {
-    if (group.tabs.length > 0) result.push(group);
-  }
-
-  return result;
 }
 
 export function LockdownBanner() {
@@ -279,23 +254,6 @@ export function LoginPage({ redirect, purpose }: { redirect?: string; purpose?: 
           <BoardText text={board.text} />
         </section>
       )}
-    </div>
-  );
-}
-
-export function StatsSummary() {
-  const { stats } = useSession();
-  if (!stats) return null;
-  return (
-    <div className="stats-row" role="group" aria-label="Tailnet summary">
-      <div className="stat-card">
-        <div className="stat-value">{stats.totalDevices}</div>
-        <div className="stat-label">Devices</div>
-      </div>
-      <div className="stat-card">
-        <div className="stat-value">{stats.onlineDevices}</div>
-        <div className="stat-label">Online</div>
-      </div>
     </div>
   );
 }

@@ -104,14 +104,14 @@ If you see "you aren't a member of any tailnet", your DID is not in `OPERATOR_DI
 
 **Connect a device**
 
-In the **Add Device** tab of the dashboard, generate a pre-authentication key. The tab shows the full command with the correct login server. Run it on the device that you want to connect. It looks like this:
+On the **Devices** page of the dashboard, generate a pre-authentication key under **Add a device**. The page shows the full command with the correct login server. Run it on the device that you want to connect. It looks like this:
 
 ```bash
 tailscale up --login-server=http://<tailnet-address>.ts.localhost:8180 \
              --authkey=tskey-auth-XXXXX
 ```
 
-When the device connects, it appears in your Devices tab.
+When the device connects, it appears in the list on the same page.
 
 </li>
 </ol>

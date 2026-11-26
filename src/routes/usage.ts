@@ -3,6 +3,7 @@
  * Usage, caps (0 = unlimited) and history. Members read; only the originator sets caps.
  */
 
+import { MAX_WAITING_HOURS } from "../orchestrator/waiting-devices.js";
 import { Router } from "express";
 import { z } from "zod";
 import { eq, desc } from "drizzle-orm";
@@ -70,6 +71,7 @@ usageRouter.get(
       limits: {
         maxDevices: tenant.maxDevices,
         maxMembers: tenant.maxMembers,
+        waitingDeviceHours: tenant.waitingDeviceHours,
       },
       overLimit: {
         devices: isOverLimit(deviceCount, tenant.maxDevices),
@@ -84,6 +86,8 @@ const limitsBody = z
   .object({
     maxDevices: z.number().int().min(0).max(MAX_LIMIT).optional(),
     maxMembers: z.number().int().min(0).max(MAX_LIMIT).optional(),
+    /** Hours after which a device that waits for admission is removed. */
+    waitingDeviceHours: z.number().int().min(1).max(MAX_WAITING_HOURS).optional(),
   })
   .strict();
 
@@ -99,7 +103,7 @@ usageRouter.put(
     const parsed = parseBody(limitsBody, req, res);
     if (!parsed) return;
 
-    const { maxDevices, maxMembers } = parsed.data;
+    const { maxDevices, maxMembers, waitingDeviceHours } = parsed.data;
 
     if (result.tenant.parentId) {
       const [parent] = await db
@@ -118,13 +122,14 @@ usageRouter.put(
     const updates: Partial<typeof tenants.$inferInsert> = { updatedAt: new Date() };
     if (maxDevices !== undefined) updates.maxDevices = maxDevices;
     if (maxMembers !== undefined) updates.maxMembers = maxMembers;
+    if (waitingDeviceHours !== undefined) updates.waitingDeviceHours = waitingDeviceHours;
 
     try {
       const [updated] = await db
         .update(tenants)
         .set(updates)
         .where(eq(tenants.id, tenantId))
-        .returning({ maxDevices: tenants.maxDevices, maxMembers: tenants.maxMembers });
+        .returning({ maxDevices: tenants.maxDevices, maxMembers: tenants.maxMembers, waitingDeviceHours: tenants.waitingDeviceHours });
 
       logAudit({
         tenantId,

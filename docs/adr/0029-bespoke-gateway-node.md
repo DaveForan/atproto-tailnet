@@ -12,7 +12,7 @@ Three features need a server-side node that is inside tailnets and carries
 traffic for them:
 
 1. Named services with HTTPS inside the tailnet (ADR-0030).
-2. Public exposure of selected services (ADR-0031).
+2. Public exposure of selected services (ADR-0031; declined 2026-11-23, not built).
 3. Federation traffic between collectives (ADR-0033). The coordinator stack has
    no data plane between instances today, so federation links carry no
    traffic.
